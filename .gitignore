@@ -21,3 +21,4 @@ tsconfig.tsbuildinfo
 
 # whatsapp bot
 whatsapp-bot/dist/
+cdk.out/
