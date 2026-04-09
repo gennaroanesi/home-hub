@@ -249,7 +249,7 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   cluster: botCluster,
   taskDefinition: botTaskDef,
-  desiredCount: 1,
+  desiredCount: 0,
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
