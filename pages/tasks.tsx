@@ -194,10 +194,14 @@ export default function TasksPage() {
 
   function getNextOccurrence(rruleStr: string, dueDate?: string | null): string | null {
     try {
-      const rule = RRule.fromString(rruleStr);
+      const baseRule = RRule.fromString(rruleStr);
+      let dtstart = new Date();
       if (dueDate) {
-        rule.options.dtstart = new Date(dueDate);
+        // Parse as local date to avoid UTC timezone shift
+        const [y, m, d] = dueDate.split("T")[0].split("-").map(Number);
+        dtstart = new Date(y, m - 1, d);
       }
+      const rule = new RRule({ ...baseRule.origOptions, dtstart });
       const next = rule.after(new Date());
       if (!next) return null;
       return next.toLocaleDateString();
