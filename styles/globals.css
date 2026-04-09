@@ -1,6 +1,25 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+
+@plugin "../heroui.plugin.js";
+
+@source "../node_modules/@heroui/theme/dist/**/*.{js,ts,jsx,tsx}";
+
+@theme {
+  --font-FrancieScript: var(--font-francie-script);
+  --font-CaslonPro: adobe-caslon-pro;
+
+  --color-primary: #aca29c;
+  --color-secondary: #4e5e53;
+  --color-text: #aca29c;
+  --color-mainTextColor: #735f55;
+  --color-alternateBackgroundColor: #aca29c;
+  --color-lightBackgroundColor: #f1f2eb;
+  --color-whiteishText: #f1f2eb;
+  --color-darkGreen: #1b2727;
+  --color-softGreen: #4e5e53;
+
+  --radius-none: 0px;
+}
 
 @layer base {
   html {
@@ -47,32 +66,31 @@
   }
 
   .dots {
-  display: flex;
-  padding: 10px 0;
-  justify-content: center;
-  position: relative;
-  top: -2rem;
-}
+    display: flex;
+    padding: 10px 0;
+    justify-content: center;
+    position: relative;
+    top: -2rem;
+  }
 
-.dot {
-  border: none;
-  width: 10px;
-  height: 10px;
-  background: #c5c5c5;
-  border-radius: 50%;
-  margin: 0 5px;
-  padding: 5px;
-  cursor: pointer;
-}
+  .dot {
+    border: none;
+    width: 10px;
+    height: 10px;
+    background: #c5c5c5;
+    border-radius: 50%;
+    margin: 0 5px;
+    padding: 5px;
+    cursor: pointer;
+  }
 
-.dot:focus {
-  outline: none;
-}
+  .dot:focus {
+    outline: none;
+  }
 
-.dot.active {
-  background: #ffffff;
-}
-
+  .dot.active {
+    background: #ffffff;
+  }
 }
 
 @layer utilities {

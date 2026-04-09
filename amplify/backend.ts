@@ -14,7 +14,7 @@ try {
 
 import { defineBackend } from "@aws-amplify/backend";
 import { Policy, PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
-import { Fn, Stack, Tags } from "aws-cdk-lib";
+import { Fn, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
 import { CfnFunction, Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
@@ -210,6 +210,7 @@ const botTaskDef = new ecs.FargateTaskDefinition(botStack, "whatsappBotTask", {
 const botRepo = new ecr.Repository(botStack, "whatsappBotRepo", {
   repositoryName: "home-hub-whatsapp-bot",
   emptyOnDelete: true,
+  removalPolicy: RemovalPolicy.DESTROY,
 });
 
 botTaskDef.addContainer("bot", {
