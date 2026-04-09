@@ -14,6 +14,10 @@ backend:
             ECR_URI=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotEcrRepoUri'].OutputValue" --output text 2>/dev/null)
             CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
             SERVICE_NAME=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotServiceName'].OutputValue" --output text 2>/dev/null)
+            # Save cluster ARN for the frontend API route
+            if [ -n "$CLUSTER_ARN" ] && [ "$CLUSTER_ARN" != "None" ]; then
+              echo "WHATSAPP_BOT_CLUSTER_ARN=$CLUSTER_ARN" >> .env.production
+            fi
             if [ -n "$ECR_URI" ] && [ "$ECR_URI" != "None" ]; then
               echo "Building WhatsApp bot image..."
               ECR_REGISTRY=$(echo "$ECR_URI" | cut -d'/' -f1)

@@ -229,6 +229,7 @@ botTaskDef.addContainer("bot", {
     S3_BUCKET: "cristinegennaro.com",
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
     WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "",
+    QR_ACCESS_TOKEN: process.env.QR_ACCESS_TOKEN ?? "",
     AWS_REGION: "us-east-1",
   },
 });

@@ -16,6 +16,7 @@
     "@aws-amplify/adapter-nextjs": "^1.5.8",
     "@aws-amplify/ui-react": "^6.11.0",
     "@aws-sdk/client-dynamodb": "^3.782.0",
+    "@aws-sdk/client-ecs": "^3.1028.0",
     "@aws-sdk/client-scheduler": "^3.1024.0",
     "@aws-sdk/client-sns": "^3.782.0",
     "@aws-sdk/lib-dynamodb": "^3.782.0",
