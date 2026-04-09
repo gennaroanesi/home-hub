@@ -8,26 +8,35 @@ backend:
     postBuild:
       commands:
         # Build and push the WhatsApp bot Docker image to ECR
+        # Only rebuilds when whatsapp-bot/ files have changed or no image exists yet
         - |
           STACK_NAME=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE --query "StackSummaries[?starts_with(StackName,'amplify-${AWS_APP_ID}-${AWS_BRANCH}')].StackName" --output text | head -1)
           if [ -n "$STACK_NAME" ]; then
             ECR_URI=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotEcrRepoUri'].OutputValue" --output text 2>/dev/null)
             CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
             SERVICE_NAME=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotServiceName'].OutputValue" --output text 2>/dev/null)
-            # Save cluster ARN for the frontend API route
             if [ -n "$CLUSTER_ARN" ] && [ "$CLUSTER_ARN" != "None" ]; then
               echo "WHATSAPP_BOT_CLUSTER_ARN=$CLUSTER_ARN" >> .env.production
             fi
             if [ -n "$ECR_URI" ] && [ "$ECR_URI" != "None" ]; then
-              echo "Building WhatsApp bot image..."
+              ECR_REPO=$(echo "$ECR_URI" | cut -d'/' -f2-)
               ECR_REGISTRY=$(echo "$ECR_URI" | cut -d'/' -f1)
-              aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-              docker build -t "$ECR_URI:latest" ./whatsapp-bot
-              docker push "$ECR_URI:latest"
-              echo "Image pushed to $ECR_URI:latest"
-              if [ -n "$CLUSTER_ARN" ] && [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "None" ]; then
-                echo "Triggering ECS redeployment..."
-                aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment
+              # Check if image already exists
+              IMAGE_EXISTS=$(aws ecr list-images --repository-name "$ECR_REPO" --query "imageIds[?imageTag=='latest']" --output text 2>/dev/null)
+              # Check if bot code changed in this commit
+              BOT_CHANGED=$(git diff HEAD~1 --name-only -- whatsapp-bot/ 2>/dev/null | head -1)
+              if [ -z "$IMAGE_EXISTS" ] || [ -n "$BOT_CHANGED" ]; then
+                echo "Building WhatsApp bot image..."
+                aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+                docker build -t "$ECR_URI:latest" ./whatsapp-bot
+                docker push "$ECR_URI:latest"
+                echo "Image pushed to $ECR_URI:latest"
+                if [ -n "$CLUSTER_ARN" ] && [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "None" ]; then
+                  echo "Triggering ECS redeployment..."
+                  aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment
+                fi
+              else
+                echo "Bot code unchanged and image exists, skipping Docker build"
               fi
             else
               echo "No ECR URI found in stack outputs, skipping bot build"
