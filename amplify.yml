@@ -32,8 +32,8 @@ backend:
                 docker push "$ECR_URI:latest"
                 echo "Image pushed to $ECR_URI:latest"
                 if [ -n "$CLUSTER_ARN" ] && [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "None" ]; then
-                  echo "Starting ECS service..."
-                  aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --desired-count 1 --force-new-deployment
+                  echo "Triggering ECS redeployment..."
+                  aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment || echo "Warning: Could not trigger ECS redeploy (missing permissions). Service will pick up new image on next task start."
                 fi
               else
                 echo "Bot code unchanged and image exists, skipping Docker build"
