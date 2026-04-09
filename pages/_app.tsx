@@ -7,8 +7,6 @@ import { useRouter } from "next/router";
 
 import "@/styles/globals.css";
 
-import { appWithTranslation } from "next-i18next";
-
 import { Amplify } from "aws-amplify";
 import outputs from "@/amplify_outputs.json";
 
@@ -31,4 +29,4 @@ function App({ Component, pageProps }: AppProps) {
   );
 }
 
-export default appWithTranslation(App);
+export default App;

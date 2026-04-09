@@ -3,9 +3,7 @@
 import React, { useState, useEffect, useRef, useCallback, Key } from "react";
 import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
-import type { GetStaticProps } from "next";
 import { useRouter } from "next/router";
-import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
@@ -451,11 +449,3 @@ export default function HomeAgent() {
   );
 }
 
-export const getStaticProps: GetStaticProps = async ({ locale }) => ({
-  props: {
-    ...(await serverSideTranslations(locale ?? "en", ["common"], null, [
-      "en",
-      "pt-BR",
-    ])),
-  },
-});

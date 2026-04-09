@@ -1,8 +1,5 @@
 import React, { FormEvent, useState, useEffect } from "react";
 import { useRouter } from "next/router";
-import type { GetStaticProps } from "next";
-import { serverSideTranslations } from "next-i18next/serverSideTranslations";
-import { useTranslation, Trans } from "next-i18next";
 
 import {
   signIn,
@@ -39,8 +36,6 @@ type View =
 
 export default function Login() {
   const router = useRouter();
-  const { t } = useTranslation("common");
-
   const [view, setView] = useState<View>("login");
   const [isLoading, setIsLoading] = useState(false);
   const [name, setName] = useState("");
@@ -66,7 +61,7 @@ export default function Login() {
     try {
       const { userId } = await getCurrentUser();
       if (userId) {
-        router.push("/admin");
+        router.push("/");
       }
     } catch {
       // not logged in
@@ -95,7 +90,7 @@ export default function Login() {
 
       switch (nextStep.signInStep) {
         case "DONE":
-          router.push("/admin");
+          router.push("/");
           break;
         case "CONFIRM_SIGN_IN_WITH_NEW_PASSWORD_REQUIRED":
           setView("force-new-password");
@@ -125,7 +120,7 @@ export default function Login() {
       });
 
       if (nextStep.signInStep === "DONE") {
-        router.push("/admin");
+        router.push("/");
       } else {
         showError("Sign in", `Unexpected step: ${nextStep.signInStep}`);
       }
@@ -166,8 +161,8 @@ export default function Login() {
       setIsLoading(true);
       await confirmSignUp({ username: email, confirmationCode: code });
       addToast({
-        title: t("login.account_confirmed"),
-        description: t("login.account_confirmed_description"),
+        title: "Account confirmed",
+        description: "You can now log in.",
       });
       setOtp("");
       setView("login");
@@ -183,8 +178,8 @@ export default function Login() {
       setIsLoading(true);
       await resendSignUpCode({ username });
       addToast({
-        title: t("login.code_resent"),
-        description: t("login.code_resent_description"),
+        title: "Code resent",
+        description: "Check your email.",
       });
     } catch (e) {
       showError("Resend error", e);
@@ -213,7 +208,7 @@ export default function Login() {
     event.preventDefault();
 
     if (otp.length !== 6) {
-      showError("Validation", t("login.code_description"));
+      showError("Validation", "6-digit code from your email");
       return;
     }
 
@@ -225,8 +220,8 @@ export default function Login() {
         newPassword,
       });
       addToast({
-        title: t("login.password_reset_success"),
-        description: t("login.password_reset_success_description"),
+        title: "Password reset",
+        description: "You can now log in with your new password.",
       });
       setOtp("");
       setNewPassword("");
@@ -263,12 +258,12 @@ export default function Login() {
       return (
         <Form className="flex flex-col gap-4" onSubmit={handleForgotPassword}>
           <p className="text-sm text-default-500">
-            {t("login.forgot_password_description")}
+            {"Enter your email and we'll send a code to reset your password."}
           </p>
           <Input
             isRequired
-            label={t("login.email_label")}
-            placeholder={t("login.email_placeholder")}
+            label={"Email"}
+            placeholder={"Enter your email"}
             type="email"
             value={username}
             onValueChange={setUsername}
@@ -282,7 +277,7 @@ export default function Login() {
               radius="none"
               isDisabled={isLoading}
             >
-              {t("login.send_reset_code")}
+              {"Send reset code"}
             </Button>
           </div>
           <p className="text-center text-small">
@@ -291,7 +286,7 @@ export default function Login() {
               size="sm"
               onPress={() => setView("login")}
             >
-              {t("login.back_to_login")}
+              {"Back to login"}
             </Link>
           </p>
         </Form>
@@ -305,19 +300,19 @@ export default function Login() {
           <p
             className="text-sm text-default-500"
             dangerouslySetInnerHTML={{
-              __html: t("login.enter_code_description", { email: username }),
+              __html: "Enter the code sent to <strong>" + username + "</strong> and your new password.",
             }}
           />
           <InputOtp
             length={6}
             value={otp}
             onValueChange={setOtp}
-            description={t("login.code_description")}
+            description={"6-digit code from your email"}
           />
           <Input
             isRequired
-            label={t("login.new_password_label")}
-            placeholder={t("login.new_password_placeholder")}
+            label={"New password"}
+            placeholder={"Enter new password"}
             type={isPasswordVisible ? "text" : "password"}
             value={newPassword}
             onValueChange={setNewPassword}
@@ -332,7 +327,7 @@ export default function Login() {
               radius="none"
               isDisabled={isLoading || otp.length !== 6 || !newPassword}
             >
-              {t("login.reset_password")}
+              {"Reset password"}
             </Button>
           </div>
           <p className="text-center text-small">
@@ -341,7 +336,7 @@ export default function Login() {
               size="sm"
               onPress={() => setView("login")}
             >
-              {t("login.back_to_login")}
+              {"Back to login"}
             </Link>
           </p>
         </Form>
@@ -353,12 +348,12 @@ export default function Login() {
       return (
         <Form className="flex flex-col gap-4" onSubmit={handleForceNewPassword}>
           <p className="text-sm text-default-500">
-            {t("login.force_new_password_description")}
+            {"You need to set a new password to continue."}
           </p>
           <Input
             isRequired
-            label={t("login.new_password_label")}
-            placeholder={t("login.choose_new_password_placeholder")}
+            label={"New password"}
+            placeholder={"Choose a new password"}
             type={isPasswordVisible ? "text" : "password"}
             value={newPassword}
             onValueChange={setNewPassword}
@@ -373,7 +368,7 @@ export default function Login() {
               radius="none"
               isDisabled={isLoading || !newPassword}
             >
-              {t("login.set_password")}
+              {"Set password"}
             </Button>
           </div>
         </Form>
@@ -387,14 +382,14 @@ export default function Login() {
           <p
             className="text-sm text-default-500"
             dangerouslySetInnerHTML={{
-              __html: t("login.signup_otp_description", { email: username }),
+              __html: "Enter the verification code sent to <strong>" + username + "</strong>.",
             }}
           />
           <InputOtp
             length={6}
             value={otp}
             onValueChange={setOtp}
-            description={t("login.verification_code_description")}
+            description={"Enter your verification code"}
           />
           <Button
             color="primary"
@@ -403,7 +398,7 @@ export default function Login() {
             onPress={handleResendSignUpOtp}
             isDisabled={isLoading}
           >
-            {t("login.resend_code")}
+            {"Resend code"}
           </Button>
           <p className="text-center text-small">
             <Link
@@ -411,7 +406,7 @@ export default function Login() {
               size="sm"
               onPress={() => setView("login")}
             >
-              {t("login.back_to_login")}
+              {"Back to login"}
             </Link>
           </p>
         </div>
@@ -431,13 +426,13 @@ export default function Login() {
           setIsLoading(false);
         }}
       >
-        <Tab key="login" title={t("login.login")}>
+        <Tab key="login" title={"Login"}>
           <Form className="flex flex-col gap-4" onSubmit={handleSignIn}>
             <Input
               isRequired
               name="email"
-              label={t("login.email_label")}
-              placeholder={t("login.email_placeholder")}
+              label={"Email"}
+              placeholder={"Enter your email"}
               type="email"
               value={username}
               onValueChange={setUsername}
@@ -446,8 +441,8 @@ export default function Login() {
             <Input
               isRequired
               name="password"
-              label={t("login.password_label")}
-              placeholder={t("login.password_placeholder")}
+              label={"Password"}
+              placeholder={"Enter your password"}
               value={password}
               onValueChange={setPassword}
               radius="none"
@@ -460,16 +455,16 @@ export default function Login() {
                 size="sm"
                 onPress={() => setView("forgot-password")}
               >
-                {t("login.forgot_password")}
+                {"Forgot password?"}
               </Link>
               <p className="text-small">
-                {t("login.need_account")}{" "}
+                {"Need an account?"}{" "}
                 <Link
                   className="cursor-pointer"
                   size="sm"
                   onPress={() => setView("sign-up")}
                 >
-                  {t("login.sign_up")}
+                  {"Sign up"}
                 </Link>
               </p>
             </div>
@@ -481,18 +476,18 @@ export default function Login() {
                 radius="none"
                 isDisabled={isLoading}
               >
-                {t("login.login")}
+                {"Login"}
               </Button>
             </div>
           </Form>
         </Tab>
-        <Tab key="sign-up" title={t("login.sign_up")}>
+        <Tab key="sign-up" title={"Sign up"}>
           <Form className="flex flex-col gap-4" onSubmit={handleSignUp}>
             <Input
               isRequired
               name="name"
-              label={t("login.name_label")}
-              placeholder={t("login.name_placeholder")}
+              label={"Name"}
+              placeholder={"Enter your name"}
               type="text"
               value={name}
               onValueChange={setName}
@@ -501,8 +496,8 @@ export default function Login() {
             <Input
               isRequired
               name="email"
-              label={t("login.email_label")}
-              placeholder={t("login.email_placeholder")}
+              label={"Email"}
+              placeholder={"Enter your email"}
               type="email"
               value={username}
               onValueChange={setUsername}
@@ -511,20 +506,20 @@ export default function Login() {
             <Input
               isRequired
               name="password"
-              label={t("login.password_label")}
-              placeholder={t("login.password_placeholder")}
+              label={"Password"}
+              placeholder={"Enter your password"}
               type={isPasswordVisible ? "text" : "password"}
               radius="none"
               endContent={passwordToggle}
             />
             <p className="text-center text-small">
-              {t("login.have_account")}{" "}
+              {"Already have an account?"}{" "}
               <Link
                 className="cursor-pointer"
                 size="sm"
                 onPress={() => setView("login")}
               >
-                {t("login.login")}
+                {"Login"}
               </Link>
             </p>
             <div className="flex gap-2 justify-end">
@@ -535,7 +530,7 @@ export default function Login() {
                 radius="none"
                 isDisabled={isLoading}
               >
-                {t("login.sign_up")}
+                {"Sign up"}
               </Button>
             </div>
           </Form>
@@ -567,11 +562,3 @@ export default function Login() {
   );
 }
 
-export const getStaticProps: GetStaticProps = async ({ locale }) => ({
-  props: {
-    ...(await serverSideTranslations(locale ?? "en", ["common"], null, [
-      "en",
-      "pt-BR",
-    ])),
-  },
-});

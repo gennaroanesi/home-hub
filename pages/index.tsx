@@ -2,9 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
-import type { GetStaticProps } from "next";
 import { useRouter } from "next/router";
-import { serverSideTranslations } from "next-i18next/serverSideTranslations";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt } from "react-icons/fa";
@@ -98,11 +96,3 @@ export default function HomeDashboard() {
   );
 }
 
-export const getStaticProps: GetStaticProps = async ({ locale }) => ({
-  props: {
-    ...(await serverSideTranslations(locale ?? "en", ["common"], null, [
-      "en",
-      "pt-BR",
-    ])),
-  },
-});
