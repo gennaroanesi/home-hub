@@ -192,9 +192,12 @@ export default function TasksPage() {
     }
   }
 
-  function getNextOccurrence(rruleStr: string): string | null {
+  function getNextOccurrence(rruleStr: string, dueDate?: string | null): string | null {
     try {
       const rule = RRule.fromString(rruleStr);
+      if (dueDate) {
+        rule.options.dtstart = new Date(dueDate);
+      }
       const next = rule.after(new Date());
       if (!next) return null;
       return next.toLocaleDateString();
@@ -297,7 +300,7 @@ export default function TasksPage() {
                         </span>
                       )}
                       {task.recurrence && !task.isCompleted && (() => {
-                        const next = getNextOccurrence(task.recurrence!);
+                        const next = getNextOccurrence(task.recurrence!, task.dueDate);
                         return next ? (
                           <span className="text-xs text-default-400">Next: {next}</span>
                         ) : null;
