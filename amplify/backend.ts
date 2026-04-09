@@ -14,7 +14,7 @@ try {
 
 import { defineBackend } from "@aws-amplify/backend";
 import { Policy, PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
-import { Fn, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
+import { CfnOutput, Fn, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
 import { CfnFunction, Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
@@ -245,12 +245,22 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   resources: ["arn:aws:s3:::cristinegennaro.com/whatsapp-bot/*"],
 }));
 
-// desiredCount: 0 until the first Docker image is pushed to ECR
-new ecs.FargateService(botStack, "whatsappBotService", {
+const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   cluster: botCluster,
   taskDefinition: botTaskDef,
-  desiredCount: 0,
+  desiredCount: 1,
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+});
+
+// Outputs on the root stack for the Amplify build phase to build/push Docker
+new CfnOutput(backend.stack, "whatsappBotEcrRepoUri", {
+  value: botRepo.repositoryUri,
+});
+new CfnOutput(backend.stack, "whatsappBotClusterArn", {
+  value: botCluster.clusterArn,
+});
+new CfnOutput(backend.stack, "whatsappBotServiceName", {
+  value: botService.serviceName,
 });

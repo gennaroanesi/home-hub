@@ -5,6 +5,32 @@ backend:
       commands:
         - npm install --cache .npm --prefer-offline
         - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
+    postBuild:
+      commands:
+        # Build and push the WhatsApp bot Docker image to ECR
+        - |
+          STACK_NAME=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE --query "StackSummaries[?starts_with(StackName,'amplify-${AWS_APP_ID}-${AWS_BRANCH}')].StackName" --output text | head -1)
+          if [ -n "$STACK_NAME" ]; then
+            ECR_URI=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotEcrRepoUri'].OutputValue" --output text 2>/dev/null)
+            CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
+            SERVICE_NAME=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotServiceName'].OutputValue" --output text 2>/dev/null)
+            if [ -n "$ECR_URI" ] && [ "$ECR_URI" != "None" ]; then
+              echo "Building WhatsApp bot image..."
+              ECR_REGISTRY=$(echo "$ECR_URI" | cut -d'/' -f1)
+              aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$ECR_REGISTRY"
+              docker build -t "$ECR_URI:latest" ./whatsapp-bot
+              docker push "$ECR_URI:latest"
+              echo "Image pushed to $ECR_URI:latest"
+              if [ -n "$CLUSTER_ARN" ] && [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "None" ]; then
+                echo "Triggering ECS redeployment..."
+                aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment
+              fi
+            else
+              echo "No ECR URI found in stack outputs, skipping bot build"
+            fi
+          else
+            echo "Stack not found, skipping bot build"
+          fi
 frontend:
   phases:
     preBuild:
