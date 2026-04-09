@@ -136,24 +136,22 @@ export default function TasksPage() {
         isCompleted: false,
         completedAt: null,
       });
+    } else if (task.recurrence) {
+      // Recurring task: advance due date to next occurrence instead of completing
+      const nextDate = getNextOccurrenceDate(task.recurrence, task.dueDate);
+      if (nextDate) {
+        await client.models.homeTask.update({
+          id: task.id,
+          dueDate: nextDate.toISOString(),
+        });
+      }
     } else {
-      // Complete
-      const now = new Date().toISOString();
+      // One-time task: mark as completed
       await client.models.homeTask.update({
         id: task.id,
         isCompleted: true,
-        completedAt: now,
+        completedAt: new Date().toISOString(),
       });
-
-      // If recurring, create next occurrence via the agent mutation
-      // (The agent handler and daily sweep both handle this, but for
-      // immediate feedback we also do it here)
-      if (task.recurrence) {
-        try {
-          // Use the RRule logic server-side; for now just reload to pick up
-          // any new tasks created by the agent or sweep
-        } catch {}
-      }
     }
     await loadTasks();
   }
@@ -192,22 +190,24 @@ export default function TasksPage() {
     }
   }
 
-  function getNextOccurrence(rruleStr: string, dueDate?: string | null): string | null {
+  function getNextOccurrenceDate(rruleStr: string, dueDate?: string | null): Date | null {
     try {
       const baseRule = RRule.fromString(rruleStr);
       let dtstart = new Date();
       if (dueDate) {
-        // Parse as local date to avoid UTC timezone shift
         const [y, m, d] = dueDate.split("T")[0].split("-").map(Number);
         dtstart = new Date(y, m - 1, d);
       }
       const rule = new RRule({ ...baseRule.origOptions, dtstart });
-      const next = rule.after(new Date());
-      if (!next) return null;
-      return next.toLocaleDateString();
+      return rule.after(new Date());
     } catch {
       return null;
     }
+  }
+
+  function getNextOccurrence(rruleStr: string, dueDate?: string | null): string | null {
+    const next = getNextOccurrenceDate(rruleStr, dueDate);
+    return next ? next.toLocaleDateString() : null;
   }
 
   const RECURRENCE_PRESETS = [
