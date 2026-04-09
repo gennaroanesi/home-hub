@@ -213,7 +213,6 @@ const botTaskDef = new ecs.FargateTaskDefinition(botStack, "whatsappBotTask", {
 });
 
 const botRepo = new ecr.Repository(botStack, "whatsappBotRepo", {
-  repositoryName: "home-hub-whatsapp-bot",
   emptyOnDelete: true,
   removalPolicy: RemovalPolicy.DESTROY,
 });
