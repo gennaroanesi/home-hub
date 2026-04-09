@@ -129,8 +129,11 @@ agentLambda.addEnvironment("SCHEDULER_ROLE_ARN", schedulerRole.roleArn);
 agentLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
 
 // ── SNS topic for notifications ─────────────────────────────────────────────
+// Topic lives in the scheduler stack (same as the lambda that publishes to it)
+// to avoid a cross-stack circular dependency with the data stack.
 
-const homeNotificationsTopic = new sns.Topic(dataStack, "homeNotificationsTopic", {
+const schedulerStack = Stack.of(backend.homeScheduler.resources.lambda);
+const homeNotificationsTopic = new sns.Topic(schedulerStack, "homeNotificationsTopic", {
   displayName: "Home Hub Notifications",
 });
 
@@ -139,8 +142,10 @@ schedulerLambda.addEnvironment("HOME_NOTIFICATIONS_TOPIC_ARN", homeNotifications
 homeNotificationsTopic.grantPublish(backend.homeScheduler.resources.lambda);
 
 // ── Recurring tasks — daily sweep ───────────────────────────────────────────
+// Env vars and policies live in the recurring stack (same as the lambda)
+// to avoid cross-stack circular dependencies with the data stack.
 
-const recurringStack = backend.createStack("recurring-tasks-schedule");
+const recurringStack = Stack.of(backend.recurringTasks.resources.lambda);
 const recurringLambda = backend.recurringTasks.resources.lambda as LambdaFunction;
 recurringLambda.addEnvironment("HOME_TASK_TABLE", taskTable.tableName);
 
