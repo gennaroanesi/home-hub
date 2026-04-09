@@ -10,7 +10,7 @@ backend:
         # Build and push the WhatsApp bot Docker image to ECR
         # Only rebuilds when whatsapp-bot/ files have changed or no image exists yet
         - |
-          STACK_NAME=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE --query "StackSummaries[?starts_with(StackName,'amplify-${AWS_APP_ID}-${AWS_BRANCH}')].StackName" --output text | head -1)
+          STACK_NAME=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE --query "StackSummaries[?starts_with(StackName,'amplify-${AWS_APP_ID}-${AWS_BRANCH}')].StackName" --output text | tr '\t' '\n' | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2-)
           if [ -n "$STACK_NAME" ]; then
             ECR_URI=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotEcrRepoUri'].OutputValue" --output text 2>/dev/null)
             CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
