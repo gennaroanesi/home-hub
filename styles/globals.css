@@ -1,0 +1,120 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    color-scheme: light only;
+  }
+  .fade {
+    opacity: 1;
+    animation: site-fade-in 2s;
+  }
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    /* Revert text color */
+    -webkit-text-fill-color: #735f55 !important;
+    color: #735f55 !important;
+    caret-color: #735f55 !important;
+
+    /* Revert background color */
+    transition: background-color 5000s ease-in-out 0s;
+  }
+  .carousel-arrow {
+    width: 20px;
+    height: 20px;
+    position: absolute;
+    top: 50%;
+    transform: translateY(-50%);
+    -webkit-transform: translateY(-50%);
+    fill: #f1f2eb;
+    cursor: pointer;
+  }
+  .carousel-arrow--left {
+    left: 5px;
+  }
+
+  .carousel-arrow--right {
+    left: auto;
+    right: 5px;
+  }
+
+  .carousel-arrow--disabled {
+    fill: rgba(255, 255, 255, 0.5);
+  }
+
+  .dots {
+  display: flex;
+  padding: 10px 0;
+  justify-content: center;
+  position: relative;
+  top: -2rem;
+}
+
+.dot {
+  border: none;
+  width: 10px;
+  height: 10px;
+  background: #c5c5c5;
+  border-radius: 50%;
+  margin: 0 5px;
+  padding: 5px;
+  cursor: pointer;
+}
+
+.dot:focus {
+  outline: none;
+}
+
+.dot.active {
+  background: #ffffff;
+}
+
+}
+
+@layer utilities {
+  .animate-fade {
+    scale: 1;
+    opacity: 0;
+    animation-name: fade-in;
+    animation-timing-function: linear;
+    animation-fill-mode: forwards;
+    animation-timeline: view();
+    animation-range: entry 30vh;
+  }
+
+  .blur-navbar {
+    backdrop-filter: none;
+    animation-name: blur-fade-in;
+    animation-fill-mode: forwards;
+    animation-timing-function: ease-in;
+    animation-duration: 1s;
+  }
+}
+
+@keyframes fade-in {
+  to {
+    scale: 1;
+    opacity: 1;
+  }
+}
+
+@keyframes blur-fade-in {
+  to {
+    backdrop-filter: blur(16px);
+    background-color: #aca29c;
+    opacity: 90%;
+  }
+}
+
+@keyframes site-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}

@@ -1,0 +1,214 @@
+{
+  "navbar": {
+    "home": "Home",
+    "welcome": "Welcome",
+    "wedding": "Wedding",
+    "tips": "Travel Tips",
+    "about_us": "Bride and Groom",
+    "language": "Language",
+    "message_board": "Message Board",
+    "registry": "Registry",
+    "photos": "Photos"
+  },
+  "home": {
+    "coming_soon": "Coming Soon...",
+    "home": "Home",
+    "welcome": "Welcome",
+    "welcome_title": "Welcome",
+    "welcome_text": "We are so happy you are here!\nOur wedding day is fast approaching, and we are excited to share all the details with you.\nTake a look around to find all the details about our celebration,\nfrom the venue to the schedule and more.",
+    "wedding": "Wedding",
+    "wedding_title": "Our Wedding",
+    "wedding_date": "Saturday, September 20, 2025 - 4:30PM",
+    "wedding_location": "Gramado - RS - Brazil",
+    "rsvp": "RSVP",
+    "leave_a_message": "Leave us a message!",
+    "tips_title": "Important Info and Tips",
+    "tips_subtitle": "Click below to check detailed recommendations by the bride and groom:",
+    "tips_buttons": {
+      "hotels": "Hotels",
+      "food": "Restaurants",
+      "beauty": "Beauty",
+      "things": "Activities"
+    },
+    "countdown": {
+      "title": "We're in countdown mode:",
+      "subtitle": "Only...",
+      "days": "days",
+      "hours": "hours",
+      "minutes": "minutes",
+      "seconds": "seconds",
+      "footer": "for the big day!"
+    }
+  },
+  "registry": {
+    "title": "Registry",
+    "intro": "We're so excited to share this special moment with you! We've put together this gift list to make things easier in case you'd like to give us something - but what truly matters is having you with us on this unforgettable day!",
+    "intro2": "",
+    "website_cta": "Go to Website",
+    "access_cta": "Access",
+    "fabricario_desc": "(For guests in Brazil) Authentic and naturally sophisticated objects to inspire the art of hosting.",
+    "experiences_desc": "(For guests in Brazil) Special selection from the bride and groom",
+    "cb2_desc": "(For guests in the US) High-design aesthetic with a boutiquelike attitude and creative edge.",
+    "experiences": "Experiences",
+    "available": "Available"
+  },
+  "checkout": {
+    "product_list": "Products",
+    "finish_shopping": "Finish your purchase",
+    "success": "Your purchase was completed",
+    "failure": "Your purchase was not completed",
+    "pending": "Your purchase is pending",
+    "success_message": "Thank you very much for the gift!!",
+    "back_home": "Back to home",
+    "back_registry": "Back to Registry",
+    "product_name": "Product",
+    "product_quantity": "Qty",
+    "product_price_brl": "Price (BRL)",
+    "product_total_brl": "Total",
+    "name_label": "Name",
+    "name_placeholder": "Please enter your name",
+    "message": "Message",
+    "message_placeholder": "Deixe uma mensagem para os noivos!",
+    "continue": "Continue"
+  },
+  "travel_tips": {
+    "tips_title": "Travel Tips",
+    "tips_intro": "The wedding will take place in the city of Gramado, in the state of Rio Grande do Sul - the southernmost state in Brazil, and where the bride and groom were born. It’s a part of the “Serra Gaúcha”, a mountainous area whose architecture, gastronomy and culture is heavily influenced by its German and Italian roots. The city is a widely known tourist destination in Brazil, with multiple options for fun activities, sightseeing, restaurants and hospitality.",
+    "hotels_title": "Hotels",
+    "hotels_caption": "We suggest hotels in Downtown Gramado so you can enjoy the city. They'll be about 20min from the location - there's Uber service in the city and we'll arrange transportation for the way back.",
+    "beauty_title": "Beauty",
+    "food_title": "Restaurants",
+    "things_to_do_title": "Things to do",
+    "getting_there": "Getting there",
+    "getting_there_subtitle": "Flights, Car Rental",
+    "accommodations": "Accommodations",
+    "accommodations_subtitle": "Hotels, Airbnb"
+  },
+  "rsvp": {
+    "name_label": "Name",
+    "name_placeholder": "Enter your name",
+    "name_error_message": "Please verify your name",
+    "email_label": "Email",
+    "email_placeholder": "Enter your email",
+    "email_error_message": "Please verify your email",
+    "phone_label": "Phone Number",
+    "phone_placeholder": "Enter your phone",
+    "phone_error_message": "Please verify your phone",
+    "phone_description": "Will be used to get in touch with you if needed",
+    "phone_contact_opt_in": "I want to receive SMS/Whatsapp messages with info about the wedding",
+    "plus_one_label": "Bringing +1 (if applicable)",
+    "plus_one_placeholder": "+1 Name",
+    "plus_one_error_message": "Please verify your +1 Name",
+    "kids_label": "Bringing Kids",
+    "kid_name": "Kid",
+    "too_many_kids_1": "Really?",
+    "too_many_kids_2": "What?",
+    "food_restrictions_label": "Food Restrictions / Allergies",
+    "food_restriction_list": [
+      "Vegan",
+      "Vegetarian",
+      "Gluten-Free",
+      "Food Allergens"
+    ],
+    "leave_a_message_label": "Leave us a message!",
+    "leave_a_message_placeholder": "Message",
+    "success": "Success",
+    "success_message": "We're so happy to share this moment with you!",
+    "error_message": "Huh... Gennaro must have done something wrong in the website..."
+  },
+  "message_us": {
+    "message_board_title": "Message Board",
+    "message_board_intro": "",
+    "leave_a_message": "Leave us a message!",
+    "name_label": "Name",
+    "name_placeholder": "Enter your name",
+    "leave_a_message_label": "Leave us a message!",
+    "leave_a_message_placeholder": "Make sure to include songs you would like to add to the wedding playlist!",
+    "send": "Send",
+    "success_message": "Success!"
+  },
+  "photos": {
+    "title": "Photos",
+    "intro": "",
+    "download_full": "Download (Full quality)",
+    "close": "Close"
+  },
+  "dress_code": {
+    "title": "Dress Code",
+    "intro_text": "We kindly ask our guests to dress in *formal attire*. The ceremony will take place outdoors, followed by an indoor reception.",
+    "women": "Women",
+    "men": "Men",
+    "women_text": "Long dresses. Stiletto heels are not recommended due to the outdoor setting. As temperatures may drop in the evening, we suggest bringing a warm wrap.",
+    "men_text": "Full suit with shirt and tie.",
+    "close": "Close"
+  },
+  "login": {
+    "login": "Login",
+    "sign_up": "Sign up",
+    "email_label": "Email",
+    "email_placeholder": "Enter your email",
+    "password_label": "Password",
+    "password_placeholder": "Enter your password",
+    "name_label": "Name",
+    "name_placeholder": "Enter your name",
+    "forgot_password": "Forgot password?",
+    "need_account": "Need an account?",
+    "have_account": "Already have an account?",
+    "forgot_password_description": "Enter your email and we'll send a code to reset your password.",
+    "send_reset_code": "Send reset code",
+    "back_to_login": "Back to login",
+    "enter_code_description": "Enter the code sent to <strong>{{email}}</strong> and your new password.",
+    "code_description": "6-digit code from your email",
+    "new_password_label": "New password",
+    "new_password_placeholder": "Enter new password",
+    "reset_password": "Reset password",
+    "force_new_password_description": "You need to set a new password to continue.",
+    "choose_new_password_placeholder": "Choose a new password",
+    "set_password": "Set password",
+    "signup_otp_description": "Enter the verification code sent to <strong>{{email}}</strong>.",
+    "verification_code_description": "Enter your verification code",
+    "resend_code": "Resend code",
+    "account_confirmed": "Account confirmed",
+    "account_confirmed_description": "You can now log in.",
+    "code_resent": "Code resent",
+    "code_resent_description": "Check your email.",
+    "password_reset_success": "Password reset",
+    "password_reset_success_description": "You can now log in with your new password."
+  },
+  "about_us": {
+    "title": "About Us",
+    "timeline_title": "Our Timeline",
+    "timeline_items": [
+      {
+        "date": "Jun, 2015",
+        "upper_caption": "First Date",
+        "title": "Went to a soccer match",
+        "description": ""
+      },
+      {
+        "date": "Jun, 2015",
+        "upper_caption": "*A bit of a mishap...*",
+        "title": "Appeared on local news",
+        "description": "After having their car stolen, appeared on local news"
+      },
+      {
+        "date": "MM, YYYY",
+        "upper_caption": "The first move",
+        "title": "Gennaro moves to Sao Paulo",
+        "description": ""
+      },
+      {
+        "date": "MM, YYYY",
+        "upper_caption": "Going abroad",
+        "title": "Move to the US",
+        "description": ""
+      },
+      {
+        "date": "MM, YYYY",
+        "upper_caption": "Furry love",
+        "title": "Say hi to Dolce!",
+        "description": "This should be **bold**"
+      }
+    ]
+  }
+}

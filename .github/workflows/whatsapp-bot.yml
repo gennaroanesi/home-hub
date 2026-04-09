@@ -1,0 +1,46 @@
+name: Build & Push WhatsApp Bot
+
+on:
+  push:
+    branches: [home]
+    paths:
+      - "whatsapp-bot/**"
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: whatsapp-bot
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: aws-actions/amazon-ecr-login@v2
+        id: ecr
+
+      - name: Build, tag, and push image
+        working-directory: whatsapp-bot
+        run: |
+          IMAGE=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:latest
+          docker build -t $IMAGE .
+          docker push $IMAGE
+
+      - name: Force new ECS deployment
+        run: |
+          CLUSTER=$(aws ecs list-clusters --query "clusterArns[?contains(@, 'whatsappBot')]" --output text | head -1)
+          if [ -n "$CLUSTER" ]; then
+            SERVICE=$(aws ecs list-services --cluster "$CLUSTER" --query "serviceArns[0]" --output text)
+            if [ -n "$SERVICE" ] && [ "$SERVICE" != "None" ]; then
+              aws ecs update-service --cluster "$CLUSTER" --service "$SERVICE" --force-new-deployment
+            fi
+          fi
