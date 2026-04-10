@@ -820,7 +820,7 @@ Message sender: ${sender}
 
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
 
-When the user asks to see photos, use the send_photos tool. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
+When the user asks to see photos, call send_photos DIRECTLY with the trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips first). It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
