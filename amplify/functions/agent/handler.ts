@@ -165,6 +165,40 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "list_calendar_events",
+    description: "List calendar events. By default returns events starting today or later. Pass startDate/endDate to narrow to a specific window (e.g. today+tomorrow), or person to filter by household member. Returns events sorted by start time.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        startDate: {
+          type: "string",
+          description: "ISO 8601 date or datetime — only events starting on/after this. Defaults to today (local).",
+        },
+        endDate: {
+          type: "string",
+          description: "ISO 8601 date or datetime — only events starting before this (exclusive).",
+        },
+        person: {
+          type: "string",
+          description: "Optional person name. Without it, household-level events are returned alongside everyone's.",
+        },
+      },
+    },
+  },
+  {
+    name: "list_trips",
+    description: "List planned and active trips. By default returns upcoming and current trips (endDate today or later). Pass includePast=true to include trips that have already ended. Each trip includes its transportation legs (flights, drives, etc.) inline.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        includePast: {
+          type: "boolean",
+          description: "Include trips that have already ended. Default false.",
+        },
+      },
+    },
+  },
+  {
     name: "list_shopping_lists",
     description: "List active shopping lists (e.g. Supermarket, Home Depot) with unchecked item counts. Pass includeArchived=true to also include archived lists.",
     input_schema: {
@@ -424,6 +458,68 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
       });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, eventId: data?.id, title: input.title });
+    }
+
+    case "list_calendar_events": {
+      const { data: events } = await client.models.homeCalendarEvent.list();
+      let filtered = events ?? [];
+
+      // Default startDate to today (local CT) if not provided so we don't
+      // dump every past event into the model context. Use the same TZ as
+      // the system prompt so weekday-relative reasoning lines up.
+      const startBound =
+        input.startDate ??
+        new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
+      filtered = filtered.filter((e) => e.startAt && e.startAt >= startBound);
+
+      if (input.endDate) {
+        filtered = filtered.filter((e) => e.startAt && e.startAt < input.endDate);
+      }
+
+      if (input.person) {
+        const personIds = await resolvePersonIds([input.person]);
+        if (personIds.length > 0) {
+          filtered = filtered.filter((e) => {
+            const assigned = (e.assignedPersonIds ?? []).filter((id): id is string => !!id);
+            return assigned.length === 0 || assigned.some((id) => personIds.includes(id));
+          });
+        }
+      }
+
+      filtered.sort((a, b) => (a.startAt ?? "").localeCompare(b.startAt ?? ""));
+      return JSON.stringify({ events: filtered });
+    }
+
+    case "list_trips": {
+      const { data: trips } = await client.models.homeTrip.list();
+      let filtered = trips ?? [];
+
+      if (!input.includePast) {
+        const today = new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(
+          new Date()
+        );
+        filtered = filtered.filter((t) => t.endDate && t.endDate >= today);
+      }
+
+      filtered.sort((a, b) => (a.startDate ?? "").localeCompare(b.startDate ?? ""));
+
+      // Fetch transportation legs for each trip in parallel and inline them.
+      const tripsWithLegs = await Promise.all(
+        filtered.map(async (trip) => {
+          const { data: legs } = await client.models.homeTripLeg.list({
+            filter: { tripId: { eq: trip.id } },
+          });
+          const sortedLegs = (legs ?? []).sort((a, b) => {
+            const orderA = a.sortOrder ?? 0;
+            const orderB = b.sortOrder ?? 0;
+            if (orderA !== orderB) return orderA - orderB;
+            return (a.departAt ?? "").localeCompare(b.departAt ?? "");
+          });
+          return { ...trip, legs: sortedLegs };
+        })
+      );
+
+      return JSON.stringify({ trips: tripsWithLegs });
     }
 
     case "list_shopping_lists": {
