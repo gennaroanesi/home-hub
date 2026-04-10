@@ -3,6 +3,7 @@ import { homeAgent } from "../functions/agent/resource";
 import { recurringTasks } from "../functions/recurring-tasks/resource";
 import { dailySummary } from "../functions/daily-summary/resource";
 import { faceDetector } from "../functions/face-detector/resource";
+import { hassSync } from "../functions/hass-sync/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -27,6 +28,11 @@ const schema = a
         // E.164 phone number (e.g. +12125551234) used to DM this person via
         // the WhatsApp bot. Null = person only receives household/group messages.
         phoneNumber: a.string(),
+        // Home Assistant device_tracker entity for this person's phone
+        // (e.g. "device_tracker.gennaro_iphone"). Populated by Unifi
+        // integration. Used by the v2 risk matrix to detect whether an
+        // action is being requested from home wifi.
+        homeDeviceTrackerEntity: a.string(),
       })
       .authorization((allow) => [allow.group("home-users")]),
 
@@ -260,6 +266,69 @@ const schema = a
       ])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Home Assistant Device ───────────────────────────────────────────
+    // Cached catalog of Home Assistant entities we care about. Populated
+    // by the hass-sync Lambda (daily + on-demand). The /devices page and
+    // the agent read from this cache instead of hitting HA on every
+    // request. Last known state is also cached here for quick reads.
+    homeDevice: a
+      .model({
+        entityId: a.string().required(), // e.g. "climate.living_room"
+        friendlyName: a.string(),
+        domain: a.string(), // "climate" | "lock" | "cover" | "camera" | "switch" | "sensor" | ...
+        area: a.string(), // e.g. "Living Room"
+        // Sensitivity tier, set manually per device during enrollment.
+        // Drives the risk matrix in lib/devicePolicy.ts.
+        sensitivity: a.enum(["READ_ONLY", "LOW", "MEDIUM", "HIGH"]),
+        // Whether this device appears on the /devices dashboard. Auto-set
+        // to true for climate/lock/cover/camera domains on first sync.
+        isPinned: a.boolean().default(false),
+        // Last raw HA state blob (state string + attributes).
+        lastState: a.json(),
+        lastSyncedAt: a.datetime(),
+      })
+      .secondaryIndexes((index) => [index("entityId"), index("domain")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Home Assistant Device Action (audit log) ────────────────────────
+    // Scaffold for v2 — the /devices page and agent will write here on
+    // every control attempt (success, fail, or denied by policy). Not
+    // written to in v1 (read-only), but defined now so v2 doesn't need a
+    // schema migration.
+    homeDeviceAction: a
+      .model({
+        personId: a.id(),
+        entityId: a.string().required(),
+        action: a.string().required(), // e.g. "set_temperature", "lock", "unlock"
+        params: a.json(),
+        origin: a.enum(["UI", "AGENT"]),
+        senderHomeWifi: a.boolean(),
+        elevatedSession: a.boolean(),
+        result: a.enum(["SUCCESS", "FAILED", "DENIED"]),
+        error: a.string(),
+      })
+      .secondaryIndexes((index) => [index("entityId"), index("personId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Sync HA devices mutation ────────────────────────────────────────
+    // Invokes the hass-sync Lambda on demand. Used by the /devices page
+    // "Refresh" button and the agent. Same auth pattern as invokeHomeAgent.
+    syncHomeDevices: a
+      .mutation()
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ])
+      .arguments({})
+      .returns(
+        a.customType({
+          synced: a.integer().required(),
+          hassAvailable: a.boolean().required(),
+          error: a.string(),
+        })
+      )
+      .handler(a.handler.function(hassSync)),
+
     // ── Shopping ────────────────────────────────────────────────────────
     // Multiple named lists (e.g. "Supermarket", "Home Depot"), each with items.
     homeShoppingList: a
@@ -370,6 +439,7 @@ const schema = a
     allow.resource(recurringTasks),
     allow.resource(dailySummary),
     allow.resource(faceDetector),
+    allow.resource(hassSync),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

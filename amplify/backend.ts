@@ -200,42 +200,6 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
   },
 });
 
-// ── Home Assistant device sync ─────────────────────────────────────────────
-// Pulls the current state of every entity from HA and upserts into the
-// homeDevice cache. Runs 10 minutes before the daily summary so the
-// summary's "home status" line reads fresh values. Can also be invoked
-// on demand via the syncHomeDevices AppSync mutation.
-//
-// Secrets (HASS_BASE_URL, HASS_TOKEN) are declared in the function's
-// resource.ts — Amplify wires them up automatically, no work here.
-
-const hassSyncLambda = backend.hassSync.resources.lambda as LambdaFunction;
-
-const hassSyncScheduleRole = new iam.Role(recurringStack, "hassSyncSchedulerRole", {
-  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
-  inlinePolicies: {
-    invokeLambda: new iam.PolicyDocument({
-      statements: [
-        new iam.PolicyStatement({
-          effect: Effect.ALLOW,
-          actions: ["lambda:InvokeFunction"],
-          resources: [hassSyncLambda.functionArn],
-        }),
-      ],
-    }),
-  },
-});
-
-// 11:50 UTC = 5:50am CST / 6:50am CDT — 10 min before the daily summary
-new scheduler.CfnSchedule(recurringStack, "hassSyncSchedule", {
-  scheduleExpression: "cron(50 11 * * ? *)",
-  flexibleTimeWindow: { mode: "OFF" },
-  target: {
-    arn: hassSyncLambda.functionArn,
-    roleArn: hassSyncScheduleRole.roleArn,
-  },
-});
-
 // ── Face detection — Rekognition + DDB stream ───────────────────────────────
 // New homePhoto rows trigger the face-detector lambda, which calls
 // IndexFaces + SearchFaces against a shared Rekognition collection and
@@ -486,10 +450,10 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
       pre_build: {
         commands: [
           [
-            "set -e",
+            'set -e',
             'echo "Building bot image for commit ${COMMIT_SHA}"',
             'echo "CODEBUILD_SRC_DIR=${CODEBUILD_SRC_DIR}"',
-            "pwd && ls -la",
+            'pwd && ls -la',
             'aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_URI}" | cut -d/ -f1)"',
           ].join("\n"),
         ],
@@ -497,7 +461,7 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
       build: {
         commands: [
           [
-            "set -e",
+            'set -e',
             // Use plain `docker build` instead of `docker buildx build`.
             // STANDARD_7_0 is already linux/amd64 so we don't need cross-
             // arch, and plain build avoids buildx-init weirdness (the
@@ -521,23 +485,23 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
         commands: [
           [
             'SHORT_SHA=$(echo "${COMMIT_SHA}" | cut -c1-7)',
-            "NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
-            "MSG_ID=$(cat /proc/sys/kernel/random/uuid)",
+            'NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)',
+            'MSG_ID=$(cat /proc/sys/kernel/random/uuid)',
             'if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then',
             '  STATUS_LABEL="✅ deployed"',
             '  aws ecs update-service --cluster "${CLUSTER_ARN}" --service "${SERVICE_NAME}" --force-new-deployment --no-cli-pager > /dev/null || true',
             '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${SHORT_SHA}"',
-            "else",
+            'else',
             '  STATUS_LABEL="❌ failed"',
             '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${SHORT_SHA} (build ${CODEBUILD_BUILD_ID})"',
-            "fi",
+            'fi',
             // Build the DDB item via heredoc, not jq — avoids any shell
             // quoting hell. Safe because $TEXT and $GROUP_JID are bot-
             // controlled and won't contain literal " or \. The
             // Amplify-managed table uses partition key `id` and flat DDB
             // attributes — same shape as the daily-summary row.
-            "cat > /tmp/item.json <<JSON_EOF",
-            "{",
+            'cat > /tmp/item.json <<JSON_EOF',
+            '{',
             '  "id": {"S": "${MSG_ID}"},',
             '  "__typename": {"S": "homeOutboundMessage"},',
             '  "channel": {"S": "WHATSAPP"},',
@@ -548,8 +512,8 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
             '  "kind": {"S": "deploy_notice"},',
             '  "createdAt": {"S": "${NOW}"},',
             '  "updatedAt": {"S": "${NOW}"}',
-            "}",
-            "JSON_EOF",
+            '}',
+            'JSON_EOF',
             'aws dynamodb put-item --table-name "${OUTBOUND_TABLE}" --item file:///tmp/item.json --no-cli-pager || true',
             'echo "Queued ${STATUS_LABEL} notice ${MSG_ID}"',
             // Propagate the original build status — return non-zero so the

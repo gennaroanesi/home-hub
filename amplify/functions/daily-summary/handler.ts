@@ -5,6 +5,7 @@ import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { env } from "$amplify/env/daily-summary";
 import type { Schema } from "../../data/resource";
+import { HassClient } from "../hass-sync/hass-client.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -57,6 +58,13 @@ interface SummaryData {
   upcomingTrips: { name: string; type: string | null; startDate: string; endDate: string; daysAway: number; participants: string[] }[];
   upcomingAllDayEvents: { title: string; date: string; daysAway: number; assignedTo: string[] }[];
   upcomingMultiPersonEvents: { title: string; date: string; daysAway: number; assignedTo: string[] }[];
+  // Home Assistant state snapshot. `available` = false when HA didn't respond
+  // to the healthcheck — the summary then renders a "devices unreachable"
+  // note instead of the home-status line.
+  home: {
+    available: boolean;
+    devices: { friendlyName: string; domain: string; summary: string }[];
+  };
 }
 
 async function gatherData(): Promise<SummaryData> {
@@ -193,12 +201,99 @@ async function gatherData(): Promise<SummaryData> {
     upcomingTrips,
     upcomingAllDayEvents,
     upcomingMultiPersonEvents,
+    home: await gatherHomeState(),
   };
+}
+
+// ── Home Assistant state ─────────────────────────────────────────────────────
+// Reads pinned devices from the cache (populated by hass-sync 10 min before
+// this lambda runs) and formats a short summary per device. We don't call HA
+// directly from here — the cache is always fresh enough, and if HA was down
+// the hass-sync scheduled run will have left stale data which is still a
+// reasonable "as of last sync" snapshot.
+//
+// The one live call we do make is a healthcheck — so we can tell the model
+// "HA is unreachable right now" vs "here's the last known state".
+
+async function gatherHomeState(): Promise<SummaryData["home"]> {
+  let available = false;
+  try {
+    const baseUrl = process.env.HASS_BASE_URL;
+    const token = process.env.HASS_TOKEN;
+    if (baseUrl && token) {
+      const hass = new HassClient(baseUrl, token);
+      available = await hass.healthcheck();
+    }
+  } catch {
+    available = false;
+  }
+
+  // Read pinned devices from the cache regardless — even if HA is down
+  // right now, the cached state is still useful context.
+  let devices: { friendlyName: string; domain: string; summary: string }[] = [];
+  try {
+    const { data: pinned } = await client.models.homeDevice.list({
+      filter: { isPinned: { eq: true } },
+      limit: 100,
+    });
+    devices = (pinned ?? [])
+      .map((d) => ({
+        friendlyName: d.friendlyName ?? d.entityId,
+        domain: d.domain ?? "unknown",
+        summary: summarizeDeviceState(d.domain ?? "", d.lastState as any),
+      }))
+      .filter((d) => d.summary !== "");
+  } catch (err) {
+    console.warn("Failed to read pinned devices from cache:", err);
+  }
+
+  return { available, devices };
+}
+
+/**
+ * Condense an HA state blob into a short human-readable string. Returns
+ * "" if there's nothing useful to say (which drops the device from the
+ * summary). Kept deliberately minimal — Haiku handles the prose.
+ */
+function summarizeDeviceState(
+  domain: string,
+  state: { state?: string; attributes?: Record<string, any> } | null
+): string {
+  if (!state) return "";
+  const attrs = state.attributes ?? {};
+  switch (domain) {
+    case "climate": {
+      const current = attrs.current_temperature;
+      const target = attrs.temperature;
+      const unit = attrs.temperature_unit ?? "°F";
+      const mode = state.state;
+      const parts: string[] = [];
+      if (typeof current === "number") parts.push(`${Math.round(current)}${unit}`);
+      if (typeof target === "number" && target !== current)
+        parts.push(`→ ${Math.round(target)}${unit}`);
+      if (mode && mode !== "off" && mode !== "unavailable") parts.push(mode);
+      return parts.join(" ");
+    }
+    case "lock":
+      return state.state === "locked"
+        ? "locked"
+        : state.state === "unlocked"
+          ? "UNLOCKED"
+          : "";
+    case "cover":
+      return state.state ?? "";
+    default:
+      return "";
+  }
 }
 
 // ── Composition ──────────────────────────────────────────────────────────────
 
 function isEmpty(data: SummaryData): boolean {
+  // Home device state alone isn't enough to justify a summary — if there's
+  // nothing going on otherwise, we still send the friendly "all clear" and
+  // skip the Anthropic call entirely. HA unavailability is noted in the
+  // "all clear" version below when relevant.
   return (
     data.todayTasks.length === 0 &&
     data.todayEvents.length === 0 &&
@@ -231,9 +326,10 @@ ${JSON.stringify(data, null, 2)}
 Formatting rules:
 - Start with a short greeting line with the day of week and date (e.g. "*Good morning! Thursday, April 9*").
 - Use WhatsApp-flavored markdown: *bold* for headers, no other formatting.
-- Group into up to two sections: "*Today*" and "*Coming up*". Omit a section entirely if it has no content.
+- Group into up to three sections: "*Today*", "*Coming up*", and "*Home*". Omit a section entirely if it has no content.
 - Under "*Today*", list tasks, events, and any notable day statuses (WFH, PTO, travel) as short bullet lines starting with "• ".
 - Under "*Coming up*", only show trips, all-day events, and multi-person events within the next 3 days. Include how many days away (e.g. "in 2 days").
+- Under "*Home*", give a one-line snapshot of device state from data.home.devices — e.g. "🏠 Inside 68°F heat · All doors locked". Only include locks/covers in this line if any are UNLOCKED or open (lowercase "locked" = silent), and only include climate if present. Drop the section entirely if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.

@@ -4,7 +4,7 @@ import React, { useState, useEffect } from "react";
 import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { useRouter } from "next/router";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane, FaFolder } from "react-icons/fa";
+import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane, FaFolder, FaLightbulb } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 
@@ -83,6 +83,13 @@ export default function HomeDashboard() {
       icon: <FaImages size={24} />,
       href: "/photos",
       color: "primary" as const,
+    },
+    {
+      title: "Devices",
+      description: "Home Assistant devices (thermostat, locks, cameras)",
+      icon: <FaLightbulb size={24} />,
+      href: "/devices",
+      color: "secondary" as const,
     },
   ];
 

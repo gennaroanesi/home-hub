@@ -375,6 +375,29 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "get_home_devices",
+    description:
+      "List Home Assistant devices (thermostats, locks, cameras, sensors, etc.) with their last known state. Read-only in v1 — cannot control devices yet. Filter by domain (climate, lock, cover, camera, sensor, switch, etc.) or area (room name). Without filters, returns all pinned devices. State is cached from the last sync (daily + on-demand).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        domain: {
+          type: "string",
+          description:
+            "HA domain filter, e.g. 'climate' for thermostats, 'lock' for door locks, 'cover' for garage, 'camera'. Omit to list all pinned devices.",
+        },
+        area: {
+          type: "string",
+          description: "Room/area name, case insensitive fuzzy match. Omit to include all areas.",
+        },
+        pinnedOnly: {
+          type: "boolean",
+          description: "If true (default), only return devices marked as pinned. Pass false to include everything in the cache.",
+        },
+      },
+    },
+  },
 ];
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -917,6 +940,40 @@ async function executeTool(
       return JSON.stringify({ success: true, scheduleName });
     }
 
+    case "get_home_devices": {
+      const pinnedOnly = input.pinnedOnly !== false;
+      const { data: devices } = await client.models.homeDevice.list({ limit: 500 });
+      let filtered = devices ?? [];
+
+      if (pinnedOnly) filtered = filtered.filter((d) => d.isPinned);
+      if (input.domain) filtered = filtered.filter((d) => d.domain === input.domain);
+      if (input.area) {
+        const q = input.area.toLowerCase();
+        filtered = filtered.filter((d) => d.area?.toLowerCase().includes(q));
+      }
+
+      // Shape the response for Claude — only fields it needs, no internal ids.
+      // lastState is the HA state blob so Claude can interpret e.g. climate
+      // attributes (current_temperature, temperature, hvac_mode) or lock
+      // state strings ("locked"/"unlocked").
+      const shaped = filtered.map((d) => ({
+        entityId: d.entityId,
+        friendlyName: d.friendlyName,
+        domain: d.domain,
+        area: d.area,
+        sensitivity: d.sensitivity,
+        state: d.lastState,
+        lastSyncedAt: d.lastSyncedAt,
+      }));
+
+      return JSON.stringify({
+        devices: shaped,
+        count: shaped.length,
+        note:
+          "Read-only in v1. To control devices, ask the user to do it in the web app for now.",
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -973,6 +1030,8 @@ Message sender: ${sender}
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
+
+Home devices (thermostat, locks, cameras, etc.) can be read via get_home_devices. Device control is NOT available yet — if the user asks to change something (e.g. "set the thermostat to 72"), tell them to do it in the web app.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
