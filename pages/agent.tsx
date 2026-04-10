@@ -100,9 +100,17 @@ export default function HomeAgent() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
+  // Helper: is the viewport currently mobile-sized?
+  const isMobile = useCallback(
+    () => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches,
+    []
+  );
+
   useEffect(() => {
     checkAuth();
-  }, []);
+    // Default sidebar closed on mobile, open on desktop
+    if (isMobile()) setSidebarOpen(false);
+  }, [isMobile]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -155,8 +163,9 @@ export default function HomeAgent() {
     async (id: string) => {
       setActiveConvoId(id);
       await loadMessages(id);
+      if (isMobile()) setSidebarOpen(false);
     },
-    []
+    [isMobile]
   );
 
   async function renameConversation(id: string) {
@@ -195,6 +204,7 @@ export default function HomeAgent() {
       setConversations((prev) => [convo, ...prev]);
       setActiveConvoId(convo.id);
       setMessages([]);
+      if (isMobile()) setSidebarOpen(false);
     }
   }
 
@@ -290,12 +300,21 @@ export default function HomeAgent() {
 
   return (
     <DefaultLayout>
-      <div className="flex h-[calc(100dvh-4rem)]">
-        {/* Sidebar — conversation list */}
+      <div className="flex h-[calc(100dvh-4rem)] relative">
+        {/* Mobile backdrop */}
+        {sidebarOpen && (
+          <div
+            className="md:hidden fixed inset-0 bg-black/40 z-30"
+            onClick={() => setSidebarOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+
+        {/* Sidebar — conversation list (drawer on mobile, inline on desktop) */}
         <div
           className={`${
             sidebarOpen ? "w-64" : "w-0"
-          } transition-all duration-200 overflow-hidden border-r border-default-200 flex flex-col bg-default-50`}
+          } absolute md:relative inset-y-0 left-0 z-40 md:z-auto h-full transition-all duration-200 overflow-hidden border-r border-default-200 flex flex-col bg-default-50`}
         >
           <div className="p-3 border-b border-default-200 flex items-center justify-between">
             <span className="text-sm font-semibold text-foreground">Chats</span>
@@ -345,7 +364,7 @@ export default function HomeAgent() {
         </div>
 
         {/* Main chat area */}
-        <div className="flex-1 flex flex-col max-w-2xl mx-auto px-4 py-6">
+        <div className="flex-1 min-w-0 w-full flex flex-col max-w-2xl mx-auto px-4 py-6">
           {/* Header */}
           <div className="flex items-center justify-between pb-4 border-b border-default-200">
             <div className="flex items-center gap-2">
