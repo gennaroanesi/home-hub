@@ -338,16 +338,16 @@ export default function PhotosPage() {
             className="max-w-[160px]"
           />
           <Button
-            size="sm"
             variant={favoritesOnly ? "solid" : "flat"}
             color={favoritesOnly ? "danger" : "default"}
-            startContent={favoritesOnly ? <FaHeart size={12} /> : <FaRegHeart size={12} />}
+            startContent={favoritesOnly ? <FaHeart size={14} /> : <FaRegHeart size={14} />}
             onPress={() => setFavoritesOnly((v) => !v)}
+            className="h-12"
           >
             Favorites
           </Button>
           {hasActiveFilters && (
-            <Button size="sm" variant="light" onPress={clearFilters}>
+            <Button variant="light" onPress={clearFilters} className="h-12">
               Clear
             </Button>
           )}
