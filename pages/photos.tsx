@@ -7,7 +7,15 @@ import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaArrowLeft } from "react-icons/fa";
+import {
+  Modal,
+  ModalContent,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  useDisclosure,
+} from "@heroui/modal";
+import { FaArrowLeft, FaTrash, FaCheckSquare, FaTimes, FaFolderPlus } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { PhotoGrid } from "@/components/photo-grid";
@@ -17,24 +25,35 @@ import type { Schema } from "@/amplify/data/resource";
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Photo = Schema["homePhoto"]["type"];
-type Trip = Schema["homeTrip"]["type"];
+type Album = Schema["homeAlbum"]["type"];
+type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
+
+const ALL = "all";
+const UNFILED = "unfiled";
 
 export default function PhotosPage() {
   const router = useRouter();
   const [photos, setPhotos] = useState<Photo[]>([]);
-  const [trips, setTrips] = useState<Trip[]>([]);
-  const [filterTripId, setFilterTripId] = useState<string>("all");
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
+  const [filterAlbumId, setFilterAlbumId] = useState<string>(ALL);
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
   const [loading, setLoading] = useState(true);
 
-  // Initialize filters from URL query params (?trip=ID&from=YYYY-MM-DD&to=YYYY-MM-DD)
-  // This lets the agent build deep links like
-  // /photos?trip=abc&from=2026-04-01&to=2026-04-30
+  // Multi-select state
+  const [selectionEnabled, setSelectionEnabled] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+  // Bulk-edit modal state
+  const bulkAddDisclosure = useDisclosure();
+  const [bulkTargetAlbumId, setBulkTargetAlbumId] = useState<string>("");
+
+  // Initialize filters from URL query params (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD)
   useEffect(() => {
     if (!router.isReady) return;
-    const { trip, from, to } = router.query;
-    if (typeof trip === "string") setFilterTripId(trip);
+    const { album, from, to } = router.query;
+    if (typeof album === "string") setFilterAlbumId(album);
     if (typeof from === "string") setFromDate(from);
     if (typeof to === "string") setToDate(to);
   }, [router.isReady, router.query]);
@@ -52,9 +71,10 @@ export default function PhotosPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [photosRes, tripsRes] = await Promise.all([
-      client.models.homePhoto.list({ limit: 500 }),
-      client.models.homeTrip.list(),
+    const [photosRes, albumsRes, joinRes] = await Promise.all([
+      client.models.homePhoto.list({ limit: 1000 }),
+      client.models.homeAlbum.list({ limit: 500 }),
+      client.models.homeAlbumPhoto.list({ limit: 5000 }),
     ]);
     setPhotos(
       (photosRes.data ?? []).sort((a, b) => {
@@ -63,17 +83,28 @@ export default function PhotosPage() {
         return new Date(bDate).getTime() - new Date(aDate).getTime();
       })
     );
-    setTrips((tripsRes.data ?? []).sort((a, b) => b.startDate.localeCompare(a.startDate)));
+    setAlbums((albumsRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+    setAlbumPhotos(joinRes.data ?? []);
     setLoading(false);
   }, []);
+
+  // Build photoId → Set<albumId> for quick membership lookups
+  const photoToAlbums = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const ap of albumPhotos) {
+      if (!map.has(ap.photoId)) map.set(ap.photoId, new Set());
+      map.get(ap.photoId)!.add(ap.albumId);
+    }
+    return map;
+  }, [albumPhotos]);
 
   const filtered = useMemo(() => {
     let result = photos;
 
-    if (filterTripId === "none") {
-      result = result.filter((p) => !p.tripId);
-    } else if (filterTripId !== "all") {
-      result = result.filter((p) => p.tripId === filterTripId);
+    if (filterAlbumId === UNFILED) {
+      result = result.filter((p) => !photoToAlbums.has(p.id) || photoToAlbums.get(p.id)!.size === 0);
+    } else if (filterAlbumId !== ALL) {
+      result = result.filter((p) => photoToAlbums.get(p.id)?.has(filterAlbumId));
     }
 
     if (fromDate) {
@@ -84,7 +115,6 @@ export default function PhotosPage() {
       });
     }
     if (toDate) {
-      // Inclusive end of day
       const toMs = new Date(`${toDate}T23:59:59.999`).getTime();
       result = result.filter((p) => {
         const t = new Date(p.takenAt ?? p.createdAt).getTime();
@@ -93,23 +123,89 @@ export default function PhotosPage() {
     }
 
     return result;
-  }, [photos, filterTripId, fromDate, toDate]);
+  }, [photos, filterAlbumId, fromDate, toDate, photoToAlbums]);
 
   function clearFilters() {
-    setFilterTripId("all");
+    setFilterAlbumId(ALL);
     setFromDate("");
     setToDate("");
     router.replace("/photos", undefined, { shallow: true });
   }
 
-  async function deletePhoto(photo: Photo) {
-    // Delete the database record; the S3 object is orphaned and can be
-    // cleaned up later with a sweep job. Keeping it simple for now.
-    await client.models.homePhoto.delete({ id: photo.id });
-    setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+  function toggleSelectionMode() {
+    setSelectionEnabled((on) => {
+      if (on) setSelectedIds(new Set());
+      return !on;
+    });
   }
 
-  const hasActiveFilters = filterTripId !== "all" || fromDate || toDate;
+  function selectAllVisible() {
+    setSelectedIds(new Set(filtered.map((p) => p.id)));
+  }
+
+  async function deletePhoto(photo: Photo) {
+    // Also delete any album-photo join rows for this photo
+    const joins = albumPhotos.filter((ap) => ap.photoId === photo.id);
+    for (const j of joins) {
+      await client.models.homeAlbumPhoto.delete({ id: j.id });
+    }
+    await client.models.homePhoto.delete({ id: photo.id });
+    setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+    setAlbumPhotos((prev) => prev.filter((ap) => ap.photoId !== photo.id));
+  }
+
+  async function bulkDelete() {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Delete ${selectedIds.size} photo${selectedIds.size === 1 ? "" : "s"}?`)) return;
+    for (const id of Array.from(selectedIds)) {
+      const photo = photos.find((p) => p.id === id);
+      if (photo) await deletePhoto(photo);
+    }
+    setSelectedIds(new Set());
+  }
+
+  function openBulkAddToAlbum() {
+    setBulkTargetAlbumId(albums[0]?.id ?? "");
+    bulkAddDisclosure.onOpen();
+  }
+
+  async function bulkAddToAlbum(onClose: () => void) {
+    if (!bulkTargetAlbumId || selectedIds.size === 0) return;
+    // Skip photos that already belong to this album
+    const existing = new Set(
+      albumPhotos
+        .filter((ap) => ap.albumId === bulkTargetAlbumId)
+        .map((ap) => ap.photoId)
+    );
+    for (const photoId of Array.from(selectedIds)) {
+      if (existing.has(photoId)) continue;
+      await client.models.homeAlbumPhoto.create({
+        albumId: bulkTargetAlbumId,
+        photoId,
+        sortOrder: 0,
+      });
+    }
+    onClose();
+    setSelectedIds(new Set());
+    await loadAll();
+  }
+
+  async function bulkRemoveFromAlbum() {
+    if (filterAlbumId === ALL || filterAlbumId === UNFILED) return;
+    if (selectedIds.size === 0) return;
+    if (!confirm(`Remove ${selectedIds.size} photo(s) from this album?`)) return;
+    const toRemove = albumPhotos.filter(
+      (ap) => ap.albumId === filterAlbumId && selectedIds.has(ap.photoId)
+    );
+    for (const ap of toRemove) {
+      await client.models.homeAlbumPhoto.delete({ id: ap.id });
+    }
+    setSelectedIds(new Set());
+    await loadAll();
+  }
+
+  const hasActiveFilters = filterAlbumId !== ALL || fromDate || toDate;
+  const isAlbumFilter = filterAlbumId !== ALL && filterAlbumId !== UNFILED;
 
   return (
     <DefaultLayout>
@@ -124,21 +220,84 @@ export default function PhotosPage() {
               <span className="hidden sm:inline text-xs text-default-400 animate-pulse">Loading…</span>
             )}
           </div>
+          <Button
+            size="sm"
+            variant={selectionEnabled ? "solid" : "flat"}
+            color={selectionEnabled ? "primary" : "default"}
+            startContent={selectionEnabled ? <FaTimes size={12} /> : <FaCheckSquare size={12} />}
+            onPress={toggleSelectionMode}
+          >
+            {selectionEnabled ? "Cancel" : "Select"}
+          </Button>
         </div>
 
+        {/* Selection toolbar */}
+        {selectionEnabled && (
+          <div className="flex flex-wrap items-center gap-2 mb-3 p-3 bg-default-100 rounded-md">
+            <span className="text-sm font-medium">
+              {selectedIds.size} selected
+            </span>
+            <Button size="sm" variant="light" onPress={selectAllVisible}>
+              Select all ({filtered.length})
+            </Button>
+            <div className="flex-1" />
+            <Button
+              size="sm"
+              variant="flat"
+              startContent={<FaFolderPlus size={12} />}
+              onPress={openBulkAddToAlbum}
+              isDisabled={selectedIds.size === 0 || albums.length === 0}
+            >
+              Add to album
+            </Button>
+            {isAlbumFilter && (
+              <Button
+                size="sm"
+                variant="flat"
+                onPress={bulkRemoveFromAlbum}
+                isDisabled={selectedIds.size === 0}
+              >
+                Remove from album
+              </Button>
+            )}
+            <Button
+              size="sm"
+              variant="flat"
+              color="danger"
+              startContent={<FaTrash size={12} />}
+              onPress={bulkDelete}
+              isDisabled={selectedIds.size === 0}
+            >
+              Delete
+            </Button>
+          </div>
+        )}
+
+        {/* Upload */}
+        {!selectionEnabled && (
+          <div className="mb-4">
+            <PhotoUploader
+              variant="dropzone"
+              albumId={isAlbumFilter ? filterAlbumId : undefined}
+              onUploaded={loadAll}
+            />
+          </div>
+        )}
+
+        {/* Filters */}
         <div className="flex flex-wrap gap-2 mb-3 items-end">
           <Select
             size="sm"
-            label="Trip"
-            selectedKeys={[filterTripId]}
-            onChange={(e) => setFilterTripId(e.target.value)}
+            label="Album"
+            selectedKeys={[filterAlbumId]}
+            onChange={(e) => setFilterAlbumId(e.target.value)}
             className="max-w-[200px]"
           >
             <>
-              <SelectItem key="all">All photos</SelectItem>
-              <SelectItem key="none">Not linked to a trip</SelectItem>
-              {trips.map((t) => (
-                <SelectItem key={t.id}>{t.name}</SelectItem>
+              <SelectItem key={ALL}>All photos</SelectItem>
+              <SelectItem key={UNFILED}>Unfiled</SelectItem>
+              {albums.map((a) => (
+                <SelectItem key={a.id}>{a.name}</SelectItem>
               )) as any}
             </>
           </Select>
@@ -164,19 +323,51 @@ export default function PhotosPage() {
             </Button>
           )}
         </div>
-        <div className="mb-4">
-          <PhotoUploader
-            variant="dropzone"
-            tripId={filterTripId !== "all" && filterTripId !== "none" ? filterTripId : undefined}
-            onUploaded={loadAll}
-          />
-        </div>
-
         <p className="text-xs text-default-400 mb-3">
           {filtered.length} photo{filtered.length === 1 ? "" : "s"}
         </p>
 
-        <PhotoGrid photos={filtered} onDelete={deletePhoto} />
+        <PhotoGrid
+          photos={filtered}
+          onDelete={selectionEnabled ? undefined : deletePhoto}
+          selectionEnabled={selectionEnabled}
+          selectedIds={selectedIds}
+          onSelectionChange={setSelectedIds}
+        />
+
+        {/* Bulk add to album modal */}
+        <Modal isOpen={bulkAddDisclosure.isOpen} onOpenChange={bulkAddDisclosure.onOpenChange}>
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader>
+                  Add {selectedIds.size} photo{selectedIds.size === 1 ? "" : "s"} to album
+                </ModalHeader>
+                <ModalBody>
+                  <Select
+                    label="Album"
+                    selectedKeys={[bulkTargetAlbumId]}
+                    onChange={(e) => setBulkTargetAlbumId(e.target.value)}
+                  >
+                    {albums.map((a) => (
+                      <SelectItem key={a.id}>{a.name}</SelectItem>
+                    ))}
+                  </Select>
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>Cancel</Button>
+                  <Button
+                    color="primary"
+                    onPress={() => bulkAddToAlbum(onClose)}
+                    isDisabled={!bulkTargetAlbumId}
+                  >
+                    Add
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
       </div>
     </DefaultLayout>
   );

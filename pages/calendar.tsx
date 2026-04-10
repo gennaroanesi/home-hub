@@ -152,6 +152,8 @@ export default function CalendarPage() {
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
+  const [allAlbums, setAllAlbums] = useState<Schema["homeAlbum"]["type"][]>([]);
+  const [allAlbumPhotos, setAllAlbumPhotos] = useState<Schema["homeAlbumPhoto"]["type"][]>([]);
   const [photosUploading, setPhotosUploading] = useState(false);
   const [savingTrip, setSavingTrip] = useState(false);
 
@@ -170,20 +172,25 @@ export default function CalendarPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes, photosRes] = await Promise.all([
-      client.models.homePerson.list(),
-      client.models.homeTrip.list(),
-      client.models.homeCalendarEvent.list(),
-      client.models.homeCalendarDay.list({ limit: 1000 }),
-      client.models.homeTripLeg.list({ limit: 1000 }),
-      client.models.homePhoto.list({ limit: 500 }),
-    ]);
+    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes, photosRes, albumsRes, albumPhotosRes] =
+      await Promise.all([
+        client.models.homePerson.list(),
+        client.models.homeTrip.list(),
+        client.models.homeCalendarEvent.list(),
+        client.models.homeCalendarDay.list({ limit: 1000 }),
+        client.models.homeTripLeg.list({ limit: 1000 }),
+        client.models.homePhoto.list({ limit: 1000 }),
+        client.models.homeAlbum.list({ limit: 500 }),
+        client.models.homeAlbumPhoto.list({ limit: 5000 }),
+      ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsRes.data ?? []);
     setAllLegs(legsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);
+    setAllAlbums(albumsRes.data ?? []);
+    setAllAlbumPhotos(albumPhotosRes.data ?? []);
 
     const dayMap = new Map<string, Day[]>();
     for (const d of daysRes.data ?? []) {
@@ -776,6 +783,8 @@ export default function CalendarPage() {
                     people={people}
                     allLegs={allLegs}
                     allPhotos={allPhotos}
+                    albums={allAlbums}
+                    albumPhotos={allAlbumPhotos}
                     onPhotosChanged={loadAll}
                     onUploadingChange={setPhotosUploading}
                   />

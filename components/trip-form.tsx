@@ -32,6 +32,8 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Person = Schema["homePerson"]["type"];
 type Photo = Schema["homePhoto"]["type"];
+type Album = Schema["homeAlbum"]["type"];
+type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
 
 export interface TripFormProps {
   // null/undefined → new trip; otherwise the trip to edit
@@ -41,6 +43,8 @@ export interface TripFormProps {
   people: Person[];
   allLegs: TripLeg[];
   allPhotos: Photo[];
+  albums: Album[];
+  albumPhotos: AlbumPhoto[];
   // Callbacks fired after the form mutates the database. The parent
   // typically calls its own loadAll() in here to refresh state.
   onSaved?: (trip: Trip) => void;
@@ -72,6 +76,8 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
     people,
     allLegs,
     allPhotos,
+    albums,
+    albumPhotos,
     onSaved,
     onDeleted,
     onPhotosChanged,
@@ -384,28 +390,122 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
 
       {/* ── Photos (only available once the trip is saved) ──────────────── */}
       {showPhotos && form.id && (
-        <div className="border-t border-default-200 pt-4">
-          <p className="text-sm font-medium mb-2">Photos</p>
-          <div className="mb-3">
-            <PhotoUploader
-              variant="dropzone"
-              tripId={form.id}
-              onUploaded={onPhotosChanged}
-              onUploadingChange={onUploadingChange}
-            />
-          </div>
-          <PhotoGrid
-            photos={allPhotos.filter((p) => p.tripId === form.id)}
-            onDelete={async (photo) => {
-              await client.models.homePhoto.delete({ id: photo.id });
-              onPhotosChanged?.();
-            }}
-          />
-        </div>
+        <TripPhotosSection
+          tripId={form.id}
+          tripName={form.name}
+          allPhotos={allPhotos}
+          albums={albums}
+          albumPhotos={albumPhotos}
+          onPhotosChanged={onPhotosChanged}
+          onUploadingChange={onUploadingChange}
+        />
       )}
     </div>
   );
 });
+
+// Photos section: shows photos from any album linked to this trip and
+// uploads to the trip's primary album (auto-creates one on first upload).
+function TripPhotosSection({
+  tripId,
+  tripName,
+  allPhotos,
+  albums,
+  albumPhotos,
+  onPhotosChanged,
+  onUploadingChange,
+}: {
+  tripId: string;
+  tripName: string;
+  allPhotos: Photo[];
+  albums: Album[];
+  albumPhotos: AlbumPhoto[];
+  onPhotosChanged?: () => void;
+  onUploadingChange?: (uploading: boolean) => void;
+}) {
+  // Find albums whose tripIds includes this trip
+  const linkedAlbums = albums.filter((a) =>
+    (a.tripIds ?? []).filter((id): id is string => !!id).includes(tripId)
+  );
+
+  // The primary album is the first linked album by createdAt (oldest first
+  // so the most "established" album is the upload target)
+  const primaryAlbum =
+    [...linkedAlbums].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    )[0] ?? null;
+
+  // All photos that belong to any linked album
+  const linkedPhotoIds = new Set(
+    albumPhotos
+      .filter((ap) => linkedAlbums.some((la) => la.id === ap.albumId))
+      .map((ap) => ap.photoId)
+  );
+  const photosForTrip = allPhotos
+    .filter((p) => linkedPhotoIds.has(p.id))
+    .sort((a, b) => {
+      const aDate = a.takenAt ?? a.createdAt;
+      const bDate = b.takenAt ?? b.createdAt;
+      return new Date(bDate).getTime() - new Date(aDate).getTime();
+    });
+
+  async function createAlbumForTrip() {
+    const name = tripName.trim() || "Trip photos";
+    await client.models.homeAlbum.create({
+      name,
+      tripIds: [tripId],
+    });
+    onPhotosChanged?.();
+  }
+
+  async function deletePhoto(photo: Photo) {
+    // Delete all join rows then the photo
+    const joins = await client.models.homeAlbumPhoto.list({
+      filter: { photoId: { eq: photo.id } },
+      limit: 100,
+    });
+    for (const j of joins.data ?? []) {
+      await client.models.homeAlbumPhoto.delete({ id: j.id });
+    }
+    await client.models.homePhoto.delete({ id: photo.id });
+    onPhotosChanged?.();
+  }
+
+  return (
+    <div className="border-t border-default-200 pt-4">
+      <div className="flex items-baseline justify-between mb-2">
+        <p className="text-sm font-medium">Photos</p>
+        {linkedAlbums.length > 0 && (
+          <p className="text-xs text-default-400">
+            From {linkedAlbums.length} album{linkedAlbums.length === 1 ? "" : "s"}
+          </p>
+        )}
+      </div>
+      {primaryAlbum ? (
+        <>
+          <div className="mb-3">
+            <PhotoUploader
+              variant="dropzone"
+              albumId={primaryAlbum.id}
+              onUploaded={onPhotosChanged}
+              onUploadingChange={onUploadingChange}
+            />
+          </div>
+          <PhotoGrid photos={photosForTrip} onDelete={deletePhoto} />
+        </>
+      ) : (
+        <div className="border border-dashed border-default-300 rounded-md p-6 text-center bg-default-50">
+          <p className="text-sm text-default-500 mb-3">
+            No album linked to this trip yet.
+          </p>
+          <Button size="sm" color="primary" onPress={createAlbumForTrip}>
+            Create album for this trip
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 // Helper used by save() — diffs the form's leg list against existing legs
 async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: TripLeg[]) {

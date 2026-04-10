@@ -3,9 +3,8 @@
 import React, { useState, useEffect } from "react";
 import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { useRouter } from "next/router";
-import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane } from "react-icons/fa";
+import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane, FaFolder } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 
@@ -72,8 +71,15 @@ export default function HomeDashboard() {
       color: "secondary" as const,
     },
     {
+      title: "Albums",
+      description: "Curated photo collections",
+      icon: <FaFolder size={24} />,
+      href: "/albums",
+      color: "warning" as const,
+    },
+    {
       title: "Photos",
-      description: "Browse and upload trip photos",
+      description: "Browse and upload all photos",
       icon: <FaImages size={24} />,
       href: "/photos",
       color: "primary" as const,

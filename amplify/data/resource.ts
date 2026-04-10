@@ -153,7 +153,8 @@ const schema = a
     // ── Photo ──────────────────────────────────────────────────────────
     // Photos uploaded to the cristinegennaro.com bucket under
     // home/photos/... Stored with UUID filenames to avoid guessability.
-    // Trip photos live at home/photos/trips/{tripId}/{uuid}.{ext}
+    // Album photos live at home/photos/albums/{albumId}/{uuid}.{ext},
+    // unfiled (no album) at home/photos/unfiled/{uuid}.{ext}.
     homePhoto: a
       .model({
         s3key: a.string().required(), // full S3 key (relative to bucket)
@@ -168,11 +169,43 @@ const schema = a
         longitude: a.float(),
         altitude: a.float(),
         exifData: a.json(),
-        tripId: a.id(), // FK → homeTrip.id (null = not linked to a trip)
         uploadedBy: a.string(),
         caption: a.string(),
+        // Many-to-many membership in albums via the homeAlbumPhoto join
+        albums: a.hasMany("homeAlbumPhoto", "photoId"),
       })
-      .secondaryIndexes((index) => [index("tripId"), index("takenAt")])
+      .secondaryIndexes((index) => [index("takenAt")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Album ──────────────────────────────────────────────────────────
+    // Named collection of photos. Albums can optionally link to one or
+    // more trips so the trip detail page can surface them automatically.
+    homeAlbum: a
+      .model({
+        name: a.string().required(),
+        description: a.string(),
+        coverPhotoId: a.id(), // optional FK → homePhoto for the album thumbnail
+        tripIds: a.id().array(), // optional FK array → homeTrip
+        createdBy: a.string(),
+        // Future Lightroom integration
+        lightroomAlbumId: a.string(),
+        lightroomLastSyncedAt: a.datetime(),
+        photos: a.hasMany("homeAlbumPhoto", "albumId"),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── AlbumPhoto (junction) ──────────────────────────────────────────
+    // Many-to-many between albums and photos. A photo can belong to
+    // multiple albums.
+    homeAlbumPhoto: a
+      .model({
+        albumId: a.id().required(),
+        photoId: a.id().required(),
+        sortOrder: a.integer().default(0),
+        album: a.belongsTo("homeAlbum", "albumId"),
+        photo: a.belongsTo("homePhoto", "photoId"),
+      })
+      .secondaryIndexes((index) => [index("albumId"), index("photoId")])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Shopping ────────────────────────────────────────────────────────

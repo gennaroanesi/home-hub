@@ -299,11 +299,15 @@ const tools: Anthropic.Tool[] = [
   {
     name: "send_photos",
     description:
-      "Find and send up to 5 photos to the user as image attachments. Use when the user asks to see/send photos. Filters: tripName (fuzzy matched), fromDate, toDate (YYYY-MM-DD inclusive). Returns the matching photos AND a deep link to the /photos page filtered to the same set so the user can see more.",
+      "Find and send up to 5 photos to the user as image attachments. Use when the user asks to see/send photos. Filters: query (fuzzy matched against album names AND trip names — pick whichever matches better), fromDate, toDate (YYYY-MM-DD inclusive). Returns the matching photos AND a deep link to the /photos page filtered to the same set so the user can see more.",
     input_schema: {
       type: "object" as const,
       properties: {
-        tripName: { type: "string", description: "Trip name (fuzzy matched, case insensitive)" },
+        query: {
+          type: "string",
+          description:
+            "Album or trip name (fuzzy matched, case insensitive). The tool tries albums first, then falls back to trips and looks up linked albums.",
+        },
         fromDate: { type: "string", description: "Earliest takenAt, YYYY-MM-DD" },
         toDate: { type: "string", description: "Latest takenAt, YYYY-MM-DD" },
         limit: { type: "integer", description: "Max photos to send (default 5, capped at 5)" },
@@ -658,44 +662,88 @@ async function executeTool(
     case "send_photos": {
       const limit = Math.min(input.limit ?? 5, 5);
 
-      // Resolve trip by name (fuzzy)
-      let tripId: string | null = null;
-      let tripName: string | null = null;
-      if (input.tripName) {
-        const { data: trips } = await client.models.homeTrip.list();
-        const q = String(input.tripName).toLowerCase().trim();
-        const trip =
-          (trips ?? []).find((t) => t.name.toLowerCase() === q) ??
-          (trips ?? []).find((t) => t.name.toLowerCase().includes(q)) ??
-          (trips ?? []).find((t) => q.includes(t.name.toLowerCase()));
-        if (!trip) {
-          return JSON.stringify({
-            error: `No trip matching "${input.tripName}"`,
-          });
+      // Resolve query → set of album IDs to match against
+      let albumIds: string[] = [];
+      let matchedLabel: string | null = null;
+      if (input.query) {
+        const q = String(input.query).toLowerCase().trim();
+
+        // Try to match an album by name first
+        const { data: albums } = await client.models.homeAlbum.list();
+        const albumMatch =
+          (albums ?? []).find((a) => a.name.toLowerCase() === q) ??
+          (albums ?? []).find((a) => a.name.toLowerCase().includes(q)) ??
+          (albums ?? []).find((a) => q.includes(a.name.toLowerCase()));
+
+        if (albumMatch) {
+          albumIds = [albumMatch.id];
+          matchedLabel = albumMatch.name;
+        } else {
+          // Fall back to trip name → linked albums
+          const { data: trips } = await client.models.homeTrip.list();
+          const trip =
+            (trips ?? []).find((t) => t.name.toLowerCase() === q) ??
+            (trips ?? []).find((t) => t.name.toLowerCase().includes(q)) ??
+            (trips ?? []).find((t) => q.includes(t.name.toLowerCase()));
+          if (!trip) {
+            return JSON.stringify({
+              error: `No album or trip matching "${input.query}"`,
+            });
+          }
+          // Find albums whose tripIds includes this trip
+          const linked = (albums ?? []).filter((a) =>
+            (a.tripIds ?? [])
+              .filter((id): id is string => !!id)
+              .includes(trip.id)
+          );
+          if (linked.length === 0) {
+            return JSON.stringify({
+              error: `Trip "${trip.name}" has no linked albums yet — create one first`,
+            });
+          }
+          albumIds = linked.map((a) => a.id);
+          matchedLabel = trip.name;
         }
-        tripId = trip.id;
-        tripName = trip.name;
       }
 
-      // Build filter for photos
+      // Get the photo IDs that belong to the matched albums (if any)
+      let photoIdSet: Set<string> | null = null;
+      if (albumIds.length > 0) {
+        const allJoins: { photoId: string }[] = [];
+        for (const albumId of albumIds) {
+          const { data: joins } = await client.models.homeAlbumPhoto.list({
+            filter: { albumId: { eq: albumId } },
+            limit: 1000,
+          });
+          for (const j of joins ?? []) {
+            allJoins.push({ photoId: j.photoId });
+          }
+        }
+        photoIdSet = new Set(allJoins.map((j) => j.photoId));
+      }
+
+      // Build the date filter
       const filter: Record<string, any> = {};
-      if (tripId) filter.tripId = { eq: tripId };
       if (input.fromDate) {
         const from = new Date(input.fromDate).toISOString();
         filter.takenAt = { ...(filter.takenAt ?? {}), ge: from };
       }
       if (input.toDate) {
-        // Inclusive: end of day
         const to = new Date(`${input.toDate}T23:59:59.999Z`).toISOString();
         filter.takenAt = { ...(filter.takenAt ?? {}), le: to };
       }
 
       const { data: photos } = await client.models.homePhoto.list({
         filter: Object.keys(filter).length > 0 ? filter : undefined,
-        limit: 200,
+        limit: 1000,
       });
 
-      const sorted = (photos ?? []).sort((a, b) => {
+      let candidates = photos ?? [];
+      if (photoIdSet) {
+        candidates = candidates.filter((p) => photoIdSet!.has(p.id));
+      }
+
+      const sorted = candidates.sort((a, b) => {
         const aDate = a.takenAt ?? a.createdAt;
         const bDate = b.takenAt ?? b.createdAt;
         return new Date(bDate).getTime() - new Date(aDate).getTime();
@@ -704,8 +752,7 @@ async function executeTool(
       const selected = sorted.slice(0, limit);
 
       // Build CloudFront URLs and add to attachments. Use JPEG (not WebP)
-      // because WhatsApp clients can fail to download WebP inline images
-      // ("Couldn't download image").
+      // because WhatsApp clients can fail to download WebP inline images.
       const CLOUDFRONT = "https://d2vnnym2o6bm6m.cloudfront.net";
       function buildUrl(s3key: string, width = 1024, quality = 80): string {
         return `${CLOUDFRONT}/${s3key}?format=jpeg&width=${width}&quality=${quality}`;
@@ -714,18 +761,14 @@ async function executeTool(
       // Build a deep link to /photos with the same filter
       const APP_URL = process.env.APP_URL ?? "https://home.cristinegennaro.com";
       const params = new URLSearchParams();
-      if (tripId) params.set("trip", tripId);
+      if (albumIds.length === 1) params.set("album", albumIds[0]);
       if (input.fromDate) params.set("from", input.fromDate);
       if (input.toDate) params.set("to", input.toDate);
       const deepLink = `${APP_URL}/photos${params.toString() ? `?${params}` : ""}`;
 
       for (const p of selected) {
         const dateLabel = p.takenAt ? new Date(p.takenAt).toLocaleDateString() : "";
-        const captionParts = [
-          tripName ?? "",
-          dateLabel,
-          p.originalFilename ?? "",
-        ].filter(Boolean);
+        const captionParts = [matchedLabel ?? "", dateLabel, p.originalFilename ?? ""].filter(Boolean);
         ctx.attachments.push({
           type: "image",
           url: buildUrl(p.s3key),
@@ -822,7 +865,7 @@ Message sender: ${sender}
 
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
 
-When the user asks to see photos, call send_photos DIRECTLY with the trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips first). It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
+When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 

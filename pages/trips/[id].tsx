@@ -17,6 +17,8 @@ type Trip = Schema["homeTrip"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
 type Photo = Schema["homePhoto"]["type"];
 type Person = Schema["homePerson"]["type"];
+type Album = Schema["homeAlbum"]["type"];
+type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
 
 export default function TripDetailPage() {
   const router = useRouter();
@@ -29,6 +31,8 @@ export default function TripDetailPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
   const [loading, setLoading] = useState(true);
   const [photosUploading, setPhotosUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -48,14 +52,18 @@ export default function TripDetailPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [peopleRes, legsRes, photosRes] = await Promise.all([
+    const [peopleRes, legsRes, photosRes, albumsRes, albumPhotosRes] = await Promise.all([
       client.models.homePerson.list(),
       client.models.homeTripLeg.list({ limit: 1000 }),
       client.models.homePhoto.list({ limit: 1000 }),
+      client.models.homeAlbum.list({ limit: 500 }),
+      client.models.homeAlbumPhoto.list({ limit: 5000 }),
     ]);
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setAllLegs(legsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);
+    setAlbums(albumsRes.data ?? []);
+    setAlbumPhotos(albumPhotosRes.data ?? []);
 
     if (typeof id === "string" && id !== "new") {
       const { data } = await client.models.homeTrip.get({ id });
@@ -163,6 +171,8 @@ export default function TripDetailPage() {
           people={people}
           allLegs={allLegs}
           allPhotos={allPhotos}
+          albums={albums}
+          albumPhotos={albumPhotos}
           onPhotosChanged={loadAll}
           onUploadingChange={setPhotosUploading}
         />

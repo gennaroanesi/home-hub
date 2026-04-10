@@ -19,8 +19,9 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Trip = Schema["homeTrip"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
-type Photo = Schema["homePhoto"]["type"];
 type Person = Schema["homePerson"]["type"];
+type Album = Schema["homeAlbum"]["type"];
+type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
 
 type FilterMode = "upcoming" | "past" | "all";
 
@@ -28,7 +29,8 @@ export default function TripsListPage() {
   const router = useRouter();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [legs, setLegs] = useState<TripLeg[]>([]);
-  const [photos, setPhotos] = useState<Photo[]>([]);
+  const [albums, setAlbums] = useState<Album[]>([]);
+  const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<FilterMode>("upcoming");
@@ -48,15 +50,17 @@ export default function TripsListPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [tripsRes, legsRes, photosRes, peopleRes] = await Promise.all([
+    const [tripsRes, legsRes, albumsRes, albumPhotosRes, peopleRes] = await Promise.all([
       client.models.homeTrip.list({ limit: 500 }),
       client.models.homeTripLeg.list({ limit: 1000 }),
-      client.models.homePhoto.list({ limit: 1000 }),
+      client.models.homeAlbum.list({ limit: 500 }),
+      client.models.homeAlbumPhoto.list({ limit: 5000 }),
       client.models.homePerson.list(),
     ]);
     setTrips(tripsRes.data ?? []);
     setLegs(legsRes.data ?? []);
-    setPhotos(photosRes.data ?? []);
+    setAlbums(albumsRes.data ?? []);
+    setAlbumPhotos(albumPhotosRes.data ?? []);
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setLoading(false);
   }, []);
@@ -93,7 +97,20 @@ export default function TripsListPage() {
     return legs.filter((l) => l.tripId === tripId).length;
   }
   function photoCount(tripId: string): number {
-    return photos.filter((p) => p.tripId === tripId).length;
+    // Sum unique photos across albums whose tripIds includes this trip
+    const linkedAlbumIds = new Set(
+      albums
+        .filter((a) =>
+          (a.tripIds ?? []).filter((id): id is string => !!id).includes(tripId)
+        )
+        .map((a) => a.id)
+    );
+    if (linkedAlbumIds.size === 0) return 0;
+    const photoIds = new Set<string>();
+    for (const ap of albumPhotos) {
+      if (linkedAlbumIds.has(ap.albumId)) photoIds.add(ap.photoId);
+    }
+    return photoIds.size;
   }
   function personNames(ids: (string | null)[]): string {
     return ids

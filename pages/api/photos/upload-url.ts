@@ -28,19 +28,18 @@ function extensionFor(contentType: string): string {
 
 /**
  * POST /api/photos/upload-url
- * Body: { contentType: string, tripId?: string }
+ * Body: { contentType: string, albumId?: string }
  * Returns: { uploadUrl, s3key, expiresIn }
  *
  * The client uploads the file directly to S3 with the returned URL,
- * then POSTs to /api/photos/register with the s3key and EXIF metadata
- * extracted client-side.
+ * then creates a homePhoto record via the Amplify data client.
  */
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
 
-  const { contentType, tripId } = req.body ?? {};
+  const { contentType, albumId } = req.body ?? {};
   if (!contentType || typeof contentType !== "string") {
     return res.status(400).json({ error: "contentType required" });
   }
@@ -50,7 +49,7 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   const ext = extensionFor(contentType);
   const id = uuid();
-  const prefix = tripId ? `home/photos/trips/${tripId}` : `home/photos/misc`;
+  const prefix = albumId ? `home/photos/albums/${albumId}` : `home/photos/unfiled`;
   const s3key = `${prefix}/${id}.${ext}`;
 
   const command = new PutObjectCommand({

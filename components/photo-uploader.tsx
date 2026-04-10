@@ -10,7 +10,9 @@ import type { Schema } from "@/amplify/data/resource";
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 interface PhotoUploaderProps {
-  tripId?: string;
+  // If provided, uploaded photos are added to this album via homeAlbumPhoto.
+  // Also used for the S3 key prefix (home/photos/albums/{albumId}/...).
+  albumId?: string;
   uploadedBy?: string;
   onUploaded?: () => void; // called after each photo is registered
   // Notifies the parent when a batch starts (true) and finishes (false).
@@ -130,7 +132,7 @@ async function readImageDimensions(file: File): Promise<{ width: number; height:
 }
 
 export function PhotoUploader({
-  tripId,
+  albumId,
   uploadedBy,
   onUploaded,
   onUploadingChange,
@@ -175,7 +177,7 @@ export function PhotoUploader({
       const urlRes = await fetch("/api/photos/upload-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contentType: file.type, tripId }),
+        body: JSON.stringify({ contentType: file.type, albumId }),
       });
       if (!urlRes.ok) throw new Error(`Upload URL error: ${urlRes.status}`);
       const { uploadUrl, s3key } = await urlRes.json();
@@ -205,7 +207,6 @@ export function PhotoUploader({
         longitude: gps.longitude,
         altitude: gps.altitude,
         exifData: Object.keys(slimmed).length > 0 ? JSON.stringify(slimmed) : null,
-        tripId: tripId ?? null,
         uploadedBy: uploadedBy ?? null,
       });
       if (errors && errors.length > 0) {
@@ -214,6 +215,19 @@ export function PhotoUploader({
       }
       if (!data) {
         throw new Error("Photo registration returned no data");
+      }
+
+      // 5. If an album was specified, create the membership row
+      if (albumId) {
+        const { errors: joinErrors } = await client.models.homeAlbumPhoto.create({
+          albumId,
+          photoId: data.id,
+          sortOrder: 0,
+        });
+        if (joinErrors && joinErrors.length > 0) {
+          console.error("homeAlbumPhoto.create errors", joinErrors);
+          // Photo is already created — don't fail the whole upload
+        }
       }
 
       setStatus({ filename: file.name, status: "done" });

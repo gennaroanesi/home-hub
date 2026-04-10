@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
+import { FaCheck } from "react-icons/fa";
 import { photoUrl } from "@/lib/image-loader";
 import { PhotoModal } from "./photo-modal";
 import type { Schema } from "@/amplify/data/resource";
@@ -19,11 +20,23 @@ interface PhotoGridProps {
   // How many photos to render initially and on each "load more" trigger.
   // Defaults to 24, which is enough for several screens of a 200-px column grid.
   pageSize?: number;
+  // Multi-select mode. When selectionEnabled is true, clicking a photo
+  // toggles its selection instead of opening the modal. Selection state is
+  // owned by the parent so it can build the bulk-action toolbar.
+  selectionEnabled?: boolean;
+  selectedIds?: Set<string>;
+  onSelectionChange?: (selected: Set<string>) => void;
+}
+
+interface PhotoCardData extends Photo {
+  onClick: (p: Photo) => void;
+  isSelected: boolean;
+  selectionEnabled: boolean;
 }
 
 interface PhotoCardProps {
   index: number;
-  data: Photo & { onClick: (p: Photo) => void };
+  data: PhotoCardData;
   width: number;
 }
 
@@ -34,7 +47,9 @@ function PhotoCard({ data, width }: PhotoCardProps) {
 
   return (
     <div
-      className="cursor-pointer overflow-hidden bg-default-100 rounded-sm"
+      className={`relative cursor-pointer overflow-hidden bg-default-100 rounded-sm ${
+        data.isSelected ? "ring-4 ring-primary" : ""
+      }`}
       style={{ height: scaledHeight }}
       onClick={() => data.onClick(data)}
     >
@@ -47,11 +62,29 @@ function PhotoCard({ data, width }: PhotoCardProps) {
         height={scaledHeight}
         style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }}
       />
+      {data.selectionEnabled && (
+        <div
+          className={`absolute top-2 left-2 w-6 h-6 rounded-full flex items-center justify-center border-2 ${
+            data.isSelected
+              ? "bg-primary border-primary text-white"
+              : "bg-white/80 border-white/80 text-transparent"
+          }`}
+        >
+          <FaCheck size={10} />
+        </div>
+      )}
     </div>
   );
 }
 
-export function PhotoGrid({ photos, onDelete, pageSize = 24 }: PhotoGridProps) {
+export function PhotoGrid({
+  photos,
+  onDelete,
+  pageSize = 24,
+  selectionEnabled = false,
+  selectedIds,
+  onSelectionChange,
+}: PhotoGridProps) {
   const [selected, setSelected] = useState<Photo | null>(null);
   const [visibleCount, setVisibleCount] = useState(pageSize);
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -85,9 +118,22 @@ export function PhotoGrid({ photos, onDelete, pageSize = 24 }: PhotoGridProps) {
     return <p className="text-center text-default-300 py-8 text-sm">No photos yet</p>;
   }
 
-  const items = visiblePhotos.map((p) => ({
+  function togglePhoto(photo: Photo) {
+    if (selectionEnabled) {
+      const next = new Set(selectedIds ?? []);
+      if (next.has(photo.id)) next.delete(photo.id);
+      else next.add(photo.id);
+      onSelectionChange?.(next);
+    } else {
+      setSelected(photo);
+    }
+  }
+
+  const items: PhotoCardData[] = visiblePhotos.map((p) => ({
     ...p,
-    onClick: (photo: Photo) => setSelected(photo),
+    onClick: togglePhoto,
+    isSelected: selectedIds?.has(p.id) ?? false,
+    selectionEnabled,
   }));
 
   const hasMore = visibleCount < photos.length;
@@ -95,7 +141,7 @@ export function PhotoGrid({ photos, onDelete, pageSize = 24 }: PhotoGridProps) {
   return (
     <>
       <Masonry
-        key={`${photos.length}-${visibleCount}` /* re-init when window changes */}
+        key={`${photos.length}-${visibleCount}-${selectionEnabled}` /* re-init when window changes */}
         items={items}
         render={PhotoCard as any}
         columnWidth={200}
