@@ -175,16 +175,16 @@ export default function CalendarPage() {
 
   // Modals
   const tripModalDisclosure = useDisclosure(); // create + edit
-  const newEventDisclosure = useDisclosure();
+  const eventModalDisclosure = useDisclosure(); // create + edit
   const dayStatusDisclosure = useDisclosure();
-  const eventDetailDisclosure = useDisclosure();
   const allTripsDisclosure = useDisclosure();
 
   // Day status editor state
   const [dayEditorDate, setDayEditorDate] = useState<string>("");
 
-  // New event form
+  // Event form (used for both create and edit)
   const [eventForm, setEventForm] = useState({
+    id: "" as string, // empty = new
     title: "",
     description: "",
     startAt: "",
@@ -217,9 +217,6 @@ export default function CalendarPage() {
 
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
-
-  // Detail views
-  const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
 
   // ── Auth + data load ──────────────────────────────────────────────────────
 
@@ -456,8 +453,7 @@ export default function CalendarPage() {
       // Clicking a leg opens the parent trip's edit modal
       openEditTrip(rbcEvent.resource.trip);
     } else {
-      setSelectedEvent(rbcEvent.resource.event);
-      eventDetailDisclosure.onOpen();
+      openEditEvent(rbcEvent.resource.event);
     }
   }
 
@@ -465,6 +461,7 @@ export default function CalendarPage() {
     const now = dayjs().format("YYYY-MM-DDTHH:mm");
     const later = dayjs().add(1, "hour").format("YYYY-MM-DDTHH:mm");
     setEventForm({
+      id: "",
       title: "",
       description: "",
       startAt: now,
@@ -478,10 +475,30 @@ export default function CalendarPage() {
       tripId: "",
       recurrence: "",
     });
-    newEventDisclosure.onOpen();
+    eventModalDisclosure.onOpen();
   }
 
-  async function createEvent(onClose: () => void) {
+  function openEditEvent(event: Event) {
+    const loc = (event.location ?? {}) as any;
+    setEventForm({
+      id: event.id,
+      title: event.title,
+      description: event.description ?? "",
+      startAt: dayjs(event.startAt).format("YYYY-MM-DDTHH:mm"),
+      endAt: event.endAt ? dayjs(event.endAt).format("YYYY-MM-DDTHH:mm") : "",
+      isAllDay: event.isAllDay ?? false,
+      location: loc.city ?? "",
+      locationLat: loc.latitude ?? null,
+      locationLon: loc.longitude ?? null,
+      locationCountry: loc.country ?? "",
+      assignedPersonIds: (event.assignedPersonIds ?? []).filter((id): id is string => !!id),
+      tripId: event.tripId ?? "",
+      recurrence: event.recurrence ?? "",
+    });
+    eventModalDisclosure.onOpen();
+  }
+
+  async function saveEvent(onClose: () => void) {
     if (!eventForm.title.trim() || !eventForm.startAt) return;
     const location =
       eventForm.location || eventForm.locationLat !== null
@@ -492,7 +509,7 @@ export default function CalendarPage() {
             longitude: eventForm.locationLon,
           }
         : null;
-    await client.models.homeCalendarEvent.create({
+    const payload = {
       title: eventForm.title,
       description: eventForm.description || null,
       startAt: new Date(eventForm.startAt).toISOString(),
@@ -502,8 +519,20 @@ export default function CalendarPage() {
       assignedPersonIds: eventForm.assignedPersonIds,
       tripId: eventForm.tripId || null,
       recurrence: eventForm.recurrence || null,
-    });
+    };
+    if (eventForm.id) {
+      await client.models.homeCalendarEvent.update({ id: eventForm.id, ...payload });
+    } else {
+      await client.models.homeCalendarEvent.create(payload);
+    }
     onClose();
+    await loadAll();
+  }
+
+  async function deleteEventById(id: string) {
+    if (!confirm("Delete this event?")) return;
+    await client.models.homeCalendarEvent.delete({ id });
+    eventModalDisclosure.onClose();
     await loadAll();
   }
 
@@ -705,16 +734,6 @@ export default function CalendarPage() {
     await loadAll();
   }
 
-  async function deleteEvent() {
-    if (!selectedEvent) return;
-    if (!confirm("Delete this event?")) return;
-    await client.models.homeCalendarEvent.delete({ id: selectedEvent.id });
-    setSelectedEvent(null);
-    eventDetailDisclosure.onClose();
-    await loadAll();
-  }
-
-
   function personName(id: string): string {
     return people.find((p) => p.id === id)?.name ?? "Unknown";
   }
@@ -850,12 +869,12 @@ export default function CalendarPage() {
           />
         </div>
 
-        {/* ── New Event Modal ──────────────────────────────────────────── */}
-        <Modal isOpen={newEventDisclosure.isOpen} onOpenChange={newEventDisclosure.onOpenChange} size="lg">
+        {/* ── Event Modal (create + edit) ──────────────────────────────── */}
+        <Modal isOpen={eventModalDisclosure.isOpen} onOpenChange={eventModalDisclosure.onOpenChange} size="lg">
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>New Event</ModalHeader>
+                <ModalHeader>{eventForm.id ? "Edit Event" : "New Event"}</ModalHeader>
                 <ModalBody>
                   <Input
                     label="Title"
@@ -929,8 +948,20 @@ export default function CalendarPage() {
                   </Select>
                 </ModalBody>
                 <ModalFooter>
+                  {eventForm.id && (
+                    <Button
+                      color="danger"
+                      variant="light"
+                      startContent={<FaTrash size={12} />}
+                      onPress={() => deleteEventById(eventForm.id)}
+                    >
+                      Delete
+                    </Button>
+                  )}
                   <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => createEvent(onClose)}>Create</Button>
+                  <Button color="primary" onPress={() => saveEvent(onClose)}>
+                    {eventForm.id ? "Save" : "Create"}
+                  </Button>
                 </ModalFooter>
               </>
             )}
@@ -1302,48 +1333,6 @@ export default function CalendarPage() {
                 </ModalBody>
                 <ModalFooter>
                   <Button color="primary" onPress={onClose}>Done</Button>
-                </ModalFooter>
-              </>
-            )}
-          </ModalContent>
-        </Modal>
-
-        {/* ── Event Detail Modal ──────────────────────────────────────── */}
-        <Modal isOpen={eventDetailDisclosure.isOpen} onOpenChange={eventDetailDisclosure.onOpenChange}>
-          <ModalContent>
-            {(onClose) => selectedEvent && (
-              <>
-                <ModalHeader>{selectedEvent.title}</ModalHeader>
-                <ModalBody>
-                  {selectedEvent.description && (
-                    <p className="text-sm text-default-600">{selectedEvent.description}</p>
-                  )}
-                  <p className="text-sm">
-                    <span className="text-default-400">When: </span>
-                    {dayjs(selectedEvent.startAt).format("MMM D, YYYY h:mm A")}
-                    {selectedEvent.endAt && ` – ${dayjs(selectedEvent.endAt).format("h:mm A")}`}
-                  </p>
-                  {selectedEvent.location && (selectedEvent.location as any).city && (
-                    <p className="text-sm">
-                      <span className="text-default-400">Where: </span>
-                      {(selectedEvent.location as any).city}
-                    </p>
-                  )}
-                  {(selectedEvent.assignedPersonIds ?? []).length > 0 && (
-                    <p className="text-sm">
-                      <span className="text-default-400">Who: </span>
-                      {(selectedEvent.assignedPersonIds ?? [])
-                        .filter((id): id is string => !!id)
-                        .map(personName)
-                        .join(", ")}
-                    </p>
-                  )}
-                </ModalBody>
-                <ModalFooter>
-                  <Button color="danger" variant="light" startContent={<FaTrash size={12} />} onPress={deleteEvent}>
-                    Delete
-                  </Button>
-                  <Button onPress={onClose}>Close</Button>
                 </ModalFooter>
               </>
             )}
