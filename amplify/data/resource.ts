@@ -112,6 +112,34 @@ const schema = a
       })
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Shopping ────────────────────────────────────────────────────────
+    // Multiple named lists (e.g. "Supermarket", "Home Depot"), each with items.
+    homeShoppingList: a
+      .model({
+        name: a.string().required(),
+        emoji: a.string(),
+        sortOrder: a.integer().default(0),
+        isArchived: a.boolean().default(false),
+        archivedAt: a.datetime(),
+        items: a.hasMany("homeShoppingItem", "listId"),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    homeShoppingItem: a
+      .model({
+        listId: a.id().required(),
+        list: a.belongsTo("homeShoppingList", "listId"),
+        name: a.string().required(),
+        quantity: a.string(),
+        notes: a.string(),
+        isChecked: a.boolean().default(false),
+        checkedAt: a.datetime(),
+        addedBy: a.string(),
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("listId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
     // ── Agent ────────────────────────────────────────────────────────────
     homeConversation: a
       .model({

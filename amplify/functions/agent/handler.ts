@@ -165,6 +165,85 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "list_shopping_lists",
+    description: "List active shopping lists (e.g. Supermarket, Home Depot) with unchecked item counts. Pass includeArchived=true to also include archived lists.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        includeArchived: { type: "boolean" },
+      },
+    },
+  },
+  {
+    name: "archive_shopping_list",
+    description: "Archive a shopping list (by name, fuzzy matched). Archived lists are hidden from the main view but kept as a record.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listName: { type: "string" },
+      },
+      required: ["listName"],
+    },
+  },
+  {
+    name: "unarchive_shopping_list",
+    description: "Unarchive a previously archived shopping list.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listName: { type: "string" },
+      },
+      required: ["listName"],
+    },
+  },
+  {
+    name: "create_shopping_list",
+    description: "Create a new shopping list. Only use when the user explicitly wants a new list that doesn't exist.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string" },
+        emoji: { type: "string", description: "Single emoji character for the list" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "add_shopping_item",
+    description: "Add an item to a shopping list, matched by list name (fuzzy, case-insensitive). If no list name is given, uses the Supermarket list by default.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listName: { type: "string", description: "Name of the list, e.g. 'Supermarket' or 'Home Depot'. Fuzzy matched." },
+        name: { type: "string", description: "Item name, e.g. 'olive oil'" },
+        quantity: { type: "string", description: "Optional quantity, e.g. '2', '1 lb', '500g'" },
+        notes: { type: "string" },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "list_shopping_items",
+    description: "List unchecked items in a shopping list (by name), or across all lists if no name given.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listName: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "check_shopping_item",
+    description: "Mark a shopping item as bought/checked by its ID.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+      },
+      required: ["itemId"],
+    },
+  },
+  {
     name: "schedule_reminder",
     description: "Schedule a notification reminder via EventBridge. Use for task/bill/event reminders.",
     input_schema: {
@@ -184,6 +263,29 @@ const tools: Anthropic.Tool[] = [
     },
   },
 ];
+
+// ── Shopping list resolution ─────────────────────────────────────────────────
+
+async function resolveShoppingList(listName?: string | null, includeArchived = false) {
+  const client = await getDataClient();
+  const { data: lists } = await client.models.homeShoppingList.list();
+  const all = (lists ?? []).filter((l) => includeArchived || !l.isArchived);
+  if (all.length === 0) return null;
+  if (!listName) {
+    // Default: prefer one called "Supermarket"/"Grocery", else the first by sortOrder
+    const supermarket = all.find((l) => l.name.toLowerCase().includes("supermarket") || l.name.toLowerCase().includes("grocer"));
+    if (supermarket) return supermarket;
+    return [...all].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))[0];
+  }
+  const q = listName.toLowerCase().trim();
+  // Exact match first, then contains
+  return (
+    all.find((l) => l.name.toLowerCase() === q) ??
+    all.find((l) => l.name.toLowerCase().includes(q)) ??
+    all.find((l) => q.includes(l.name.toLowerCase())) ??
+    null
+  );
+}
 
 // ── Tool execution ───────────────────────────────────────────────────────────
 
@@ -324,6 +426,109 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
       return JSON.stringify({ success: true, eventId: data?.id, title: input.title });
     }
 
+    case "list_shopping_lists": {
+      const { data: lists } = await client.models.homeShoppingList.list();
+      const filtered = (lists ?? []).filter((l) => input.includeArchived || !l.isArchived);
+      const results = await Promise.all(
+        filtered.map(async (l) => {
+          const { data: items } = await client.models.homeShoppingItem.list({
+            filter: { listId: { eq: l.id }, isChecked: { eq: false } },
+          });
+          return {
+            id: l.id,
+            name: l.name,
+            emoji: l.emoji,
+            isArchived: !!l.isArchived,
+            uncheckedCount: (items ?? []).length,
+          };
+        })
+      );
+      return JSON.stringify({ lists: results });
+    }
+
+    case "archive_shopping_list": {
+      const list = await resolveShoppingList(input.listName);
+      if (!list) return JSON.stringify({ error: `No active list matching "${input.listName}"` });
+      await client.models.homeShoppingList.update({
+        id: list.id,
+        isArchived: true,
+        archivedAt: new Date().toISOString(),
+      });
+      return JSON.stringify({ success: true, listId: list.id, name: list.name });
+    }
+
+    case "unarchive_shopping_list": {
+      const list = await resolveShoppingList(input.listName, true);
+      if (!list) return JSON.stringify({ error: `No list matching "${input.listName}"` });
+      await client.models.homeShoppingList.update({
+        id: list.id,
+        isArchived: false,
+        archivedAt: null,
+      });
+      return JSON.stringify({ success: true, listId: list.id, name: list.name });
+    }
+
+    case "create_shopping_list": {
+      const { data, errors } = await client.models.homeShoppingList.create({
+        name: input.name,
+        emoji: input.emoji ?? null,
+        sortOrder: 0,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, listId: data?.id, name: input.name });
+    }
+
+    case "add_shopping_item": {
+      const list = await resolveShoppingList(input.listName);
+      if (!list) {
+        return JSON.stringify({
+          error: input.listName
+            ? `No shopping list matching "${input.listName}". Use create_shopping_list first.`
+            : "No shopping lists exist. Use create_shopping_list first.",
+        });
+      }
+      const { data, errors } = await client.models.homeShoppingItem.create({
+        listId: list.id,
+        name: input.name,
+        quantity: input.quantity ?? null,
+        notes: input.notes ?? null,
+        isChecked: false,
+        addedBy: "agent",
+        sortOrder: 0,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        itemId: data?.id,
+        name: input.name,
+        listName: list.name,
+      });
+    }
+
+    case "list_shopping_items": {
+      if (input.listName) {
+        const list = await resolveShoppingList(input.listName);
+        if (!list) return JSON.stringify({ error: `No shopping list matching "${input.listName}"` });
+        const { data: items } = await client.models.homeShoppingItem.list({
+          filter: { listId: { eq: list.id }, isChecked: { eq: false } },
+        });
+        return JSON.stringify({ listName: list.name, items: items ?? [] });
+      }
+      const { data: items } = await client.models.homeShoppingItem.list({
+        filter: { isChecked: { eq: false } },
+      });
+      return JSON.stringify({ items: items ?? [] });
+    }
+
+    case "check_shopping_item": {
+      await client.models.homeShoppingItem.update({
+        id: input.itemId,
+        isChecked: true,
+        checkedAt: new Date().toISOString(),
+      });
+      return JSON.stringify({ success: true, itemId: input.itemId });
+    }
+
     case "schedule_reminder": {
       const scheduleName = `home-reminder-${generateId()}`;
       const scheduleExpression = input.recurrence
@@ -374,7 +579,7 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
   const people = await getPeople();
   const peopleNames = people.map((p) => p.name).join(", ");
 
-  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, and reminders for the household.
+  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, shopping lists, and reminders for the household.
 
 Household members: ${peopleNames}
 Current date/time: ${now.toISOString()} (${now.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/New_York" })})
