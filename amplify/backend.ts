@@ -54,13 +54,9 @@ for (const [key, desc] of Object.entries(lambdaDescriptions)) {
   }
 }
 
-// ── Data stack references ───────────────────────────────────────────────────
+// ── Data stack reference ────────────────────────────────────────────────────
 
 const dataStack = Stack.of(backend.data.resources.tables["homeTask"]);
-
-const taskTable = backend.data.resources.tables["homeTask"];
-const billTable = backend.data.resources.tables["homeBill"];
-const eventTable = backend.data.resources.tables["homeCalendarEvent"];
 
 // ── Agent Lambda — Anthropic API + DynamoDB + Scheduler ─────────────────────
 
@@ -97,33 +93,9 @@ const schedulerPolicy = new Policy(dataStack, "homeAgentSchedulerPolicy", {
 });
 backend.homeAgent.resources.lambda.role?.attachInlinePolicy(schedulerPolicy);
 
-// Agent lambda — DynamoDB direct access
-const agentDdbPolicy = new Policy(dataStack, "homeAgentDynamoDBPolicy", {
-  statements: [
-    new PolicyStatement({
-      effect: Effect.ALLOW,
-      actions: [
-        "dynamodb:PutItem",
-        "dynamodb:UpdateItem",
-        "dynamodb:GetItem",
-        "dynamodb:Scan",
-        "dynamodb:Query",
-      ],
-      resources: [
-        taskTable.tableArn,
-        billTable.tableArn,
-        eventTable.tableArn,
-      ],
-    }),
-  ],
-});
-backend.homeAgent.resources.lambda.role?.attachInlinePolicy(agentDdbPolicy);
-
 // Env vars for agent lambda
+// (Data access via Amplify data client; no DDB policies needed)
 const agentLambda = backend.homeAgent.resources.lambda as LambdaFunction;
-agentLambda.addEnvironment("HOME_TASK_TABLE", taskTable.tableName);
-agentLambda.addEnvironment("HOME_BILL_TABLE", billTable.tableName);
-agentLambda.addEnvironment("HOME_CALENDAR_EVENT_TABLE", eventTable.tableName);
 agentLambda.addEnvironment("SCHEDULER_LAMBDA_ARN", backend.homeScheduler.resources.lambda.functionArn);
 agentLambda.addEnvironment("SCHEDULER_ROLE_ARN", schedulerRole.roleArn);
 agentLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
@@ -142,23 +114,10 @@ schedulerLambda.addEnvironment("HOME_NOTIFICATIONS_TOPIC_ARN", homeNotifications
 homeNotificationsTopic.grantPublish(backend.homeScheduler.resources.lambda);
 
 // ── Recurring tasks — daily sweep ───────────────────────────────────────────
-// Env vars and policies live in the recurring stack (same as the lambda)
-// to avoid cross-stack circular dependencies with the data stack.
+// Data access via Amplify data client; no DDB env vars or policies needed.
 
 const recurringStack = Stack.of(backend.recurringTasks.resources.lambda);
 const recurringLambda = backend.recurringTasks.resources.lambda as LambdaFunction;
-recurringLambda.addEnvironment("HOME_TASK_TABLE", taskTable.tableName);
-
-const recurringDdbPolicy = new Policy(recurringStack, "recurringTasksDynamoDBPolicy", {
-  statements: [
-    new PolicyStatement({
-      effect: Effect.ALLOW,
-      actions: ["dynamodb:Scan", "dynamodb:PutItem"],
-      resources: [taskTable.tableArn],
-    }),
-  ],
-});
-backend.recurringTasks.resources.lambda.role?.attachInlinePolicy(recurringDdbPolicy);
 
 const recurringScheduleRole = new iam.Role(recurringStack, "recurringTasksSchedulerRole", {
   assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),

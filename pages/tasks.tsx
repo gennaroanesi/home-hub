@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from "react";
-import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
+import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
@@ -25,26 +25,16 @@ import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
-interface Task {
-  id: string;
-  title: string;
-  description: string | null;
-  assignee: string | null;
-  dueDate: string | null;
-  isCompleted: boolean;
-  recurrence: string | null;
-  completedAt: string | null;
-  createdBy: string | null;
-  createdAt: string;
-}
+type Task = Schema["homeTask"]["type"];
+type Person = Schema["homePerson"]["type"];
 
-type FilterAssignee = "all" | "gennaro" | "cristine" | "both";
 type FilterStatus = "open" | "completed" | "all";
 
 export default function TasksPage() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
-  const [filterAssignee, setFilterAssignee] = useState<FilterAssignee>("all");
+  const [people, setPeople] = useState<Person[]>([]);
+  const [filterPersonId, setFilterPersonId] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("open");
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
@@ -52,7 +42,7 @@ export default function TasksPage() {
   // Form state
   const [formTitle, setFormTitle] = useState("");
   const [formDescription, setFormDescription] = useState("");
-  const [formAssignee, setFormAssignee] = useState("both");
+  const [formAssignedIds, setFormAssignedIds] = useState<string[]>([]);
   const [formDueDate, setFormDueDate] = useState("");
   const [formRecurrence, setFormRecurrence] = useState("");
   const [isCustomRecurrence, setIsCustomRecurrence] = useState(false);
@@ -64,25 +54,43 @@ export default function TasksPage() {
   async function checkAuth() {
     try {
       await getCurrentUser();
-      await loadTasks();
+      await Promise.all([loadTasks(), loadPeople()]);
     } catch {
       router.push("/login");
     }
   }
+
+  const loadPeople = useCallback(async () => {
+    const { data } = await client.models.homePerson.list();
+    setPeople((data ?? []).filter((p) => p.active));
+  }, []);
 
   const loadTasks = useCallback(async () => {
     const { data } = await client.models.homeTask.list({ limit: 500 });
     const sorted = [...(data ?? [])].sort(
       (a, b) => new Date(a.dueDate ?? a.createdAt).getTime() - new Date(b.dueDate ?? b.createdAt).getTime()
     );
-    setTasks(sorted as Task[]);
+    setTasks(sorted);
   }, []);
+
+  function getAssignedIds(task: Task): string[] {
+    return (task.assignedPersonIds ?? []).filter((id): id is string => !!id);
+  }
+
+  function personLabel(ids: string[]): string {
+    if (ids.length === 0) return "Household";
+    if (ids.length === people.length && people.length > 0) return "Both";
+    return ids
+      .map((id) => people.find((p) => p.id === id)?.name)
+      .filter(Boolean)
+      .join(", ");
+  }
 
   function openCreateModal() {
     setEditingTask(null);
     setFormTitle("");
     setFormDescription("");
-    setFormAssignee("both");
+    setFormAssignedIds([]);
     setFormDueDate("");
     setFormRecurrence("");
     setIsCustomRecurrence(false);
@@ -93,7 +101,7 @@ export default function TasksPage() {
     setEditingTask(task);
     setFormTitle(task.title);
     setFormDescription(task.description ?? "");
-    setFormAssignee(task.assignee ?? "both");
+    setFormAssignedIds(getAssignedIds(task));
     setFormDueDate(task.dueDate ? task.dueDate.slice(0, 16) : "");
     setFormRecurrence(task.recurrence ?? "");
     setIsCustomRecurrence(task.recurrence ? !RECURRENCE_PRESETS.some((p) => p.value === task.recurrence) : false);
@@ -108,7 +116,7 @@ export default function TasksPage() {
         id: editingTask.id,
         title: formTitle,
         description: formDescription || null,
-        assignee: formAssignee as any,
+        assignedPersonIds: formAssignedIds,
         dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
         recurrence: formRecurrence || null,
       });
@@ -116,7 +124,7 @@ export default function TasksPage() {
       await client.models.homeTask.create({
         title: formTitle,
         description: formDescription || null,
-        assignee: formAssignee as any,
+        assignedPersonIds: formAssignedIds,
         dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
         recurrence: formRecurrence || null,
         isCompleted: false,
@@ -163,13 +171,17 @@ export default function TasksPage() {
   }
 
   const filteredTasks = tasks.filter((t) => {
-    if (filterAssignee !== "all" && t.assignee !== filterAssignee) return false;
+    if (filterPersonId !== "all") {
+      const assigned = getAssignedIds(t);
+      // Household tasks (empty assigned) show for everyone; otherwise must include the filtered person
+      if (assigned.length > 0 && !assigned.includes(filterPersonId)) return false;
+    }
     if (filterStatus === "open" && t.isCompleted) return false;
     if (filterStatus === "completed" && !t.isCompleted) return false;
     return true;
   });
 
-  function formatDueDate(d: string | null) {
+  function formatDueDate(d: string | null | undefined) {
     if (!d) return null;
     const date = new Date(d);
     const now = new Date();
@@ -244,15 +256,17 @@ export default function TasksPage() {
         <div className="flex gap-2 mb-4">
           <Select
             size="sm"
-            label="Assignee"
-            selectedKeys={[filterAssignee]}
-            onChange={(e) => setFilterAssignee(e.target.value as FilterAssignee)}
+            label="Person"
+            selectedKeys={[filterPersonId]}
+            onChange={(e) => setFilterPersonId(e.target.value)}
             className="max-w-[150px]"
           >
-            <SelectItem key="all">All</SelectItem>
-            <SelectItem key="gennaro">Gennaro</SelectItem>
-            <SelectItem key="cristine">Cristine</SelectItem>
-            <SelectItem key="both">Both</SelectItem>
+            <>
+              <SelectItem key="all">All</SelectItem>
+              {people.map((p) => (
+                <SelectItem key={p.id}>{p.name}</SelectItem>
+              )) as any}
+            </>
           </Select>
           <Select
             size="sm"
@@ -274,11 +288,12 @@ export default function TasksPage() {
           )}
           {filteredTasks.map((task) => {
             const due = formatDueDate(task.dueDate);
+            const assigned = getAssignedIds(task);
             return (
               <Card key={task.id} className={task.isCompleted ? "opacity-60" : ""}>
                 <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
                   <Checkbox
-                    isSelected={task.isCompleted}
+                    isSelected={!!task.isCompleted}
                     onValueChange={() => toggleComplete(task)}
                   />
                   <div className="flex-1 min-w-0">
@@ -291,9 +306,7 @@ export default function TasksPage() {
                       <p className="text-xs text-default-500 mt-0.5">{task.description}</p>
                     )}
                     <div className="flex items-center gap-2 mt-1 flex-wrap">
-                      {task.assignee && (
-                        <span className="text-xs text-default-400 capitalize">{task.assignee}</span>
-                      )}
+                      <span className="text-xs text-default-400">{personLabel(assigned)}</span>
                       {due && (
                         <span className={`text-xs ${due.color}`}>{due.text}</span>
                       )}
@@ -344,13 +357,15 @@ export default function TasksPage() {
                     onValueChange={setFormDescription}
                   />
                   <Select
-                    label="Assignee"
-                    selectedKeys={[formAssignee]}
-                    onChange={(e) => setFormAssignee(e.target.value)}
+                    label="Assigned to"
+                    selectionMode="multiple"
+                    selectedKeys={new Set(formAssignedIds)}
+                    onSelectionChange={(keys) => setFormAssignedIds(Array.from(keys as Set<string>))}
+                    description="Leave empty for household"
                   >
-                    <SelectItem key="gennaro">Gennaro</SelectItem>
-                    <SelectItem key="cristine">Cristine</SelectItem>
-                    <SelectItem key="both">Both</SelectItem>
+                    {people.map((p) => (
+                      <SelectItem key={p.id}>{p.name}</SelectItem>
+                    ))}
                   </Select>
                   <Input
                     label="Due date"
@@ -400,4 +415,3 @@ export default function TasksPage() {
     </DefaultLayout>
   );
 }
-

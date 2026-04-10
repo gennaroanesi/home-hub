@@ -1,25 +1,60 @@
 import type { AppSyncResolverHandler } from "aws-lambda";
 import Anthropic from "@anthropic-ai/sdk";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, PutCommand, GetCommand, ScanCommand, UpdateCommand } from "@aws-sdk/lib-dynamodb";
+import { Amplify } from "aws-amplify";
+import { generateClient } from "aws-amplify/data";
+import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { RRule } from "rrule";
-import {
-  SchedulerClient,
-  CreateScheduleCommand,
-} from "@aws-sdk/client-scheduler";
+import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
+import { env } from "$amplify/env/home-agent";
+import type { Schema } from "../../data/resource";
 
 const anthropic = new Anthropic();
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
 const scheduler = new SchedulerClient({});
 
 const MODEL_ID = "claude-sonnet-4-20250514";
 
-// Table names are injected as env vars by backend.ts
-const TASK_TABLE = process.env.HOME_TASK_TABLE!;
-const BILL_TABLE = process.env.HOME_BILL_TABLE!;
-const EVENT_TABLE = process.env.HOME_CALENDAR_EVENT_TABLE!;
 const SCHEDULER_LAMBDA_ARN = process.env.SCHEDULER_LAMBDA_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
+
+// ── Amplify data client (lazy init) ──────────────────────────────────────────
+
+let _dataClient: ReturnType<typeof generateClient<Schema>> | null = null;
+
+async function getDataClient() {
+  if (_dataClient) return _dataClient;
+  const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
+  Amplify.configure(resourceConfig, libraryOptions);
+  _dataClient = generateClient<Schema>();
+  return _dataClient;
+}
+
+// ── Person resolution ────────────────────────────────────────────────────────
+// Resolves names like "Gennaro" / "Cristine" / ["both"] to person IDs.
+
+let _peopleCache: { id: string; name: string }[] | null = null;
+
+async function getPeople(): Promise<{ id: string; name: string }[]> {
+  if (_peopleCache) return _peopleCache;
+  const client = await getDataClient();
+  const { data } = await client.models.homePerson.list();
+  _peopleCache = (data ?? []).map((p) => ({ id: p.id, name: p.name }));
+  return _peopleCache;
+}
+
+async function resolvePersonIds(names?: string[] | null): Promise<string[]> {
+  if (!names || names.length === 0) return [];
+  const people = await getPeople();
+  // "both", "all", "household" → all people
+  if (names.some((n) => ["both", "all", "household", "everyone"].includes(n.toLowerCase()))) {
+    return people.map((p) => p.id);
+  }
+  const ids: string[] = [];
+  for (const name of names) {
+    const match = people.find((p) => p.name.toLowerCase() === name.toLowerCase());
+    if (match) ids.push(match.id);
+  }
+  return ids;
+}
 
 // ── Tool definitions for Claude ──────────────────────────────────────────────
 
@@ -31,7 +66,11 @@ const tools: Anthropic.Tool[] = [
       type: "object" as const,
       properties: {
         title: { type: "string" },
-        assignee: { type: "string", enum: ["gennaro", "cristine", "both"] },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household tasks.",
+        },
         description: { type: "string" },
         dueDate: { type: "string", description: "ISO 8601 datetime" },
         recurrence: { type: "string", description: "RRULE string, e.g. RRULE:FREQ=WEEKLY;BYDAY=MO" },
@@ -52,11 +91,11 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "list_tasks",
-    description: "List open (incomplete) tasks. Optionally filter by assignee.",
+    description: "List open (incomplete) tasks. Optionally filter by person name.",
     input_schema: {
       type: "object" as const,
       properties: {
-        assignee: { type: "string", enum: ["gennaro", "cristine", "both"] },
+        person: { type: "string", description: "Person name to filter by" },
       },
     },
   },
@@ -75,6 +114,11 @@ const tools: Anthropic.Tool[] = [
         category: { type: "string" },
         url: { type: "string" },
         notes: { type: "string" },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Empty/omitted for household.",
+        },
       },
       required: ["name"],
     },
@@ -108,7 +152,11 @@ const tools: Anthropic.Tool[] = [
         startAt: { type: "string", description: "ISO 8601 datetime" },
         endAt: { type: "string", description: "ISO 8601 datetime" },
         isAllDay: { type: "boolean" },
-        assignee: { type: "string", enum: ["gennaro", "cristine", "both"] },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
         recurrence: { type: "string" },
         location: { type: "string" },
         reminderMinutes: { type: "integer" },
@@ -123,12 +171,16 @@ const tools: Anthropic.Tool[] = [
       type: "object" as const,
       properties: {
         message: { type: "string" },
-        assignee: { type: "string", enum: ["gennaro", "cristine", "both"] },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names to notify. Use ['both'] for household.",
+        },
         scheduleAt: { type: "string", description: "ISO 8601 datetime for one-time reminder" },
         recurrence: { type: "string", description: "RRULE or cron expression for recurring" },
         type: { type: "string", enum: ["task", "bill", "event"] },
       },
-      required: ["message", "assignee"],
+      required: ["message"],
     },
   },
 ];
@@ -149,70 +201,50 @@ function getNextOccurrence(rruleString: string, after: Date): Date | null {
 }
 
 async function executeTool(name: string, input: Record<string, any>): Promise<string> {
+  const client = await getDataClient();
+
   switch (name) {
     case "create_task": {
-      const id = generateId();
-      const now = new Date().toISOString();
-      await ddb.send(new PutCommand({
-        TableName: TASK_TABLE,
-        Item: {
-          id,
-          __typename: "homeTask",
-          title: input.title,
-          description: input.description ?? null,
-          assignee: input.assignee ?? "both",
-          dueDate: input.dueDate ?? null,
-          isCompleted: false,
-          recurrence: input.recurrence ?? null,
-          completedAt: null,
-          createdBy: "agent",
-          createdAt: now,
-          updatedAt: now,
-        },
-      }));
-      return JSON.stringify({ success: true, taskId: id, title: input.title });
+      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      const { data, errors } = await client.models.homeTask.create({
+        title: input.title,
+        description: input.description ?? null,
+        assignedPersonIds,
+        dueDate: input.dueDate ?? null,
+        isCompleted: false,
+        recurrence: input.recurrence ?? null,
+        createdBy: "agent",
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, taskId: data?.id, title: input.title });
     }
 
     case "complete_task": {
-      const now = new Date();
-      const nowIso = now.toISOString();
-
       // Fetch the task to check for recurrence
-      const { Item: task } = await ddb.send(new GetCommand({
-        TableName: TASK_TABLE,
-        Key: { id: input.taskId },
-      }));
+      const { data: task } = await client.models.homeTask.get({ id: input.taskId });
+      if (!task) return JSON.stringify({ error: "Task not found" });
 
-      await ddb.send(new UpdateCommand({
-        TableName: TASK_TABLE,
-        Key: { id: input.taskId },
-        UpdateExpression: "SET isCompleted = :done, completedAt = :now, updatedAt = :now",
-        ExpressionAttributeValues: { ":done": true, ":now": nowIso },
-      }));
+      await client.models.homeTask.update({
+        id: input.taskId,
+        isCompleted: true,
+        completedAt: new Date().toISOString(),
+      });
 
       // If recurring, create the next occurrence
       let nextTaskId: string | null = null;
-      if (task?.recurrence) {
-        const nextDate = getNextOccurrence(task.recurrence, now);
+      if (task.recurrence) {
+        const nextDate = getNextOccurrence(task.recurrence, new Date());
         if (nextDate) {
-          nextTaskId = generateId();
-          await ddb.send(new PutCommand({
-            TableName: TASK_TABLE,
-            Item: {
-              id: nextTaskId,
-              __typename: "homeTask",
-              title: task.title,
-              description: task.description ?? null,
-              assignee: task.assignee ?? "both",
-              dueDate: nextDate.toISOString(),
-              isCompleted: false,
-              recurrence: task.recurrence,
-              completedAt: null,
-              createdBy: "recurrence",
-              createdAt: nowIso,
-              updatedAt: nowIso,
-            },
-          }));
+          const { data: nextTask } = await client.models.homeTask.create({
+            title: task.title,
+            description: task.description ?? null,
+            assignedPersonIds: (task.assignedPersonIds ?? []).filter((id): id is string => !!id),
+            dueDate: nextDate.toISOString(),
+            isCompleted: false,
+            recurrence: task.recurrence,
+            createdBy: "recurrence",
+          });
+          nextTaskId = nextTask?.id ?? null;
         }
       }
 
@@ -220,91 +252,76 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
         success: true,
         taskId: input.taskId,
         nextTaskId,
-        nextDueDate: nextTaskId ? task?.recurrence : null,
       });
     }
 
     case "list_tasks": {
-      const result = await ddb.send(new ScanCommand({
-        TableName: TASK_TABLE,
-        FilterExpression: input.assignee
-          ? "isCompleted = :false AND assignee = :assignee"
-          : "isCompleted = :false",
-        ExpressionAttributeValues: input.assignee
-          ? { ":false": false, ":assignee": input.assignee }
-          : { ":false": false },
-      }));
-      return JSON.stringify({ tasks: result.Items ?? [] });
+      const { data: tasks } = await client.models.homeTask.list({
+        filter: { isCompleted: { eq: false } },
+      });
+      let filtered = tasks ?? [];
+      if (input.person) {
+        const personIds = await resolvePersonIds([input.person]);
+        if (personIds.length > 0) {
+          filtered = filtered.filter((t) => {
+            const assigned = (t.assignedPersonIds ?? []).filter((id): id is string => !!id);
+            return assigned.length === 0 || assigned.some((id) => personIds.includes(id));
+          });
+        }
+      }
+      return JSON.stringify({ tasks: filtered });
     }
 
     case "create_bill": {
-      const id = generateId();
-      const now = new Date().toISOString();
-      await ddb.send(new PutCommand({
-        TableName: BILL_TABLE,
-        Item: {
-          id,
-          __typename: "homeBill",
-          name: input.name,
-          amount: input.amount ?? null,
-          currency: input.currency ?? "USD",
-          dueDay: input.dueDay ?? null,
-          dueDate: input.dueDate ?? null,
-          isRecurring: input.isRecurring ?? true,
-          isPaid: false,
-          paidAt: null,
-          category: input.category ?? null,
-          url: input.url ?? null,
-          notes: input.notes ?? null,
-          createdAt: now,
-          updatedAt: now,
-        },
-      }));
-      return JSON.stringify({ success: true, billId: id, name: input.name });
+      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      const { data, errors } = await client.models.homeBill.create({
+        name: input.name,
+        amount: input.amount ?? null,
+        currency: input.currency ?? "USD",
+        dueDay: input.dueDay ?? null,
+        dueDate: input.dueDate ?? null,
+        isRecurring: input.isRecurring ?? true,
+        isPaid: false,
+        category: input.category ?? null,
+        url: input.url ?? null,
+        notes: input.notes ?? null,
+        assignedPersonIds,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, billId: data?.id, name: input.name });
     }
 
     case "mark_bill_paid": {
-      const now = new Date().toISOString();
-      await ddb.send(new UpdateCommand({
-        TableName: BILL_TABLE,
-        Key: { id: input.billId },
-        UpdateExpression: "SET isPaid = :paid, paidAt = :now, updatedAt = :now",
-        ExpressionAttributeValues: { ":paid": true, ":now": now },
-      }));
+      await client.models.homeBill.update({
+        id: input.billId,
+        isPaid: true,
+        paidAt: new Date().toISOString(),
+      });
       return JSON.stringify({ success: true, billId: input.billId });
     }
 
     case "list_bills": {
-      const result = await ddb.send(new ScanCommand({
-        TableName: BILL_TABLE,
-        FilterExpression: "isPaid = :false",
-        ExpressionAttributeValues: { ":false": false },
-      }));
-      return JSON.stringify({ bills: result.Items ?? [] });
+      const { data: bills } = await client.models.homeBill.list({
+        filter: { isPaid: { eq: false } },
+      });
+      return JSON.stringify({ bills: bills ?? [] });
     }
 
     case "create_event": {
-      const id = generateId();
-      const now = new Date().toISOString();
-      await ddb.send(new PutCommand({
-        TableName: EVENT_TABLE,
-        Item: {
-          id,
-          __typename: "homeCalendarEvent",
-          title: input.title,
-          description: input.description ?? null,
-          startAt: input.startAt,
-          endAt: input.endAt ?? null,
-          isAllDay: input.isAllDay ?? false,
-          assignee: input.assignee ?? "both",
-          recurrence: input.recurrence ?? null,
-          location: input.location ?? null,
-          reminderMinutes: input.reminderMinutes ?? null,
-          createdAt: now,
-          updatedAt: now,
-        },
-      }));
-      return JSON.stringify({ success: true, eventId: id, title: input.title });
+      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      const { data, errors } = await client.models.homeCalendarEvent.create({
+        title: input.title,
+        description: input.description ?? null,
+        startAt: input.startAt,
+        endAt: input.endAt ?? null,
+        isAllDay: input.isAllDay ?? false,
+        assignedPersonIds,
+        recurrence: input.recurrence ?? null,
+        location: input.location ?? null,
+        reminderMinutes: input.reminderMinutes ?? null,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, eventId: data?.id, title: input.title });
     }
 
     case "schedule_reminder": {
@@ -312,6 +329,7 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
       const scheduleExpression = input.recurrence
         ? `cron(${input.recurrence})`
         : `at(${input.scheduleAt})`;
+      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
 
       await scheduler.send(new CreateScheduleCommand({
         Name: scheduleName,
@@ -321,7 +339,7 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
           Arn: SCHEDULER_LAMBDA_ARN,
           RoleArn: SCHEDULER_ROLE_ARN,
           Input: JSON.stringify({
-            assignee: input.assignee,
+            assignedPersonIds,
             message: input.message,
             type: input.type ?? "task",
           }),
@@ -353,11 +371,17 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
   const { message: userMessage, history: conversationHistory = [], sender = "unknown" } = event.arguments;
 
   const now = new Date();
-  const systemPrompt = `You are a helpful household assistant for Gennaro and Cristine. You help them manage tasks, bills, calendar events, and reminders for their shared home.
+  const people = await getPeople();
+  const peopleNames = people.map((p) => p.name).join(", ");
 
+  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, and reminders for the household.
+
+Household members: ${peopleNames}
 Current date/time: ${now.toISOString()} (${now.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/New_York" })})
 Timezone: America/New_York (Eastern)
 Message sender: ${sender}
+
+When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 

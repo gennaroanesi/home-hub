@@ -1,14 +1,14 @@
 import type { Handler } from "aws-lambda";
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient, ScanCommand, PutCommand } from "@aws-sdk/lib-dynamodb";
+import { Amplify } from "aws-amplify";
+import { generateClient } from "aws-amplify/data";
+import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { RRule } from "rrule";
+import { env } from "$amplify/env/recurring-tasks";
+import type { Schema } from "../../data/resource";
 
-const ddb = DynamoDBDocumentClient.from(new DynamoDBClient({}));
-const TASK_TABLE = process.env.HOME_TASK_TABLE!;
-
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-}
+const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
+Amplify.configure(resourceConfig, libraryOptions);
+const client = generateClient<Schema>();
 
 /**
  * Daily safety net for recurring tasks.
@@ -17,18 +17,14 @@ function generateId(): string {
  */
 export const handler: Handler = async () => {
   const now = new Date();
-  const nowIso = now.toISOString();
 
   // Get all recurring tasks (both completed and open)
-  const { Items: allTasks = [] } = await ddb.send(new ScanCommand({
-    TableName: TASK_TABLE,
-    FilterExpression: "attribute_exists(recurrence) AND recurrence <> :empty",
-    ExpressionAttributeValues: { ":empty": "" },
-  }));
+  const { data: allTasks } = await client.models.homeTask.list();
+  const recurring = (allTasks ?? []).filter((t) => t.recurrence && t.recurrence !== "");
 
   // Group by recurrence + title to find "series"
-  const seriesMap = new Map<string, typeof allTasks>();
-  for (const task of allTasks) {
+  const seriesMap = new Map<string, typeof recurring>();
+  for (const task of recurring) {
     const key = `${task.title}::${task.recurrence}`;
     if (!seriesMap.has(key)) seriesMap.set(key, []);
     seriesMap.get(key)!.push(task);
@@ -38,37 +34,28 @@ export const handler: Handler = async () => {
 
   for (const [, tasks] of seriesMap) {
     // Check if there's already an open (incomplete) task in this series
-    const hasOpenTask = tasks.some((t: any) => !t.isCompleted);
+    const hasOpenTask = tasks.some((t) => !t.isCompleted);
     if (hasOpenTask) continue;
 
     // All tasks in this series are completed — create the next occurrence
-    const latest = tasks.reduce((a: any, b: any) =>
+    const latest = tasks.reduce((a, b) =>
       new Date(a.completedAt ?? a.createdAt) > new Date(b.completedAt ?? b.createdAt) ? a : b
     );
 
     try {
-      const rule = RRule.fromString(latest.recurrence);
+      const rule = RRule.fromString(latest.recurrence!);
       const nextDate = rule.after(now);
       if (!nextDate) continue;
 
-      const id = generateId();
-      await ddb.send(new PutCommand({
-        TableName: TASK_TABLE,
-        Item: {
-          id,
-          __typename: "homeTask",
-          title: latest.title,
-          description: latest.description ?? null,
-          assignee: latest.assignee ?? "both",
-          dueDate: nextDate.toISOString(),
-          isCompleted: false,
-          recurrence: latest.recurrence,
-          completedAt: null,
-          createdBy: "recurrence",
-          createdAt: nowIso,
-          updatedAt: nowIso,
-        },
-      }));
+      await client.models.homeTask.create({
+        title: latest.title,
+        description: latest.description ?? null,
+        assignedPersonIds: (latest.assignedPersonIds ?? []).filter((id): id is string => !!id),
+        dueDate: nextDate.toISOString(),
+        isCompleted: false,
+        recurrence: latest.recurrence,
+        createdBy: "recurrence",
+      });
       created++;
     } catch {
       // Invalid RRULE, skip
