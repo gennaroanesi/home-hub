@@ -90,6 +90,32 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "update_task",
+    description: "Update fields on an existing task by its ID. Only the fields you pass are changed; omit fields to leave them untouched. To mark complete use complete_task instead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        taskId: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
+        dueDate: {
+          type: "string",
+          description: "ISO 8601 datetime. Pass empty string to clear.",
+        },
+        recurrence: {
+          type: "string",
+          description: "RRULE string, e.g. RRULE:FREQ=WEEKLY;BYDAY=MO. Pass empty string to clear.",
+        },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
     name: "list_tasks",
     description: "List open (incomplete) tasks. Optionally filter by person name.",
     input_schema: {
@@ -162,6 +188,41 @@ const tools: Anthropic.Tool[] = [
         reminderMinutes: { type: "integer" },
       },
       required: ["title", "startAt"],
+    },
+  },
+  {
+    name: "update_event",
+    description: "Update fields on an existing calendar event by its ID. Only the fields you pass are changed; omit fields to leave them untouched.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        eventId: { type: "string" },
+        title: { type: "string" },
+        description: { type: "string" },
+        startAt: { type: "string", description: "ISO 8601 datetime" },
+        endAt: {
+          type: "string",
+          description: "ISO 8601 datetime. Pass empty string to clear.",
+        },
+        isAllDay: { type: "boolean" },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
+        recurrence: {
+          type: "string",
+          description: "RRULE string. Pass empty string to clear.",
+        },
+        location: { type: "string" },
+        url: { type: "string" },
+        reminderMinutes: { type: "integer" },
+        tripId: {
+          type: "string",
+          description: "ID of a homeTrip to link this event to. Pass empty string to clear.",
+        },
+      },
+      required: ["eventId"],
     },
   },
   {
@@ -425,6 +486,20 @@ async function executeTool(
       });
     }
 
+    case "update_task": {
+      const updates: { id: string } & Record<string, any> = { id: input.taskId };
+      if (input.title !== undefined) updates.title = input.title;
+      if (input.description !== undefined) updates.description = input.description || null;
+      if (input.assignedPeople !== undefined) {
+        updates.assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      }
+      if (input.dueDate !== undefined) updates.dueDate = input.dueDate || null;
+      if (input.recurrence !== undefined) updates.recurrence = input.recurrence || null;
+      const { data, errors } = await client.models.homeTask.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, taskId: data?.id, title: data?.title });
+    }
+
     case "list_tasks": {
       const { data: tasks } = await client.models.homeTask.list({
         filter: { isCompleted: { eq: false } },
@@ -492,6 +567,26 @@ async function executeTool(
       });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, eventId: data?.id, title: input.title });
+    }
+
+    case "update_event": {
+      const updates: { id: string } & Record<string, any> = { id: input.eventId };
+      if (input.title !== undefined) updates.title = input.title;
+      if (input.description !== undefined) updates.description = input.description || null;
+      if (input.startAt !== undefined) updates.startAt = input.startAt;
+      if (input.endAt !== undefined) updates.endAt = input.endAt || null;
+      if (input.isAllDay !== undefined) updates.isAllDay = input.isAllDay;
+      if (input.assignedPeople !== undefined) {
+        updates.assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      }
+      if (input.recurrence !== undefined) updates.recurrence = input.recurrence || null;
+      if (input.location !== undefined) updates.location = input.location || null;
+      if (input.url !== undefined) updates.url = input.url || null;
+      if (input.reminderMinutes !== undefined) updates.reminderMinutes = input.reminderMinutes;
+      if (input.tripId !== undefined) updates.tripId = input.tripId || null;
+      const { data, errors } = await client.models.homeCalendarEvent.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, eventId: data?.id, title: data?.title });
     }
 
     case "list_calendar_events": {
