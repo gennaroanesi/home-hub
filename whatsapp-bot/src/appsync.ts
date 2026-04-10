@@ -60,13 +60,25 @@ const INVOKE_MUTATION = `
         tool
         result
       }
+      attachments {
+        type
+        url
+        caption
+      }
     }
   }
 `;
 
+export interface AgentAttachment {
+  type: string; // "image"
+  url: string;
+  caption?: string | null;
+}
+
 interface AgentResponse {
   message: string;
   actionsTaken?: { tool: string; result: any }[];
+  attachments?: AgentAttachment[];
 }
 
 export async function invokeHomeAgent(message: string, sender: string): Promise<AgentResponse> {

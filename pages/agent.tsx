@@ -21,12 +21,19 @@ interface ActionTaken {
   result: Record<string, any>;
 }
 
+interface Attachment {
+  type: string;
+  url: string;
+  caption?: string | null;
+}
+
 interface Message {
   id?: string;
   role: "user" | "assistant";
   content: string;
   sender?: string;
   actionsTaken?: ActionTaken[];
+  attachments?: Attachment[];
 }
 
 interface Conversation {
@@ -45,6 +52,7 @@ const TOOL_LABELS: Record<string, string> = {
   list_bills: "Listed bills",
   create_event: "Created event",
   schedule_reminder: "Scheduled reminder",
+  send_photos: "Sent photos",
 };
 
 function ActionLog({ actions }: { actions: ActionTaken[] }) {
@@ -155,6 +163,7 @@ export default function HomeAgent() {
         content: m.content,
         sender: m.sender ?? undefined,
         actionsTaken: m.actionsTaken ? (m.actionsTaken as ActionTaken[]) : undefined,
+        attachments: m.attachments ? (m.attachments as Attachment[]) : undefined,
       }))
     );
   }
@@ -218,6 +227,7 @@ export default function HomeAgent() {
       content: msg.content,
       sender: msg.sender ?? null,
       actionsTaken: msg.actionsTaken ? JSON.stringify(msg.actionsTaken) : null,
+      attachments: msg.attachments && msg.attachments.length > 0 ? JSON.stringify(msg.attachments) : null,
     });
   }
 
@@ -265,6 +275,7 @@ export default function HomeAgent() {
         role: "assistant",
         content: data.message,
         actionsTaken: (data.actionsTaken?.filter(Boolean) ?? []) as ActionTaken[],
+        attachments: (data.attachments?.filter(Boolean) ?? []) as Attachment[],
       };
 
       setMessages((prev) => [...prev, assistantMessage]);
@@ -418,6 +429,32 @@ export default function HomeAgent() {
                       </p>
                     )}
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    {msg.attachments && msg.attachments.length > 0 && (
+                      <div className="mt-2 grid grid-cols-2 gap-2">
+                        {msg.attachments.map((att, idx) =>
+                          att.type === "image" ? (
+                            <a
+                              key={idx}
+                              href={att.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block"
+                            >
+                              {/* eslint-disable-next-line @next/next/no-img-element */}
+                              <img
+                                src={att.url}
+                                alt={att.caption ?? "photo"}
+                                loading="lazy"
+                                className="w-full h-auto rounded-sm"
+                              />
+                              {att.caption && (
+                                <p className="text-xs opacity-70 mt-0.5 truncate">{att.caption}</p>
+                              )}
+                            </a>
+                          ) : null
+                        )}
+                      </div>
+                    )}
                     {msg.actionsTaken && msg.actionsTaken.length > 0 && (
                       <ActionLog actions={msg.actionsTaken} />
                     )}

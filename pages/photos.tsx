@@ -5,6 +5,7 @@ import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
+import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { FaArrowLeft } from "react-icons/fa";
 
@@ -23,7 +24,20 @@ export default function PhotosPage() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [filterTripId, setFilterTripId] = useState<string>("all");
+  const [fromDate, setFromDate] = useState<string>("");
+  const [toDate, setToDate] = useState<string>("");
   const [loading, setLoading] = useState(true);
+
+  // Initialize filters from URL query params (?trip=ID&from=YYYY-MM-DD&to=YYYY-MM-DD)
+  // This lets the agent build deep links like
+  // /photos?trip=abc&from=2026-04-01&to=2026-04-30
+  useEffect(() => {
+    if (!router.isReady) return;
+    const { trip, from, to } = router.query;
+    if (typeof trip === "string") setFilterTripId(trip);
+    if (typeof from === "string") setFromDate(from);
+    if (typeof to === "string") setToDate(to);
+  }, [router.isReady, router.query]);
 
   useEffect(() => {
     (async () => {
@@ -54,10 +68,39 @@ export default function PhotosPage() {
   }, []);
 
   const filtered = useMemo(() => {
-    if (filterTripId === "all") return photos;
-    if (filterTripId === "none") return photos.filter((p) => !p.tripId);
-    return photos.filter((p) => p.tripId === filterTripId);
-  }, [photos, filterTripId]);
+    let result = photos;
+
+    if (filterTripId === "none") {
+      result = result.filter((p) => !p.tripId);
+    } else if (filterTripId !== "all") {
+      result = result.filter((p) => p.tripId === filterTripId);
+    }
+
+    if (fromDate) {
+      const fromMs = new Date(fromDate).getTime();
+      result = result.filter((p) => {
+        const t = new Date(p.takenAt ?? p.createdAt).getTime();
+        return t >= fromMs;
+      });
+    }
+    if (toDate) {
+      // Inclusive end of day
+      const toMs = new Date(`${toDate}T23:59:59.999`).getTime();
+      result = result.filter((p) => {
+        const t = new Date(p.takenAt ?? p.createdAt).getTime();
+        return t <= toMs;
+      });
+    }
+
+    return result;
+  }, [photos, filterTripId, fromDate, toDate]);
+
+  function clearFilters() {
+    setFilterTripId("all");
+    setFromDate("");
+    setToDate("");
+    router.replace("/photos", undefined, { shallow: true });
+  }
 
   async function deletePhoto(photo: Photo) {
     // Delete the database record; the S3 object is orphaned and can be
@@ -65,6 +108,8 @@ export default function PhotosPage() {
     await client.models.homePhoto.delete({ id: photo.id });
     setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
   }
+
+  const hasActiveFilters = filterTripId !== "all" || fromDate || toDate;
 
   return (
     <DefaultLayout>
@@ -85,13 +130,13 @@ export default function PhotosPage() {
           />
         </div>
 
-        <div className="mb-3">
+        <div className="flex flex-wrap gap-2 mb-3 items-end">
           <Select
             size="sm"
             label="Trip"
             selectedKeys={[filterTripId]}
             onChange={(e) => setFilterTripId(e.target.value)}
-            className="max-w-[250px]"
+            className="max-w-[200px]"
           >
             <>
               <SelectItem key="all">All photos</SelectItem>
@@ -101,10 +146,31 @@ export default function PhotosPage() {
               )) as any}
             </>
           </Select>
-          <p className="text-xs text-default-400 mt-1">
-            {filtered.length} photo{filtered.length === 1 ? "" : "s"}
-          </p>
+          <Input
+            size="sm"
+            type="date"
+            label="From"
+            value={fromDate}
+            onValueChange={setFromDate}
+            className="max-w-[160px]"
+          />
+          <Input
+            size="sm"
+            type="date"
+            label="To"
+            value={toDate}
+            onValueChange={setToDate}
+            className="max-w-[160px]"
+          />
+          {hasActiveFilters && (
+            <Button size="sm" variant="light" onPress={clearFilters}>
+              Clear
+            </Button>
+          )}
         </div>
+        <p className="text-xs text-default-400 mb-3">
+          {filtered.length} photo{filtered.length === 1 ? "" : "s"}
+        </p>
 
         <PhotoGrid photos={filtered} onDelete={deletePhoto} />
       </div>

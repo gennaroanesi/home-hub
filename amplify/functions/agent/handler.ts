@@ -296,6 +296,20 @@ const tools: Anthropic.Tool[] = [
       required: ["message"],
     },
   },
+  {
+    name: "send_photos",
+    description:
+      "Find and send up to 5 photos to the user as image attachments. Use when the user asks to see/send photos. Filters: tripName (fuzzy matched), fromDate, toDate (YYYY-MM-DD inclusive). Returns the matching photos AND a deep link to the /photos page filtered to the same set so the user can see more.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripName: { type: "string", description: "Trip name (fuzzy matched, case insensitive)" },
+        fromDate: { type: "string", description: "Earliest takenAt, YYYY-MM-DD" },
+        toDate: { type: "string", description: "Latest takenAt, YYYY-MM-DD" },
+        limit: { type: "integer", description: "Max photos to send (default 5, capped at 5)" },
+      },
+    },
+  },
 ];
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -336,7 +350,23 @@ function getNextOccurrence(rruleString: string, after: Date): Date | null {
   }
 }
 
-async function executeTool(name: string, input: Record<string, any>): Promise<string> {
+// Attachments accumulated during a single agent invocation. Tools push
+// to this and the handler returns it on the response.
+interface Attachment {
+  type: "image";
+  url: string;
+  caption?: string | null;
+}
+
+interface ToolContext {
+  attachments: Attachment[];
+}
+
+async function executeTool(
+  name: string,
+  input: Record<string, any>,
+  ctx: ToolContext
+): Promise<string> {
   const client = await getDataClient();
 
   switch (name) {
@@ -625,6 +655,91 @@ async function executeTool(name: string, input: Record<string, any>): Promise<st
       return JSON.stringify({ success: true, itemId: input.itemId });
     }
 
+    case "send_photos": {
+      const limit = Math.min(input.limit ?? 5, 5);
+
+      // Resolve trip by name (fuzzy)
+      let tripId: string | null = null;
+      let tripName: string | null = null;
+      if (input.tripName) {
+        const { data: trips } = await client.models.homeTrip.list();
+        const q = String(input.tripName).toLowerCase().trim();
+        const trip =
+          (trips ?? []).find((t) => t.name.toLowerCase() === q) ??
+          (trips ?? []).find((t) => t.name.toLowerCase().includes(q)) ??
+          (trips ?? []).find((t) => q.includes(t.name.toLowerCase()));
+        if (!trip) {
+          return JSON.stringify({
+            error: `No trip matching "${input.tripName}"`,
+          });
+        }
+        tripId = trip.id;
+        tripName = trip.name;
+      }
+
+      // Build filter for photos
+      const filter: Record<string, any> = {};
+      if (tripId) filter.tripId = { eq: tripId };
+      if (input.fromDate) {
+        const from = new Date(input.fromDate).toISOString();
+        filter.takenAt = { ...(filter.takenAt ?? {}), ge: from };
+      }
+      if (input.toDate) {
+        // Inclusive: end of day
+        const to = new Date(`${input.toDate}T23:59:59.999Z`).toISOString();
+        filter.takenAt = { ...(filter.takenAt ?? {}), le: to };
+      }
+
+      const { data: photos } = await client.models.homePhoto.list({
+        filter: Object.keys(filter).length > 0 ? filter : undefined,
+        limit: 200,
+      });
+
+      const sorted = (photos ?? []).sort((a, b) => {
+        const aDate = a.takenAt ?? a.createdAt;
+        const bDate = b.takenAt ?? b.createdAt;
+        return new Date(bDate).getTime() - new Date(aDate).getTime();
+      });
+      const totalMatching = sorted.length;
+      const selected = sorted.slice(0, limit);
+
+      // Build CloudFront URLs and add to attachments
+      const CLOUDFRONT = "https://d2vnnym2o6bm6m.cloudfront.net";
+      function buildUrl(s3key: string, width = 1024, quality = 80): string {
+        return `${CLOUDFRONT}/${s3key}?format=webp&width=${width}&quality=${quality}`;
+      }
+
+      // Build a deep link to /photos with the same filter
+      const APP_URL = process.env.APP_URL ?? "https://home.cristinegennaro.com";
+      const params = new URLSearchParams();
+      if (tripId) params.set("trip", tripId);
+      if (input.fromDate) params.set("from", input.fromDate);
+      if (input.toDate) params.set("to", input.toDate);
+      const deepLink = `${APP_URL}/photos${params.toString() ? `?${params}` : ""}`;
+
+      for (const p of selected) {
+        const dateLabel = p.takenAt ? new Date(p.takenAt).toLocaleDateString() : "";
+        const captionParts = [
+          tripName ?? "",
+          dateLabel,
+          p.originalFilename ?? "",
+        ].filter(Boolean);
+        ctx.attachments.push({
+          type: "image",
+          url: buildUrl(p.s3key),
+          caption: captionParts.join(" · ") || null,
+        });
+      }
+
+      return JSON.stringify({
+        success: true,
+        sent: selected.length,
+        totalMatching,
+        deepLink,
+        more: totalMatching > selected.length ? totalMatching - selected.length : 0,
+      });
+    }
+
     case "schedule_reminder": {
       const scheduleName = `home-reminder-${generateId()}`;
       const scheduleExpression = input.recurrence
@@ -666,6 +781,7 @@ interface AgentArgs {
 interface AgentResponse {
   message: string;
   actionsTaken: { tool: string; result: any }[];
+  attachments?: Attachment[];
 }
 
 export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (event) => {
@@ -695,7 +811,7 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
     timeZoneName: "short",
   });
 
-  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, shopping lists, and reminders for the household.
+  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, and reminders for the household.
 
 Household members: ${peopleNames}
 Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
@@ -703,6 +819,8 @@ Timezone: ${TZ} (Central)
 Message sender: ${sender}
 
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
+
+When the user asks to see photos, use the send_photos tool. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
@@ -721,6 +839,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];
+  const toolCtx: ToolContext = { attachments: [] };
 
   // Agentic loop
   let response = await anthropic.messages.create({
@@ -737,7 +856,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     const toolResults: Anthropic.ToolResultBlockParam[] = [];
     for (const block of response.content) {
       if (block.type === "tool_use") {
-        const result = await executeTool(block.name, block.input as Record<string, any>);
+        const result = await executeTool(block.name, block.input as Record<string, any>, toolCtx);
         actionsTaken.push({ tool: block.name, result: JSON.parse(result) });
         toolResults.push({
           type: "tool_result",
@@ -767,5 +886,6 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   return {
     message: assistantText,
     actionsTaken,
+    attachments: toolCtx.attachments,
   };
 };

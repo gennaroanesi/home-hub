@@ -244,8 +244,23 @@ async function startBot() {
       try {
         const response = await invokeHomeAgent(text, sender);
 
+        // Text first, so the agent's narrative arrives before the photos
         await socket.sendMessage(chatJid, { text: response.message });
         logger.info({ sender, response: response.message }, "Sent response");
+
+        // Then any attachments (e.g. photos from send_photos tool)
+        for (const att of response.attachments ?? []) {
+          if (att.type === "image" && att.url) {
+            try {
+              await socket.sendMessage(chatJid, {
+                image: { url: att.url },
+                caption: att.caption ?? undefined,
+              });
+            } catch (err) {
+              logger.error({ err, url: att.url }, "Failed to send attachment");
+            }
+          }
+        }
       } catch (err) {
         logger.error({ err }, "Failed to invoke agent");
         await socket.sendMessage(chatJid, {

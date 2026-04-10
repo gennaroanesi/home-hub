@@ -245,15 +245,25 @@ const schema = a
         content: a.string().required(),
         sender: a.string(),
         actionsTaken: a.json(),
+        attachments: a.json(), // [{ type, url, caption }] from agent tools
       })
       .authorization((allow) => [allow.group("home-users")]),
     homeAgentAction: a.customType({
       tool: a.string().required(),
       result: a.json(),
     }),
+    // An attachment the agent wants to deliver alongside its text reply.
+    // Currently used for photos: type="image", url=CloudFront URL,
+    // caption=optional human-readable label.
+    homeAgentAttachment: a.customType({
+      type: a.string().required(), // "image" for now
+      url: a.string().required(),
+      caption: a.string(),
+    }),
     homeAgentResponse: a.customType({
       message: a.string().required(),
       actionsTaken: a.ref("homeAgentAction").array(),
+      attachments: a.ref("homeAgentAttachment").array(),
     }),
     invokeHomeAgent: a
       .mutation()
