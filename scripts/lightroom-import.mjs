@@ -233,13 +233,25 @@ async function listLightroomAlbums() {
 async function listAlbumAssets(albumId) {
   const { catalogId } = await getAccountAndCatalog();
   const assets = [];
-  let next = `${LR_BASE}/catalogs/${catalogId}/albums/${albumId}/assets`;
+  // ?embed=asset is required so each row in the response includes the
+  // actual asset object — without it we only get album_asset rows whose
+  // id is the join row id, not the underlying asset id.
+  let next = `${LR_BASE}/catalogs/${catalogId}/albums/${albumId}/assets?embed=asset`;
   while (next) {
     const data = await lrJson(next);
     for (const r of data.resources ?? []) {
+      const asset = r.asset;
+      if (!asset?.id) continue;
       assets.push({
-        id: r.asset?.id ?? r.id,
-        subtype: r.asset?.subtype ?? r.subtype,
+        id: asset.id,
+        subtype: asset.subtype,
+        // Available rendition sizes are exposed via the asset's links:
+        // /rels/rendition_type/{size}. Capture them so the importer
+        // can pick the largest one rather than blindly trying fullsize
+        // (which doesn't exist for cloud-synced raws).
+        renditions: Object.keys(asset.links ?? {})
+          .filter((k) => k.startsWith("/rels/rendition_type/"))
+          .map((k) => k.replace("/rels/rendition_type/", "")),
       });
     }
     next = resolveNextUrl(data);
@@ -253,10 +265,23 @@ async function getAssetMetadata(assetId) {
   return data;
 }
 
-async function downloadAssetFullsize(assetId) {
+// Picks the largest rendition the asset actually has. Lightroom's API
+// only exposes fullsize for non-raw originals; raw files (CR3, NEF, etc.)
+// max out at 2048. The /master endpoint returns the original raw bytes
+// but requires scopes that aren't part of lr_partner_apis (403).
+const RENDITION_PREFERENCE = ["fullsize", "2560", "2048", "1280", "640", "thumbnail2x"];
+
+function pickBestRendition(available) {
+  for (const size of RENDITION_PREFERENCE) {
+    if (available.includes(size)) return size;
+  }
+  // Fall back to whatever's there, or fullsize as a last guess
+  return available[0] ?? "fullsize";
+}
+
+async function downloadAssetRendition(assetId, size) {
   const { catalogId } = await getAccountAndCatalog();
-  // Renditions: thumbnail2x, 1280, 2048, fullsize
-  const url = `${LR_BASE}/catalogs/${catalogId}/assets/${assetId}/renditions/fullsize`;
+  const url = `${LR_BASE}/catalogs/${catalogId}/assets/${assetId}/renditions/${size}`;
   const res = await lrFetch(url);
   const buf = Buffer.from(await res.arrayBuffer());
   return buf;
@@ -376,8 +401,28 @@ async function createAlbumPhoto(albumId, photoId) {
 
 const s3 = new S3Client({ region: REGION });
 
-async function uploadToS3(albumId, filename, buffer, contentType) {
-  const ext = filename.includes(".") ? filename.split(".").pop().toLowerCase() : "jpg";
+function extensionForContentType(contentType) {
+  switch (contentType) {
+    case "image/jpeg":
+    case "image/jpg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/webp":
+      return "webp";
+    case "image/heic":
+    case "image/heif":
+      return "heic";
+    default:
+      return "bin";
+  }
+}
+
+async function uploadToS3(albumId, buffer, contentType) {
+  // Always derive the extension from the actual content type (not the
+  // source filename) — Lightroom renditions are JPEG even when the
+  // original file is .CR3 / .NEF / .ARW etc.
+  const ext = extensionForContentType(contentType);
   const id = uuid();
   const key = `home/photos/albums/${albumId}/${id}.${ext}`;
   await s3.send(
@@ -530,12 +575,16 @@ async function main() {
         continue;
       }
 
-      // Download fullsize
-      const buffer = await downloadAssetFullsize(asset.id);
-      console.log(`        downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB`);
+      // Pick the largest available rendition (raw originals max out at
+      // 2048 since /master is forbidden under lr_partner_apis).
+      const renditionSize = pickBestRendition(asset.renditions ?? []);
+      const buffer = await downloadAssetRendition(asset.id, renditionSize);
+      console.log(
+        `        downloaded ${(buffer.length / 1024 / 1024).toFixed(1)} MB (rendition: ${renditionSize})`
+      );
 
-      // Upload to S3
-      const s3key = await uploadToS3(homeAlbum.id, filename, buffer, "image/jpeg");
+      // Upload to S3 (renditions are always JPEG)
+      const s3key = await uploadToS3(homeAlbum.id, buffer, "image/jpeg");
       console.log(`        s3://${BUCKET}/${s3key}`);
 
       // Create homePhoto record
