@@ -22,8 +22,6 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
-import { GraphqlApi } from "aws-cdk-lib/aws-appsync";
-
 import { auth } from "./auth/resource";
 import { data } from "./data/resource";
 import { homeAgent } from "./functions/agent/resource";
@@ -183,11 +181,12 @@ botTaskDef.addContainer("bot", {
   portMappings: [{ containerPort: 8080 }],
   environment: {
     // AppSync's GraphQL hostname is NOT derived from the apiId — it's a
-    // separate opaque identifier exposed via graphqlUrl. Constructing the URL
-    // from apiId produces a hostname that doesn't resolve. Amplify types this
-    // as IGraphqlApi (which doesn't expose graphqlUrl) but the concrete
-    // instance is a GraphqlApi, so we cast.
-    APPSYNC_ENDPOINT: (backend.data.resources.graphqlApi as GraphqlApi).graphqlUrl,
+    // separate opaque identifier. Amplify Gen 2 types `resources.graphqlApi`
+    // as an imported IGraphqlApi (no graphqlUrl exposed), but the real L1
+    // CfnGraphQLApi is accessible at `resources.cfnResources.cfnGraphqlApi`.
+    // This is the canonical path — Amplify's own factory.js uses it when
+    // building the amplify_outputs GraphQL endpoint.
+    APPSYNC_ENDPOINT: backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl,
     S3_BUCKET: "cristinegennaro.com",
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
     WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "",
