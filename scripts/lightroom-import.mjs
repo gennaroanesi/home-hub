@@ -202,6 +202,17 @@ async function getAccountAndCatalog() {
   return { accountId: _accountId, catalogId: _catalogId };
 }
 
+// Lightroom pagination links are relative to the response's `base` field
+// (typically https://lr.adobe.io/v2/catalogs/{catalogId}/), not to the
+// API root. Combine them carefully — using the URL constructor handles
+// trailing/leading slashes correctly.
+function resolveNextUrl(data) {
+  const href = data?.links?.next?.href;
+  if (!href) return null;
+  const base = data.base ?? `${LR_BASE}/`;
+  return new URL(href, base).toString();
+}
+
 async function listLightroomAlbums() {
   const { catalogId } = await getAccountAndCatalog();
   const albums = [];
@@ -214,7 +225,7 @@ async function listLightroomAlbums() {
         albums.push({ id: a.id, name: a.payload?.name ?? "(unnamed)" });
       }
     }
-    next = data.links?.next?.href ? `${LR_BASE}${data.links.next.href}` : null;
+    next = resolveNextUrl(data);
   }
   return albums;
 }
@@ -231,7 +242,7 @@ async function listAlbumAssets(albumId) {
         subtype: r.asset?.subtype ?? r.subtype,
       });
     }
-    next = data.links?.next?.href ? `${LR_BASE}${data.links.next.href}` : null;
+    next = resolveNextUrl(data);
   }
   return assets;
 }
