@@ -112,11 +112,14 @@ export function PhotoGrid({
   const [visibleCount, setVisibleCount] = useState(pageSize);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
-  // Reset the visible window whenever the underlying photo list changes
-  // (e.g. after applying a filter or after a fresh upload reload).
+  // Reset the visible window when the photo list grows or shrinks (filter
+  // applied, fresh upload, refresh). Deliberately track `photos.length` and
+  // not the `photos` reference itself — in-place edits like favorite toggles
+  // reuse the same length but produce a new array reference, and resetting
+  // on every such edit dumps the user back to the top of an infinite scroll.
   useEffect(() => {
     setVisibleCount(pageSize);
-  }, [photos, pageSize]);
+  }, [photos.length, pageSize]);
 
   // IntersectionObserver: load more when the sentinel comes into view
   useEffect(() => {
