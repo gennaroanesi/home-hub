@@ -195,7 +195,15 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
           label="Start date"
           type="date"
           value={form.startDate}
-          onValueChange={(v) => setForm((f) => ({ ...f, startDate: v }))}
+          onValueChange={(v) =>
+            setForm((f) => ({
+              ...f,
+              startDate: v,
+              // Auto-advance end date if it's empty or now earlier than the
+              // new start. Same UX as the calendar event end-time field.
+              endDate: !f.endDate || f.endDate < v ? v : f.endDate,
+            }))
+          }
         />
         <Input
           label="End date"
