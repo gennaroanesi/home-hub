@@ -275,8 +275,14 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   // the service to zero during deploys; the brief downtime is acceptable
   // because the daily summary / reminder queue is durable in DynamoDB and
   // gets delivered as soon as the new task connects.
+  //
+  // AZ rebalancing must be DISABLED because ECS rejects maxHealthyPercent
+  // ≤ 100 when rebalancing is enabled. We're a single-task bot and the
+  // cluster spans 2 AZs already; if an AZ goes down ECS just starts the
+  // replacement task in the surviving AZ. We don't need active rebalancing.
   minHealthyPercent: 0,
   maxHealthyPercent: 100,
+  availabilityZoneRebalancing: ecs.AvailabilityZoneRebalancing.DISABLED,
 });
 
 // Outputs on the root stack for the Amplify build phase to build/push Docker
