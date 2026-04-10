@@ -150,6 +150,27 @@ const schema = a
       })
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Photo ──────────────────────────────────────────────────────────
+    // Photos uploaded to the cristinegennaro.com bucket under
+    // home/photos/... Stored with UUID filenames to avoid guessability.
+    // Trip photos live at home/photos/trips/{tripId}/{uuid}.{ext}
+    homePhoto: a
+      .model({
+        s3key: a.string().required(), // full S3 key (relative to bucket)
+        originalFilename: a.string(), // e.g. "IMG_1234.JPG"
+        contentType: a.string(), // e.g. "image/jpeg"
+        sizeBytes: a.integer(),
+        width: a.integer(),
+        height: a.integer(),
+        takenAt: a.datetime(), // from EXIF DateTimeOriginal
+        exifData: a.json(),
+        tripId: a.id(), // FK → homeTrip.id (null = not linked to a trip)
+        uploadedBy: a.string(),
+        caption: a.string(),
+      })
+      .secondaryIndexes((index) => [index("tripId"), index("takenAt")])
+      .authorization((allow) => [allow.group("home-users")]),
+
     // ── Shopping ────────────────────────────────────────────────────────
     // Multiple named lists (e.g. "Supermarket", "Home Depot"), each with items.
     homeShoppingList: a

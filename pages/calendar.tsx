@@ -26,6 +26,8 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { FreeCombobox } from "@/components/free-combobox";
+import { PhotoUploader } from "@/components/photo-uploader";
+import { PhotoGrid } from "@/components/photo-grid";
 import { AIRLINES } from "@/lib/airlines";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -44,6 +46,7 @@ type Trip = Schema["homeTrip"]["type"];
 type Event = Schema["homeCalendarEvent"]["type"];
 type Day = Schema["homeCalendarDay"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
+type Photo = Schema["homePhoto"]["type"];
 
 type LegMode =
   | "COMMERCIAL_FLIGHT"
@@ -217,6 +220,7 @@ export default function CalendarPage() {
 
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
+  const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
 
   // ── Auth + data load ──────────────────────────────────────────────────────
 
@@ -233,18 +237,20 @@ export default function CalendarPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes] = await Promise.all([
+    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes, photosRes] = await Promise.all([
       client.models.homePerson.list(),
       client.models.homeTrip.list(),
       client.models.homeCalendarEvent.list(),
       client.models.homeCalendarDay.list({ limit: 1000 }),
       client.models.homeTripLeg.list({ limit: 1000 }),
+      client.models.homePhoto.list({ limit: 500 }),
     ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsRes.data ?? []);
     setAllLegs(legsRes.data ?? []);
+    setAllPhotos(photosRes.data ?? []);
 
     const dayMap = new Map<string, Day[]>();
     for (const d of daysRes.data ?? []) {
@@ -738,6 +744,11 @@ export default function CalendarPage() {
     return people.find((p) => p.id === id)?.name ?? "Unknown";
   }
 
+  async function deletePhoto(photo: Photo) {
+    await client.models.homePhoto.delete({ id: photo.id });
+    setAllPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+  }
+
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
@@ -1188,6 +1199,23 @@ export default function CalendarPage() {
                       })}
                     </div>
                   </div>
+
+                  {/* ── Photos (only available once the trip is saved) ──── */}
+                  {tripForm.id && (
+                    <div className="border-t border-default-200 pt-4">
+                      <div className="flex items-center justify-between mb-2">
+                        <p className="text-sm font-medium">Photos</p>
+                        <PhotoUploader
+                          tripId={tripForm.id}
+                          onUploaded={loadAll}
+                        />
+                      </div>
+                      <PhotoGrid
+                        photos={allPhotos.filter((p) => p.tripId === tripForm.id)}
+                        onDelete={deletePhoto}
+                      />
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter>
                   {tripForm.id && (
