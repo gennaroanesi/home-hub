@@ -153,6 +153,34 @@ AWS_PROFILE=admin node scripts/lightroom-import.mjs \
 | `--home-album-id <uuid>`   | Existing home-hub album ID. Errors if it doesn't exist (no auto-create)    |
 | `--limit <n>`              | Cap the number of photos to import (useful with `--dry-run`)               |
 | `--dry-run`                | Don't download/upload/write — just print what would be imported            |
+| `--prod`                   | Target production AppSync (default is sandbox via `amplify_outputs.json`)  |
+| `--appsync-url <url>`      | Explicit AppSync endpoint override (advanced)                              |
+
+## Sandbox vs production
+
+By default the importer reads `amplify_outputs.json`, which points at
+your local **sandbox** while `npx ampx sandbox` is running. That's the
+safer default — you can test the full flow end-to-end without touching
+production data.
+
+When you want to import into the production app, pass `--prod`:
+
+```sh
+AWS_PROFILE=admin node scripts/lightroom-import.mjs --prod --lr-album "Italy 2026"
+```
+
+The script prints which environment it's targeting on the first line so
+you always know:
+
+```
+Target: PROD — https://pzn6gqjwxndatgpb6ujcey47fe.appsync-api.us-east-1.amazonaws.com/graphql
+```
+
+vs
+
+```
+Target: sandbox (from amplify_outputs.json) — https://xvimf4w34ndoflazehzpozjnga...
+```
 
 ## What gets imported
 

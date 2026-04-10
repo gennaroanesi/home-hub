@@ -21,6 +21,9 @@
  *                           than the Lightroom one.
  *   --limit <n>             Cap the number of photos to import (for testing)
  *   --dry-run               Don't actually upload — just print what would be imported
+ *   --prod                  Target the production AppSync endpoint instead
+ *                           of the sandbox URL from amplify_outputs.json
+ *   --appsync-url <url>     Explicit AppSync endpoint override (advanced)
  *
  * Reads from .env.local:
  *   ADOBE_CLIENT_ID, ADOBE_CLIENT_SECRET   (from Adobe Developer Console)
@@ -75,8 +78,10 @@ if (!CLIENT_ID || !CLIENT_SECRET || !REFRESH_TOKEN) {
   process.exit(1);
 }
 
-const outputs = JSON.parse(fs.readFileSync(OUTPUTS_FILE, "utf-8"));
-const APPSYNC_ENDPOINT = outputs.data.url;
+// Hard-coded prod AppSync URL — used when --prod is passed.
+// Sandbox URL comes from amplify_outputs.json by default.
+const PROD_APPSYNC_URL =
+  "https://pzn6gqjwxndatgpb6ujcey47fe.appsync-api.us-east-1.amazonaws.com/graphql";
 
 // ── CLI args ────────────────────────────────────────────────────────────────
 
@@ -93,6 +98,8 @@ function parseArgs() {
     else if (a === "--home-album-id") opts.homeAlbumId = args[++i];
     else if (a === "--limit") opts.limit = parseInt(args[++i], 10);
     else if (a === "--dry-run") opts.dryRun = true;
+    else if (a === "--prod") opts.prod = true;
+    else if (a === "--appsync-url") opts.appsyncUrl = args[++i];
     else if (a === "--help" || a === "-h") {
       console.log(fs.readFileSync(import.meta.url.replace("file://", ""), "utf-8")
         .split("\n").filter(l => l.startsWith(" *")).join("\n").replace(/^ \*\/?/gm, ""));
@@ -103,6 +110,30 @@ function parseArgs() {
 }
 
 const opts = parseArgs();
+
+// ── Resolve AppSync endpoint ────────────────────────────────────────────────
+// Default: read amplify_outputs.json (the sandbox URL while developing locally).
+// --prod          → hard-coded prod URL (safer than overwriting amplify_outputs)
+// --appsync-url X → explicit override
+let APPSYNC_ENDPOINT;
+if (opts.appsyncUrl) {
+  APPSYNC_ENDPOINT = opts.appsyncUrl;
+} else if (opts.prod) {
+  APPSYNC_ENDPOINT = PROD_APPSYNC_URL;
+} else {
+  if (!fs.existsSync(OUTPUTS_FILE)) {
+    console.error(`Error: ${OUTPUTS_FILE} not found. Pass --prod or --appsync-url <url>.`);
+    process.exit(1);
+  }
+  const outputs = JSON.parse(fs.readFileSync(OUTPUTS_FILE, "utf-8"));
+  APPSYNC_ENDPOINT = outputs.data.url;
+}
+const envLabel = opts.appsyncUrl
+  ? "custom"
+  : opts.prod
+  ? "PROD"
+  : "sandbox (from amplify_outputs.json)";
+console.log(`Target: ${envLabel} — ${APPSYNC_ENDPOINT}`);
 
 // ── Lightroom token + API ───────────────────────────────────────────────────
 
