@@ -579,11 +579,31 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
   const people = await getPeople();
   const peopleNames = people.map((p) => p.name).join(", ");
 
+  // Format date and time consistently in the household's local timezone.
+  // Mixing `now.toISOString()` (UTC) with a localized weekday previously
+  // produced inconsistent strings like "Thursday April 10" — UTC date but
+  // local day name — which made the model compute weekday-relative dates
+  // ("Saturday") off by one day.
+  const TZ = "America/Chicago";
+  const dateFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+  const timeFmt = new Intl.DateTimeFormat("en-US", {
+    timeZone: TZ,
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+
   const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, shopping lists, and reminders for the household.
 
 Household members: ${peopleNames}
-Current date/time: ${now.toISOString()} (${now.toLocaleDateString("en-US", { weekday: "long", timeZone: "America/New_York" })})
-Timezone: America/New_York (Eastern)
+Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
+Timezone: ${TZ} (Central)
 Message sender: ${sender}
 
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
