@@ -5,7 +5,7 @@ import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@herou
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
 import { Chip } from "@heroui/chip";
-import { FaTrash, FaDownload, FaUser } from "react-icons/fa";
+import { FaTrash, FaDownload, FaUser, FaHeart, FaRegHeart } from "react-icons/fa";
 import dayjs from "dayjs";
 import { generateClient } from "aws-amplify/data";
 import { photoUrl, originalPhotoUrl } from "@/lib/image-loader";
@@ -22,11 +22,26 @@ interface PhotoModalProps {
   isOpen: boolean;
   onClose: () => void;
   onDelete?: () => void;
+  onToggleFavorite?: (photo: Photo, next: boolean) => void;
 }
 
-export function PhotoModal({ photo, isOpen, onClose, onDelete }: PhotoModalProps) {
+export function PhotoModal({
+  photo,
+  isOpen,
+  onClose,
+  onDelete,
+  onToggleFavorite,
+}: PhotoModalProps) {
   const [faces, setFaces] = useState<PhotoFace[]>([]);
   const [peopleById, setPeopleById] = useState<Record<string, Person>>({});
+  // Local optimistic favorite state — the modal renders the icon from this
+  // so the heart flips instantly on click without waiting for the parent to
+  // re-render. Reset whenever the modal opens against a new photo.
+  const [isFavorite, setIsFavorite] = useState<boolean>(false);
+
+  useEffect(() => {
+    setIsFavorite(!!photo?.isFavorite);
+  }, [photo?.id, photo?.isFavorite]);
 
   useEffect(() => {
     if (!photo || !isOpen) {
@@ -136,6 +151,25 @@ export function PhotoModal({ photo, isOpen, onClose, onDelete }: PhotoModalProps
               }}
             >
               Delete
+            </Button>
+          )}
+          {onToggleFavorite && (
+            <Button
+              variant="flat"
+              startContent={
+                isFavorite ? (
+                  <FaHeart size={12} className="text-red-500" />
+                ) : (
+                  <FaRegHeart size={12} />
+                )
+              }
+              onPress={() => {
+                const next = !isFavorite;
+                setIsFavorite(next);
+                onToggleFavorite(photo, next);
+              }}
+            >
+              {isFavorite ? "Unfavorite" : "Favorite"}
             </Button>
           )}
           <Button

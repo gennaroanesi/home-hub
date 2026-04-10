@@ -193,6 +193,7 @@ export function PhotoGrid({
               }
             : undefined
         }
+        onToggleFavorite={onToggleFavorite}
       />
     </>
   );
