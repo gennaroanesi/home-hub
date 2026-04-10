@@ -299,7 +299,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "send_photos",
     description:
-      "Find and send up to 5 photos to the user as image attachments. Use when the user asks to see/send photos. Filters: query (fuzzy matched against album names AND trip names — pick whichever matches better), fromDate, toDate (YYYY-MM-DD inclusive). Returns the matching photos AND a deep link to the /photos page filtered to the same set so the user can see more.",
+      "Find and send up to 5 photos to the user as image attachments. Use when the user asks to see/send photos. Filters: query (fuzzy matched against album names AND trip names — pick whichever matches better), fromDate, toDate (YYYY-MM-DD inclusive). Favorited photos are sent first (curated picks from the user), then filled with the most recent non-favorites. Returns the matching photos AND a deep link to the /photos page filtered to the same set so the user can see more.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -743,13 +743,23 @@ async function executeTool(
         candidates = candidates.filter((p) => photoIdSet!.has(p.id));
       }
 
-      const sorted = candidates.sort((a, b) => {
+      // Sort newest first as the base order
+      const byDateDesc = (a: typeof candidates[number], b: typeof candidates[number]) => {
         const aDate = a.takenAt ?? a.createdAt;
         const bDate = b.takenAt ?? b.createdAt;
         return new Date(bDate).getTime() - new Date(aDate).getTime();
-      });
+      };
+
+      // Prefer favorites: take all favorited photos (sorted newest first),
+      // then fill the remaining slots with non-favorites (also newest first).
+      // Example: 3 favorites + 10 total + limit 5 → 3 favorites + 2 newest others.
+      const favorites = candidates.filter((p) => p.isFavorite).sort(byDateDesc);
+      const others = candidates.filter((p) => !p.isFavorite).sort(byDateDesc);
+      const sorted = [...favorites, ...others];
+
       const totalMatching = sorted.length;
       const selected = sorted.slice(0, limit);
+      const favoritesSent = selected.filter((p) => p.isFavorite).length;
 
       // Build CloudFront URLs and add to attachments. Use JPEG (not WebP)
       // because WhatsApp clients can fail to download WebP inline images.
@@ -779,6 +789,8 @@ async function executeTool(
       return JSON.stringify({
         success: true,
         sent: selected.length,
+        favoritesSent,
+        totalFavorites: favorites.length,
         totalMatching,
         deepLink,
         more: totalMatching > selected.length ? totalMatching - selected.length : 0,

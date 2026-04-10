@@ -186,16 +186,27 @@ Target: sandbox (from amplify_outputs.json) — https://xvimf4w34ndoflazehzpozjn
 
 For each Lightroom asset:
 
-- **Fullsize JPEG rendition** uploaded to
-  `s3://cristinegennaro.com/home/photos/albums/{albumId}/{uuid}.jpg`
+- **Largest available JPEG rendition** uploaded to
+  `s3://cristinegennaro.com/home/photos/albums/{albumId}/{uuid}.jpg`.
+  Lightroom only exposes raw originals (`/master`) under scopes outside
+  the partner API tier, so for raw uploads (CR3, NEF, ARW…) the script
+  falls back to the **2048-pixel JPEG smart preview**. Non-raw originals
+  get the full-size rendition. The console output shows which size was
+  used.
 - A `homePhoto` row with:
   - `s3key`, `originalFilename`, `contentType: "image/jpeg"`, `sizeBytes`
   - `width`, `height` (from Lightroom develop dimensions)
   - `takenAt` (from XMP `DateTimeOriginal`)
   - `latitude`, `longitude` (from XMP GPS, decimal degrees)
+  - `isFavorite: true` if the photo is **picked** in Lightroom (i.e. has
+    a flag of `pick` under `payload.reviews`). Star ratings are ignored.
+    Picked photos show a `★` next to their filename in the import log.
   - `sourceProvider: "lightroom"`, `sourceAssetId: <Lightroom asset id>`
   - `uploadedBy: "lightroom-import"`
 - A `homeAlbumPhoto` join row linking the photo to the home-hub album
+
+Rejected photos in Lightroom (`flag: "reject"`) are imported normally —
+the script doesn't filter them out.
 
 ## Dedup / re-running
 
