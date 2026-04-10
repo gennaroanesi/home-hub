@@ -7,46 +7,67 @@ backend:
         - npx ampx pipeline-deploy --branch $AWS_BRANCH --app-id $AWS_APP_ID
     postBuild:
       commands:
-        # Build and push the WhatsApp bot Docker image to ECR
-        # Only rebuilds when whatsapp-bot/ files have changed or no image exists yet
+        # Trigger the WhatsApp bot image build via CodeBuild.
+        #
+        # Amplify Hosting's build environment has no Docker daemon and no ECR
+        # permissions, so the docker build/push lives in a CodeBuild project
+        # (defined in amplify/backend.ts). This step:
+        #   1. exports stack outputs needed by the Next.js runtime
+        #   2. tars the whatsapp-bot/ directory and uploads it to S3
+        #   3. fires off CodeBuild and exits (fire-and-forget)
+        #
+        # CodeBuild handles the rest: build → push → ECS redeploy → write a
+        # homeOutboundMessage row so the bot itself reports the result to
+        # the household WhatsApp group when the new task connects.
         - |
+          set -e
           STACK_NAME=$(aws cloudformation list-stacks --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE UPDATE_ROLLBACK_COMPLETE --query "StackSummaries[?starts_with(StackName,'amplify-${AWS_APP_ID}-${AWS_BRANCH}')].StackName" --output text | tr '\t' '\n' | awk '{ print length, $0 }' | sort -n | head -1 | cut -d' ' -f2-)
-          if [ -n "$STACK_NAME" ]; then
-            ECR_URI=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotEcrRepoUri'].OutputValue" --output text 2>/dev/null)
-            CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
-            SERVICE_NAME=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotServiceName'].OutputValue" --output text 2>/dev/null)
-            if [ -n "$CLUSTER_ARN" ] && [ "$CLUSTER_ARN" != "None" ]; then
-              echo "WHATSAPP_BOT_CLUSTER_ARN=$CLUSTER_ARN" >> .env.production
-            fi
-            if [ -n "$ECR_URI" ] && [ "$ECR_URI" != "None" ]; then
-              ECR_REPO=$(echo "$ECR_URI" | cut -d'/' -f2-)
-              ECR_REGISTRY=$(echo "$ECR_URI" | cut -d'/' -f1)
-              # Check if image already exists
-              IMAGE_EXISTS=$(aws ecr list-images --repository-name "$ECR_REPO" --query "imageIds[?imageTag=='latest']" --output text 2>/dev/null)
-              # Check if bot code changed in the most recent commit. `git show`
-              # works in shallow clones (Amplify default) where HEAD~1 does not
-              # exist; `git diff HEAD~1` silently returns empty there, which
-              # would skip the rebuild indefinitely.
-              BOT_CHANGED=$(git show --pretty= --name-only HEAD 2>/dev/null | grep '^whatsapp-bot/' | head -1)
-              if [ -z "$IMAGE_EXISTS" ] || [ -n "$BOT_CHANGED" ]; then
-                echo "Building WhatsApp bot image..."
-                aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$ECR_REGISTRY"
-                docker build -t "$ECR_URI:latest" ./whatsapp-bot
-                docker push "$ECR_URI:latest"
-                echo "Image pushed to $ECR_URI:latest"
-                if [ -n "$CLUSTER_ARN" ] && [ -n "$SERVICE_NAME" ] && [ "$SERVICE_NAME" != "None" ]; then
-                  echo "Triggering ECS redeployment..."
-                  aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment || echo "Warning: Could not trigger ECS redeploy (missing permissions). Service will pick up new image on next task start."
-                fi
-              else
-                echo "Bot code unchanged and image exists, skipping Docker build"
-              fi
-            else
-              echo "No ECR URI found in stack outputs, skipping bot build"
-            fi
-          else
-            echo "Stack not found, skipping bot build"
+          if [ -z "$STACK_NAME" ]; then
+            echo "Stack not found, skipping bot build trigger"
+            exit 0
           fi
+
+          # Stack outputs that the Next.js API routes need at runtime
+          CLUSTER_ARN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotClusterArn'].OutputValue" --output text 2>/dev/null)
+          if [ -n "$CLUSTER_ARN" ] && [ "$CLUSTER_ARN" != "None" ]; then
+            echo "WHATSAPP_BOT_CLUSTER_ARN=$CLUSTER_ARN" >> .env.production
+          fi
+
+          BUILD_PROJECT=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotBuildProjectName'].OutputValue" --output text 2>/dev/null)
+          ARTIFACTS_S3=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotBuildArtifactsPrefix'].OutputValue" --output text 2>/dev/null)
+
+          if [ -z "$BUILD_PROJECT" ] || [ "$BUILD_PROJECT" = "None" ]; then
+            echo "Bot CodeBuild project not found in stack outputs, skipping bot build trigger"
+            exit 0
+          fi
+
+          # Skip when nothing under whatsapp-bot/ changed in this commit. We
+          # use `git show` (works in shallow clones) rather than `git diff`.
+          BOT_CHANGED=$(git show --pretty= --name-only HEAD 2>/dev/null | grep '^whatsapp-bot/' | head -1)
+          if [ -z "$BOT_CHANGED" ]; then
+            echo "Bot code unchanged in this commit, skipping CodeBuild trigger"
+            exit 0
+          fi
+
+          COMMIT_SHA=$(git rev-parse HEAD)
+          TAR_NAME="whatsapp-bot-${COMMIT_SHA}.tar.gz"
+          # Strip the s3:// prefix and split into bucket + key prefix
+          ARTIFACTS_BARE="${ARTIFACTS_S3#s3://}"
+          ARTIFACTS_BUCKET="${ARTIFACTS_BARE%%/*}"
+          ARTIFACTS_KEY_PREFIX="${ARTIFACTS_BARE#*/}"
+          S3_KEY="${ARTIFACTS_KEY_PREFIX}/${TAR_NAME}"
+
+          echo "Tarring whatsapp-bot/ → s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
+          tar -czf "/tmp/${TAR_NAME}" -C whatsapp-bot .
+          aws s3 cp "/tmp/${TAR_NAME}" "s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
+
+          echo "Starting CodeBuild project ${BUILD_PROJECT} for commit ${COMMIT_SHA:0:7}"
+          aws codebuild start-build \
+            --project-name "${BUILD_PROJECT}" \
+            --source-location-override "${ARTIFACTS_BUCKET}/${S3_KEY}" \
+            --environment-variables-override "name=COMMIT_SHA,value=${COMMIT_SHA},type=PLAINTEXT" \
+            --no-cli-pager \
+            --query 'build.id' --output text || echo "Warning: failed to start CodeBuild — check Amplify build role permissions"
 frontend:
   phases:
     preBuild:

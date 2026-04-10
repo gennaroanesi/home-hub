@@ -14,7 +14,7 @@ try {
 
 import { defineBackend } from "@aws-amplify/backend";
 import { Policy, PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
-import { CfnOutput, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
+import { CfnOutput, Duration, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
 import { CfnFunction, Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
@@ -22,6 +22,8 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
+import * as s3 from "aws-cdk-lib/aws-s3";
+import * as codebuild from "aws-cdk-lib/aws-codebuild";
 
 import { auth } from "./auth/resource";
 import { data } from "./data/resource";
@@ -285,7 +287,137 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   availabilityZoneRebalancing: ecs.AvailabilityZoneRebalancing.DISABLED,
 });
 
-// Outputs on the root stack for the Amplify build phase to build/push Docker
+// ── WA bot image build pipeline ─────────────────────────────────────────────
+// Amplify Hosting's build environment has no Docker daemon and no ECR
+// permissions, so it can't build the bot image directly. Instead, the
+// Amplify postBuild step uploads a tar of whatsapp-bot/ to S3 and starts
+// this CodeBuild project, which has Docker available and the right IAM.
+// CodeBuild builds the image, pushes to ECR, force-redeploys the service,
+// and writes a homeOutboundMessage row so the bot delivers a deploy result
+// notification to the household WA group via the existing outbound poller.
+
+const BUILD_ARTIFACTS_PREFIX = "whatsapp-bot/build";
+const BOT_BUILD_PROJECT_NAME = "home-hub-whatsapp-bot-image";
+// ITable.tableName resolves to a CFN token at synth time and to the real
+// physical table name at deploy. Amplify creates one DynamoDB table per
+// model in the data nested stack and exposes them via `resources.tables`.
+const OUTBOUND_TABLE_NAME = backend.data.resources.tables["homeOutboundMessage"].tableName;
+
+const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild", {
+  projectName: BOT_BUILD_PROJECT_NAME,
+  description: "Build and push the home-hub WhatsApp bot Docker image",
+  // The Amplify postBuild step overrides the source location per build with
+  // a tar of whatsapp-bot/ uploaded to S3. This base value is just a
+  // placeholder so CDK has a valid Source.s3() to construct.
+  source: codebuild.Source.s3({
+    bucket: s3.Bucket.fromBucketName(botStack, "BotBuildSrcBucket", "cristinegennaro.com"),
+    path: `${BUILD_ARTIFACTS_PREFIX}/placeholder.tar.gz`,
+  }),
+  environment: {
+    buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+    privileged: true, // required for docker buildx
+    computeType: codebuild.ComputeType.SMALL,
+  },
+  timeout: Duration.minutes(15),
+  environmentVariables: {
+    ECR_URI: { value: botRepo.repositoryUri },
+    AWS_DEFAULT_REGION: { value: botStack.region },
+    CLUSTER_ARN: { value: botCluster.clusterArn },
+    SERVICE_NAME: { value: botService.serviceName },
+    OUTBOUND_TABLE: { value: OUTBOUND_TABLE_NAME },
+    GROUP_JID: { value: process.env.WHATSAPP_GROUP_JID ?? "REDACTED@g.us" },
+    // COMMIT_SHA is overridden per-build by the Amplify postBuild step.
+    COMMIT_SHA: { value: "unknown" },
+  },
+  buildSpec: codebuild.BuildSpec.fromObject({
+    version: "0.2",
+    phases: {
+      pre_build: {
+        commands: [
+          'echo "Building bot image for commit $COMMIT_SHA"',
+          'aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$(echo $ECR_URI | cut -d/ -f1)"',
+        ],
+      },
+      build: {
+        commands: [
+          // CodeBuild's S3 source type extracts the tarball into
+          // $CODEBUILD_SRC_DIR. The bot's Dockerfile lives at the root.
+          'docker buildx build --platform linux/amd64 -t "$ECR_URI:latest" -t "$ECR_URI:$COMMIT_SHA" .',
+          'docker push "$ECR_URI:latest"',
+          'docker push "$ECR_URI:$COMMIT_SHA"',
+        ],
+      },
+      post_build: {
+        commands: [
+          // Trigger ECS to pull the new image. Stop-then-start deploy
+          // strategy is configured on the service itself.
+          'aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment --no-cli-pager > /dev/null',
+          // Notify the WA group via the outbound message queue. The bot's
+          // existing poller picks PENDING rows up and delivers them within
+          // ~30s of the new task connecting. We write the row directly to
+          // DynamoDB rather than going through AppSync because CodeBuild
+          // already has the table name and DDB perms — no signed GraphQL
+          // request needed. The Amplify-managed table uses partition key
+          // `id` and stores all model fields as DDB attributes.
+          'STATUS_LABEL="✅ deployed"',
+          'NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"',
+          'MSG_ID="$(uuidgen | tr A-Z a-z)"',
+          'TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${COMMIT_SHA:0:7}"',
+          // Use jq for safe JSON construction (handles quoting in TEXT).
+          // jq is preinstalled on STANDARD_7_0.
+          'jq -n --arg id "$MSG_ID" --arg now "$NOW" --arg text "$TEXT" --arg jid "$GROUP_JID" \'{id:{S:$id},__typename:{S:"homeOutboundMessage"},channel:{S:"WHATSAPP"},target:{S:"GROUP"},groupJid:{S:$jid},text:{S:$text},status:{S:"PENDING"},kind:{S:"deploy_notice"},createdAt:{S:$now},updatedAt:{S:$now}}\' > /tmp/item.json',
+          'aws dynamodb put-item --table-name "$OUTBOUND_TABLE" --item file:///tmp/item.json --no-cli-pager',
+          'echo "Queued deploy notice $MSG_ID"',
+        ],
+        // post_build's `finally` block runs even if the build phase failed.
+        // We swap the success message for a failure one in that case.
+        finally: [
+          'if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then',
+          '  STATUS_LABEL="❌ failed"',
+          '  NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"',
+          '  MSG_ID="$(uuidgen | tr A-Z a-z)"',
+          '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${COMMIT_SHA:0:7} (build $CODEBUILD_BUILD_ID)"',
+          '  jq -n --arg id "$MSG_ID" --arg now "$NOW" --arg text "$TEXT" --arg jid "$GROUP_JID" \'{id:{S:$id},__typename:{S:"homeOutboundMessage"},channel:{S:"WHATSAPP"},target:{S:"GROUP"},groupJid:{S:$jid},text:{S:$text},status:{S:"PENDING"},kind:{S:"deploy_notice"},createdAt:{S:$now},updatedAt:{S:$now}}\' > /tmp/item.json',
+          '  aws dynamodb put-item --table-name "$OUTBOUND_TABLE" --item file:///tmp/item.json --no-cli-pager || true',
+          'fi',
+        ],
+      },
+    },
+  }),
+});
+
+// IAM for the CodeBuild project — minimum needed to:
+//   - pull the source tar from the build-artifacts S3 prefix
+//   - push to the bot's ECR repository
+//   - force-redeploy the bot's ECS service
+//   - put a row into the homeOutboundMessage table
+botBuildProject.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:GetObject", "s3:GetObjectVersion"],
+    resources: [`arn:aws:s3:::cristinegennaro.com/${BUILD_ARTIFACTS_PREFIX}/*`],
+  })
+);
+botRepo.grantPullPush(botBuildProject);
+// ECR auth token is account-wide, not per-repo
+botBuildProject.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["ecr:GetAuthorizationToken"],
+    resources: ["*"],
+  })
+);
+botBuildProject.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["ecs:UpdateService", "ecs:DescribeServices"],
+    resources: [botService.serviceArn],
+  })
+);
+backend.data.resources.tables["homeOutboundMessage"].grantWriteData(botBuildProject);
+
+// Outputs on the root stack for the Amplify build phase to find the
+// CodeBuild project + S3 artifacts location and trigger a build.
 new CfnOutput(backend.stack, "whatsappBotEcrRepoUri", {
   value: botRepo.repositoryUri,
 });
@@ -294,4 +426,10 @@ new CfnOutput(backend.stack, "whatsappBotClusterArn", {
 });
 new CfnOutput(backend.stack, "whatsappBotServiceName", {
   value: botService.serviceName,
+});
+new CfnOutput(backend.stack, "whatsappBotBuildProjectName", {
+  value: botBuildProject.projectName,
+});
+new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
+  value: `s3://cristinegennaro.com/${BUILD_ARTIFACTS_PREFIX}`,
 });
