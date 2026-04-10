@@ -123,14 +123,34 @@ AWS_PROFILE=admin node scripts/lightroom-import.mjs \
 
 If a home-hub album with that name already exists, photos are added to it.
 
+### Target an existing home-hub album by ID
+
+When you want to add photos to a specific existing album (and avoid any
+name-matching ambiguity), look up the ID first and pass `--home-album-id`:
+
+```sh
+# 1. List your home-hub albums
+AWS_PROFILE=admin node scripts/lightroom-import.mjs --list-home-albums
+
+# 2. Import into a specific one (the script errors out if the ID doesn't exist —
+#    no album is created)
+AWS_PROFILE=admin node scripts/lightroom-import.mjs \
+  --lr-album "Italy 2026 - Edited" \
+  --home-album-id 0190f3ab-1234-7890-abcd-ef0123456789
+```
+
+`--home-album-id` takes precedence over `--home-album` if both are passed.
+
 ## Flags
 
 | Flag                       | Description                                                                |
 | -------------------------- | -------------------------------------------------------------------------- |
 | `--list-albums`            | Print all Lightroom albums and exit                                        |
+| `--list-home-albums`       | Print all home-hub albums (with IDs) and exit                              |
 | `--lr-album <name>`        | Lightroom album name (fuzzy matched, case-insensitive)                     |
 | `--lr-album-id <uuid>`     | Lightroom album ID (exact, from `--list-albums`)                           |
-| `--home-album <name>`      | Override the home-hub album name (default: same as Lightroom)              |
+| `--home-album <name>`      | home-hub album name (find by name, create if missing)                      |
+| `--home-album-id <uuid>`   | Existing home-hub album ID. Errors if it doesn't exist (no auto-create)    |
 | `--limit <n>`              | Cap the number of photos to import (useful with `--dry-run`)               |
 | `--dry-run`                | Don't download/upload/write — just print what would be imported            |
 

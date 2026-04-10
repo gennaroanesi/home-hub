@@ -3,15 +3,22 @@
  * Lightroom album importer.
  *
  * Usage:
- *   node scripts/lightroom-import.mjs [--list-albums]
- *   node scripts/lightroom-import.mjs --lr-album "Italy 2026" [--home-album "Italy"]
- *   node scripts/lightroom-import.mjs --lr-album-id <uuid> [--home-album "Italy"]
+ *   node scripts/lightroom-import.mjs --list-albums
+ *   node scripts/lightroom-import.mjs --list-home-albums
+ *   node scripts/lightroom-import.mjs --lr-album "Italy 2026"
+ *   node scripts/lightroom-import.mjs --lr-album "Italy 2026" --home-album "Italy"
+ *   node scripts/lightroom-import.mjs --lr-album "Italy 2026" --home-album-id <uuid>
  *
  * Flags:
  *   --list-albums           Print all Lightroom albums and exit
+ *   --list-home-albums      Print all home-hub albums and exit (with IDs)
  *   --lr-album <name>       Lightroom album name (fuzzy match)
  *   --lr-album-id <uuid>    Exact Lightroom album ID
- *   --home-album <name>     Override the home-hub album name (default: same as Lightroom)
+ *   --home-album <name>     home-hub album name (find by name, create if missing)
+ *   --home-album-id <uuid>  Existing home-hub album ID — must already exist.
+ *                           Useful when name matching is ambiguous or you
+ *                           want to add to an album with a different name
+ *                           than the Lightroom one.
  *   --limit <n>             Cap the number of photos to import (for testing)
  *   --dry-run               Don't actually upload — just print what would be imported
  *
@@ -79,9 +86,11 @@ function parseArgs() {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === "--list-albums") opts.listAlbums = true;
+    else if (a === "--list-home-albums") opts.listHomeAlbums = true;
     else if (a === "--lr-album") opts.lrAlbumName = args[++i];
     else if (a === "--lr-album-id") opts.lrAlbumId = args[++i];
     else if (a === "--home-album") opts.homeAlbumName = args[++i];
+    else if (a === "--home-album-id") opts.homeAlbumId = args[++i];
     else if (a === "--limit") opts.limit = parseInt(args[++i], 10);
     else if (a === "--dry-run") opts.dryRun = true;
     else if (a === "--help" || a === "-h") {
@@ -254,12 +263,25 @@ async function gql(query, variables) {
 
 // ── Home-hub queries/mutations ──────────────────────────────────────────────
 
-async function findOrCreateHomeAlbum(name) {
+async function listAllHomeAlbums() {
   const list = await gql(
     `query ListAlbums { listHomeAlbums(limit: 500) { items { id name } } }`,
     {}
   );
-  const existing = (list.listHomeAlbums?.items ?? []).find((a) => a.name === name);
+  return list.listHomeAlbums?.items ?? [];
+}
+
+async function getHomeAlbumById(id) {
+  const data = await gql(
+    `query GetAlbum($id: ID!) { getHomeAlbum(id: $id) { id name } }`,
+    { id }
+  );
+  return data.getHomeAlbum;
+}
+
+async function findOrCreateHomeAlbum(name) {
+  const all = await listAllHomeAlbums();
+  const existing = all.find((a) => a.name === name);
   if (existing) return existing;
 
   const created = await gql(
@@ -344,6 +366,21 @@ async function main() {
     return;
   }
 
+  if (opts.listHomeAlbums) {
+    const albums = await listAllHomeAlbums();
+    if (albums.length === 0) {
+      console.log("No home-hub albums yet.");
+      return;
+    }
+    const sorted = [...albums].sort((a, b) => a.name.localeCompare(b.name));
+    console.log(`\nFound ${sorted.length} home-hub album(s):\n`);
+    for (const a of sorted) {
+      console.log(`  ${a.id}  ${a.name}`);
+    }
+    console.log();
+    return;
+  }
+
   // Resolve which Lightroom album to import
   let lrAlbum;
   if (opts.lrAlbumId) {
@@ -371,13 +408,30 @@ async function main() {
 
   console.log(`\nLightroom album: ${lrAlbum.name} (${lrAlbum.id})`);
 
-  // Resolve home-hub album (find or create)
-  const homeAlbumName = opts.homeAlbumName ?? lrAlbum.name;
+  // Resolve home-hub album:
+  //   --home-album-id  → look up an existing album by ID (must exist)
+  //   --home-album     → find by name, create if missing
+  //   (neither)        → use the Lightroom album name, create if missing
   let homeAlbum;
-  if (opts.dryRun) {
-    homeAlbum = { id: "(dry-run)", name: homeAlbumName };
+  if (opts.homeAlbumId) {
+    if (opts.dryRun) {
+      homeAlbum = { id: opts.homeAlbumId, name: "(dry-run)" };
+    } else {
+      const found = await getHomeAlbumById(opts.homeAlbumId);
+      if (!found) {
+        console.error(`Home-hub album with id ${opts.homeAlbumId} not found.`);
+        console.error("Run with --list-home-albums to see all album IDs.");
+        process.exit(1);
+      }
+      homeAlbum = found;
+    }
   } else {
-    homeAlbum = await findOrCreateHomeAlbum(homeAlbumName);
+    const homeAlbumName = opts.homeAlbumName ?? lrAlbum.name;
+    if (opts.dryRun) {
+      homeAlbum = { id: "(dry-run)", name: homeAlbumName };
+    } else {
+      homeAlbum = await findOrCreateHomeAlbum(homeAlbumName);
+    }
   }
   console.log(`Home-hub album: ${homeAlbum.name} (${homeAlbum.id})`);
 
