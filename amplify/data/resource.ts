@@ -163,6 +163,10 @@ const schema = a
         width: a.integer(),
         height: a.integer(),
         takenAt: a.datetime(), // from EXIF DateTimeOriginal
+        // GPS coordinates extracted from EXIF (decimal degrees)
+        latitude: a.float(),
+        longitude: a.float(),
+        altitude: a.float(),
         exifData: a.json(),
         tripId: a.id(), // FK → homeTrip.id (null = not linked to a trip)
         uploadedBy: a.string(),

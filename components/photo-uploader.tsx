@@ -33,6 +33,80 @@ function parseExifDate(dateString?: string, tzOffset = 0): string | null {
   }
 }
 
+// Slim EXIF down to a small JSON object before storing. ExifReader's full
+// output is huge (often 100+ KB) because it includes embedded thumbnails
+// and per-tag metadata, which blows past AppSync's 256 KB resolver limit.
+// We only keep tags that are actually useful for display/filtering.
+const EXIF_KEEP_FIELDS: string[] = [
+  "DateTimeOriginal",
+  "OffsetTimeOriginal",
+  "Make",
+  "Model",
+  "LensModel",
+  "FocalLength",
+  "FNumber",
+  "ExposureTime",
+  "ISOSpeedRatings",
+  "Orientation",
+  "GPSLatitude",
+  "GPSLongitude",
+  "GPSLatitudeRef",
+  "GPSLongitudeRef",
+  "GPSAltitude",
+];
+
+function slimExif(raw: any): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!raw || typeof raw !== "object") return out;
+  for (const key of EXIF_KEEP_FIELDS) {
+    const tag = raw[key];
+    if (tag && typeof tag === "object" && "description" in tag) {
+      out[key] = String(tag.description);
+    }
+  }
+  return out;
+}
+
+interface ExifGps {
+  latitude: number | null;
+  longitude: number | null;
+  altitude: number | null;
+}
+
+// Extract decimal-degree GPS coordinates from ExifReader output. ExifReader
+// provides a friendly `description` field that's already in decimal degrees,
+// but it's always positive — the sign comes from GPSLatitudeRef ("N"/"S")
+// and GPSLongitudeRef ("E"/"W").
+function extractGps(raw: any): ExifGps {
+  const result: ExifGps = { latitude: null, longitude: null, altitude: null };
+  if (!raw || typeof raw !== "object") return result;
+
+  const latTag = raw.GPSLatitude;
+  const lonTag = raw.GPSLongitude;
+  const latRef = raw.GPSLatitudeRef?.value?.[0] ?? raw.GPSLatitudeRef?.description;
+  const lonRef = raw.GPSLongitudeRef?.value?.[0] ?? raw.GPSLongitudeRef?.description;
+
+  if (latTag?.description !== undefined) {
+    const num = parseFloat(String(latTag.description));
+    if (!Number.isNaN(num)) {
+      result.latitude = latRef === "S" ? -Math.abs(num) : Math.abs(num);
+    }
+  }
+  if (lonTag?.description !== undefined) {
+    const num = parseFloat(String(lonTag.description));
+    if (!Number.isNaN(num)) {
+      result.longitude = lonRef === "W" ? -Math.abs(num) : Math.abs(num);
+    }
+  }
+  const altTag = raw.GPSAltitude;
+  if (altTag?.description !== undefined) {
+    const num = parseFloat(String(altTag.description));
+    if (!Number.isNaN(num)) result.altitude = num;
+  }
+
+  return result;
+}
+
 async function readImageDimensions(file: File): Promise<{ width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const url = URL.createObjectURL(file);
@@ -99,6 +173,8 @@ export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderP
       setStatus({ filename: file.name, status: "registering" });
 
       // 4. Register the photo record via Amplify data client
+      const slimmed = slimExif(exif);
+      const gps = extractGps(exif);
       const { data, errors } = await client.models.homePhoto.create({
         s3key,
         originalFilename: file.name,
@@ -107,7 +183,10 @@ export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderP
         width: dimensions.width || null,
         height: dimensions.height || null,
         takenAt,
-        exifData: Object.keys(exif).length > 0 ? JSON.stringify(exif) : null,
+        latitude: gps.latitude,
+        longitude: gps.longitude,
+        altitude: gps.altitude,
+        exifData: Object.keys(slimmed).length > 0 ? JSON.stringify(slimmed) : null,
         tripId: tripId ?? null,
         uploadedBy: uploadedBy ?? null,
       });
