@@ -17,6 +17,7 @@
     "@aws-amplify/ui-react": "^6.11.0",
     "@aws-sdk/client-dynamodb": "^3.782.0",
     "@aws-sdk/client-ecs": "^3.1028.0",
+    "@aws-sdk/client-rekognition": "^3.1029.0",
     "@aws-sdk/client-s3": "^3.1028.0",
     "@aws-sdk/client-scheduler": "^3.1024.0",
     "@aws-sdk/client-sns": "^3.782.0",

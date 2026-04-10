@@ -28,6 +28,10 @@ type Album = Schema["homeAlbum"]["type"];
 type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
 type Photo = Schema["homePhoto"]["type"];
 type Trip = Schema["homeTrip"]["type"];
+type Person = Schema["homePerson"]["type"];
+type PhotoFace = Schema["homePhotoFace"]["type"];
+
+const ALL = "all";
 
 export default function AlbumDetailPage() {
   const router = useRouter();
@@ -37,6 +41,9 @@ export default function AlbumDetailPage() {
   const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [photoFaces, setPhotoFaces] = useState<PhotoFace[]>([]);
+  const [filterPersonId, setFilterPersonId] = useState<string>(ALL);
   const [loading, setLoading] = useState(true);
   const [photosUploading, setPhotosUploading] = useState(false);
 
@@ -66,29 +73,55 @@ export default function AlbumDetailPage() {
   const loadAll = useCallback(async () => {
     if (typeof id !== "string") return;
     setLoading(true);
-    const [albumRes, joinRes, photosRes, tripsRes] = await Promise.all([
+    // Soft-fail homePhotoFace so the album page still loads when the model
+    // isn't deployed yet (between schema bump and sandbox redeploy).
+    const [albumRes, joinRes, photosRes, tripsRes, peopleRes, facesRes] = await Promise.all([
       client.models.homeAlbum.get({ id }),
       client.models.homeAlbumPhoto.list({ filter: { albumId: { eq: id } }, limit: 5000 }),
       client.models.homePhoto.list({ limit: 1000 }),
       client.models.homeTrip.list({ limit: 500 }),
+      client.models.homePerson.list({ limit: 100 }),
+      client.models.homePhotoFace
+        ?.list({ limit: 5000 })
+        .catch((err: unknown) => {
+          console.warn("homePhotoFace not available yet:", err);
+          return { data: [] as PhotoFace[] };
+        }) ?? Promise.resolve({ data: [] as PhotoFace[] }),
     ]);
     setAlbum(albumRes.data ?? null);
     setAlbumPhotos(joinRes.data ?? []);
     setPhotos(photosRes.data ?? []);
     setTrips((tripsRes.data ?? []).sort((a, b) => b.startDate.localeCompare(a.startDate)));
+    setPeople((peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+    setPhotoFaces(facesRes.data ?? []);
     setLoading(false);
   }, [id]);
 
-  // Photos in this album, sorted by takenAt (newest first)
+  // personId → Set<photoId> for the person filter
+  const personToPhotos = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const f of photoFaces) {
+      if (!f.personId) continue;
+      if (!map.has(f.personId)) map.set(f.personId, new Set());
+      map.get(f.personId)!.add(f.photoId);
+    }
+    return map;
+  }, [photoFaces]);
+
+  // Photos in this album, sorted by takenAt (newest first), filtered by person
   const albumPhotosList = useMemo(() => {
     const photoIds = new Set(albumPhotos.map((ap) => ap.photoId));
-    const list = photos.filter((p) => photoIds.has(p.id));
+    let list = photos.filter((p) => photoIds.has(p.id));
+    if (filterPersonId !== ALL) {
+      const set = personToPhotos.get(filterPersonId);
+      list = set ? list.filter((p) => set.has(p.id)) : [];
+    }
     return list.sort((a, b) => {
       const aDate = a.takenAt ?? a.createdAt;
       const bDate = b.takenAt ?? b.createdAt;
       return new Date(bDate).getTime() - new Date(aDate).getTime();
     });
-  }, [photos, albumPhotos]);
+  }, [photos, albumPhotos, filterPersonId, personToPhotos]);
 
   function openEdit() {
     if (!album) return;
@@ -237,9 +270,30 @@ export default function AlbumDetailPage() {
         {album.description && (
           <p className="text-sm text-default-500 mb-3">{album.description}</p>
         )}
-        <p className="text-xs text-default-400 mb-4">
-          {albumPhotosList.length} photo{albumPhotosList.length === 1 ? "" : "s"}
-        </p>
+        <div className="flex items-end gap-2 mb-4">
+          {people.length > 0 && (
+            <Select
+              size="sm"
+              label="Person"
+              selectedKeys={[filterPersonId]}
+              onChange={(e) => setFilterPersonId(e.target.value || ALL)}
+              className="max-w-[200px]"
+            >
+              <>
+                <SelectItem key={ALL}>Anyone</SelectItem>
+                {people.map((p) => (
+                  <SelectItem key={p.id}>
+                    {p.emoji ? `${p.emoji} ` : ""}
+                    {p.name}
+                  </SelectItem>
+                )) as any}
+              </>
+            </Select>
+          )}
+          <p className="text-xs text-default-400 ml-1 pb-2">
+            {albumPhotosList.length} photo{albumPhotosList.length === 1 ? "" : "s"}
+          </p>
+        </div>
 
         {/* Selection toolbar */}
         {selectionEnabled && (

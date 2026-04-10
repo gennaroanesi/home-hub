@@ -97,6 +97,9 @@ export const Navbar = () => {
               <DropdownItem key="people" onPress={() => router.push("/admin/people")}>
                 Manage people
               </DropdownItem>
+              <DropdownItem key="faces" onPress={() => router.push("/admin/faces")}>
+                Faces
+              </DropdownItem>
               <DropdownItem key="signout" onPress={() => signOut().then(() => router.push("/login"))}>
                 Sign out
               </DropdownItem>

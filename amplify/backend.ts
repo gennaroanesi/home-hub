@@ -15,7 +15,19 @@ try {
 import { defineBackend } from "@aws-amplify/backend";
 import { Policy, PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
 import { CfnOutput, Duration, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
-import { CfnFunction, Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
+import {
+  CfnFunction,
+  Function as LambdaFunction,
+  StartingPosition,
+  FilterCriteria,
+  FilterRule,
+} from "aws-cdk-lib/aws-lambda";
+import { DynamoEventSource } from "aws-cdk-lib/aws-lambda-event-sources";
+import {
+  AwsCustomResource,
+  AwsCustomResourcePolicy,
+  PhysicalResourceId,
+} from "aws-cdk-lib/custom-resources";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -31,6 +43,7 @@ import { homeAgent } from "./functions/agent/resource";
 import { homeScheduler } from "./functions/scheduler/resource";
 import { recurringTasks } from "./functions/recurring-tasks/resource";
 import { dailySummary } from "./functions/daily-summary/resource";
+import { faceDetector } from "./functions/face-detector/resource";
 
 const backend = defineBackend({
   auth,
@@ -39,6 +52,7 @@ const backend = defineBackend({
   homeScheduler,
   recurringTasks,
   dailySummary,
+  faceDetector,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -49,6 +63,7 @@ const lambdaDescriptions: Record<string, string> = {
   homeScheduler: "Home Hub — EventBridge reminder notifications (SNS)",
   recurringTasks: "Home Hub — Daily recurring task sweep",
   dailySummary: "Home Hub — Daily summary composer (writes outbound message)",
+  faceDetector: "Home Hub — Rekognition face detection on new photos (DDB stream)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -182,6 +197,95 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
   },
 });
 
+// ── Face detection — Rekognition + DDB stream ───────────────────────────────
+// New homePhoto rows trigger the face-detector lambda, which calls
+// IndexFaces + SearchFaces against a shared Rekognition collection and
+// writes one homePhotoFace row per detected face. See the handler for
+// the full pipeline. The collection itself is created (and torn down)
+// via an AwsCustomResource because CDK has no L2 for Rekognition.
+
+const PHOTOS_BUCKET_NAME = "cristinegennaro.com";
+const REKOGNITION_COLLECTION_ID = "home-hub-faces";
+
+const faceDetectorLambda = backend.faceDetector.resources.lambda as LambdaFunction;
+const faceDetectorStack = Stack.of(faceDetectorLambda);
+
+// Rekognition collection — created once on stack create, deleted on
+// stack delete. The collection holds enrolled face vectors (one per
+// homePersonFace row); the face-detector lambda also writes temporary
+// faces to it during processing and cleans them up afterwards.
+new AwsCustomResource(faceDetectorStack, "homeHubFaceCollection", {
+  onCreate: {
+    service: "Rekognition",
+    action: "createCollection",
+    parameters: { CollectionId: REKOGNITION_COLLECTION_ID },
+    physicalResourceId: PhysicalResourceId.of(REKOGNITION_COLLECTION_ID),
+    // ResourceAlreadyExistsException is fine — the collection survived
+    // a previous stack delete or was created out-of-band. Treat as
+    // success so the deploy doesn't roll back.
+    ignoreErrorCodesMatching: "ResourceAlreadyExistsException",
+  },
+  onDelete: {
+    service: "Rekognition",
+    action: "deleteCollection",
+    parameters: { CollectionId: REKOGNITION_COLLECTION_ID },
+    ignoreErrorCodesMatching: "ResourceNotFoundException",
+  },
+  policy: AwsCustomResourcePolicy.fromStatements([
+    new PolicyStatement({
+      effect: Effect.ALLOW,
+      actions: ["rekognition:CreateCollection", "rekognition:DeleteCollection"],
+      resources: ["*"],
+    }),
+  ]),
+});
+
+// Lambda needs IndexFaces / SearchFaces / DeleteFaces on the collection,
+// plus GetObject on the photos S3 prefix so Rekognition can fetch images
+// via the S3Object input.
+faceDetectorLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: [
+      "rekognition:IndexFaces",
+      "rekognition:SearchFaces",
+      "rekognition:SearchFacesByImage",
+      "rekognition:DeleteFaces",
+      "rekognition:DetectFaces",
+    ],
+    // Rekognition collection ARN format
+    resources: [
+      `arn:aws:rekognition:${faceDetectorStack.region}:${faceDetectorStack.account}:collection/${REKOGNITION_COLLECTION_ID}`,
+    ],
+  })
+);
+faceDetectorLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:GetObject"],
+    resources: [`arn:aws:s3:::${PHOTOS_BUCKET_NAME}/home/photos/*`],
+  })
+);
+
+faceDetectorLambda.addEnvironment("REKOGNITION_COLLECTION_ID", REKOGNITION_COLLECTION_ID);
+faceDetectorLambda.addEnvironment("PHOTOS_BUCKET", PHOTOS_BUCKET_NAME);
+
+// Wire the homePhoto DynamoDB stream to the lambda. Amplify Gen 2 enables
+// streams on every model table by default (they power AppSync's
+// subscription invalidation), so we can attach an event source directly.
+// Filter to INSERT events only — we don't want to re-process on every
+// photo edit.
+const photoTable = backend.data.resources.tables["homePhoto"];
+
+faceDetectorLambda.addEventSource(
+  new DynamoEventSource(photoTable, {
+    startingPosition: StartingPosition.LATEST,
+    batchSize: 5,
+    retryAttempts: 2,
+    filters: [FilterCriteria.filter({ eventName: FilterRule.isEqual("INSERT") })],
+  })
+);
+
 // ── WhatsApp bot — ECS Fargate + Baileys ────────────────────────────────────
 
 const botStack = backend.createStack("whatsappBot");
@@ -297,9 +401,9 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
 // notification to the household WA group via the existing outbound poller.
 
 const BUILD_ARTIFACTS_PREFIX = "whatsapp-bot/build";
-// ITable.tableName resolves to a CFN token at synth time and to the real
-// physical table name at deploy. Amplify creates one DynamoDB table per
-// model in the data nested stack and exposes them via `resources.tables`.
+// ITable.tableName is the resolved physical name (a CFN token at synth time
+// that resolves at deploy). The Amplify-managed table is created in the
+// data nested stack and exposed via `resources.tables[modelName]`.
 const OUTBOUND_TABLE_NAME = backend.data.resources.tables["homeOutboundMessage"].tableName;
 
 // No `projectName` override — CodeBuild project names are globally unique
@@ -309,9 +413,8 @@ const OUTBOUND_TABLE_NAME = backend.data.resources.tables["homeOutboundMessage"]
 // via the whatsappBotBuildProjectName CFN output below.
 const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild", {
   description: "Build and push the home-hub WhatsApp bot Docker image",
-  // The Amplify postBuild step overrides the source location per build with
-  // a tar of whatsapp-bot/ uploaded to S3. This base value is just a
-  // placeholder so CDK has a valid Source.s3() to construct.
+  // NO_SOURCE — the Amplify postBuild step passes the S3 path of the
+  // tarred bot source via BOT_SRC_S3_URI as an env var override.
   source: codebuild.Source.s3({
     bucket: s3.Bucket.fromBucketName(botStack, "BotBuildSrcBucket", "cristinegennaro.com"),
     path: `${BUILD_ARTIFACTS_PREFIX}/placeholder.tar.gz`,
@@ -343,7 +446,7 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
       },
       build: {
         commands: [
-          // CodeBuild's S3 source type extracts the tarball into
+          // CodeBuild's S3 source automatically extracts the tarball into
           // $CODEBUILD_SRC_DIR. The bot's Dockerfile lives at the root.
           'docker buildx build --platform linux/amd64 -t "$ECR_URI:latest" -t "$ECR_URI:$COMMIT_SHA" .',
           'docker push "$ECR_URI:latest"',
@@ -366,14 +469,14 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
           'NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"',
           'MSG_ID="$(uuidgen | tr A-Z a-z)"',
           'TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${COMMIT_SHA:0:7}"',
-          // Use jq for safe JSON construction (handles quoting in TEXT).
-          // jq is preinstalled on STANDARD_7_0.
+          // Use a heredoc + jq for safe JSON construction (handles quoting
+          // in TEXT). jq is preinstalled on STANDARD_7_0.
           'jq -n --arg id "$MSG_ID" --arg now "$NOW" --arg text "$TEXT" --arg jid "$GROUP_JID" \'{id:{S:$id},__typename:{S:"homeOutboundMessage"},channel:{S:"WHATSAPP"},target:{S:"GROUP"},groupJid:{S:$jid},text:{S:$text},status:{S:"PENDING"},kind:{S:"deploy_notice"},createdAt:{S:$now},updatedAt:{S:$now}}\' > /tmp/item.json',
           'aws dynamodb put-item --table-name "$OUTBOUND_TABLE" --item file:///tmp/item.json --no-cli-pager',
           'echo "Queued deploy notice $MSG_ID"',
         ],
-        // post_build's `finally` block runs even if the build phase failed.
-        // We swap the success message for a failure one in that case.
+        // post_build runs even if build phase failed. We want a different
+        // notification on failure — codebuild exposes CODEBUILD_BUILD_SUCCEEDING.
         finally: [
           'if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then',
           '  STATUS_LABEL="❌ failed"',
@@ -389,7 +492,7 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
   }),
 });
 
-// IAM for the CodeBuild project — minimum needed to:
+// IAM for the CodeBuild project. We grant the minimum needed to:
 //   - pull the source tar from the build-artifacts S3 prefix
 //   - push to the bot's ECR repository
 //   - force-redeploy the bot's ECS service
@@ -419,8 +522,7 @@ botBuildProject.addToRolePolicy(
 );
 backend.data.resources.tables["homeOutboundMessage"].grantWriteData(botBuildProject);
 
-// Outputs on the root stack for the Amplify build phase to find the
-// CodeBuild project + S3 artifacts location and trigger a build.
+// Outputs on the root stack for the Amplify build phase to build/push Docker
 new CfnOutput(backend.stack, "whatsappBotEcrRepoUri", {
   value: botRepo.repositoryUri,
 });

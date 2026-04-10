@@ -2,6 +2,7 @@ import { type ClientSchema, a, defineData } from "@aws-amplify/backend";
 import { homeAgent } from "../functions/agent/resource";
 import { recurringTasks } from "../functions/recurring-tasks/resource";
 import { dailySummary } from "../functions/daily-summary/resource";
+import { faceDetector } from "../functions/face-detector/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -213,6 +214,52 @@ const schema = a
       .secondaryIndexes((index) => [index("albumId"), index("photoId")])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── PersonFace (Rekognition enrollment) ─────────────────────────────
+    // One row per face vector enrolled in the Rekognition collection for
+    // a household member. A person can have multiple enrolled faces
+    // (different angles, glasses on/off, etc) — when matching we accept a
+    // hit on any of them.
+    homePersonFace: a
+      .model({
+        personId: a.id().required(),
+        // Rekognition FaceId returned by IndexFaces. Used to match
+        // SearchFacesByImage hits back to a person.
+        rekognitionFaceId: a.string().required(),
+        // Optional: which photo this enrollment was created from (so we
+        // can show the source thumbnail in the admin UI).
+        enrolledFromPhotoId: a.id(),
+        // Detection confidence at enrollment time (0-100).
+        confidence: a.float(),
+      })
+      .secondaryIndexes((index) => [
+        index("personId"),
+        index("rekognitionFaceId"),
+      ])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── PhotoFace (detected face on a photo) ────────────────────────────
+    // One row per face detected on a photo by the face-detection lambda.
+    // personId is null when the face was detected but not matched to any
+    // enrolled person (admin can later assign it via /admin/faces).
+    homePhotoFace: a
+      .model({
+        photoId: a.id().required(),
+        // Optional FK → homePerson. Null until matched.
+        personId: a.id(),
+        // The Rekognition FaceId for the matched homePersonFace, if any.
+        rekognitionFaceId: a.string(),
+        // Match score 0-100 from SearchFacesByImage. Null if unmatched.
+        similarity: a.float(),
+        // BoundingBox from Rekognition: { Width, Height, Left, Top } in
+        // image-relative coords (0-1). Used to draw the face rectangle.
+        boundingBox: a.json(),
+      })
+      .secondaryIndexes((index) => [
+        index("photoId"),
+        index("personId"),
+      ])
+      .authorization((allow) => [allow.group("home-users")]),
+
     // ── Shopping ────────────────────────────────────────────────────────
     // Multiple named lists (e.g. "Supermarket", "Home Depot"), each with items.
     homeShoppingList: a
@@ -322,6 +369,7 @@ const schema = a
     allow.resource(homeAgent),
     allow.resource(recurringTasks),
     allow.resource(dailySummary),
+    allow.resource(faceDetector),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

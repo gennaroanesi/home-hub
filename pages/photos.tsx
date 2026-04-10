@@ -27,6 +27,8 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 type Photo = Schema["homePhoto"]["type"];
 type Album = Schema["homeAlbum"]["type"];
 type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
+type Person = Schema["homePerson"]["type"];
+type PhotoFace = Schema["homePhotoFace"]["type"];
 
 const ALL = "all";
 const UNFILED = "unfiled";
@@ -36,7 +38,10 @@ export default function PhotosPage() {
   const [photos, setPhotos] = useState<Photo[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [photoFaces, setPhotoFaces] = useState<PhotoFace[]>([]);
   const [filterAlbumId, setFilterAlbumId] = useState<string>(ALL);
+  const [filterPersonId, setFilterPersonId] = useState<string>(ALL);
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
   const [favoritesOnly, setFavoritesOnly] = useState(false);
@@ -51,14 +56,15 @@ export default function PhotosPage() {
   const [bulkTargetAlbumId, setBulkTargetAlbumId] = useState<string>("");
 
   // Initialize filters from URL query params
-  // (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD&favorites=1)
+  // (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD&favorites=1&person=ID)
   useEffect(() => {
     if (!router.isReady) return;
-    const { album, from, to, favorites } = router.query;
+    const { album, from, to, favorites, person } = router.query;
     if (typeof album === "string") setFilterAlbumId(album);
     if (typeof from === "string") setFromDate(from);
     if (typeof to === "string") setToDate(to);
     if (favorites === "1") setFavoritesOnly(true);
+    if (typeof person === "string") setFilterPersonId(person);
   }, [router.isReady, router.query]);
 
   useEffect(() => {
@@ -74,10 +80,20 @@ export default function PhotosPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [photosRes, albumsRes, joinRes] = await Promise.all([
+    // homePhotoFace is loaded with a soft failure: when the model isn't
+    // deployed yet (e.g. between schema bump and ampx sandbox redeploy),
+    // we don't want it to take down the whole photos page.
+    const [photosRes, albumsRes, joinRes, peopleRes, facesRes] = await Promise.all([
       client.models.homePhoto.list({ limit: 1000 }),
       client.models.homeAlbum.list({ limit: 500 }),
       client.models.homeAlbumPhoto.list({ limit: 5000 }),
+      client.models.homePerson.list({ limit: 100 }),
+      client.models.homePhotoFace
+        ?.list({ limit: 5000 })
+        .catch((err: unknown) => {
+          console.warn("homePhotoFace not available yet:", err);
+          return { data: [] as PhotoFace[] };
+        }) ?? Promise.resolve({ data: [] as PhotoFace[] }),
     ]);
     setPhotos(
       (photosRes.data ?? []).sort((a, b) => {
@@ -88,6 +104,8 @@ export default function PhotosPage() {
     );
     setAlbums((albumsRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     setAlbumPhotos(joinRes.data ?? []);
+    setPeople((peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+    setPhotoFaces(facesRes.data ?? []);
     setLoading(false);
   }, []);
 
@@ -101,6 +119,17 @@ export default function PhotosPage() {
     return map;
   }, [albumPhotos]);
 
+  // Build personId → Set<photoId> for the person filter
+  const personToPhotos = useMemo(() => {
+    const map = new Map<string, Set<string>>();
+    for (const f of photoFaces) {
+      if (!f.personId) continue;
+      if (!map.has(f.personId)) map.set(f.personId, new Set());
+      map.get(f.personId)!.add(f.photoId);
+    }
+    return map;
+  }, [photoFaces]);
+
   const filtered = useMemo(() => {
     let result = photos;
 
@@ -108,6 +137,11 @@ export default function PhotosPage() {
       result = result.filter((p) => !photoToAlbums.has(p.id) || photoToAlbums.get(p.id)!.size === 0);
     } else if (filterAlbumId !== ALL) {
       result = result.filter((p) => photoToAlbums.get(p.id)?.has(filterAlbumId));
+    }
+
+    if (filterPersonId !== ALL) {
+      const set = personToPhotos.get(filterPersonId);
+      result = set ? result.filter((p) => set.has(p.id)) : [];
     }
 
     if (favoritesOnly) {
@@ -130,10 +164,11 @@ export default function PhotosPage() {
     }
 
     return result;
-  }, [photos, filterAlbumId, fromDate, toDate, favoritesOnly, photoToAlbums]);
+  }, [photos, filterAlbumId, filterPersonId, fromDate, toDate, favoritesOnly, photoToAlbums, personToPhotos]);
 
   function clearFilters() {
     setFilterAlbumId(ALL);
+    setFilterPersonId(ALL);
     setFromDate("");
     setToDate("");
     setFavoritesOnly(false);
@@ -224,7 +259,7 @@ export default function PhotosPage() {
     await loadAll();
   }
 
-  const hasActiveFilters = filterAlbumId !== ALL || fromDate || toDate || favoritesOnly;
+  const hasActiveFilters = filterAlbumId !== ALL || filterPersonId !== ALL || fromDate || toDate || favoritesOnly;
   const isAlbumFilter = filterAlbumId !== ALL && filterAlbumId !== UNFILED;
 
   return (
@@ -321,6 +356,25 @@ export default function PhotosPage() {
               )) as any}
             </>
           </Select>
+          {people.length > 0 && (
+            <Select
+              size="sm"
+              label="Person"
+              selectedKeys={[filterPersonId]}
+              onChange={(e) => setFilterPersonId(e.target.value || ALL)}
+              className="max-w-[200px]"
+            >
+              <>
+                <SelectItem key={ALL}>Anyone</SelectItem>
+                {people.map((p) => (
+                  <SelectItem key={p.id}>
+                    {p.emoji ? `${p.emoji} ` : ""}
+                    {p.name}
+                  </SelectItem>
+                )) as any}
+              </>
+            </Select>
+          )}
           <Input
             size="sm"
             type="date"
