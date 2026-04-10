@@ -25,6 +25,8 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
+import { FreeCombobox } from "@/components/free-combobox";
+import { AIRLINES } from "@/lib/airlines";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -41,6 +43,53 @@ type Person = Schema["homePerson"]["type"];
 type Trip = Schema["homeTrip"]["type"];
 type Event = Schema["homeCalendarEvent"]["type"];
 type Day = Schema["homeCalendarDay"]["type"];
+type TripLeg = Schema["homeTripLeg"]["type"];
+
+type LegMode =
+  | "COMMERCIAL_FLIGHT"
+  | "PERSONAL_FLIGHT"
+  | "CAR"
+  | "TRAIN"
+  | "BUS"
+  | "BOAT"
+  | "OTHER";
+
+const LEG_MODE_LABEL: Record<LegMode, string> = {
+  COMMERCIAL_FLIGHT: "Commercial flight",
+  PERSONAL_FLIGHT: "Personal flight",
+  CAR: "Car",
+  TRAIN: "Train",
+  BUS: "Bus",
+  BOAT: "Boat",
+  OTHER: "Other",
+};
+
+const LEG_MODE_EMOJI: Record<LegMode, string> = {
+  COMMERCIAL_FLIGHT: "✈️",
+  PERSONAL_FLIGHT: "🛩️",
+  CAR: "🚗",
+  TRAIN: "🚆",
+  BUS: "🚌",
+  BOAT: "⛵",
+  OTHER: "📍",
+};
+
+// Form-side leg shape (id is empty for new legs that haven't been saved yet)
+interface LegFormRow {
+  id: string;
+  mode: LegMode;
+  departAt: string;       // datetime-local string
+  arriveAt: string;
+  fromCity: string;
+  toCity: string;
+  airline: string;
+  flightNumber: string;
+  aircraft: string;
+  confirmationCode: string;
+  url: string;
+  notes: string;
+  sortOrder: number;
+}
 
 type StatusKey =
   | "WORKING_HOME"
@@ -60,7 +109,8 @@ interface RbcEvent {
   allDay?: boolean;
   resource:
     | { kind: "trip"; trip: Trip }
-    | { kind: "event"; event: Event };
+    | { kind: "event"; event: Event }
+    | { kind: "leg"; leg: TripLeg; trip: Trip };
 }
 
 // ── Config ───────────────────────────────────────────────────────────────────
@@ -154,7 +204,11 @@ export default function CalendarPage() {
     destinationCountry: "",
     notes: "",
     participantIds: [] as string[],
+    legs: [] as LegFormRow[],
   });
+
+  // All legs across all trips, used for rendering on the calendar
+  const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
 
   // Detail views
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
@@ -174,16 +228,18 @@ export default function CalendarPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [peopleRes, tripsRes, eventsRes, daysRes] = await Promise.all([
+    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes] = await Promise.all([
       client.models.homePerson.list(),
       client.models.homeTrip.list(),
       client.models.homeCalendarEvent.list(),
       client.models.homeCalendarDay.list({ limit: 1000 }),
+      client.models.homeTripLeg.list({ limit: 1000 }),
     ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsRes.data ?? []);
+    setAllLegs(legsRes.data ?? []);
 
     const dayMap = new Map<string, Day[]>();
     for (const d of daysRes.data ?? []) {
@@ -257,8 +313,37 @@ export default function CalendarPage() {
       }
     }
 
+    // Trip legs as timed events
+    const tripById = new Map(trips.map((t) => [t.id, t]));
+    for (const leg of allLegs) {
+      if (!leg.departAt) continue;
+      const trip = tripById.get(leg.tripId);
+      if (!trip) continue;
+      const start = new Date(leg.departAt);
+      const end = leg.arriveAt ? new Date(leg.arriveAt) : new Date(start.getTime() + 60 * 60 * 1000);
+      const mode = (leg.mode ?? "OTHER") as LegMode;
+      const emoji = LEG_MODE_EMOJI[mode];
+      let title = emoji;
+      if (mode === "COMMERCIAL_FLIGHT" && (leg.airline || leg.flightNumber)) {
+        title += ` ${leg.airline ?? ""} ${leg.flightNumber ?? ""}`.trim();
+      } else if (leg.fromLocation || leg.toLocation) {
+        const from = (leg.fromLocation as any)?.city ?? "";
+        const to = (leg.toLocation as any)?.city ?? "";
+        title += ` ${from}${from && to ? " → " : ""}${to}`;
+      } else {
+        title += ` ${LEG_MODE_LABEL[mode]}`;
+      }
+      result.push({
+        title,
+        start,
+        end,
+        allDay: false,
+        resource: { kind: "leg", leg, trip },
+      });
+    }
+
     return result;
-  }, [trips, events, currentDate]);
+  }, [trips, events, allLegs, currentDate]);
 
   // ── Day status helpers ────────────────────────────────────────────────────
 
@@ -321,6 +406,22 @@ export default function CalendarPage() {
         },
       };
     }
+    if (event.resource.kind === "leg") {
+      // Use the parent trip's color so legs visually belong to their trip
+      const tripType = event.resource.trip.type as TripType;
+      const color = TRIP_TYPE_CONFIG[tripType]?.color ?? "#60A5FA";
+      return {
+        style: {
+          backgroundColor: color,
+          color: "#1a1a1a",
+          border: "none",
+          borderRadius: "3px",
+          fontWeight: 600,
+          fontSize: "0.7rem",
+          padding: "1px 4px",
+        },
+      };
+    }
     return {
       style: {
         backgroundColor: "#6b7280",
@@ -342,6 +443,9 @@ export default function CalendarPage() {
 
   function handleSelectEvent(rbcEvent: RbcEvent) {
     if (rbcEvent.resource.kind === "trip") {
+      openEditTrip(rbcEvent.resource.trip);
+    } else if (rbcEvent.resource.kind === "leg") {
+      // Clicking a leg opens the parent trip's edit modal
       openEditTrip(rbcEvent.resource.trip);
     } else {
       setSelectedEvent(rbcEvent.resource.event);
@@ -395,6 +499,44 @@ export default function CalendarPage() {
     await loadAll();
   }
 
+  function emptyLeg(sortOrder: number): LegFormRow {
+    return {
+      id: "",
+      mode: "COMMERCIAL_FLIGHT",
+      departAt: "",
+      arriveAt: "",
+      fromCity: "",
+      toCity: "",
+      airline: "",
+      flightNumber: "",
+      aircraft: "",
+      confirmationCode: "",
+      url: "",
+      notes: "",
+      sortOrder,
+    };
+  }
+
+  function legToFormRow(leg: TripLeg): LegFormRow {
+    const from = (leg.fromLocation ?? {}) as any;
+    const to = (leg.toLocation ?? {}) as any;
+    return {
+      id: leg.id,
+      mode: (leg.mode ?? "COMMERCIAL_FLIGHT") as LegMode,
+      departAt: leg.departAt ? dayjs(leg.departAt).format("YYYY-MM-DDTHH:mm") : "",
+      arriveAt: leg.arriveAt ? dayjs(leg.arriveAt).format("YYYY-MM-DDTHH:mm") : "",
+      fromCity: from.city ?? "",
+      toCity: to.city ?? "",
+      airline: leg.airline ?? "",
+      flightNumber: leg.flightNumber ?? "",
+      aircraft: leg.aircraft ?? "",
+      confirmationCode: leg.confirmationCode ?? "",
+      url: leg.url ?? "",
+      notes: leg.notes ?? "",
+      sortOrder: leg.sortOrder ?? 0,
+    };
+  }
+
   function openNewTrip() {
     const today = dayjs().format("YYYY-MM-DD");
     setTripForm({
@@ -409,12 +551,17 @@ export default function CalendarPage() {
       destinationCountry: "",
       notes: "",
       participantIds: [],
+      legs: [],
     });
     tripModalDisclosure.onOpen();
   }
 
   function openEditTrip(trip: Trip) {
     const dest = (trip.destination ?? {}) as any;
+    const tripLegs = allLegs
+      .filter((l) => l.tripId === trip.id)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map(legToFormRow);
     setTripForm({
       id: trip.id,
       name: trip.name,
@@ -427,6 +574,7 @@ export default function CalendarPage() {
       destinationCountry: dest.country ?? "",
       notes: trip.notes ?? "",
       participantIds: (trip.participantIds ?? []).filter((id): id is string => !!id),
+      legs: tripLegs,
     });
     tripModalDisclosure.onOpen();
   }
@@ -443,9 +591,10 @@ export default function CalendarPage() {
           }
         : null;
 
-    if (tripForm.id) {
+    let tripId = tripForm.id;
+    if (tripId) {
       await client.models.homeTrip.update({
-        id: tripForm.id,
+        id: tripId,
         name: tripForm.name,
         type: tripForm.type,
         startDate: tripForm.startDate,
@@ -455,7 +604,7 @@ export default function CalendarPage() {
         participantIds: tripForm.participantIds,
       });
     } else {
-      await client.models.homeTrip.create({
+      const { data } = await client.models.homeTrip.create({
         name: tripForm.name,
         type: tripForm.type,
         startDate: tripForm.startDate,
@@ -464,13 +613,64 @@ export default function CalendarPage() {
         notes: tripForm.notes || null,
         participantIds: tripForm.participantIds,
       });
+      tripId = data?.id ?? "";
     }
+
+    if (tripId) {
+      await syncLegs(tripId, tripForm.legs);
+    }
+
     onClose();
     await loadAll();
   }
 
+  // Diff form legs against existing legs and create/update/delete as needed
+  async function syncLegs(tripId: string, formLegs: LegFormRow[]) {
+    const existing = allLegs.filter((l) => l.tripId === tripId);
+    const formIds = new Set(formLegs.map((l) => l.id).filter((id) => id !== ""));
+
+    // Delete legs that are no longer in the form
+    for (const ex of existing) {
+      if (!formIds.has(ex.id)) {
+        await client.models.homeTripLeg.delete({ id: ex.id });
+      }
+    }
+
+    // Create or update each form leg
+    for (let i = 0; i < formLegs.length; i++) {
+      const leg = formLegs[i];
+      const fromLocation = leg.fromCity ? { city: leg.fromCity } : null;
+      const toLocation = leg.toCity ? { city: leg.toCity } : null;
+      const payload = {
+        tripId,
+        mode: leg.mode,
+        departAt: leg.departAt ? new Date(leg.departAt).toISOString() : null,
+        arriveAt: leg.arriveAt ? new Date(leg.arriveAt).toISOString() : null,
+        fromLocation,
+        toLocation,
+        airline: leg.airline || null,
+        flightNumber: leg.flightNumber || null,
+        aircraft: leg.aircraft || null,
+        confirmationCode: leg.confirmationCode || null,
+        url: leg.url || null,
+        notes: leg.notes || null,
+        sortOrder: i,
+      };
+      if (leg.id) {
+        await client.models.homeTripLeg.update({ id: leg.id, ...payload });
+      } else {
+        await client.models.homeTripLeg.create(payload);
+      }
+    }
+  }
+
   async function deleteTripById(id: string) {
-    if (!confirm("Delete this trip? Days linked to it will keep their status but lose the trip link.")) return;
+    if (!confirm("Delete this trip? All legs will be deleted. Days linked to it will keep their status but lose the trip link.")) return;
+    // Delete legs first
+    const tripLegs = allLegs.filter((l) => l.tripId === id);
+    for (const leg of tripLegs) {
+      await client.models.homeTripLeg.delete({ id: leg.id });
+    }
     await client.models.homeTrip.delete({ id });
     tripModalDisclosure.onClose();
     await loadAll();
@@ -737,6 +937,157 @@ export default function CalendarPage() {
                     onValueChange={(v) => setTripForm((f) => ({ ...f, notes: v }))}
                     minRows={2}
                   />
+
+                  {/* ── Legs editor ──────────────────────────────────────── */}
+                  <div className="border-t border-default-200 pt-4">
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-sm font-medium">Transportation</p>
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        startContent={<FaPlus size={10} />}
+                        onPress={() =>
+                          setTripForm((f) => ({
+                            ...f,
+                            legs: [...f.legs, emptyLeg(f.legs.length)],
+                          }))
+                        }
+                      >
+                        Add leg
+                      </Button>
+                    </div>
+                    {tripForm.legs.length === 0 && (
+                      <p className="text-xs text-default-400">
+                        Add flights, drives, or other segments for this trip.
+                      </p>
+                    )}
+                    <div className="space-y-3">
+                      {tripForm.legs.map((leg, idx) => {
+                        const updateLeg = (patch: Partial<LegFormRow>) =>
+                          setTripForm((f) => ({
+                            ...f,
+                            legs: f.legs.map((l, i) => (i === idx ? { ...l, ...patch } : l)),
+                          }));
+                        const removeLeg = () =>
+                          setTripForm((f) => ({
+                            ...f,
+                            legs: f.legs.filter((_, i) => i !== idx),
+                          }));
+                        return (
+                          <div
+                            key={idx}
+                            className="border border-default-200 rounded-md p-3 space-y-2 bg-default-50"
+                          >
+                            <div className="flex items-center gap-2">
+                              <Select
+                                size="sm"
+                                label="Mode"
+                                selectedKeys={[leg.mode]}
+                                onChange={(e) => updateLeg({ mode: e.target.value as LegMode })}
+                                className="flex-1"
+                              >
+                                {(Object.keys(LEG_MODE_LABEL) as LegMode[]).map((m) => (
+                                  <SelectItem key={m}>
+                                    {LEG_MODE_EMOJI[m]} {LEG_MODE_LABEL[m]}
+                                  </SelectItem>
+                                ))}
+                              </Select>
+                              <Button
+                                size="sm"
+                                isIconOnly
+                                variant="light"
+                                color="danger"
+                                onPress={removeLeg}
+                              >
+                                <FaTrash size={10} />
+                              </Button>
+                            </div>
+                            <div className="flex gap-2">
+                              <Input
+                                size="sm"
+                                label="From"
+                                placeholder="City"
+                                value={leg.fromCity}
+                                onValueChange={(v) => updateLeg({ fromCity: v })}
+                              />
+                              <Input
+                                size="sm"
+                                label="To"
+                                placeholder="City"
+                                value={leg.toCity}
+                                onValueChange={(v) => updateLeg({ toCity: v })}
+                              />
+                            </div>
+                            <div className="flex gap-2">
+                              <Input
+                                size="sm"
+                                label="Depart"
+                                type="datetime-local"
+                                value={leg.departAt}
+                                onValueChange={(v) => updateLeg({ departAt: v })}
+                              />
+                              <Input
+                                size="sm"
+                                label="Arrive"
+                                type="datetime-local"
+                                value={leg.arriveAt}
+                                onValueChange={(v) => updateLeg({ arriveAt: v })}
+                              />
+                            </div>
+                            {leg.mode === "COMMERCIAL_FLIGHT" && (
+                              <div className="flex gap-2">
+                                <div className="flex-1">
+                                  <FreeCombobox
+                                    label="Airline"
+                                    value={leg.airline}
+                                    onValueChange={(v) => updateLeg({ airline: v })}
+                                    options={AIRLINES}
+                                  />
+                                </div>
+                                <Input
+                                  size="sm"
+                                  label="Flight #"
+                                  placeholder="DL123"
+                                  value={leg.flightNumber}
+                                  onValueChange={(v) => updateLeg({ flightNumber: v })}
+                                />
+                              </div>
+                            )}
+                            {leg.mode === "PERSONAL_FLIGHT" && (
+                              <Input
+                                size="sm"
+                                label="Aircraft tail #"
+                                placeholder="N12345"
+                                value={leg.aircraft}
+                                onValueChange={(v) => updateLeg({ aircraft: v })}
+                              />
+                            )}
+                            <div className="flex gap-2">
+                              <Input
+                                size="sm"
+                                label="Confirmation #"
+                                value={leg.confirmationCode}
+                                onValueChange={(v) => updateLeg({ confirmationCode: v })}
+                              />
+                              <Input
+                                size="sm"
+                                label="URL"
+                                value={leg.url}
+                                onValueChange={(v) => updateLeg({ url: v })}
+                              />
+                            </div>
+                            <Textarea
+                              size="sm"
+                              label="Notes"
+                              value={leg.notes}
+                              onValueChange={(v) => updateLeg({ notes: v })}
+                              minRows={1}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </ModalBody>
                 <ModalFooter>
                   {tripForm.id && (

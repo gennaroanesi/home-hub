@@ -36,7 +36,41 @@ const schema = a
         destination: locationCustomType,
         notes: a.string(),
         participantIds: a.id().array(), // FK array → homePerson.id
+        legs: a.hasMany("homeTripLeg", "tripId"),
       })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Trip Leg ────────────────────────────────────────────────────────
+    // One transportation segment of a trip (outbound flight, return drive,
+    // multi-city flight, etc). A trip can have many legs.
+    homeTripLeg: a
+      .model({
+        tripId: a.id().required(),
+        trip: a.belongsTo("homeTrip", "tripId"),
+        mode: a.enum([
+          "COMMERCIAL_FLIGHT",
+          "PERSONAL_FLIGHT",
+          "CAR",
+          "TRAIN",
+          "BUS",
+          "BOAT",
+          "OTHER",
+        ]),
+        departAt: a.datetime(),
+        arriveAt: a.datetime(),
+        fromLocation: locationCustomType,
+        toLocation: locationCustomType,
+        confirmationCode: a.string(),
+        url: a.url(),
+        notes: a.string(),
+        // Commercial flight fields
+        airline: a.string(),
+        flightNumber: a.string(),
+        // Personal flight field
+        aircraft: a.string(), // tail number, e.g. N12345
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("tripId")])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Calendar Day ────────────────────────────────────────────────────
