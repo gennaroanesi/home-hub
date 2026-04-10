@@ -19,7 +19,7 @@ import {
   Dropdown,
   DropdownMenu,
 } from "@heroui/dropdown";
-import { FaHome, FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaUserCircle } from "react-icons/fa";
+import { FaHome, FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane, FaUserCircle } from "react-icons/fa";
 
 export const Navbar = () => {
   const router = useRouter();
@@ -45,6 +45,7 @@ export const Navbar = () => {
     { name: "Shopping", href: "/shopping", icon: <FaShoppingCart /> },
     { name: "Bills", href: "/bills", icon: <FaFileInvoiceDollar />, coming: true },
     { name: "Calendar", href: "/calendar", icon: <FaCalendarAlt /> },
+    { name: "Trips", href: "/trips", icon: <FaPlane /> },
     { name: "Photos", href: "/photos", icon: <FaImages /> },
   ];
 

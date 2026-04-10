@@ -5,7 +5,7 @@ import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages } from "react-icons/fa";
+import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 
@@ -63,6 +63,13 @@ export default function HomeDashboard() {
       icon: <FaCalendarAlt size={24} />,
       href: "/calendar",
       color: "success" as const,
+    },
+    {
+      title: "Trips",
+      description: "Plan trips, legs, and travel details",
+      icon: <FaPlane size={24} />,
+      href: "/trips",
+      color: "secondary" as const,
     },
     {
       title: "Photos",
