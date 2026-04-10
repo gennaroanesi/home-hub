@@ -172,10 +172,14 @@ const schema = a
         uploadedBy: a.string(),
         caption: a.string(),
         isFavorite: a.boolean().default(false),
+        // Source provider for imports (e.g. "lightroom"). Lets us dedup
+        // re-runs of the import script via the asset id below.
+        sourceProvider: a.string(),
+        sourceAssetId: a.string(),
         // Many-to-many membership in albums via the homeAlbumPhoto join
         albums: a.hasMany("homeAlbumPhoto", "photoId"),
       })
-      .secondaryIndexes((index) => [index("takenAt")])
+      .secondaryIndexes((index) => [index("takenAt"), index("sourceAssetId")])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Album ──────────────────────────────────────────────────────────
