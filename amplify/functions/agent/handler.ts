@@ -703,10 +703,12 @@ async function executeTool(
       const totalMatching = sorted.length;
       const selected = sorted.slice(0, limit);
 
-      // Build CloudFront URLs and add to attachments
+      // Build CloudFront URLs and add to attachments. Use JPEG (not WebP)
+      // because WhatsApp clients can fail to download WebP inline images
+      // ("Couldn't download image").
       const CLOUDFRONT = "https://d2vnnym2o6bm6m.cloudfront.net";
       function buildUrl(s3key: string, width = 1024, quality = 80): string {
-        return `${CLOUDFRONT}/${s3key}?format=webp&width=${width}&quality=${quality}`;
+        return `${CLOUDFRONT}/${s3key}?format=jpeg&width=${width}&quality=${quality}`;
       }
 
       // Build a deep link to /photos with the same filter
