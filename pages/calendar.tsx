@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -25,10 +25,8 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
-import { FreeCombobox } from "@/components/free-combobox";
-import { PhotoUploader } from "@/components/photo-uploader";
-import { PhotoGrid } from "@/components/photo-grid";
-import { AIRLINES } from "@/lib/airlines";
+import { TripForm, type TripFormHandle } from "@/components/trip-form";
+import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -48,52 +46,6 @@ type Day = Schema["homeCalendarDay"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
 type Photo = Schema["homePhoto"]["type"];
 
-type LegMode =
-  | "COMMERCIAL_FLIGHT"
-  | "PERSONAL_FLIGHT"
-  | "CAR"
-  | "TRAIN"
-  | "BUS"
-  | "BOAT"
-  | "OTHER";
-
-const LEG_MODE_LABEL: Record<LegMode, string> = {
-  COMMERCIAL_FLIGHT: "Commercial flight",
-  PERSONAL_FLIGHT: "Personal flight",
-  CAR: "Car",
-  TRAIN: "Train",
-  BUS: "Bus",
-  BOAT: "Boat",
-  OTHER: "Other",
-};
-
-const LEG_MODE_EMOJI: Record<LegMode, string> = {
-  COMMERCIAL_FLIGHT: "✈️",
-  PERSONAL_FLIGHT: "🛩️",
-  CAR: "🚗",
-  TRAIN: "🚆",
-  BUS: "🚌",
-  BOAT: "⛵",
-  OTHER: "📍",
-};
-
-// Form-side leg shape (id is empty for new legs that haven't been saved yet)
-interface LegFormRow {
-  id: string;
-  mode: LegMode;
-  departAt: string;       // datetime-local string
-  arriveAt: string;
-  fromCity: string;
-  toCity: string;
-  airline: string;
-  flightNumber: string;
-  aircraft: string;
-  confirmationCode: string;
-  url: string;
-  notes: string;
-  sortOrder: number;
-}
-
 type StatusKey =
   | "WORKING_HOME"
   | "WORKING_OFFICE"
@@ -102,8 +54,6 @@ type StatusKey =
   | "WEEKEND_HOLIDAY"
   | "PTO"
   | "CHOICE_DAY";
-
-type TripType = "LEISURE" | "WORK" | "FLYING" | "FAMILY";
 
 interface RbcEvent {
   title: string;
@@ -126,13 +76,6 @@ const STATUS_CONFIG: Record<StatusKey, { label: string; color: string }> = {
   WEEKEND_HOLIDAY: { label: "Weekend/Holiday", color: "#7ab87a" },
   PTO: { label: "PTO", color: "#8b5cf6" },
   CHOICE_DAY: { label: "Choice Day", color: "#ec4899" },
-};
-
-const TRIP_TYPE_CONFIG: Record<TripType, { label: string; color: string }> = {
-  LEISURE: { label: "Leisure", color: "#DEBA02" },
-  WORK: { label: "Work", color: "#587D71" },
-  FLYING: { label: "Flying", color: "#60A5FA" },
-  FAMILY: { label: "Family", color: "#EC4899" },
 };
 
 const STATUS_KEYS: StatusKey[] = [
@@ -202,26 +145,15 @@ export default function CalendarPage() {
     recurrence: "",
   });
 
-  // Trip form (used for both create and edit)
-  const [tripForm, setTripForm] = useState({
-    id: "" as string, // empty = new
-    name: "",
-    type: "LEISURE" as TripType,
-    startDate: "",
-    endDate: "",
-    destination: "",
-    destinationLat: null as number | null,
-    destinationLon: null as number | null,
-    destinationCountry: "",
-    notes: "",
-    participantIds: [] as string[],
-    legs: [] as LegFormRow[],
-  });
+  // The trip currently being edited in the modal (null = creating a new trip)
+  const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
+  const tripFormRef = useRef<TripFormHandle>(null);
 
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
   const [photosUploading, setPhotosUploading] = useState(false);
+  const [savingTrip, setSavingTrip] = useState(false);
 
   // ── Auth + data load ──────────────────────────────────────────────────────
 
@@ -543,183 +475,37 @@ export default function CalendarPage() {
     await loadAll();
   }
 
-  function emptyLeg(sortOrder: number): LegFormRow {
-    return {
-      id: "",
-      mode: "COMMERCIAL_FLIGHT",
-      departAt: "",
-      arriveAt: "",
-      fromCity: "",
-      toCity: "",
-      airline: "",
-      flightNumber: "",
-      aircraft: "",
-      confirmationCode: "",
-      url: "",
-      notes: "",
-      sortOrder,
-    };
-  }
-
-  function legToFormRow(leg: TripLeg): LegFormRow {
-    const from = (leg.fromLocation ?? {}) as any;
-    const to = (leg.toLocation ?? {}) as any;
-    return {
-      id: leg.id,
-      mode: (leg.mode ?? "COMMERCIAL_FLIGHT") as LegMode,
-      departAt: leg.departAt ? dayjs(leg.departAt).format("YYYY-MM-DDTHH:mm") : "",
-      arriveAt: leg.arriveAt ? dayjs(leg.arriveAt).format("YYYY-MM-DDTHH:mm") : "",
-      fromCity: from.city ?? "",
-      toCity: to.city ?? "",
-      airline: leg.airline ?? "",
-      flightNumber: leg.flightNumber ?? "",
-      aircraft: leg.aircraft ?? "",
-      confirmationCode: leg.confirmationCode ?? "",
-      url: leg.url ?? "",
-      notes: leg.notes ?? "",
-      sortOrder: leg.sortOrder ?? 0,
-    };
-  }
-
   function openNewTrip() {
-    const today = dayjs().format("YYYY-MM-DD");
-    setTripForm({
-      id: "",
-      name: "",
-      type: "LEISURE",
-      startDate: today,
-      endDate: today,
-      destination: "",
-      destinationLat: null,
-      destinationLon: null,
-      destinationCountry: "",
-      notes: "",
-      participantIds: [],
-      legs: [],
-    });
+    setSelectedTrip(null);
     setPhotosUploading(false);
     tripModalDisclosure.onOpen();
   }
 
   function openEditTrip(trip: Trip) {
-    const dest = (trip.destination ?? {}) as any;
-    const tripLegs = allLegs
-      .filter((l) => l.tripId === trip.id)
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      .map(legToFormRow);
-    setTripForm({
-      id: trip.id,
-      name: trip.name,
-      type: (trip.type ?? "LEISURE") as TripType,
-      startDate: trip.startDate,
-      endDate: trip.endDate,
-      destination: dest.city ?? "",
-      destinationLat: dest.latitude ?? null,
-      destinationLon: dest.longitude ?? null,
-      destinationCountry: dest.country ?? "",
-      notes: trip.notes ?? "",
-      participantIds: (trip.participantIds ?? []).filter((id): id is string => !!id),
-      legs: tripLegs,
-    });
+    setSelectedTrip(trip);
     setPhotosUploading(false);
     tripModalDisclosure.onOpen();
   }
 
-  async function saveTrip(onClose: () => void) {
-    if (!tripForm.name.trim() || !tripForm.startDate || !tripForm.endDate) return;
-    const destination =
-      tripForm.destination || tripForm.destinationLat !== null
-        ? {
-            city: tripForm.destination || null,
-            country: tripForm.destinationCountry || null,
-            latitude: tripForm.destinationLat,
-            longitude: tripForm.destinationLon,
-          }
-        : null;
-
-    let tripId = tripForm.id;
-    if (tripId) {
-      await client.models.homeTrip.update({
-        id: tripId,
-        name: tripForm.name,
-        type: tripForm.type,
-        startDate: tripForm.startDate,
-        endDate: tripForm.endDate,
-        destination,
-        notes: tripForm.notes || null,
-        participantIds: tripForm.participantIds,
-      });
-    } else {
-      const { data } = await client.models.homeTrip.create({
-        name: tripForm.name,
-        type: tripForm.type,
-        startDate: tripForm.startDate,
-        endDate: tripForm.endDate,
-        destination,
-        notes: tripForm.notes || null,
-        participantIds: tripForm.participantIds,
-      });
-      tripId = data?.id ?? "";
-    }
-
-    if (tripId) {
-      await syncLegs(tripId, tripForm.legs);
-    }
-
-    onClose();
-    await loadAll();
-  }
-
-  // Diff form legs against existing legs and create/update/delete as needed
-  async function syncLegs(tripId: string, formLegs: LegFormRow[]) {
-    const existing = allLegs.filter((l) => l.tripId === tripId);
-    const formIds = new Set(formLegs.map((l) => l.id).filter((id) => id !== ""));
-
-    // Delete legs that are no longer in the form
-    for (const ex of existing) {
-      if (!formIds.has(ex.id)) {
-        await client.models.homeTripLeg.delete({ id: ex.id });
+  async function handleSaveTrip(onClose: () => void) {
+    setSavingTrip(true);
+    try {
+      const saved = await tripFormRef.current?.save();
+      if (saved) {
+        onClose();
+        await loadAll();
       }
-    }
-
-    // Create or update each form leg
-    for (let i = 0; i < formLegs.length; i++) {
-      const leg = formLegs[i];
-      const fromLocation = leg.fromCity ? { city: leg.fromCity } : null;
-      const toLocation = leg.toCity ? { city: leg.toCity } : null;
-      const payload = {
-        tripId,
-        mode: leg.mode,
-        departAt: leg.departAt ? new Date(leg.departAt).toISOString() : null,
-        arriveAt: leg.arriveAt ? new Date(leg.arriveAt).toISOString() : null,
-        fromLocation,
-        toLocation,
-        airline: leg.airline || null,
-        flightNumber: leg.flightNumber || null,
-        aircraft: leg.aircraft || null,
-        confirmationCode: leg.confirmationCode || null,
-        url: leg.url || null,
-        notes: leg.notes || null,
-        sortOrder: i,
-      };
-      if (leg.id) {
-        await client.models.homeTripLeg.update({ id: leg.id, ...payload });
-      } else {
-        await client.models.homeTripLeg.create(payload);
-      }
+    } finally {
+      setSavingTrip(false);
     }
   }
 
-  async function deleteTripById(id: string) {
-    if (!confirm("Delete this trip? All legs will be deleted. Days linked to it will keep their status but lose the trip link.")) return;
-    // Delete legs first
-    const tripLegs = allLegs.filter((l) => l.tripId === id);
-    for (const leg of tripLegs) {
-      await client.models.homeTripLeg.delete({ id: leg.id });
+  async function handleDeleteTrip(onClose: () => void) {
+    const ok = await tripFormRef.current?.delete();
+    if (ok) {
+      onClose();
+      await loadAll();
     }
-    await client.models.homeTrip.delete({ id });
-    tripModalDisclosure.onClose();
-    await loadAll();
   }
 
   async function setDayStatus(personId: string, status: StatusKey | null) {
@@ -745,11 +531,6 @@ export default function CalendarPage() {
 
   function personName(id: string): string {
     return people.find((p) => p.id === id)?.name ?? "Unknown";
-  }
-
-  async function deletePhoto(photo: Photo) {
-    await client.models.homePhoto.delete({ id: photo.id });
-    setAllPhotos((prev) => prev.filter((p) => p.id !== photo.id));
   }
 
   // ── Render ────────────────────────────────────────────────────────────────
@@ -983,267 +764,47 @@ export default function CalendarPage() {
         </Modal>
 
         {/* ── Trip Modal (create + edit) ───────────────────────────────── */}
-        <Modal isOpen={tripModalDisclosure.isOpen} onOpenChange={tripModalDisclosure.onOpenChange} size="lg">
+        <Modal isOpen={tripModalDisclosure.isOpen} onOpenChange={tripModalDisclosure.onOpenChange} size="lg" scrollBehavior="inside">
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>{tripForm.id ? "Edit Trip" : "New Trip"}</ModalHeader>
+                <ModalHeader>{selectedTrip ? "Edit Trip" : "New Trip"}</ModalHeader>
                 <ModalBody>
-                  <Input
-                    label="Name"
-                    value={tripForm.name}
-                    onValueChange={(v) => setTripForm((f) => ({ ...f, name: v }))}
-                    placeholder="Italy 2026"
-                    isRequired
+                  <TripForm
+                    ref={tripFormRef}
+                    trip={selectedTrip}
+                    people={people}
+                    allLegs={allLegs}
+                    allPhotos={allPhotos}
+                    onPhotosChanged={loadAll}
+                    onUploadingChange={setPhotosUploading}
                   />
-                  <Select
-                    label="Type"
-                    selectedKeys={[tripForm.type]}
-                    onChange={(e) => setTripForm((f) => ({ ...f, type: e.target.value as TripType }))}
-                  >
-                    {Object.entries(TRIP_TYPE_CONFIG).map(([key, { label }]) => (
-                      <SelectItem key={key}>{label}</SelectItem>
-                    ))}
-                  </Select>
-                  <div className="flex gap-2">
-                    <Input
-                      label="Start date"
-                      type="date"
-                      value={tripForm.startDate}
-                      onValueChange={(v) => setTripForm((f) => ({ ...f, startDate: v }))}
-                    />
-                    <Input
-                      label="End date"
-                      type="date"
-                      value={tripForm.endDate}
-                      onValueChange={(v) => setTripForm((f) => ({ ...f, endDate: v }))}
-                    />
-                  </div>
-                  <CityAutocomplete
-                    label="Destination"
-                    placeholder="Rome, Italy"
-                    value={tripForm.destination}
-                    onValueChange={(v) => setTripForm((f) => ({ ...f, destination: v }))}
-                    onSelect={(r) =>
-                      setTripForm((f) => ({
-                        ...f,
-                        destinationLat: r.latitude,
-                        destinationLon: r.longitude,
-                        destinationCountry: r.country,
-                      }))
-                    }
-                  />
-                  <Select
-                    label="Participants"
-                    selectionMode="multiple"
-                    selectedKeys={new Set(tripForm.participantIds)}
-                    onSelectionChange={(keys) =>
-                      setTripForm((f) => ({ ...f, participantIds: Array.from(keys as Set<string>) }))
-                    }
-                  >
-                    {people.map((p) => (
-                      <SelectItem key={p.id}>{p.name}</SelectItem>
-                    ))}
-                  </Select>
-                  <Textarea
-                    label="Notes"
-                    value={tripForm.notes}
-                    onValueChange={(v) => setTripForm((f) => ({ ...f, notes: v }))}
-                    minRows={2}
-                  />
-
-                  {/* ── Legs editor ──────────────────────────────────────── */}
-                  <div className="border-t border-default-200 pt-4">
-                    <div className="flex items-center justify-between mb-2">
-                      <p className="text-sm font-medium">Transportation</p>
-                      <Button
-                        size="sm"
-                        variant="flat"
-                        startContent={<FaPlus size={10} />}
-                        onPress={() =>
-                          setTripForm((f) => ({
-                            ...f,
-                            legs: [...f.legs, emptyLeg(f.legs.length)],
-                          }))
-                        }
-                      >
-                        Add leg
-                      </Button>
-                    </div>
-                    {tripForm.legs.length === 0 && (
-                      <p className="text-xs text-default-400">
-                        Add flights, drives, or other segments for this trip.
-                      </p>
-                    )}
-                    <div className="space-y-3">
-                      {tripForm.legs.map((leg, idx) => {
-                        const updateLeg = (patch: Partial<LegFormRow>) =>
-                          setTripForm((f) => ({
-                            ...f,
-                            legs: f.legs.map((l, i) => (i === idx ? { ...l, ...patch } : l)),
-                          }));
-                        const removeLeg = () =>
-                          setTripForm((f) => ({
-                            ...f,
-                            legs: f.legs.filter((_, i) => i !== idx),
-                          }));
-                        return (
-                          <div
-                            key={idx}
-                            className="border border-default-200 rounded-md p-3 space-y-2 bg-default-50"
-                          >
-                            <div className="flex items-center gap-2">
-                              <Select
-                                size="sm"
-                                label="Mode"
-                                selectedKeys={[leg.mode]}
-                                onChange={(e) => updateLeg({ mode: e.target.value as LegMode })}
-                                className="flex-1"
-                              >
-                                {(Object.keys(LEG_MODE_LABEL) as LegMode[]).map((m) => (
-                                  <SelectItem key={m}>
-                                    {LEG_MODE_EMOJI[m]} {LEG_MODE_LABEL[m]}
-                                  </SelectItem>
-                                ))}
-                              </Select>
-                              <Button
-                                size="sm"
-                                isIconOnly
-                                variant="light"
-                                color="danger"
-                                onPress={removeLeg}
-                              >
-                                <FaTrash size={10} />
-                              </Button>
-                            </div>
-                            <div className="flex gap-2">
-                              <Input
-                                size="sm"
-                                label="From"
-                                placeholder="City"
-                                value={leg.fromCity}
-                                onValueChange={(v) => updateLeg({ fromCity: v })}
-                              />
-                              <Input
-                                size="sm"
-                                label="To"
-                                placeholder="City"
-                                value={leg.toCity}
-                                onValueChange={(v) => updateLeg({ toCity: v })}
-                              />
-                            </div>
-                            <div className="flex gap-2">
-                              <Input
-                                size="sm"
-                                label="Depart"
-                                type="datetime-local"
-                                value={leg.departAt}
-                                onValueChange={(v) => updateLeg({ departAt: v })}
-                              />
-                              <Input
-                                size="sm"
-                                label="Arrive"
-                                type="datetime-local"
-                                value={leg.arriveAt}
-                                onValueChange={(v) => updateLeg({ arriveAt: v })}
-                              />
-                            </div>
-                            {leg.mode === "COMMERCIAL_FLIGHT" && (
-                              <div className="flex gap-2">
-                                <div className="flex-1">
-                                  <FreeCombobox
-                                    label="Airline"
-                                    value={leg.airline}
-                                    onValueChange={(v) => updateLeg({ airline: v })}
-                                    options={AIRLINES}
-                                  />
-                                </div>
-                                <Input
-                                  size="sm"
-                                  label="Flight #"
-                                  placeholder="DL123"
-                                  value={leg.flightNumber}
-                                  onValueChange={(v) => updateLeg({ flightNumber: v })}
-                                />
-                              </div>
-                            )}
-                            {leg.mode === "PERSONAL_FLIGHT" && (
-                              <Input
-                                size="sm"
-                                label="Aircraft tail #"
-                                placeholder="N12345"
-                                value={leg.aircraft}
-                                onValueChange={(v) => updateLeg({ aircraft: v })}
-                              />
-                            )}
-                            <div className="flex gap-2">
-                              <Input
-                                size="sm"
-                                label="Confirmation #"
-                                value={leg.confirmationCode}
-                                onValueChange={(v) => updateLeg({ confirmationCode: v })}
-                              />
-                              <Input
-                                size="sm"
-                                label="URL"
-                                value={leg.url}
-                                onValueChange={(v) => updateLeg({ url: v })}
-                              />
-                            </div>
-                            <Textarea
-                              size="sm"
-                              label="Notes"
-                              value={leg.notes}
-                              onValueChange={(v) => updateLeg({ notes: v })}
-                              minRows={1}
-                            />
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-
-                  {/* ── Photos (only available once the trip is saved) ──── */}
-                  {tripForm.id && (
-                    <div className="border-t border-default-200 pt-4">
-                      <p className="text-sm font-medium mb-2">Photos</p>
-                      <div className="mb-3">
-                        <PhotoUploader
-                          variant="dropzone"
-                          tripId={tripForm.id}
-                          onUploaded={loadAll}
-                          onUploadingChange={setPhotosUploading}
-                        />
-                      </div>
-                      <PhotoGrid
-                        photos={allPhotos.filter((p) => p.tripId === tripForm.id)}
-                        onDelete={deletePhoto}
-                      />
-                    </div>
-                  )}
                 </ModalBody>
                 <ModalFooter>
-                  {tripForm.id && (
+                  {selectedTrip && (
                     <Button
                       color="danger"
                       variant="light"
                       startContent={<FaTrash size={12} />}
-                      onPress={() => deleteTripById(tripForm.id)}
+                      onPress={() => handleDeleteTrip(onClose)}
+                      isDisabled={photosUploading || savingTrip}
                     >
                       Delete
                     </Button>
                   )}
-                  <Button variant="light" onPress={onClose} isDisabled={photosUploading}>
+                  <Button variant="light" onPress={onClose} isDisabled={photosUploading || savingTrip}>
                     Cancel
                   </Button>
                   <Button
                     color="primary"
-                    onPress={() => saveTrip(onClose)}
-                    isDisabled={photosUploading}
+                    onPress={() => handleSaveTrip(onClose)}
+                    isDisabled={photosUploading || savingTrip}
                   >
                     {photosUploading
                       ? "Uploading photos…"
-                      : tripForm.id
+                      : savingTrip
+                      ? "Saving…"
+                      : selectedTrip
                       ? "Save"
                       : "Create"}
                   </Button>
