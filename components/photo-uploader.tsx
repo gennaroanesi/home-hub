@@ -221,8 +221,14 @@ export function PhotoUploader({
   async function handleFiles(files: FileList | null) {
     if (!files || files.length === 0) return;
     const arr = Array.from(files);
+    console.log(`[PhotoUploader] handleFiles received ${arr.length} file(s):`, arr.map((f) => f.name));
     setUploading(true);
-    setProgress(arr.map((f) => ({ filename: f.name, status: "pending" })));
+    // Append to existing progress (not replace) so previous batches stay visible
+    const startIdx = progress.length;
+    setProgress((prev) => [
+      ...prev,
+      ...arr.map((f) => ({ filename: f.name, status: "pending" as const })),
+    ]);
 
     // Upload in parallel, max 3 at a time to avoid overwhelming bandwidth
     const concurrency = 3;
@@ -230,10 +236,11 @@ export function PhotoUploader({
     async function worker() {
       while (idx < arr.length) {
         const current = idx++;
+        const slot = startIdx + current;
         await uploadFile(arr[current], (s) => {
           setProgress((prev) => {
             const next = [...prev];
-            next[current] = s;
+            next[slot] = s;
             return next;
           });
         });
@@ -241,6 +248,8 @@ export function PhotoUploader({
     }
     await Promise.all(Array.from({ length: concurrency }, worker));
     setUploading(false);
+    // Reset the file input so re-selecting the same files still fires change
+    if (fileInputRef.current) fileInputRef.current.value = "";
   }
 
   function onDragOver(e: React.DragEvent) {
