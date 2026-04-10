@@ -205,6 +205,17 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   resources: ["arn:aws:s3:::cristinegennaro.com/whatsapp-bot/*"],
 }));
 
+// ListBucket is required so GetObject on a missing key returns 404 instead of 403
+// (without it, S3 masks key existence). Scoped to the whatsapp-bot/ prefix.
+botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
+  effect: Effect.ALLOW,
+  actions: ["s3:ListBucket"],
+  resources: ["arn:aws:s3:::cristinegennaro.com"],
+  conditions: {
+    StringLike: { "s3:prefix": ["whatsapp-bot/*"] },
+  },
+}));
+
 const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   cluster: botCluster,
   taskDefinition: botTaskDef,

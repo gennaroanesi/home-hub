@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
+import makeWASocket, { DisconnectReason, jidNormalizedUser, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import pino from "pino";
 import { Boom } from "@hapi/boom";
 import { useS3AuthState } from "./s3-auth-state.js";
@@ -8,8 +8,10 @@ import { startServer, updateQR, updateStatus } from "./qr-server.js";
 const logger = pino({ level: "info" });
 const GROUP_JID = process.env.WHATSAPP_GROUP_JID;
 
-if (!GROUP_JID) {
-  logger.warn("WHATSAPP_GROUP_JID not set — bot will respond to all group messages");
+if (GROUP_JID) {
+  logger.info({ group: GROUP_JID }, "Bot will only respond to @-mentions in the configured group");
+} else {
+  logger.info("Bot will only respond to @-mentions in any group");
 }
 
 // Simple cooldown to avoid flooding the agent
@@ -35,6 +37,10 @@ async function startBot() {
     printQRInTerminal: true,
   });
 
+  // Bot's own JID (set on connection open). Normalized to strip device suffix
+  // so it matches the format used in contextInfo.mentionedJid.
+  let botJid: string | null = null;
+
   // Connection updates — QR code and status
   socket.ev.on("connection.update", (update) => {
     const { connection, lastDisconnect, qr } = update;
@@ -47,6 +53,7 @@ async function startBot() {
     if (connection === "close") {
       updateStatus("disconnected");
       updateQR(null);
+      botJid = null;
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -60,9 +67,10 @@ async function startBot() {
     }
 
     if (connection === "open") {
+      botJid = socket.user?.id ? jidNormalizedUser(socket.user.id) : null;
       updateStatus("open");
       updateQR(null);
-      logger.info("Connected to WhatsApp");
+      logger.info({ botJid }, "Connected to WhatsApp");
     }
   });
 
@@ -72,6 +80,7 @@ async function startBot() {
   // Message handler
   socket.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
+    if (!botJid) return; // Not connected yet
 
     for (const msg of messages) {
       // Ignore own messages
@@ -82,11 +91,18 @@ async function startBot() {
       if (!chatJid?.endsWith("@g.us")) continue;
       if (GROUP_JID && chatJid !== GROUP_JID) continue;
 
-      // Extract text
-      const text =
-        msg.message?.conversation ||
-        msg.message?.extendedTextMessage?.text;
+      // Only respond when the bot is @-mentioned. Plain `conversation` messages
+      // can't carry mentions, so we only look at extendedTextMessage.
+      const ext = msg.message?.extendedTextMessage;
+      const mentioned = ext?.contextInfo?.mentionedJid ?? [];
+      if (!mentioned.includes(botJid)) continue;
 
+      const rawText = ext?.text;
+      if (!rawText) continue;
+
+      // Strip the @<botNumber> mention token so the agent sees clean input
+      const botNumber = botJid.split("@")[0];
+      const text = rawText.replace(new RegExp(`@${botNumber}\\b`, "g"), "").trim();
       if (!text) continue;
 
       // Get sender name
