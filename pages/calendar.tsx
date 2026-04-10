@@ -221,6 +221,7 @@ export default function CalendarPage() {
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
+  const [photosUploading, setPhotosUploading] = useState(false);
 
   // ── Auth + data load ──────────────────────────────────────────────────────
 
@@ -596,6 +597,7 @@ export default function CalendarPage() {
       participantIds: [],
       legs: [],
     });
+    setPhotosUploading(false);
     tripModalDisclosure.onOpen();
   }
 
@@ -619,6 +621,7 @@ export default function CalendarPage() {
       participantIds: (trip.participantIds ?? []).filter((id): id is string => !!id),
       legs: tripLegs,
     });
+    setPhotosUploading(false);
     tripModalDisclosure.onOpen();
   }
 
@@ -1209,6 +1212,7 @@ export default function CalendarPage() {
                           variant="dropzone"
                           tripId={tripForm.id}
                           onUploaded={loadAll}
+                          onUploadingChange={setPhotosUploading}
                         />
                       </div>
                       <PhotoGrid
@@ -1229,9 +1233,19 @@ export default function CalendarPage() {
                       Delete
                     </Button>
                   )}
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => saveTrip(onClose)}>
-                    {tripForm.id ? "Save" : "Create"}
+                  <Button variant="light" onPress={onClose} isDisabled={photosUploading}>
+                    Cancel
+                  </Button>
+                  <Button
+                    color="primary"
+                    onPress={() => saveTrip(onClose)}
+                    isDisabled={photosUploading}
+                  >
+                    {photosUploading
+                      ? "Uploading photos…"
+                      : tripForm.id
+                      ? "Save"
+                      : "Create"}
                   </Button>
                 </ModalFooter>
               </>

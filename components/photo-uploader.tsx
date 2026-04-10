@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { generateClient } from "aws-amplify/data";
 import ExifReader from "exifreader";
 import { Button } from "@heroui/button";
@@ -13,6 +13,9 @@ interface PhotoUploaderProps {
   tripId?: string;
   uploadedBy?: string;
   onUploaded?: () => void; // called after each photo is registered
+  // Notifies the parent when a batch starts (true) and finishes (false).
+  // Useful for disabling Save buttons while uploads are in flight.
+  onUploadingChange?: (uploading: boolean) => void;
   // "button"  → just the button (default, used in headers)
   // "dropzone" → big visible drop zone with a button inside
   variant?: "button" | "dropzone";
@@ -130,12 +133,18 @@ export function PhotoUploader({
   tripId,
   uploadedBy,
   onUploaded,
+  onUploadingChange,
   variant = "button",
 }: PhotoUploaderProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<UploadProgress[]>([]);
   const [uploading, setUploading] = useState(false);
   const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    onUploadingChange?.(uploading);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uploading]);
 
   async function uploadFile(file: File, setStatus: (s: UploadProgress) => void) {
     try {
