@@ -99,7 +99,7 @@ export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderP
       setStatus({ filename: file.name, status: "registering" });
 
       // 4. Register the photo record via Amplify data client
-      await client.models.homePhoto.create({
+      const { data, errors } = await client.models.homePhoto.create({
         s3key,
         originalFilename: file.name,
         contentType: file.type,
@@ -111,6 +111,13 @@ export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderP
         tripId: tripId ?? null,
         uploadedBy: uploadedBy ?? null,
       });
+      if (errors && errors.length > 0) {
+        console.error("homePhoto.create errors", errors);
+        throw new Error(errors[0].message ?? "Failed to register photo");
+      }
+      if (!data) {
+        throw new Error("Photo registration returned no data");
+      }
 
       setStatus({ filename: file.name, status: "done" });
       onUploaded?.();
