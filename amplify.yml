@@ -23,8 +23,11 @@ backend:
               ECR_REGISTRY=$(echo "$ECR_URI" | cut -d'/' -f1)
               # Check if image already exists
               IMAGE_EXISTS=$(aws ecr list-images --repository-name "$ECR_REPO" --query "imageIds[?imageTag=='latest']" --output text 2>/dev/null)
-              # Check if bot code changed in this commit
-              BOT_CHANGED=$(git diff HEAD~1 --name-only -- whatsapp-bot/ 2>/dev/null | head -1)
+              # Check if bot code changed in the most recent commit. `git show`
+              # works in shallow clones (Amplify default) where HEAD~1 does not
+              # exist; `git diff HEAD~1` silently returns empty there, which
+              # would skip the rebuild indefinitely.
+              BOT_CHANGED=$(git show --pretty= --name-only HEAD 2>/dev/null | grep '^whatsapp-bot/' | head -1)
               if [ -z "$IMAGE_EXISTS" ] || [ -n "$BOT_CHANGED" ]; then
                 echo "Building WhatsApp bot image..."
                 aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$ECR_REGISTRY"

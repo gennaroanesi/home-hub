@@ -1,4 +1,4 @@
-import makeWASocket, { DisconnectReason, jidNormalizedUser, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
+import makeWASocket, { DisconnectReason, fetchLatestWaWebVersion, jidNormalizedUser, makeCacheableSignalKeyStore } from "@whiskeysockets/baileys";
 import pino from "pino";
 import { Boom } from "@hapi/boom";
 import { useS3AuthState } from "./s3-auth-state.js";
@@ -28,7 +28,14 @@ function isOnCooldown(sender: string): boolean {
 async function startBot() {
   const { state, saveCreds } = await useS3AuthState();
 
+  // Baileys hardcodes a WA Web client version that goes stale; WhatsApp's
+  // handshake rejects old versions silently (handshake fails, no QR ever
+  // emitted). Fetch the latest version on each boot.
+  const { version, isLatest } = await fetchLatestWaWebVersion({});
+  logger.info({ version, isLatest }, "Using WA Web version");
+
   const socket = makeWASocket({
+    version,
     auth: {
       creds: state.creds,
       keys: makeCacheableSignalKeyStore(state.keys, logger),
@@ -37,9 +44,11 @@ async function startBot() {
     printQRInTerminal: true,
   });
 
-  // Bot's own JID (set on connection open). Normalized to strip device suffix
-  // so it matches the format used in contextInfo.mentionedJid.
-  let botJid: string | null = null;
+  // Bot's own identifiers (set on connection open). WhatsApp groups now use
+  // anonymous @lid JIDs for participants alongside the legacy @s.whatsapp.net
+  // format, so we track both and treat a mention of either as "us".
+  let botIds: Set<string> = new Set();
+  let botPhoneNumber: string | null = null;
 
   // Connection updates — QR code and status
   socket.ev.on("connection.update", (update) => {
@@ -53,7 +62,8 @@ async function startBot() {
     if (connection === "close") {
       updateStatus("disconnected");
       updateQR(null);
-      botJid = null;
+      botIds = new Set();
+      botPhoneNumber = null;
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
       const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
@@ -67,10 +77,19 @@ async function startBot() {
     }
 
     if (connection === "open") {
-      botJid = socket.user?.id ? jidNormalizedUser(socket.user.id) : null;
+      const ids = new Set<string>();
+      if (socket.user?.id) ids.add(jidNormalizedUser(socket.user.id));
+      if (socket.user?.lid) ids.add(jidNormalizedUser(socket.user.lid));
+      botIds = ids;
+      // Phone number is the user portion of the @s.whatsapp.net JID — used to
+      // strip @<number> mention tokens from message text before passing to the
+      // agent. The @lid form is anonymous and never appears as a text mention.
+      botPhoneNumber = socket.user?.id
+        ? jidNormalizedUser(socket.user.id).split("@")[0]
+        : null;
       updateStatus("open");
       updateQR(null);
-      logger.info({ botJid }, "Connected to WhatsApp");
+      logger.info({ botIds: [...botIds], botPhoneNumber }, "Connected to WhatsApp");
     }
   });
 
@@ -80,7 +99,7 @@ async function startBot() {
   // Message handler
   socket.ev.on("messages.upsert", async ({ messages, type }) => {
     if (type !== "notify") return;
-    if (!botJid) return; // Not connected yet
+    if (botIds.size === 0) return; // Not connected yet
 
     for (const msg of messages) {
       // Ignore own messages
@@ -92,17 +111,32 @@ async function startBot() {
       if (GROUP_JID && chatJid !== GROUP_JID) continue;
 
       // Only respond when the bot is @-mentioned. Plain `conversation` messages
-      // can't carry mentions, so we only look at extendedTextMessage.
+      // can't carry mentions, so we only look at extendedTextMessage. The
+      // mention list may contain either the @s.whatsapp.net JID or the
+      // anonymous @lid form, so we accept either.
       const ext = msg.message?.extendedTextMessage;
       const mentioned = ext?.contextInfo?.mentionedJid ?? [];
-      if (!mentioned.includes(botJid)) continue;
+      const isMentioned = mentioned.some((j) => botIds.has(j));
+      if (!isMentioned) {
+        // Info-level on purpose so we can debug JID-format mismatches in
+        // production without flipping the global log level.
+        logger.info({ chatJid, mentioned, botIds: [...botIds] }, "Group message ignored (not mentioned)");
+        continue;
+      }
 
       const rawText = ext?.text;
       if (!rawText) continue;
 
-      // Strip the @<botNumber> mention token so the agent sees clean input
-      const botNumber = botJid.split("@")[0];
-      const text = rawText.replace(new RegExp(`@${botNumber}\\b`, "g"), "").trim();
+      // Strip the mention token(s) so the agent sees clean input. WhatsApp
+      // may render the token using either the phone-number form (@1737...)
+      // or the anonymous LID form (@241579696631954) depending on whether
+      // the sender has the recipient saved as a contact.
+      let text = rawText;
+      for (const id of botIds) {
+        const user = id.split("@")[0];
+        text = text.replace(new RegExp(`@${user}\\b`, "g"), "");
+      }
+      text = text.trim();
       if (!text) continue;
 
       // Get sender name

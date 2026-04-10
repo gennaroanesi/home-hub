@@ -14,7 +14,7 @@ try {
 
 import { defineBackend } from "@aws-amplify/backend";
 import { Policy, PolicyStatement, Effect } from "aws-cdk-lib/aws-iam";
-import { CfnOutput, Fn, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
+import { CfnOutput, RemovalPolicy, Stack, Tags } from "aws-cdk-lib";
 import { CfnFunction, Function as LambdaFunction } from "aws-cdk-lib/aws-lambda";
 import * as sns from "aws-cdk-lib/aws-sns";
 import * as scheduler from "aws-cdk-lib/aws-scheduler";
@@ -22,6 +22,7 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
+import { GraphqlApi } from "aws-cdk-lib/aws-appsync";
 
 import { auth } from "./auth/resource";
 import { data } from "./data/resource";
@@ -181,10 +182,12 @@ botTaskDef.addContainer("bot", {
   logging: ecs.LogDrivers.awsLogs({ streamPrefix: "whatsapp-bot" }),
   portMappings: [{ containerPort: 8080 }],
   environment: {
-    APPSYNC_ENDPOINT: Fn.join("", [
-      "https://", backend.data.resources.graphqlApi.apiId,
-      ".appsync-api.us-east-1.amazonaws.com/graphql",
-    ]),
+    // AppSync's GraphQL hostname is NOT derived from the apiId — it's a
+    // separate opaque identifier exposed via graphqlUrl. Constructing the URL
+    // from apiId produces a hostname that doesn't resolve. Amplify types this
+    // as IGraphqlApi (which doesn't expose graphqlUrl) but the concrete
+    // instance is a GraphqlApi, so we cast.
+    APPSYNC_ENDPOINT: (backend.data.resources.graphqlApi as GraphqlApi).graphqlUrl,
     S3_BUCKET: "cristinegennaro.com",
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
     WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "",
