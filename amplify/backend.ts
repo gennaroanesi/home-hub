@@ -226,7 +226,13 @@ botTaskDef.addContainer("bot", {
     APPSYNC_ENDPOINT: backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl,
     S3_BUCKET: "cristinegennaro.com",
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
-    WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "",
+    // Default to the household group JID. Can be overridden via .env.local /
+    // the shell env if you ever need to point the bot at a different group.
+    // The bot uses this for both inbound mention filtering (when set, only
+    // mentions in this group are processed) and outbound delivery (the
+    // composer queues GROUP-targeted messages without a groupJid override
+    // and the bot resolves them via this env var).
+    WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "REDACTED@g.us",
     QR_ACCESS_TOKEN: process.env.QR_ACCESS_TOKEN ?? "",
     AWS_REGION: "us-east-1",
   },
@@ -262,6 +268,15 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+  // Stop the old task before starting the new one. Baileys can only have a
+  // single linked-device session per WhatsApp account, so the default ECS
+  // rolling deploy (overlapping old + new) makes both tasks fight, kicks
+  // each other off WA, and crashes them. minHealthyPercent=0 lets ECS take
+  // the service to zero during deploys; the brief downtime is acceptable
+  // because the daily summary / reminder queue is durable in DynamoDB and
+  // gets delivered as soon as the new task connects.
+  minHealthyPercent: 0,
+  maxHealthyPercent: 100,
 });
 
 // Outputs on the root stack for the Amplify build phase to build/push Docker
