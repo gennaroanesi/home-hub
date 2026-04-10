@@ -258,9 +258,12 @@ export default function HomeAgent() {
     await persistMessage(convoId, userMessage);
 
     try {
-      const history = messages.map((m) => ({
+      // The agent handler expects history as { role, content } where
+      // content is a plain string. Cap to the last 10 messages so we
+      // don't blow the prompt as conversations grow.
+      const history = messages.slice(-10).map((m) => ({
         role: m.role,
-        content: [{ text: m.content }],
+        content: m.content,
       }));
 
       const { data, errors } = await client.mutations.invokeHomeAgent({

@@ -81,10 +81,22 @@ interface AgentResponse {
   attachments?: AgentAttachment[];
 }
 
-export async function invokeHomeAgent(message: string, sender: string): Promise<AgentResponse> {
+export interface HistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export async function invokeHomeAgent(
+  message: string,
+  sender: string,
+  history: HistoryMessage[] = []
+): Promise<AgentResponse> {
   const data = await callAppSync<{ invokeHomeAgent: AgentResponse }>(INVOKE_MUTATION, {
     message,
     sender,
+    // The agent's `history` arg is AWSJSON — must be a serialized string,
+    // not an object. AppSync rejects raw objects with a 400 otherwise.
+    history: history.length ? JSON.stringify(history) : null,
   });
   return data.invokeHomeAgent;
 }

@@ -9,6 +9,7 @@ import {
   markOutboundMessageFailed,
   getPerson,
   type OutboundMessage,
+  type HistoryMessage,
 } from "./appsync.js";
 import { startServer, updateQR, updateStatus } from "./qr-server.js";
 
@@ -25,6 +26,30 @@ if (GROUP_JID) {
 // Simple cooldown to avoid flooding the agent
 const cooldowns = new Map<string, number>();
 const COOLDOWN_MS = 3000;
+
+// Per-chat short-term memory. We keep the last N user/assistant turns per
+// group JID so the agent has context for follow-up questions ("did I do
+// well?", "what did I just ask you to do?"). Memory is in-process only —
+// it resets on every container restart, which is fine for the household
+// use case (a fresh deploy starts a fresh conversation).
+//
+// Scoped per chat (not per sender) so the whole household participates
+// in the same conversation: Cristine can follow up on something Gennaro
+// just said.
+const HISTORY_TURNS = 5; // = 10 messages (5 user + 5 assistant)
+const chatHistories = new Map<string, HistoryMessage[]>();
+
+function getHistory(chatJid: string): HistoryMessage[] {
+  return chatHistories.get(chatJid) ?? [];
+}
+
+function appendHistory(chatJid: string, role: "user" | "assistant", content: string): void {
+  const buf = chatHistories.get(chatJid) ?? [];
+  buf.push({ role, content });
+  // Trim to the last HISTORY_TURNS * 2 messages
+  while (buf.length > HISTORY_TURNS * 2) buf.shift();
+  chatHistories.set(chatJid, buf);
+}
 
 function isOnCooldown(sender: string): boolean {
   const last = cooldowns.get(sender) ?? 0;
@@ -242,7 +267,16 @@ async function startBot() {
       logger.info({ sender, text, group: chatJid }, "Received message");
 
       try {
-        const response = await invokeHomeAgent(text, sender);
+        const history = getHistory(chatJid);
+        // Prefix the user's name into the message body so the agent can
+        // distinguish multi-person threads in the same chat (history is
+        // shared across senders for this group).
+        const messageForAgent = `${sender}: ${text}`;
+        const response = await invokeHomeAgent(messageForAgent, sender, history);
+
+        // Update memory with the turn we just had so the next call sees it.
+        appendHistory(chatJid, "user", messageForAgent);
+        appendHistory(chatJid, "assistant", response.message);
 
         // Text first, so the agent's narrative arrives before the photos
         await socket.sendMessage(chatJid, { text: response.message });
