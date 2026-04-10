@@ -1203,9 +1203,10 @@ export default function CalendarPage() {
                   {/* ── Photos (only available once the trip is saved) ──── */}
                   {tripForm.id && (
                     <div className="border-t border-default-200 pt-4">
-                      <div className="flex items-center justify-between mb-2">
-                        <p className="text-sm font-medium">Photos</p>
+                      <p className="text-sm font-medium mb-2">Photos</p>
+                      <div className="mb-3">
                         <PhotoUploader
+                          variant="dropzone"
                           tripId={tripForm.id}
                           onUploaded={loadAll}
                         />

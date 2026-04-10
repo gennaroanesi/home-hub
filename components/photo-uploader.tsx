@@ -13,6 +13,9 @@ interface PhotoUploaderProps {
   tripId?: string;
   uploadedBy?: string;
   onUploaded?: () => void; // called after each photo is registered
+  // "button"  → just the button (default, used in headers)
+  // "dropzone" → big visible drop zone with a button inside
+  variant?: "button" | "dropzone";
 }
 
 interface UploadProgress {
@@ -123,10 +126,16 @@ async function readImageDimensions(file: File): Promise<{ width: number; height:
   });
 }
 
-export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderProps) {
+export function PhotoUploader({
+  tripId,
+  uploadedBy,
+  onUploaded,
+  variant = "button",
+}: PhotoUploaderProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [progress, setProgress] = useState<UploadProgress[]>([]);
   const [uploading, setUploading] = useState(false);
+  const [isDragging, setIsDragging] = useState(false);
 
   async function uploadFile(file: File, setStatus: (s: UploadProgress) => void) {
     try {
@@ -234,53 +243,103 @@ export function PhotoUploader({ tripId, uploadedBy, onUploaded }: PhotoUploaderP
     setUploading(false);
   }
 
+  function onDragOver(e: React.DragEvent) {
+    e.preventDefault();
+    if (!isDragging) setIsDragging(true);
+  }
+  function onDragLeave(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+  }
+  function onDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setIsDragging(false);
+    const files = e.dataTransfer?.files;
+    if (files && files.length > 0) handleFiles(files);
+  }
+
+  const hiddenInput = (
+    <input
+      ref={fileInputRef}
+      type="file"
+      accept="image/*"
+      multiple
+      className="hidden"
+      onChange={(e) => handleFiles(e.target.files)}
+    />
+  );
+
+  const progressList = progress.length > 0 && (
+    <div className="mt-3 space-y-1 text-xs">
+      {progress.map((p, i) => (
+        <div key={i} className="flex items-center gap-2">
+          <span
+            className={
+              p.status === "done"
+                ? "text-success"
+                : p.status === "error"
+                ? "text-danger"
+                : "text-default-500"
+            }
+          >
+            {p.status === "done"
+              ? "✓"
+              : p.status === "error"
+              ? "✕"
+              : p.status === "pending"
+              ? "…"
+              : "↑"}
+          </span>
+          <span className="truncate flex-1">{p.filename}</span>
+          {p.error && <span className="text-danger">{p.error}</span>}
+        </div>
+      ))}
+    </div>
+  );
+
+  if (variant === "dropzone") {
+    return (
+      <div>
+        {hiddenInput}
+        <div
+          onDragOver={onDragOver}
+          onDragLeave={onDragLeave}
+          onDrop={onDrop}
+          onClick={() => fileInputRef.current?.click()}
+          className={`border-2 border-dashed rounded-md px-6 py-8 text-center cursor-pointer transition-colors ${
+            isDragging
+              ? "border-primary bg-primary/10"
+              : "border-default-300 hover:border-default-400 bg-default-50"
+          }`}
+        >
+          <FaUpload size={20} className="mx-auto text-default-400 mb-2" />
+          <p className="text-sm text-default-600">
+            {uploading ? "Uploading…" : "Drag photos here or click to select"}
+          </p>
+          <p className="text-xs text-default-400 mt-1">JPEG, PNG, HEIC, WebP — multiple files OK</p>
+        </div>
+        {progressList}
+      </div>
+    );
+  }
+
+  // Default "button" variant — drag-and-drop is also wired so the user can
+  // drop on the button if they want. The wrapping div has no extra styling
+  // so it doesn't disturb existing headers.
   return (
-    <div>
-      <input
-        ref={fileInputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
-      />
+    <div onDragOver={onDragOver} onDragLeave={onDragLeave} onDrop={onDrop}>
+      {hiddenInput}
       <Button
         size="sm"
         variant="flat"
         startContent={<FaUpload size={12} />}
         onPress={() => fileInputRef.current?.click()}
         isDisabled={uploading}
+        className={isDragging ? "ring-2 ring-primary" : ""}
       >
         {uploading ? "Uploading…" : "Upload photos"}
       </Button>
-
-      {progress.length > 0 && (
-        <div className="mt-3 space-y-1 text-xs">
-          {progress.map((p, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span
-                className={
-                  p.status === "done"
-                    ? "text-success"
-                    : p.status === "error"
-                    ? "text-danger"
-                    : "text-default-500"
-                }
-              >
-                {p.status === "done"
-                  ? "✓"
-                  : p.status === "error"
-                  ? "✕"
-                  : p.status === "pending"
-                  ? "…"
-                  : "↑"}
-              </span>
-              <span className="truncate flex-1">{p.filename}</span>
-              {p.error && <span className="text-danger">{p.error}</span>}
-            </div>
-          ))}
-        </div>
-      )}
+      {progressList}
     </div>
   );
 }

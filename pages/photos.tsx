@@ -124,10 +124,6 @@ export default function PhotosPage() {
               <span className="hidden sm:inline text-xs text-default-400 animate-pulse">Loading…</span>
             )}
           </div>
-          <PhotoUploader
-            tripId={filterTripId !== "all" && filterTripId !== "none" ? filterTripId : undefined}
-            onUploaded={loadAll}
-          />
         </div>
 
         <div className="flex flex-wrap gap-2 mb-3 items-end">
@@ -168,6 +164,14 @@ export default function PhotosPage() {
             </Button>
           )}
         </div>
+        <div className="mb-4">
+          <PhotoUploader
+            variant="dropzone"
+            tripId={filterTripId !== "all" && filterTripId !== "none" ? filterTripId : undefined}
+            onUploaded={loadAll}
+          />
+        </div>
+
         <p className="text-xs text-default-400 mb-3">
           {filtered.length} photo{filtered.length === 1 ? "" : "s"}
         </p>
