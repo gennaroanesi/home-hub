@@ -6,6 +6,7 @@ import {
   RekognitionClient,
   IndexFacesCommand,
   SearchFacesCommand,
+  type SearchFacesCommandOutput,
   DeleteFacesCommand,
 } from "@aws-sdk/client-rekognition";
 import { env } from "$amplify/env/face-detector";
@@ -111,16 +112,36 @@ async function processPhoto(photoId: string, s3key: string) {
     let storedFaceId: string = candidateFaceId;
     let similarity: number | null = null;
 
-    try {
-      const searchResult = await rek.send(
-        new SearchFacesCommand({
-          CollectionId: COLLECTION_ID,
-          FaceId: candidateFaceId,
-          FaceMatchThreshold: SIMILARITY_THRESHOLD,
-          MaxFaces: 5,
-        })
-      );
+    // Rekognition collections have a brief eventual-consistency window after
+    // IndexFaces — calling SearchFaces with the just-indexed FaceId can fail
+    // with "faceId was not found in the collection" for a few hundred ms.
+    // Retry up to 3 times with backoff before giving up and treating the
+    // face as unmatched.
+    let searchResult: SearchFacesCommandOutput | null = null;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        searchResult = await rek.send(
+          new SearchFacesCommand({
+            CollectionId: COLLECTION_ID,
+            FaceId: candidateFaceId,
+            FaceMatchThreshold: SIMILARITY_THRESHOLD,
+            MaxFaces: 5,
+          })
+        );
+        break;
+      } catch (err: any) {
+        const isLast = attempt === 2;
+        if (isLast) {
+          console.error(
+            `  SearchFaces failed for ${candidateFaceId} after ${attempt + 1} attempts: ${err.message ?? err}`
+          );
+        } else {
+          await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+        }
+      }
+    }
 
+    if (searchResult) {
       // Walk matches in descending similarity order (Rekognition returns
       // them sorted) and stop at the first one that maps to an enrolled
       // person. Self-matches and matches to other unmatched candidates
@@ -140,17 +161,33 @@ async function processPhoto(photoId: string, s3key: string) {
           break;
         }
       }
-    } catch (err: any) {
-      console.error(`  SearchFaces failed for ${candidateFaceId}: ${err.message ?? err}`);
     }
 
-    await client.models.homePhotoFace.create({
+    // Build the create input as a sparse object — DynamoDB GSIs reject
+    // null values for indexed attributes (homePhotoFace has a GSI on
+    // personId), so we have to OMIT personId entirely for unmatched faces
+    // rather than passing null. The Amplify Data client drops fields that
+    // aren't present in the input, which produces a sparse-index-friendly
+    // PutItem. Same applies to similarity (no GSI on it but be defensive
+    // and avoid sending nulls when we don't have a value).
+    const createInput: Parameters<typeof client.models.homePhotoFace.create>[0] = {
       photoId,
-      personId: matchedPersonId,
       rekognitionFaceId: storedFaceId,
-      similarity,
       boundingBox: boundingBox as any,
-    });
+    };
+    if (matchedPersonId) createInput.personId = matchedPersonId;
+    if (similarity !== null) createInput.similarity = similarity;
+
+    const { errors: createErrors } = await client.models.homePhotoFace.create(createInput);
+    if (createErrors?.length) {
+      // The Amplify Data client returns errors in `errors` instead of
+      // throwing — without this check the previous version was silently
+      // dropping every face write and producing zero homePhotoFace rows.
+      console.error(
+        `  Failed to create homePhotoFace for ${storedFaceId}: ${JSON.stringify(createErrors)}`
+      );
+      continue;
+    }
 
     if (matchedPersonId) {
       // Matched → the enrolled face already covers this person; the
