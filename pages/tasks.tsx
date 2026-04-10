@@ -79,11 +79,13 @@ export default function TasksPage() {
 
   function personLabel(ids: string[]): string {
     if (ids.length === 0) return "Household";
-    if (ids.length === people.length && people.length > 0) return "Both";
-    return ids
+    const names = ids
       .map((id) => people.find((p) => p.id === id)?.name)
-      .filter(Boolean)
-      .join(", ");
+      .filter((n): n is string => !!n);
+    if (names.length === 0) return "Household";
+    if (names.length === 1) return names[0];
+    if (names.length === 2) return `${names[0]} and ${names[1]}`;
+    return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
   }
 
   function openCreateModal() {
