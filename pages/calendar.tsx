@@ -99,6 +99,17 @@ function isWeekend(d: Date | string): boolean {
   return day === 0 || day === 6;
 }
 
+// Pick readable text color (black/white) for a given hex background
+function contrastText(hex: string): string {
+  const h = hex.replace("#", "");
+  if (h.length !== 6) return "#fff";
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+  return luminance > 0.6 ? "#1a1a1a" : "#fff";
+}
+
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function CalendarPage() {
@@ -373,16 +384,40 @@ export default function CalendarPage() {
         },
       };
     }
+    // Calendar event — color by assigned person(s)
+    const assigned = (event.resource.event.assignedPersonIds ?? []).filter(
+      (id): id is string => !!id,
+    );
+    const assignedPeople = assigned
+      .map((id) => people.find((p) => p.id === id))
+      .filter((p): p is Person => !!p);
+    const householdColor = "#6b7280";
+    let background: string;
+    let textColor: string;
+    if (assignedPeople.length === 0 || assignedPeople.length === people.length) {
+      // Household (nobody assigned, or everyone assigned)
+      background = householdColor;
+      textColor = "#fff";
+    } else if (assignedPeople.length === 1) {
+      const c = assignedPeople[0].color ?? householdColor;
+      background = c;
+      textColor = contrastText(c);
+    } else {
+      // Multiple (but not all) — gradient across their colors
+      const colors = assignedPeople.map((p) => p.color ?? householdColor);
+      background = `linear-gradient(90deg, ${colors.join(", ")})`;
+      textColor = contrastText(colors[0]);
+    }
     return {
       style: {
-        backgroundColor: "#6b7280",
-        color: "#fff",
+        background,
+        color: textColor,
         border: "none",
         borderRadius: "3px",
         fontSize: "0.75rem",
       },
     };
-  }, []);
+  }, [people]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -445,7 +480,28 @@ export default function CalendarPage() {
   }
 
   async function saveEvent(onClose: () => void) {
-    if (!eventForm.title.trim() || !eventForm.startAt) return;
+    if (!eventForm.title.trim() || !eventForm.startAt) {
+      alert("Title and start date are required.");
+      return;
+    }
+    // Validate dates
+    const startDate = new Date(eventForm.startAt);
+    if (isNaN(startDate.getTime())) {
+      alert("Start date is invalid.");
+      return;
+    }
+    let endDate: Date | null = null;
+    if (eventForm.endAt) {
+      endDate = new Date(eventForm.endAt);
+      if (isNaN(endDate.getTime())) {
+        alert("End date is invalid.");
+        return;
+      }
+      if (endDate.getTime() < startDate.getTime()) {
+        alert("End must be after start.");
+        return;
+      }
+    }
     const location =
       eventForm.location || eventForm.locationLat !== null
         ? {
@@ -458,18 +514,27 @@ export default function CalendarPage() {
     const payload = {
       title: eventForm.title,
       description: eventForm.description || null,
-      startAt: new Date(eventForm.startAt).toISOString(),
-      endAt: eventForm.endAt ? new Date(eventForm.endAt).toISOString() : null,
+      startAt: startDate.toISOString(),
+      endAt: endDate ? endDate.toISOString() : null,
       isAllDay: eventForm.isAllDay,
       location,
       assignedPersonIds: eventForm.assignedPersonIds,
       tripId: eventForm.tripId || null,
       recurrence: eventForm.recurrence || null,
     };
-    if (eventForm.id) {
-      await client.models.homeCalendarEvent.update({ id: eventForm.id, ...payload });
-    } else {
-      await client.models.homeCalendarEvent.create(payload);
+    try {
+      const result = eventForm.id
+        ? await client.models.homeCalendarEvent.update({ id: eventForm.id, ...payload })
+        : await client.models.homeCalendarEvent.create(payload);
+      if (result.errors && result.errors.length > 0) {
+        console.error("Save event errors:", result.errors);
+        alert(`Failed to save: ${result.errors.map((e) => e.message).join(", ")}`);
+        return;
+      }
+    } catch (err) {
+      console.error("Save event threw:", err);
+      alert(`Failed to save event: ${err instanceof Error ? err.message : String(err)}`);
+      return;
     }
     onClose();
     await loadAll();
@@ -695,7 +760,31 @@ export default function CalendarPage() {
                       label="Start"
                       type={eventForm.isAllDay ? "date" : "datetime-local"}
                       value={eventForm.isAllDay ? eventForm.startAt.slice(0, 10) : eventForm.startAt}
-                      onValueChange={(v) => setEventForm((f) => ({ ...f, startAt: v }))}
+                      onValueChange={(v) =>
+                        setEventForm((f) => {
+                          if (!v) return { ...f, startAt: v };
+                          // Auto-adjust end: maintain existing duration if valid, else default to +1h
+                          const newStart = dayjs(v);
+                          if (!newStart.isValid()) return { ...f, startAt: v };
+                          let newEnd = f.endAt;
+                          if (f.isAllDay) {
+                            // For all-day, keep end >= start
+                            if (!f.endAt || dayjs(f.endAt).isBefore(newStart, "day")) {
+                              newEnd = newStart.format("YYYY-MM-DDTHH:mm");
+                            }
+                          } else {
+                            const prevStart = dayjs(f.startAt);
+                            const prevEnd = dayjs(f.endAt);
+                            if (f.startAt && f.endAt && prevStart.isValid() && prevEnd.isValid() && prevEnd.isAfter(prevStart)) {
+                              const durationMs = prevEnd.diff(prevStart);
+                              newEnd = newStart.add(durationMs, "ms").format("YYYY-MM-DDTHH:mm");
+                            } else {
+                              newEnd = newStart.add(1, "hour").format("YYYY-MM-DDTHH:mm");
+                            }
+                          }
+                          return { ...f, startAt: v, endAt: newEnd };
+                        })
+                      }
                     />
                     <Input
                       label="End"
