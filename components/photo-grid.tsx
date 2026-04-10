@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
-import { FaCheck } from "react-icons/fa";
+import { FaCheck, FaHeart, FaRegHeart } from "react-icons/fa";
 import { photoUrl } from "@/lib/image-loader";
 import { PhotoModal } from "./photo-modal";
 import type { Schema } from "@/amplify/data/resource";
@@ -26,10 +26,15 @@ interface PhotoGridProps {
   selectionEnabled?: boolean;
   selectedIds?: Set<string>;
   onSelectionChange?: (selected: Set<string>) => void;
+  // When provided, each card shows a heart in the bottom-right corner.
+  // Clicking it calls this callback with the new value (and stops propagation
+  // so it doesn't also open the photo modal).
+  onToggleFavorite?: (photo: Photo, next: boolean) => void;
 }
 
 interface PhotoCardData extends Photo {
   onClick: (p: Photo) => void;
+  onFavoriteClick?: (p: Photo) => void;
   isSelected: boolean;
   selectionEnabled: boolean;
 }
@@ -73,6 +78,23 @@ function PhotoCard({ data, width }: PhotoCardProps) {
           <FaCheck size={10} />
         </div>
       )}
+      {data.onFavoriteClick && (
+        <button
+          type="button"
+          className="absolute bottom-2 right-2 w-7 h-7 rounded-full bg-black/40 backdrop-blur-sm flex items-center justify-center text-white hover:bg-black/60 transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            data.onFavoriteClick?.(data);
+          }}
+          aria-label={data.isFavorite ? "Unfavorite" : "Favorite"}
+        >
+          {data.isFavorite ? (
+            <FaHeart size={14} className="text-red-500" />
+          ) : (
+            <FaRegHeart size={14} />
+          )}
+        </button>
+      )}
     </div>
   );
 }
@@ -84,6 +106,7 @@ export function PhotoGrid({
   selectionEnabled = false,
   selectedIds,
   onSelectionChange,
+  onToggleFavorite,
 }: PhotoGridProps) {
   const [selected, setSelected] = useState<Photo | null>(null);
   const [visibleCount, setVisibleCount] = useState(pageSize);
@@ -132,6 +155,9 @@ export function PhotoGrid({
   const items: PhotoCardData[] = visiblePhotos.map((p) => ({
     ...p,
     onClick: togglePhoto,
+    onFavoriteClick: onToggleFavorite
+      ? (photo: Photo) => onToggleFavorite(photo, !photo.isFavorite)
+      : undefined,
     isSelected: selectedIds?.has(p.id) ?? false,
     selectionEnabled,
   }));

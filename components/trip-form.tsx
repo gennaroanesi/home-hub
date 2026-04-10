@@ -471,6 +471,15 @@ function TripPhotosSection({
     onPhotosChanged?.();
   }
 
+  async function toggleFavorite(photo: Photo, next: boolean) {
+    try {
+      await client.models.homePhoto.update({ id: photo.id, isFavorite: next });
+      onPhotosChanged?.();
+    } catch (err) {
+      console.error("Failed to toggle favorite", err);
+    }
+  }
+
   return (
     <div className="border-t border-default-200 pt-4">
       <div className="flex items-baseline justify-between mb-2">
@@ -491,7 +500,11 @@ function TripPhotosSection({
               onUploadingChange={onUploadingChange}
             />
           </div>
-          <PhotoGrid photos={photosForTrip} onDelete={deletePhoto} />
+          <PhotoGrid
+            photos={photosForTrip}
+            onDelete={deletePhoto}
+            onToggleFavorite={toggleFavorite}
+          />
         </>
       ) : (
         <div className="border border-dashed border-default-300 rounded-md p-6 text-center bg-default-50">

@@ -171,6 +171,7 @@ const schema = a
         exifData: a.json(),
         uploadedBy: a.string(),
         caption: a.string(),
+        isFavorite: a.boolean().default(false),
         // Many-to-many membership in albums via the homeAlbumPhoto join
         albums: a.hasMany("homeAlbumPhoto", "photoId"),
       })

@@ -141,6 +141,16 @@ export default function AlbumDetailPage() {
     }
   }
 
+  async function toggleFavorite(photo: Photo, next: boolean) {
+    setPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, isFavorite: next } : p)));
+    try {
+      await client.models.homePhoto.update({ id: photo.id, isFavorite: next });
+    } catch (err) {
+      console.error("Failed to toggle favorite", err);
+      setPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, isFavorite: !next } : p)));
+    }
+  }
+
   function toggleSelectionMode() {
     setSelectionEnabled((on) => {
       if (on) setSelectedIds(new Set());
@@ -282,6 +292,7 @@ export default function AlbumDetailPage() {
           selectionEnabled={selectionEnabled}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
+          onToggleFavorite={selectionEnabled ? undefined : toggleFavorite}
         />
 
         {/* Edit modal */}

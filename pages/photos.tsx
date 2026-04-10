@@ -15,7 +15,7 @@ import {
   ModalFooter,
   useDisclosure,
 } from "@heroui/modal";
-import { FaArrowLeft, FaTrash, FaCheckSquare, FaTimes, FaFolderPlus } from "react-icons/fa";
+import { FaArrowLeft, FaTrash, FaCheckSquare, FaTimes, FaFolderPlus, FaHeart, FaRegHeart } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { PhotoGrid } from "@/components/photo-grid";
@@ -39,6 +39,7 @@ export default function PhotosPage() {
   const [filterAlbumId, setFilterAlbumId] = useState<string>(ALL);
   const [fromDate, setFromDate] = useState<string>("");
   const [toDate, setToDate] = useState<string>("");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
   const [loading, setLoading] = useState(true);
 
   // Multi-select state
@@ -49,13 +50,15 @@ export default function PhotosPage() {
   const bulkAddDisclosure = useDisclosure();
   const [bulkTargetAlbumId, setBulkTargetAlbumId] = useState<string>("");
 
-  // Initialize filters from URL query params (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD)
+  // Initialize filters from URL query params
+  // (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD&favorites=1)
   useEffect(() => {
     if (!router.isReady) return;
-    const { album, from, to } = router.query;
+    const { album, from, to, favorites } = router.query;
     if (typeof album === "string") setFilterAlbumId(album);
     if (typeof from === "string") setFromDate(from);
     if (typeof to === "string") setToDate(to);
+    if (favorites === "1") setFavoritesOnly(true);
   }, [router.isReady, router.query]);
 
   useEffect(() => {
@@ -107,6 +110,10 @@ export default function PhotosPage() {
       result = result.filter((p) => photoToAlbums.get(p.id)?.has(filterAlbumId));
     }
 
+    if (favoritesOnly) {
+      result = result.filter((p) => p.isFavorite);
+    }
+
     if (fromDate) {
       const fromMs = new Date(fromDate).getTime();
       result = result.filter((p) => {
@@ -123,13 +130,26 @@ export default function PhotosPage() {
     }
 
     return result;
-  }, [photos, filterAlbumId, fromDate, toDate, photoToAlbums]);
+  }, [photos, filterAlbumId, fromDate, toDate, favoritesOnly, photoToAlbums]);
 
   function clearFilters() {
     setFilterAlbumId(ALL);
     setFromDate("");
     setToDate("");
+    setFavoritesOnly(false);
     router.replace("/photos", undefined, { shallow: true });
+  }
+
+  async function toggleFavorite(photo: Photo, next: boolean) {
+    // Optimistic update
+    setPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, isFavorite: next } : p)));
+    try {
+      await client.models.homePhoto.update({ id: photo.id, isFavorite: next });
+    } catch (err) {
+      console.error("Failed to toggle favorite", err);
+      // Revert
+      setPhotos((prev) => prev.map((p) => (p.id === photo.id ? { ...p, isFavorite: !next } : p)));
+    }
   }
 
   function toggleSelectionMode() {
@@ -204,7 +224,7 @@ export default function PhotosPage() {
     await loadAll();
   }
 
-  const hasActiveFilters = filterAlbumId !== ALL || fromDate || toDate;
+  const hasActiveFilters = filterAlbumId !== ALL || fromDate || toDate || favoritesOnly;
   const isAlbumFilter = filterAlbumId !== ALL && filterAlbumId !== UNFILED;
 
   return (
@@ -317,6 +337,15 @@ export default function PhotosPage() {
             onValueChange={setToDate}
             className="max-w-[160px]"
           />
+          <Button
+            size="sm"
+            variant={favoritesOnly ? "solid" : "flat"}
+            color={favoritesOnly ? "danger" : "default"}
+            startContent={favoritesOnly ? <FaHeart size={12} /> : <FaRegHeart size={12} />}
+            onPress={() => setFavoritesOnly((v) => !v)}
+          >
+            Favorites
+          </Button>
           {hasActiveFilters && (
             <Button size="sm" variant="light" onPress={clearFilters}>
               Clear
@@ -333,6 +362,7 @@ export default function PhotosPage() {
           selectionEnabled={selectionEnabled}
           selectedIds={selectedIds}
           onSelectionChange={setSelectedIds}
+          onToggleFavorite={selectionEnabled ? undefined : toggleFavorite}
         />
 
         {/* Bulk add to album modal */}
