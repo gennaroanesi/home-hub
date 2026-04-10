@@ -167,8 +167,8 @@ const botCluster = new ecs.Cluster(botStack, "whatsappBotCluster", {
 });
 
 const botTaskDef = new ecs.FargateTaskDefinition(botStack, "whatsappBotTask", {
-  cpu: 1024,
-  memoryLimitMiB: 2048,
+  cpu: 256,
+  memoryLimitMiB: 512,
 });
 
 const botRepo = new ecr.Repository(botStack, "whatsappBotRepo", {
