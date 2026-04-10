@@ -128,6 +128,53 @@
   }
 }
 
+/* ── react-big-calendar mobile tweaks ─────────────────────────────────── */
+@media (max-width: 640px) {
+  .calendar-container .rbc-toolbar {
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+  .calendar-container .rbc-toolbar-label {
+    font-size: 0.95rem;
+    flex: 1 1 100%;
+    text-align: center;
+    order: -1;
+  }
+  .calendar-container .rbc-btn-group {
+    font-size: 0.8rem;
+  }
+  .calendar-container .rbc-btn-group button {
+    padding: 0.25rem 0.5rem;
+  }
+  /* Tighten the time column on day/week views */
+  .calendar-container .rbc-time-gutter,
+  .calendar-container .rbc-time-header-gutter {
+    font-size: 0.7rem;
+    width: 3rem !important;
+    min-width: 3rem !important;
+    max-width: 3rem !important;
+  }
+  .calendar-container .rbc-header {
+    font-size: 0.75rem;
+    padding: 4px 2px;
+  }
+  .calendar-container .rbc-time-slot {
+    font-size: 0.7rem;
+  }
+  .calendar-container .rbc-event {
+    font-size: 0.7rem !important;
+  }
+  /* Month view: smaller cell text */
+  .calendar-container .rbc-date-cell {
+    font-size: 0.75rem;
+    padding: 2px;
+  }
+  .calendar-container .rbc-month-view .rbc-event-content {
+    font-size: 0.65rem;
+  }
+}
+
 @keyframes site-fade-in {
   from {
     opacity: 0;

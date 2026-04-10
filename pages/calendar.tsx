@@ -21,7 +21,7 @@ import {
   ModalFooter,
   useDisclosure,
 } from "@heroui/modal";
-import { FaPlus, FaTrash, FaArrowLeft, FaList } from "react-icons/fa";
+import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
@@ -164,6 +164,14 @@ export default function CalendarPage() {
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>(Views.WEEK);
   const [loading, setLoading] = useState(true);
+  const [legendOpen, setLegendOpen] = useState(false);
+
+  // Detect mobile viewport once on mount and default to day view
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches) {
+      setCurrentView(Views.DAY);
+    }
+  }, []);
 
   // Modals
   const tripModalDisclosure = useDisclosure(); // create + edit
@@ -715,53 +723,114 @@ export default function CalendarPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-7xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
+        <div className="flex items-center justify-between mb-3 sm:mb-4 gap-2">
+          <div className="flex items-center gap-2 min-w-0">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
               <FaArrowLeft />
             </Button>
-            <h1 className="text-2xl font-bold text-foreground">Calendar</h1>
-            {loading && <span className="text-xs text-default-400 animate-pulse">Loading…</span>}
+            <h1 className="text-xl sm:text-2xl font-bold text-foreground truncate">Calendar</h1>
+            {loading && <span className="hidden sm:inline text-xs text-default-400 animate-pulse">Loading…</span>}
           </div>
-          <div className="flex gap-2">
-            <Button size="sm" variant="flat" startContent={<FaList size={12} />} onPress={allTripsDisclosure.onOpen}>
+          <div className="flex gap-1 sm:gap-2 flex-shrink-0">
+            {/* Mobile: icon-only buttons */}
+            <Button
+              size="sm"
+              isIconOnly
+              variant="flat"
+              onPress={allTripsDisclosure.onOpen}
+              className="sm:hidden"
+              aria-label="All trips"
+            >
+              <FaList size={12} />
+            </Button>
+            <Button
+              size="sm"
+              isIconOnly
+              variant="flat"
+              onPress={openNewTrip}
+              className="sm:hidden"
+              aria-label="New trip"
+            >
+              <FaPlane size={12} />
+            </Button>
+            <Button
+              size="sm"
+              isIconOnly
+              color="primary"
+              onPress={openNewEvent}
+              className="sm:hidden"
+              aria-label="New event"
+            >
+              <FaPlus size={12} />
+            </Button>
+
+            {/* Desktop: full buttons */}
+            <Button size="sm" variant="flat" startContent={<FaList size={12} />} onPress={allTripsDisclosure.onOpen} className="hidden sm:inline-flex">
               All Trips
             </Button>
-            <Button size="sm" variant="flat" startContent={<FaPlus size={12} />} onPress={openNewTrip}>
+            <Button size="sm" variant="flat" startContent={<FaPlus size={12} />} onPress={openNewTrip} className="hidden sm:inline-flex">
               New Trip
             </Button>
-            <Button size="sm" color="primary" startContent={<FaPlus size={12} />} onPress={openNewEvent}>
+            <Button size="sm" color="primary" startContent={<FaPlus size={12} />} onPress={openNewEvent} className="hidden sm:inline-flex">
               New Event
             </Button>
           </div>
         </div>
 
-        {/* Legend */}
+        {/* Legend — collapsed on mobile, inline on desktop */}
         {people.length > 0 && (
-          <div className="flex flex-wrap items-center gap-4 mb-3 text-xs text-default-500">
-            {people.map((p) => (
-              <div key={p.id} className="flex items-center gap-1.5">
-                <div
-                  className="w-3 h-3 rounded-sm"
-                  style={{ backgroundColor: p.color ?? "#999" }}
-                />
-                <span>{p.name}</span>
-              </div>
-            ))}
-            <div className="h-4 w-px bg-default-200 mx-1" />
-            {Object.entries(STATUS_CONFIG).map(([, { label, color }]) => (
-              <div key={label} className="flex items-center gap-1.5">
-                <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color }} />
-                <span>{label}</span>
-              </div>
-            ))}
-          </div>
+          <>
+            {/* Mobile: collapsible */}
+            <div className="sm:hidden mb-2">
+              <button
+                type="button"
+                className="text-xs text-default-500 underline"
+                onClick={() => setLegendOpen((o) => !o)}
+              >
+                {legendOpen ? "Hide legend" : "Show legend"}
+              </button>
+              {legendOpen && (
+                <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-default-500">
+                  {people.map((p) => (
+                    <div key={p.id} className="flex items-center gap-1">
+                      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color ?? "#999" }} />
+                      <span>{p.name}</span>
+                    </div>
+                  ))}
+                  <div className="h-4 w-px bg-default-200 mx-1" />
+                  {Object.entries(STATUS_CONFIG).map(([, { label, color }]) => (
+                    <div key={label} className="flex items-center gap-1">
+                      <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color }} />
+                      <span>{label}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Desktop: inline */}
+            <div className="hidden sm:flex flex-wrap items-center gap-4 mb-3 text-xs text-default-500">
+              {people.map((p) => (
+                <div key={p.id} className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color ?? "#999" }} />
+                  <span>{p.name}</span>
+                </div>
+              ))}
+              <div className="h-4 w-px bg-default-200 mx-1" />
+              {Object.entries(STATUS_CONFIG).map(([, { label, color }]) => (
+                <div key={label} className="flex items-center gap-1.5">
+                  <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: color }} />
+                  <span>{label}</span>
+                </div>
+              ))}
+            </div>
+          </>
         )}
 
         {/* Calendar */}
-        <div style={{ height: "calc(100vh - 220px)" }}>
+        <div className="calendar-container" style={{ height: "calc(100dvh - 180px)" }}>
           <Calendar
             localizer={localizer}
             events={rbcEvents}
