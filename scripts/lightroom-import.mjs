@@ -568,7 +568,18 @@ async function main() {
         ? { lat: parseFloat(xmp.exif.GPSLatitude), lon: parseFloat(xmp.exif.GPSLongitude) }
         : null;
 
-      console.log(`${prefix} ${filename}${width && height ? ` (${width}×${height})` : ""}`);
+      // Lightroom "pick" flag → home-hub favorite. Reviews are keyed by
+      // user id; if any user has flagged this photo as a pick, we count
+      // it as a favorite. Star ratings (payload.ratings.{user}.rating)
+      // are ignored for now.
+      const reviews = payload.reviews ?? {};
+      const isPicked = Object.values(reviews).some(
+        (r) => r && typeof r === "object" && r.flag === "pick"
+      );
+
+      console.log(
+        `${prefix} ${filename}${width && height ? ` (${width}×${height})` : ""}${isPicked ? " ★" : ""}`
+      );
 
       if (opts.dryRun) {
         imported++;
@@ -598,6 +609,7 @@ async function main() {
         takenAt: captureDate,
         latitude: gps?.lat ?? null,
         longitude: gps?.lon ?? null,
+        isFavorite: isPicked,
         sourceProvider: "lightroom",
         sourceAssetId: asset.id,
         uploadedBy: "lightroom-import",
