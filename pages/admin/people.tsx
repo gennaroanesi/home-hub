@@ -46,6 +46,7 @@ export default function PeoplePage() {
   const [name, setName] = useState("");
   const [color, setColor] = useState("#3a5068");
   const [emoji, setEmoji] = useState("");
+  const [phoneNumber, setPhoneNumber] = useState("");
   const [timezone, setTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"
   );
@@ -73,6 +74,7 @@ export default function PeoplePage() {
     setName("");
     setColor("#3a5068");
     setEmoji("");
+    setPhoneNumber("");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
     onOpen();
   }
@@ -82,6 +84,7 @@ export default function PeoplePage() {
     setName(p.name);
     setColor(p.color ?? "#3a5068");
     setEmoji(p.emoji ?? "");
+    setPhoneNumber(p.phoneNumber ?? "");
     setTimezone(p.defaultTimezone ?? "America/New_York");
     onOpen();
   }
@@ -94,6 +97,7 @@ export default function PeoplePage() {
         name,
         color,
         emoji: emoji || null,
+        phoneNumber: phoneNumber.trim() || null,
         defaultTimezone: timezone,
       });
     } else {
@@ -101,6 +105,7 @@ export default function PeoplePage() {
         name,
         color,
         emoji: emoji || null,
+        phoneNumber: phoneNumber.trim() || null,
         defaultTimezone: timezone,
         active: true,
       });
@@ -180,6 +185,13 @@ export default function PeoplePage() {
                     value={emoji}
                     onValueChange={setEmoji}
                     placeholder="🐱"
+                  />
+                  <Input
+                    label="Phone number (optional)"
+                    value={phoneNumber}
+                    onValueChange={setPhoneNumber}
+                    placeholder="+12125551234"
+                    description="E.164 format. Used by the WhatsApp bot to DM this person."
                   />
                   <Input
                     label="Default timezone"

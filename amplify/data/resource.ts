@@ -1,6 +1,7 @@
 import { type ClientSchema, a, defineData } from "@aws-amplify/backend";
 import { homeAgent } from "../functions/agent/resource";
 import { recurringTasks } from "../functions/recurring-tasks/resource";
+import { dailySummary } from "../functions/daily-summary/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -22,6 +23,9 @@ const schema = a
         defaultTimezone: a.string(),
         emoji: a.string(),
         active: a.boolean().default(true),
+        // E.164 phone number (e.g. +12125551234) used to DM this person via
+        // the WhatsApp bot. Null = person only receives household/group messages.
+        phoneNumber: a.string(),
       })
       .authorization((allow) => [allow.group("home-users")]),
 
@@ -174,6 +178,36 @@ const schema = a
       .secondaryIndexes((index) => [index("listId")])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Outbound Message ─────────────────────────────────────────────────
+    // Generic delivery queue. Anything that needs to notify the household
+    // (daily summaries, reminders, ad-hoc alerts) writes a row here; the
+    // WhatsApp bot polls for PENDING rows and sends them. Decouples message
+    // composition from delivery so the composer can run even if the bot is
+    // offline — the message waits in the queue.
+    homeOutboundMessage: a
+      .model({
+        channel: a.enum(["WHATSAPP"]),
+        // GROUP → bot sends to its configured default group JID (or groupJid
+        // if set). PERSON → bot resolves personId → person.phoneNumber → DM.
+        target: a.enum(["GROUP", "PERSON"]),
+        personId: a.id(),
+        groupJid: a.string(), // optional override for GROUP target
+        text: a.string().required(),
+        status: a.enum(["PENDING", "SENT", "FAILED"]),
+        // Free-form label for filtering / dedupe, e.g. "daily_summary",
+        // "task_reminder", "ad_hoc".
+        kind: a.string(),
+        sentAt: a.datetime(),
+        error: a.string(),
+      })
+      .secondaryIndexes((index) => [index("status")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // WhatsApp bot (ECS task role) accesses this model directly via
+        // IAM-signed GraphQL — same pattern as invokeHomeAgent.
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Agent ────────────────────────────────────────────────────────────
     homeConversation: a
       .model({
@@ -214,6 +248,7 @@ const schema = a
   .authorization((allow) => [
     allow.resource(homeAgent),
     allow.resource(recurringTasks),
+    allow.resource(dailySummary),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

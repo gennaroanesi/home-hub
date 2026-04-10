@@ -22,11 +22,13 @@ import * as iam from "aws-cdk-lib/aws-iam";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
+
 import { auth } from "./auth/resource";
 import { data } from "./data/resource";
 import { homeAgent } from "./functions/agent/resource";
 import { homeScheduler } from "./functions/scheduler/resource";
 import { recurringTasks } from "./functions/recurring-tasks/resource";
+import { dailySummary } from "./functions/daily-summary/resource";
 
 const backend = defineBackend({
   auth,
@@ -34,6 +36,7 @@ const backend = defineBackend({
   homeAgent,
   homeScheduler,
   recurringTasks,
+  dailySummary,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -43,6 +46,7 @@ const lambdaDescriptions: Record<string, string> = {
   homeAgent: "Home Hub — Anthropic agent (tasks, bills, calendar)",
   homeScheduler: "Home Hub — EventBridge reminder notifications (SNS)",
   recurringTasks: "Home Hub — Daily recurring task sweep",
+  dailySummary: "Home Hub — Daily summary composer (writes outbound message)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -140,6 +144,39 @@ new scheduler.CfnSchedule(recurringStack, "recurringTasksDailySchedule", {
   target: {
     arn: recurringLambda.functionArn,
     roleArn: recurringScheduleRole.roleArn,
+  },
+});
+
+// ── Daily summary ──────────────────────────────────────────────────────────
+// Composes the household's morning summary (today + next 3 days) via
+// Anthropic and writes it as a PENDING homeOutboundMessage. The WA bot
+// picks it up from the queue and delivers it.
+
+const dailySummaryLambda = backend.dailySummary.resources.lambda as LambdaFunction;
+dailySummaryLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+
+const dailySummaryScheduleRole = new iam.Role(recurringStack, "dailySummarySchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [dailySummaryLambda.functionArn],
+        }),
+      ],
+    }),
+  },
+});
+
+// 12:00 UTC = 6am CST (winter) / 7am CDT (summer)
+new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
+  scheduleExpression: "cron(0 12 * * ? *)",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: {
+    arn: dailySummaryLambda.functionArn,
+    roleArn: dailySummaryScheduleRole.roleArn,
   },
 });
 
