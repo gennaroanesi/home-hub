@@ -21,9 +21,10 @@ import {
   ModalFooter,
   useDisclosure,
 } from "@heroui/modal";
-import { FaPlus, FaTrash, FaArrowLeft } from "react-icons/fa";
+import { FaPlus, FaTrash, FaArrowLeft, FaList } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { CityAutocomplete } from "@/components/city-autocomplete";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -115,11 +116,11 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(true);
 
   // Modals
+  const tripModalDisclosure = useDisclosure(); // create + edit
   const newEventDisclosure = useDisclosure();
-  const newTripDisclosure = useDisclosure();
   const dayStatusDisclosure = useDisclosure();
   const eventDetailDisclosure = useDisclosure();
-  const tripDetailDisclosure = useDisclosure();
+  const allTripsDisclosure = useDisclosure();
 
   // Day status editor state
   const [dayEditorDate, setDayEditorDate] = useState<string>("");
@@ -132,25 +133,31 @@ export default function CalendarPage() {
     endAt: "",
     isAllDay: false,
     location: "",
+    locationLat: null as number | null,
+    locationLon: null as number | null,
+    locationCountry: "",
     assignedPersonIds: [] as string[],
     tripId: "",
     recurrence: "",
   });
 
-  // New trip form
+  // Trip form (used for both create and edit)
   const [tripForm, setTripForm] = useState({
+    id: "" as string, // empty = new
     name: "",
     type: "LEISURE" as TripType,
     startDate: "",
     endDate: "",
     destination: "",
+    destinationLat: null as number | null,
+    destinationLon: null as number | null,
+    destinationCountry: "",
     notes: "",
     participantIds: [] as string[],
   });
 
   // Detail views
   const [selectedEvent, setSelectedEvent] = useState<Event | null>(null);
-  const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
 
   // ── Auth + data load ──────────────────────────────────────────────────────
 
@@ -335,8 +342,7 @@ export default function CalendarPage() {
 
   function handleSelectEvent(rbcEvent: RbcEvent) {
     if (rbcEvent.resource.kind === "trip") {
-      setSelectedTrip(rbcEvent.resource.trip);
-      tripDetailDisclosure.onOpen();
+      openEditTrip(rbcEvent.resource.trip);
     } else {
       setSelectedEvent(rbcEvent.resource.event);
       eventDetailDisclosure.onOpen();
@@ -353,6 +359,9 @@ export default function CalendarPage() {
       endAt: later,
       isAllDay: false,
       location: "",
+      locationLat: null,
+      locationLon: null,
+      locationCountry: "",
       assignedPersonIds: [],
       tripId: "",
       recurrence: "",
@@ -362,13 +371,22 @@ export default function CalendarPage() {
 
   async function createEvent(onClose: () => void) {
     if (!eventForm.title.trim() || !eventForm.startAt) return;
+    const location =
+      eventForm.location || eventForm.locationLat !== null
+        ? {
+            city: eventForm.location || null,
+            country: eventForm.locationCountry || null,
+            latitude: eventForm.locationLat,
+            longitude: eventForm.locationLon,
+          }
+        : null;
     await client.models.homeCalendarEvent.create({
       title: eventForm.title,
       description: eventForm.description || null,
       startAt: new Date(eventForm.startAt).toISOString(),
       endAt: eventForm.endAt ? new Date(eventForm.endAt).toISOString() : null,
       isAllDay: eventForm.isAllDay,
-      location: eventForm.location ? { city: eventForm.location } : null,
+      location,
       assignedPersonIds: eventForm.assignedPersonIds,
       tripId: eventForm.tripId || null,
       recurrence: eventForm.recurrence || null,
@@ -380,29 +398,81 @@ export default function CalendarPage() {
   function openNewTrip() {
     const today = dayjs().format("YYYY-MM-DD");
     setTripForm({
+      id: "",
       name: "",
       type: "LEISURE",
       startDate: today,
       endDate: today,
       destination: "",
+      destinationLat: null,
+      destinationLon: null,
+      destinationCountry: "",
       notes: "",
       participantIds: [],
     });
-    newTripDisclosure.onOpen();
+    tripModalDisclosure.onOpen();
   }
 
-  async function createTrip(onClose: () => void) {
-    if (!tripForm.name.trim() || !tripForm.startDate || !tripForm.endDate) return;
-    await client.models.homeTrip.create({
-      name: tripForm.name,
-      type: tripForm.type,
-      startDate: tripForm.startDate,
-      endDate: tripForm.endDate,
-      destination: tripForm.destination ? { city: tripForm.destination } : null,
-      notes: tripForm.notes || null,
-      participantIds: tripForm.participantIds,
+  function openEditTrip(trip: Trip) {
+    const dest = (trip.destination ?? {}) as any;
+    setTripForm({
+      id: trip.id,
+      name: trip.name,
+      type: (trip.type ?? "LEISURE") as TripType,
+      startDate: trip.startDate,
+      endDate: trip.endDate,
+      destination: dest.city ?? "",
+      destinationLat: dest.latitude ?? null,
+      destinationLon: dest.longitude ?? null,
+      destinationCountry: dest.country ?? "",
+      notes: trip.notes ?? "",
+      participantIds: (trip.participantIds ?? []).filter((id): id is string => !!id),
     });
+    tripModalDisclosure.onOpen();
+  }
+
+  async function saveTrip(onClose: () => void) {
+    if (!tripForm.name.trim() || !tripForm.startDate || !tripForm.endDate) return;
+    const destination =
+      tripForm.destination || tripForm.destinationLat !== null
+        ? {
+            city: tripForm.destination || null,
+            country: tripForm.destinationCountry || null,
+            latitude: tripForm.destinationLat,
+            longitude: tripForm.destinationLon,
+          }
+        : null;
+
+    if (tripForm.id) {
+      await client.models.homeTrip.update({
+        id: tripForm.id,
+        name: tripForm.name,
+        type: tripForm.type,
+        startDate: tripForm.startDate,
+        endDate: tripForm.endDate,
+        destination,
+        notes: tripForm.notes || null,
+        participantIds: tripForm.participantIds,
+      });
+    } else {
+      await client.models.homeTrip.create({
+        name: tripForm.name,
+        type: tripForm.type,
+        startDate: tripForm.startDate,
+        endDate: tripForm.endDate,
+        destination,
+        notes: tripForm.notes || null,
+        participantIds: tripForm.participantIds,
+      });
+    }
     onClose();
+    await loadAll();
+  }
+
+  async function deleteTripById(id: string) {
+    if (!confirm("Delete this trip? Days linked to it will keep their status but lose the trip link.")) return;
+    await client.models.homeTrip.delete({ id });
+    tripModalDisclosure.onClose();
     await loadAll();
   }
 
@@ -436,14 +506,6 @@ export default function CalendarPage() {
     await loadAll();
   }
 
-  async function deleteTrip() {
-    if (!selectedTrip) return;
-    if (!confirm("Delete this trip? Days linked to it will keep their status but lose the trip link.")) return;
-    await client.models.homeTrip.delete({ id: selectedTrip.id });
-    setSelectedTrip(null);
-    tripDetailDisclosure.onClose();
-    await loadAll();
-  }
 
   function personName(id: string): string {
     return people.find((p) => p.id === id)?.name ?? "Unknown";
@@ -464,6 +526,9 @@ export default function CalendarPage() {
             {loading && <span className="text-xs text-default-400 animate-pulse">Loading…</span>}
           </div>
           <div className="flex gap-2">
+            <Button size="sm" variant="flat" startContent={<FaList size={12} />} onPress={allTripsDisclosure.onOpen}>
+              All Trips
+            </Button>
             <Button size="sm" variant="flat" startContent={<FaPlus size={12} />} onPress={openNewTrip}>
               New Trip
             </Button>
@@ -555,10 +620,18 @@ export default function CalendarPage() {
                   >
                     All day
                   </Checkbox>
-                  <Input
+                  <CityAutocomplete
                     label="Location"
                     value={eventForm.location}
                     onValueChange={(v) => setEventForm((f) => ({ ...f, location: v }))}
+                    onSelect={(r) =>
+                      setEventForm((f) => ({
+                        ...f,
+                        locationLat: r.latitude,
+                        locationLon: r.longitude,
+                        locationCountry: r.country,
+                      }))
+                    }
                   />
                   <Select
                     label="Assigned to"
@@ -595,12 +668,12 @@ export default function CalendarPage() {
           </ModalContent>
         </Modal>
 
-        {/* ── New Trip Modal ───────────────────────────────────────────── */}
-        <Modal isOpen={newTripDisclosure.isOpen} onOpenChange={newTripDisclosure.onOpenChange} size="lg">
+        {/* ── Trip Modal (create + edit) ───────────────────────────────── */}
+        <Modal isOpen={tripModalDisclosure.isOpen} onOpenChange={tripModalDisclosure.onOpenChange} size="lg">
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>New Trip</ModalHeader>
+                <ModalHeader>{tripForm.id ? "Edit Trip" : "New Trip"}</ModalHeader>
                 <ModalBody>
                   <Input
                     label="Name"
@@ -632,11 +705,19 @@ export default function CalendarPage() {
                       onValueChange={(v) => setTripForm((f) => ({ ...f, endDate: v }))}
                     />
                   </div>
-                  <Input
+                  <CityAutocomplete
                     label="Destination"
+                    placeholder="Rome, Italy"
                     value={tripForm.destination}
                     onValueChange={(v) => setTripForm((f) => ({ ...f, destination: v }))}
-                    placeholder="Rome, Italy"
+                    onSelect={(r) =>
+                      setTripForm((f) => ({
+                        ...f,
+                        destinationLat: r.latitude,
+                        destinationLon: r.longitude,
+                        destinationCountry: r.country,
+                      }))
+                    }
                   />
                   <Select
                     label="Participants"
@@ -658,8 +739,98 @@ export default function CalendarPage() {
                   />
                 </ModalBody>
                 <ModalFooter>
+                  {tripForm.id && (
+                    <Button
+                      color="danger"
+                      variant="light"
+                      startContent={<FaTrash size={12} />}
+                      onPress={() => deleteTripById(tripForm.id)}
+                    >
+                      Delete
+                    </Button>
+                  )}
                   <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => createTrip(onClose)}>Create</Button>
+                  <Button color="primary" onPress={() => saveTrip(onClose)}>
+                    {tripForm.id ? "Save" : "Create"}
+                  </Button>
+                </ModalFooter>
+              </>
+            )}
+          </ModalContent>
+        </Modal>
+
+        {/* ── All Trips Modal ─────────────────────────────────────────── */}
+        <Modal isOpen={allTripsDisclosure.isOpen} onOpenChange={allTripsDisclosure.onOpenChange} size="2xl">
+          <ModalContent>
+            {(onClose) => (
+              <>
+                <ModalHeader>All Trips ({trips.length})</ModalHeader>
+                <ModalBody>
+                  {trips.length === 0 ? (
+                    <p className="text-center text-default-300 py-8">No trips yet</p>
+                  ) : (
+                    <div className="space-y-2 max-h-[60vh] overflow-y-auto">
+                      {[...trips]
+                        .sort((a, b) => a.startDate.localeCompare(b.startDate))
+                        .map((trip) => {
+                          const tripType = trip.type as TripType;
+                          const color = TRIP_TYPE_CONFIG[tripType]?.color ?? "#999";
+                          const dest = (trip.destination ?? {}) as any;
+                          const destStr = dest.city
+                            ? dest.country
+                              ? `${dest.city}, ${dest.country}`
+                              : dest.city
+                            : "";
+                          return (
+                            <button
+                              key={trip.id}
+                              type="button"
+                              className="w-full text-left p-3 rounded-md border border-default-200 hover:bg-default-50 flex items-start gap-3"
+                              onClick={() => {
+                                onClose();
+                                openEditTrip(trip);
+                              }}
+                            >
+                              <div
+                                className="w-2 self-stretch rounded-sm"
+                                style={{ backgroundColor: color }}
+                              />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <p className="font-medium text-sm truncate">{trip.name}</p>
+                                  <span className="text-xs text-default-400 flex-shrink-0">
+                                    {dayjs(trip.startDate).format("MMM D")} – {dayjs(trip.endDate).format("MMM D, YYYY")}
+                                  </span>
+                                </div>
+                                <div className="flex items-center gap-2 text-xs text-default-500 mt-0.5">
+                                  <span>{TRIP_TYPE_CONFIG[tripType]?.label ?? trip.type}</span>
+                                  {destStr && (
+                                    <>
+                                      <span>·</span>
+                                      <span className="truncate">{destStr}</span>
+                                    </>
+                                  )}
+                                  {(trip.participantIds ?? []).length > 0 && (
+                                    <>
+                                      <span>·</span>
+                                      <span className="truncate">
+                                        {(trip.participantIds ?? [])
+                                          .filter((id): id is string => !!id)
+                                          .map(personName)
+                                          .join(", ")}
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                    </div>
+                  )}
+                </ModalBody>
+                <ModalFooter>
+                  <Button onPress={onClose}>Close</Button>
                 </ModalFooter>
               </>
             )}
@@ -759,50 +930,6 @@ export default function CalendarPage() {
           </ModalContent>
         </Modal>
 
-        {/* ── Trip Detail Modal ───────────────────────────────────────── */}
-        <Modal isOpen={tripDetailDisclosure.isOpen} onOpenChange={tripDetailDisclosure.onOpenChange}>
-          <ModalContent>
-            {(onClose) => selectedTrip && (
-              <>
-                <ModalHeader>{selectedTrip.name}</ModalHeader>
-                <ModalBody>
-                  <p className="text-sm">
-                    <span className="text-default-400">Type: </span>
-                    {TRIP_TYPE_CONFIG[selectedTrip.type as TripType]?.label ?? selectedTrip.type}
-                  </p>
-                  <p className="text-sm">
-                    <span className="text-default-400">When: </span>
-                    {dayjs(selectedTrip.startDate).format("MMM D")} – {dayjs(selectedTrip.endDate).format("MMM D, YYYY")}
-                  </p>
-                  {selectedTrip.destination && (selectedTrip.destination as any).city && (
-                    <p className="text-sm">
-                      <span className="text-default-400">Where: </span>
-                      {(selectedTrip.destination as any).city}
-                    </p>
-                  )}
-                  {(selectedTrip.participantIds ?? []).length > 0 && (
-                    <p className="text-sm">
-                      <span className="text-default-400">Who: </span>
-                      {(selectedTrip.participantIds ?? [])
-                        .filter((id): id is string => !!id)
-                        .map(personName)
-                        .join(", ")}
-                    </p>
-                  )}
-                  {selectedTrip.notes && (
-                    <p className="text-sm text-default-600">{selectedTrip.notes}</p>
-                  )}
-                </ModalBody>
-                <ModalFooter>
-                  <Button color="danger" variant="light" startContent={<FaTrash size={12} />} onPress={deleteTrip}>
-                    Delete
-                  </Button>
-                  <Button onPress={onClose}>Close</Button>
-                </ModalFooter>
-              </>
-            )}
-          </ModalContent>
-        </Modal>
       </div>
     </DefaultLayout>
   );
