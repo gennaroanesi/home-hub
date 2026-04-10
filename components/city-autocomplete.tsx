@@ -46,11 +46,22 @@ export function CityAutocomplete({
   const [loading, setLoading] = useState(false);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  // Only run the autocomplete search when the user actively types — not
+  // when the parent pre-fills the value (e.g. opening an existing trip
+  // for editing). Without this flag the dropdown pops open on mount.
+  const userTypingRef = useRef(false);
+
+  function handleInputChange(v: string) {
+    userTypingRef.current = true;
+    onValueChange(v);
+  }
 
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (!userTypingRef.current) return;
     if (!value || value.length < 3) {
       setResults([]);
+      setShowResults(false);
       return;
     }
     debounceRef.current = setTimeout(async () => {
@@ -100,6 +111,10 @@ export function CityAutocomplete({
       r.display_name.split(",")[0];
     const country = r.address?.country ?? "";
     const display = country ? `${city}, ${country}` : city;
+    // Selecting a result is also "user-driven" but we want to immediately
+    // collapse the dropdown — clear the typing flag so the value-changed
+    // effect doesn't reopen it.
+    userTypingRef.current = false;
     onValueChange(display);
     setShowResults(false);
     onSelect?.({
@@ -116,7 +131,7 @@ export function CityAutocomplete({
         label={label}
         placeholder={placeholder}
         value={value}
-        onValueChange={onValueChange}
+        onValueChange={handleInputChange}
         onFocus={() => results.length > 0 && setShowResults(true)}
         endContent={loading ? <span className="text-xs text-default-400">…</span> : null}
       />
