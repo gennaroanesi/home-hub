@@ -28,6 +28,13 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - **Travel planner** — trip itineraries, packing lists, shared on calendar.
 - **Decisions log / shared notes** — things we've agreed on (paint colors, restaurants to try, "next time we'll…").
 
+### Calendar integrations
+- **External calendar sync (iCal)** — two-way sync with Google/Apple/Outlook calendars via CalDAV or ICS feeds. Options:
+  - **Read-only ICS feed export** — publish each person's home-hub events as an `.ics` URL they can subscribe to from their phone calendar (simplest, one-way).
+  - **Two-way CalDAV** — import external events alongside home-hub events, write home-hub events back. Needs per-person OAuth for Google, app-specific passwords for Apple, etc.
+  - **Pull-only ICS import** — periodically fetch an ICS URL (e.g. work calendar, shared family calendar) and mirror events into the home-hub calendar as read-only overlays.
+  - Useful for: pulling in flight confirmations from TripIt, work calendars, school schedules, etc.
+
 ## Top 3 picks
 
 If picking three to build next, highest leverage given the current stack:
