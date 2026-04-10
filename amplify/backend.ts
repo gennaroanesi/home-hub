@@ -297,14 +297,17 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
 // notification to the household WA group via the existing outbound poller.
 
 const BUILD_ARTIFACTS_PREFIX = "whatsapp-bot/build";
-const BOT_BUILD_PROJECT_NAME = "home-hub-whatsapp-bot-image";
 // ITable.tableName resolves to a CFN token at synth time and to the real
 // physical table name at deploy. Amplify creates one DynamoDB table per
 // model in the data nested stack and exposes them via `resources.tables`.
 const OUTBOUND_TABLE_NAME = backend.data.resources.tables["homeOutboundMessage"].tableName;
 
+// No `projectName` override — CodeBuild project names are globally unique
+// per account-region, and hardcoding one collides between the main branch
+// and any active `npx ampx sandbox` deploy. Let CDK auto-generate based on
+// the construct path. The Amplify build script discovers the actual name
+// via the whatsappBotBuildProjectName CFN output below.
 const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild", {
-  projectName: BOT_BUILD_PROJECT_NAME,
   description: "Build and push the home-hub WhatsApp bot Docker image",
   // The Amplify postBuild step overrides the source location per build with
   // a tar of whatsapp-bot/ uploaded to S3. This base value is just a
