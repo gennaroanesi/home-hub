@@ -44,6 +44,7 @@ import { homeScheduler } from "./functions/scheduler/resource";
 import { recurringTasks } from "./functions/recurring-tasks/resource";
 import { dailySummary } from "./functions/daily-summary/resource";
 import { faceDetector } from "./functions/face-detector/resource";
+import { hassSync } from "./functions/hass-sync/resource";
 
 const backend = defineBackend({
   auth,
@@ -53,6 +54,7 @@ const backend = defineBackend({
   recurringTasks,
   dailySummary,
   faceDetector,
+  hassSync,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -64,6 +66,7 @@ const lambdaDescriptions: Record<string, string> = {
   recurringTasks: "Home Hub — Daily recurring task sweep",
   dailySummary: "Home Hub — Daily summary composer (writes outbound message)",
   faceDetector: "Home Hub — Rekognition face detection on new photos (DDB stream)",
+  hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -194,6 +197,42 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
   target: {
     arn: dailySummaryLambda.functionArn,
     roleArn: dailySummaryScheduleRole.roleArn,
+  },
+});
+
+// ── Home Assistant device sync ─────────────────────────────────────────────
+// Pulls the current state of every entity from HA and upserts into the
+// homeDevice cache. Runs 10 minutes before the daily summary so the
+// summary's "home status" line reads fresh values. Can also be invoked
+// on demand via the syncHomeDevices AppSync mutation.
+//
+// Secrets (HASS_BASE_URL, HASS_TOKEN) are declared in the function's
+// resource.ts — Amplify wires them up automatically, no work here.
+
+const hassSyncLambda = backend.hassSync.resources.lambda as LambdaFunction;
+
+const hassSyncScheduleRole = new iam.Role(recurringStack, "hassSyncSchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [hassSyncLambda.functionArn],
+        }),
+      ],
+    }),
+  },
+});
+
+// 11:50 UTC = 5:50am CST / 6:50am CDT — 10 min before the daily summary
+new scheduler.CfnSchedule(recurringStack, "hassSyncSchedule", {
+  scheduleExpression: "cron(50 11 * * ? *)",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: {
+    arn: hassSyncLambda.functionArn,
+    roleArn: hassSyncScheduleRole.roleArn,
   },
 });
 
@@ -438,54 +477,85 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
   buildSpec: codebuild.BuildSpec.fromObject({
     version: "0.2",
     phases: {
+      // CodeBuild runs each `commands` list item as a SEPARATE script.sh —
+      // env vars set in one item don't survive to the next, multi-line
+      // shell constructs (if/then/fi, heredocs) across items break, and the
+      // shell is /bin/sh (dash) not bash. So each phase's logic is one
+      // multi-line list item that the buildspec writes verbatim to a single
+      // script.sh and runs end-to-end.
       pre_build: {
         commands: [
-          'echo "Building bot image for commit $COMMIT_SHA"',
-          'aws ecr get-login-password --region "$AWS_DEFAULT_REGION" | docker login --username AWS --password-stdin "$(echo $ECR_URI | cut -d/ -f1)"',
+          [
+            "set -e",
+            'echo "Building bot image for commit ${COMMIT_SHA}"',
+            'echo "CODEBUILD_SRC_DIR=${CODEBUILD_SRC_DIR}"',
+            "pwd && ls -la",
+            'aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_URI}" | cut -d/ -f1)"',
+          ].join("\n"),
         ],
       },
       build: {
         commands: [
-          // CodeBuild's S3 source automatically extracts the tarball into
-          // $CODEBUILD_SRC_DIR. The bot's Dockerfile lives at the root.
-          'docker buildx build --platform linux/amd64 -t "$ECR_URI:latest" -t "$ECR_URI:$COMMIT_SHA" .',
-          'docker push "$ECR_URI:latest"',
-          'docker push "$ECR_URI:$COMMIT_SHA"',
+          [
+            "set -e",
+            // Use plain `docker build` instead of `docker buildx build`.
+            // STANDARD_7_0 is already linux/amd64 so we don't need cross-
+            // arch, and plain build avoids buildx-init weirdness (the
+            // earlier buildx run produced "transferring dockerfile: 2B"
+            // followed by "open Dockerfile: no such file or directory"
+            // even though the file was sitting in the working directory).
+            'docker build -t "${ECR_URI}:latest" -t "${ECR_URI}:${COMMIT_SHA}" .',
+            'docker push "${ECR_URI}:latest"',
+            'docker push "${ECR_URI}:${COMMIT_SHA}"',
+          ].join("\n"),
         ],
       },
       post_build: {
+        // post_build runs even when build failed. Pick success/failure from
+        // $CODEBUILD_BUILD_SUCCEEDING, kick ECS on success, queue one
+        // homeOutboundMessage row in either case so the bot's outbound
+        // poller delivers a status to the household WA group.
+        //
+        // Deliberately no `set -e` — we want every step to attempt even
+        // if a prior one failed, so the notification still fires.
         commands: [
-          // Trigger ECS to pull the new image. Stop-then-start deploy
-          // strategy is configured on the service itself.
-          'aws ecs update-service --cluster "$CLUSTER_ARN" --service "$SERVICE_NAME" --force-new-deployment --no-cli-pager > /dev/null',
-          // Notify the WA group via the outbound message queue. The bot's
-          // existing poller picks PENDING rows up and delivers them within
-          // ~30s of the new task connecting. We write the row directly to
-          // DynamoDB rather than going through AppSync because CodeBuild
-          // already has the table name and DDB perms — no signed GraphQL
-          // request needed. The Amplify-managed table uses partition key
-          // `id` and stores all model fields as DDB attributes.
-          'STATUS_LABEL="✅ deployed"',
-          'NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"',
-          'MSG_ID="$(uuidgen | tr A-Z a-z)"',
-          'TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${COMMIT_SHA:0:7}"',
-          // Use a heredoc + jq for safe JSON construction (handles quoting
-          // in TEXT). jq is preinstalled on STANDARD_7_0.
-          'jq -n --arg id "$MSG_ID" --arg now "$NOW" --arg text "$TEXT" --arg jid "$GROUP_JID" \'{id:{S:$id},__typename:{S:"homeOutboundMessage"},channel:{S:"WHATSAPP"},target:{S:"GROUP"},groupJid:{S:$jid},text:{S:$text},status:{S:"PENDING"},kind:{S:"deploy_notice"},createdAt:{S:$now},updatedAt:{S:$now}}\' > /tmp/item.json',
-          'aws dynamodb put-item --table-name "$OUTBOUND_TABLE" --item file:///tmp/item.json --no-cli-pager',
-          'echo "Queued deploy notice $MSG_ID"',
-        ],
-        // post_build runs even if build phase failed. We want a different
-        // notification on failure — codebuild exposes CODEBUILD_BUILD_SUCCEEDING.
-        finally: [
-          'if [ "$CODEBUILD_BUILD_SUCCEEDING" != "1" ]; then',
-          '  STATUS_LABEL="❌ failed"',
-          '  NOW="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"',
-          '  MSG_ID="$(uuidgen | tr A-Z a-z)"',
-          '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${COMMIT_SHA:0:7} (build $CODEBUILD_BUILD_ID)"',
-          '  jq -n --arg id "$MSG_ID" --arg now "$NOW" --arg text "$TEXT" --arg jid "$GROUP_JID" \'{id:{S:$id},__typename:{S:"homeOutboundMessage"},channel:{S:"WHATSAPP"},target:{S:"GROUP"},groupJid:{S:$jid},text:{S:$text},status:{S:"PENDING"},kind:{S:"deploy_notice"},createdAt:{S:$now},updatedAt:{S:$now}}\' > /tmp/item.json',
-          '  aws dynamodb put-item --table-name "$OUTBOUND_TABLE" --item file:///tmp/item.json --no-cli-pager || true',
-          'fi',
+          [
+            'SHORT_SHA=$(echo "${COMMIT_SHA}" | cut -c1-7)',
+            "NOW=$(date -u +%Y-%m-%dT%H:%M:%S.000Z)",
+            "MSG_ID=$(cat /proc/sys/kernel/random/uuid)",
+            'if [ "${CODEBUILD_BUILD_SUCCEEDING}" = "1" ]; then',
+            '  STATUS_LABEL="✅ deployed"',
+            '  aws ecs update-service --cluster "${CLUSTER_ARN}" --service "${SERVICE_NAME}" --force-new-deployment --no-cli-pager > /dev/null || true',
+            '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${SHORT_SHA}"',
+            "else",
+            '  STATUS_LABEL="❌ failed"',
+            '  TEXT="🤖 *Bot deploy ${STATUS_LABEL}* — ${SHORT_SHA} (build ${CODEBUILD_BUILD_ID})"',
+            "fi",
+            // Build the DDB item via heredoc, not jq — avoids any shell
+            // quoting hell. Safe because $TEXT and $GROUP_JID are bot-
+            // controlled and won't contain literal " or \. The
+            // Amplify-managed table uses partition key `id` and flat DDB
+            // attributes — same shape as the daily-summary row.
+            "cat > /tmp/item.json <<JSON_EOF",
+            "{",
+            '  "id": {"S": "${MSG_ID}"},',
+            '  "__typename": {"S": "homeOutboundMessage"},',
+            '  "channel": {"S": "WHATSAPP"},',
+            '  "target": {"S": "GROUP"},',
+            '  "groupJid": {"S": "${GROUP_JID}"},',
+            '  "text": {"S": "${TEXT}"},',
+            '  "status": {"S": "PENDING"},',
+            '  "kind": {"S": "deploy_notice"},',
+            '  "createdAt": {"S": "${NOW}"},',
+            '  "updatedAt": {"S": "${NOW}"}',
+            "}",
+            "JSON_EOF",
+            'aws dynamodb put-item --table-name "${OUTBOUND_TABLE}" --item file:///tmp/item.json --no-cli-pager || true',
+            'echo "Queued ${STATUS_LABEL} notice ${MSG_ID}"',
+            // Propagate the original build status — return non-zero so the
+            // CodeBuild build itself shows FAILED when the build phase failed.
+            'if [ "${CODEBUILD_BUILD_SUCCEEDING}" != "1" ]; then exit 1; fi',
+          ].join("\n"),
         ],
       },
     },
