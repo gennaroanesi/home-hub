@@ -239,6 +239,140 @@ function parseTaf(raw: RawTafResponse): ParsedTaf {
   };
 }
 
+// ── Briefing mode selection ─────────────────────────────────────────────────
+//
+// The morning briefing has two flavors: "plain" (household-friendly weather
+// line) and "aviation" (full METAR/TAF + plain-English interpretation for
+// a flying day). We pick based on whether there's a flight today or in the
+// next 2 days.
+//
+// Two signals:
+//   1. homeTripLeg with mode PERSONAL_FLIGHT and departAt in window
+//   2. homeCalendarEvent whose title/description fuzzy-matches "flight"-ish
+//      keywords, for users who add flights as calendar events instead of
+//      (or in addition to) structured trip legs
+//
+// This function is pure — callers pre-fetch the trip legs and events and
+// pass them in. Keeps the lib free of Amplify runtime deps.
+
+/** Fuzzy regex for detecting flight-related calendar events. */
+const FLIGHT_EVENT_REGEX =
+  /\b(flight|fly(?:ing)?|pilot|depart(?:ure|ing)?|arrival|boarding|airport|takeoff|taxi)\b/i;
+
+/** Airline names that often appear in event titles without "flight". */
+const AIRLINE_REGEX =
+  /\b(united|american|delta|southwest|jetblue|alaska|spirit|frontier|hawaiian|british airways|lufthansa|air france|klm|emirates|qatar)\b/i;
+
+/** A flight number like "AA1234", "UA 789", "DL-42". */
+const FLIGHT_NUMBER_REGEX = /\b[A-Z]{2}\s?-?\d{1,4}\b/;
+
+/** Minimal shapes for the inputs — callers pass their own model objects. */
+export interface FlightTripLeg {
+  mode?: string | null;
+  departAt?: string | null;
+}
+
+export interface FlightCalendarEvent {
+  title?: string | null;
+  description?: string | null;
+  startAt?: string | null;
+}
+
+export interface BriefingContext {
+  /** All trip legs from homeTripLeg.list(). We'll filter. */
+  tripLegs?: FlightTripLeg[];
+  /** All upcoming events from homeCalendarEvent.list(). We'll filter. */
+  events?: FlightCalendarEvent[];
+  /** How many days ahead to scan for flights. Default 2. */
+  lookaheadDays?: number;
+}
+
+export interface FlyingDetection {
+  flying: boolean;
+  source?: "trip_leg" | "calendar";
+  title?: string;
+  when?: string;
+}
+
+/**
+ * Decide whether the user is flying in the lookahead window based on
+ * structured trip legs and fuzzy calendar event matching. Pure function.
+ */
+export function detectFlyingWindow(ctx: BriefingContext): FlyingDetection {
+  const lookaheadDays = ctx.lookaheadDays ?? 2;
+  const now = Date.now();
+  const windowEnd = now + lookaheadDays * 24 * 60 * 60 * 1000;
+
+  // 1. Structured trip legs — exact match on mode
+  for (const leg of ctx.tripLegs ?? []) {
+    if (leg.mode !== "PERSONAL_FLIGHT") continue;
+    if (!leg.departAt) continue;
+    const t = new Date(leg.departAt).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t >= now && t <= windowEnd) {
+      return {
+        flying: true,
+        source: "trip_leg",
+        title: `PERSONAL_FLIGHT leg at ${leg.departAt}`,
+        when: leg.departAt,
+      };
+    }
+  }
+
+  // 2. Calendar events — fuzzy keyword match
+  for (const evt of ctx.events ?? []) {
+    if (!evt.startAt) continue;
+    const t = new Date(evt.startAt).getTime();
+    if (!Number.isFinite(t)) continue;
+    if (t < now || t > windowEnd) continue;
+
+    const haystack = `${evt.title ?? ""} ${evt.description ?? ""}`;
+    if (
+      FLIGHT_EVENT_REGEX.test(haystack) ||
+      AIRLINE_REGEX.test(haystack) ||
+      FLIGHT_NUMBER_REGEX.test(haystack)
+    ) {
+      return {
+        flying: true,
+        source: "calendar",
+        title: evt.title ?? "",
+        when: evt.startAt,
+      };
+    }
+  }
+
+  return { flying: false };
+}
+
+/**
+ * Top-level morning briefing. Fetches METAR + TAF for the airport and
+ * decides whether to render in plain or aviation mode. Callers supply
+ * the context (trip legs + calendar events) and the ICAO; the function
+ * handles everything else.
+ */
+export async function getMorningWeatherBriefing(
+  icao: string,
+  ctx: BriefingContext = {}
+): Promise<{
+  icao: string;
+  mode: "plain" | "aviation";
+  metar: ParsedMetar | null;
+  taf: ParsedTaf | null;
+  flyingContext: FlyingDetection;
+}> {
+  const [{ metar, taf }, flyingContext] = [
+    await fetchAirportWeather(icao),
+    detectFlyingWindow(ctx),
+  ];
+  return {
+    icao,
+    mode: flyingContext.flying ? "aviation" : "plain",
+    metar,
+    taf,
+    flyingContext,
+  };
+}
+
 // ── Human-readable rendering ────────────────────────────────────────────────
 
 /**
