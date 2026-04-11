@@ -241,7 +241,15 @@ const schema = a
         index("personId"),
         index("rekognitionFaceId"),
       ])
-      .authorization((allow) => [allow.group("home-users")]),
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // Schema-level allow.resource(faceDetector) is not enough on its
+        // own — Amplify Gen 2 treats per-model auth rules as exclusive,
+        // so we need an explicit IAM/identity-pool grant here for the
+        // face-detector lambda to read the index. Same pattern as
+        // homeOutboundMessage which is queried by the daily-summary lambda.
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── PhotoFace (detected face on a photo) ────────────────────────────
     // One row per face detected on a photo by the face-detection lambda.
@@ -264,7 +272,12 @@ const schema = a
         index("photoId"),
         index("personId"),
       ])
-      .authorization((allow) => [allow.group("home-users")]),
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // See note on homePersonFace above — face-detector lambda needs
+        // explicit IAM access to write detected faces.
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── Home Assistant Device ───────────────────────────────────────────
     // Cached catalog of Home Assistant entities we care about. Populated

@@ -150,8 +150,15 @@ async function processPhoto(photoId: string, s3key: string) {
         const matchFaceId = match.Face?.FaceId;
         if (!matchFaceId || matchFaceId === candidateFaceId) continue;
 
-        const enrolled = await client.models.homePersonFace.listhomePersonFaceByRekognitionFaceId({
-          rekognitionFaceId: matchFaceId,
+        // Use a plain `list` with a filter rather than the generated index
+        // method (`list*ByRekognitionFaceId`) — Amplify Gen 2 has a casing
+        // inconsistency between the typed client and the bundled GraphQL
+        // queries that breaks the index method on Lambda runtimes. The
+        // filter is fine here because the rekognitionFaceId matches are
+        // exact and the result set is tiny (one row per enrolled face).
+        const enrolled = await client.models.homePersonFace.list({
+          filter: { rekognitionFaceId: { eq: matchFaceId } },
+          limit: 1,
         });
 
         if (enrolled.data && enrolled.data.length > 0) {
