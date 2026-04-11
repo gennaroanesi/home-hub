@@ -442,10 +442,10 @@ export default function PhotosPage() {
             className="max-w-[200px]"
           >
             <>
-              <SelectItem key={ALL}>All photos</SelectItem>
-              <SelectItem key={UNFILED}>Unfiled</SelectItem>
+              <SelectItem key={ALL} textValue="All photos">All photos</SelectItem>
+              <SelectItem key={UNFILED} textValue="Unfiled">Unfiled</SelectItem>
               {albums.map((a) => (
-                <SelectItem key={a.id}>{a.name}</SelectItem>
+                <SelectItem key={a.id} textValue={a.name}>{a.name}</SelectItem>
               )) as any}
             </>
           </Select>
@@ -529,7 +529,7 @@ export default function PhotosPage() {
                     onChange={(e) => setBulkTargetAlbumId(e.target.value)}
                   >
                     {albums.map((a) => (
-                      <SelectItem key={a.id}>{a.name}</SelectItem>
+                      <SelectItem key={a.id} textValue={a.name}>{a.name}</SelectItem>
                     ))}
                   </Select>
                 </ModalBody>

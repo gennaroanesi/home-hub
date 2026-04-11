@@ -26,7 +26,7 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
-import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI } from "@/lib/trip";
+import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -281,8 +281,15 @@ export default function CalendarPage() {
       if (!leg.departAt) continue;
       const trip = tripById.get(leg.tripId);
       if (!trip) continue;
-      const start = new Date(leg.departAt);
-      const end = leg.arriveAt ? new Date(leg.arriveAt) : new Date(start.getTime() + 60 * 60 * 1000);
+      // Leg times are local wall-clock at the airport stored with a fake
+      // Z suffix — use legIsoToLocalDate so the viewer sees the event on
+      // the grid at the HH:mm that was entered, regardless of their
+      // browser timezone. (See convention note in lib/trip.ts.)
+      const start = legIsoToLocalDate(leg.departAt);
+      if (!start) continue;
+      const end =
+        legIsoToLocalDate(leg.arriveAt) ??
+        new Date(start.getTime() + 60 * 60 * 1000);
       const mode = (leg.mode ?? "OTHER") as LegMode;
       const emoji = LEG_MODE_EMOJI[mode];
       let title = emoji;
@@ -822,7 +829,7 @@ export default function CalendarPage() {
                     description="Leave empty for household"
                   >
                     {people.map((p) => (
-                      <SelectItem key={p.id}>{p.name}</SelectItem>
+                      <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
                     ))}
                   </Select>
                   <Select
@@ -831,9 +838,9 @@ export default function CalendarPage() {
                     onChange={(e) => setEventForm((f) => ({ ...f, tripId: e.target.value }))}
                   >
                     <>
-                      <SelectItem key="">None</SelectItem>
+                      <SelectItem key="" textValue="None">None</SelectItem>
                       {trips.map((t) => (
-                        <SelectItem key={t.id}>{t.name}</SelectItem>
+                        <SelectItem key={t.id} textValue={t.name}>{t.name}</SelectItem>
                       )) as any}
                     </>
                   </Select>

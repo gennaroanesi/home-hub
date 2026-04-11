@@ -101,8 +101,12 @@ export function legToFormRow(leg: TripLeg): LegFormRow {
   return {
     id: leg.id,
     mode: (leg.mode ?? "COMMERCIAL_FLIGHT") as LegMode,
-    departAt: leg.departAt ? dayjs(leg.departAt).format("YYYY-MM-DDTHH:mm") : "",
-    arriveAt: leg.arriveAt ? dayjs(leg.arriveAt).format("YYYY-MM-DDTHH:mm") : "",
+    // Trip leg times store local wall-clock at the airport in an ISO
+    // string with a fake Z suffix. Direct-slice the first 16 chars
+    // ("YYYY-MM-DDTHH:mm") so we never run the value through a Date
+    // object — see the convention note in components/trip-form.tsx.
+    departAt: leg.departAt ? leg.departAt.slice(0, 16) : "",
+    arriveAt: leg.arriveAt ? leg.arriveAt.slice(0, 16) : "",
     fromCity: from.city ?? "",
     toCity: to.city ?? "",
     airline: leg.airline ?? "",
@@ -131,6 +135,60 @@ export function newTripFormState(): TripFormState {
     participantIds: [],
     legs: [],
   };
+}
+
+// ── Trip leg time helpers ───────────────────────────────────────────────
+//
+// CONVENTION: homeTripLeg.departAt / arriveAt store the local wall-clock
+// time AT THE RESPECTIVE AIRPORT as an ISO 8601 string with a "Z" suffix.
+// The Z is a syntactic placeholder required by the AWSDateTime scalar —
+// it does NOT mean UTC. A 4:22 PM departure from Austin is stored as
+// "2026-07-02T16:22:00.000Z" regardless of where the user entering it is
+// physically located. No timezone math is ever performed on these fields.
+//
+// These helpers parse the string directly instead of routing through a
+// Date object, because JS Date would re-interpret the string in the
+// viewer's browser timezone and display garbage.
+
+/** Parse a leg ISO string into its parts. Returns null for empty/invalid. */
+export function parseLegIso(iso: string | null | undefined):
+  | { year: number; month: number; day: number; hour: number; minute: number }
+  | null {
+  if (!iso) return null;
+  // Expected shape: YYYY-MM-DDTHH:mm[:ss[.sss]][Z]
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso);
+  if (!m) return null;
+  return {
+    year: Number(m[1]),
+    month: Number(m[2]),
+    day: Number(m[3]),
+    hour: Number(m[4]),
+    minute: Number(m[5]),
+  };
+}
+
+/** "4:22 PM" style display from a leg ISO string. No Date object involved. */
+export function formatLegTime(iso: string | null | undefined): string {
+  const p = parseLegIso(iso);
+  if (!p) return "";
+  const ampm = p.hour >= 12 ? "PM" : "AM";
+  const h12 = p.hour % 12 === 0 ? 12 : p.hour % 12;
+  const mm = p.minute.toString().padStart(2, "0");
+  return `${h12}:${mm} ${ampm}`;
+}
+
+/**
+ * Convert a leg ISO string to a JS Date whose local wall-clock matches
+ * the stored wall-clock. Used by anything that needs a Date object for
+ * positioning (e.g. react-big-calendar). We strip the fake Z so JS parses
+ * the remaining "YYYY-MM-DDTHH:mm:ss" as local time, which means the
+ * resulting Date renders in the viewer's browser as the same HH:mm that
+ * was stored — regardless of the viewer's actual timezone.
+ */
+export function legIsoToLocalDate(iso: string | null | undefined): Date | null {
+  const p = parseLegIso(iso);
+  if (!p) return null;
+  return new Date(p.year, p.month - 1, p.day, p.hour, p.minute, 0, 0);
 }
 
 export function tripToFormState(trip: Trip, allLegs: TripLeg[]): TripFormState {

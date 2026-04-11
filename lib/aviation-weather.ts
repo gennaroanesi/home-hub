@@ -304,10 +304,18 @@ export function detectFlyingWindow(ctx: BriefingContext): FlyingDetection {
   const windowEnd = now + lookaheadDays * 24 * 60 * 60 * 1000;
 
   // 1. Structured trip legs — exact match on mode
+  //
+  // Trip leg departAt stores local wall-clock at the airport with a fake
+  // Z suffix (see convention in lib/trip.ts). For the flying-window
+  // check we strip the Z and parse the remainder as a naive local
+  // instant. This puts the comparison on the same footing as "what
+  // calendar day is the flight" without pretending to do real timezone
+  // math — the detection is a rough ±half-day lookahead and that's fine.
   for (const leg of ctx.tripLegs ?? []) {
     if (leg.mode !== "PERSONAL_FLIGHT") continue;
     if (!leg.departAt) continue;
-    const t = new Date(leg.departAt).getTime();
+    const naive = leg.departAt.replace(/Z$/, "");
+    const t = new Date(naive).getTime();
     if (!Number.isFinite(t)) continue;
     if (t >= now && t <= windowEnd) {
       return {

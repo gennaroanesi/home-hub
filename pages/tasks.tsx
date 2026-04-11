@@ -264,9 +264,9 @@ export default function TasksPage() {
             className="max-w-[150px]"
           >
             <>
-              <SelectItem key="all">All</SelectItem>
+              <SelectItem key="all" textValue="All">All</SelectItem>
               {people.map((p) => (
-                <SelectItem key={p.id}>{p.name}</SelectItem>
+                <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
               )) as any}
             </>
           </Select>
@@ -277,9 +277,9 @@ export default function TasksPage() {
             onChange={(e) => setFilterStatus(e.target.value as FilterStatus)}
             className="max-w-[150px]"
           >
-            <SelectItem key="open">Open</SelectItem>
-            <SelectItem key="completed">Completed</SelectItem>
-            <SelectItem key="all">All</SelectItem>
+            <SelectItem key="open" textValue="Open">Open</SelectItem>
+            <SelectItem key="completed" textValue="Completed">Completed</SelectItem>
+            <SelectItem key="all" textValue="All">All</SelectItem>
           </Select>
         </div>
 
@@ -366,7 +366,7 @@ export default function TasksPage() {
                     description="Leave empty for household"
                   >
                     {people.map((p) => (
-                      <SelectItem key={p.id}>{p.name}</SelectItem>
+                      <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
                     ))}
                   </Select>
                   <Input
@@ -390,7 +390,7 @@ export default function TasksPage() {
                     }}
                   >
                     {RECURRENCE_PRESETS.map((p) => (
-                      <SelectItem key={p.value}>{p.label}</SelectItem>
+                      <SelectItem key={p.value} textValue={p.label}>{p.label}</SelectItem>
                     ))}
                   </Select>
                   {isCustomRecurrence && (

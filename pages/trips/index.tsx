@@ -152,9 +152,9 @@ export default function TripsListPage() {
             onChange={(e) => setFilter(e.target.value as FilterMode)}
             className="max-w-[160px]"
           >
-            <SelectItem key="upcoming">Upcoming &amp; ongoing</SelectItem>
-            <SelectItem key="past">Past</SelectItem>
-            <SelectItem key="all">All</SelectItem>
+            <SelectItem key="upcoming" textValue="Upcoming & ongoing">Upcoming &amp; ongoing</SelectItem>
+            <SelectItem key="past" textValue="Past">Past</SelectItem>
+            <SelectItem key="all" textValue="All">All</SelectItem>
           </Select>
           <Select
             size="sm"
@@ -164,10 +164,10 @@ export default function TripsListPage() {
             className="max-w-[160px]"
           >
             <>
-              <SelectItem key="all">All types</SelectItem>
+              <SelectItem key="all" textValue="All types">All types</SelectItem>
               {(Object.entries(TRIP_TYPE_CONFIG) as [TripType, { label: string }][]).map(
                 ([key, { label }]) => (
-                  <SelectItem key={key}>{label}</SelectItem>
+                  <SelectItem key={key} textValue={label}>{label}</SelectItem>
                 )
               )}
             </>
@@ -180,9 +180,9 @@ export default function TripsListPage() {
             className="max-w-[160px]"
           >
             <>
-              <SelectItem key="all">Anyone</SelectItem>
+              <SelectItem key="all" textValue="Anyone">Anyone</SelectItem>
               {people.map((p) => (
-                <SelectItem key={p.id}>{p.name}</SelectItem>
+                <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
               )) as any}
             </>
           </Select>

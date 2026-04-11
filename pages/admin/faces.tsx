@@ -437,7 +437,7 @@ export default function FacesPage() {
                             }}
                           >
                             {people.map((p) => (
-                              <SelectItem key={p.id}>{p.name}</SelectItem>
+                              <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
                             ))}
                           </Select>
                           <div className="flex gap-1">

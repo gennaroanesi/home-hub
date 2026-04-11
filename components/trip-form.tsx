@@ -187,7 +187,7 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         onChange={(e) => setForm((f) => ({ ...f, type: e.target.value as TripType }))}
       >
         {Object.entries(TRIP_TYPE_CONFIG).map(([key, { label }]) => (
-          <SelectItem key={key}>{label}</SelectItem>
+          <SelectItem key={key} textValue={label}>{label}</SelectItem>
         ))}
       </Select>
       <div className="flex gap-2">
@@ -235,7 +235,7 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         }
       >
         {people.map((p) => (
-          <SelectItem key={p.id}>{p.name}</SelectItem>
+          <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
         ))}
       </Select>
       <Textarea
@@ -294,7 +294,12 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                     className="flex-1"
                   >
                     {(Object.keys(LEG_MODE_LABEL) as LegMode[]).map((m) => (
-                      <SelectItem key={m}>
+                      // textValue is what HeroUI renders in the collapsed
+                      // trigger — without it, Select can't extract a display
+                      // string from the mixed emoji + label children and
+                      // shows a blank value after selection. Same fix as
+                      // the person Select in commit 541b895e.
+                      <SelectItem key={m} textValue={LEG_MODE_LABEL[m]}>
                         {LEG_MODE_EMOJI[m]} {LEG_MODE_LABEL[m]}
                       </SelectItem>
                     ))}
@@ -342,15 +347,17 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                   />
                 </div>
                 {leg.mode === "COMMERCIAL_FLIGHT" && (
-                  <div className="flex gap-2">
-                    <div className="flex-1">
-                      <FreeCombobox
-                        label="Airline"
-                        value={leg.airline}
-                        onValueChange={(v) => updateLeg({ airline: v })}
-                        options={AIRLINES}
-                      />
-                    </div>
+                  // 2fr/1fr grid so the airline combobox always dominates
+                  // and "American Airlines" etc. fits fully, while flight #
+                  // still has room for ~6 chars. A plain flex row let the
+                  // airline label collapse to "A..." at typical form widths.
+                  <div className="grid grid-cols-[2fr_1fr] gap-2">
+                    <FreeCombobox
+                      label="Airline"
+                      value={leg.airline}
+                      onValueChange={(v) => updateLeg({ airline: v })}
+                      options={AIRLINES}
+                    />
                     <Input
                       size="sm"
                       label="Flight #"
@@ -548,8 +555,13 @@ async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: Tri
     const payload = {
       tripId,
       mode: leg.mode,
-      departAt: leg.departAt ? new Date(leg.departAt).toISOString() : null,
-      arriveAt: leg.arriveAt ? new Date(leg.arriveAt).toISOString() : null,
+      // Trip leg times are local wall-clock at the airport — never run
+      // through Date(), which would reinterpret the string in the browser's
+      // timezone. The datetime-local input gives us "YYYY-MM-DDTHH:mm";
+      // append ":00.000Z" literally so it satisfies the AWSDateTime scalar.
+      // The Z is a syntactic placeholder, not a UTC assertion.
+      departAt: leg.departAt ? `${leg.departAt}:00.000Z` : null,
+      arriveAt: leg.arriveAt ? `${leg.arriveAt}:00.000Z` : null,
       fromLocation,
       toLocation,
       airline: leg.airline || null,

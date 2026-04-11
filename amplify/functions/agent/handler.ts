@@ -374,8 +374,16 @@ const tools: Anthropic.Tool[] = [
             "OTHER",
           ],
         },
-        departAt: { type: "string", description: "ISO 8601 datetime" },
-        arriveAt: { type: "string", description: "ISO 8601 datetime" },
+        departAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE ORIGIN AIRPORT, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The trailing Z is a syntactic placeholder required by the storage format — it is NOT a UTC assertion. Do NOT perform any timezone conversion. If the user says '4:22 PM depart from Austin on July 2 2026', write literally '2026-07-02T16:22:00.000Z'. The HH:mm is always the local wall-clock time at the origin airport. Never convert to UTC, never apply an offset, never call any timezone function — just take the local time the user stated and format it with a Z suffix.",
+        },
+        arriveAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE DESTINATION AIRPORT, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The trailing Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion. If the flight AUS->EWR arrives at 9:14 PM local Newark time on July 2 2026, write literally '2026-07-02T21:14:00.000Z'. Example of a round trip: AUS->EWR departing 4:22 PM AUS -> arriving 9:14 PM EWR on 2026-07-02 stores as departAt='2026-07-02T16:22:00.000Z' and arriveAt='2026-07-02T21:14:00.000Z'. Return EWR->AUS departing 7:27 PM EWR -> arriving 10:33 PM AUS stores as departAt='2026-07-XXT19:27:00.000Z' and arriveAt='2026-07-XXT22:33:00.000Z'.",
+        },
         fromLocation: {
           type: "object",
           properties: {
@@ -426,8 +434,16 @@ const tools: Anthropic.Tool[] = [
             "OTHER",
           ],
         },
-        departAt: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
-        arriveAt: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
+        departAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE ORIGIN AIRPORT, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion; write the HH:mm the user stated for the origin airport literally. Example: '4:22 PM depart Austin 2026-07-02' -> '2026-07-02T16:22:00.000Z'. Pass empty string to clear.",
+        },
+        arriveAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE DESTINATION AIRPORT, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion; write the HH:mm the user stated for the destination airport literally. Example: 'arrive 9:14 PM Newark 2026-07-02' -> '2026-07-02T21:14:00.000Z'. Pass empty string to clear.",
+        },
         fromLocation: {
           type: "object",
           properties: {
