@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -33,6 +33,74 @@ type PhotoFace = Schema["homePhotoFace"]["type"];
 const ALL = "all";
 const UNFILED = "unfiled";
 
+// Walk `nextToken` until the full model is loaded. Amplify's `.list` caps
+// a single request at 1 MB (AppSync DynamoDB resolver limit) regardless of
+// the `limit` you pass, so anything over a few hundred rows silently
+// truncates unless you paginate. We keep calling the fetcher with the
+// previous page's nextToken until it comes back null.
+async function listAllPages<T>(
+  fetcher: (nextToken: string | null) => Promise<{ data?: T[] | null; nextToken?: string | null }>
+): Promise<T[]> {
+  const collected: T[] = [];
+  let token: string | null = null;
+  do {
+    const res = await fetcher(token);
+    collected.push(...(res.data ?? []));
+    token = res.nextToken ?? null;
+  } while (token);
+  return collected;
+}
+
+// A date filter input that renders truly empty when cleared. HeroUI's
+// Input with type="date" and value="" shows today's date as a ghost
+// placeholder on Chrome/Safari macOS, which looks like a bug. We work
+// around it by rendering type="text" with an empty value when the field
+// is both blank AND not focused — swapping to type="date" the moment
+// the user focuses so the native date picker opens normally. Clear
+// button lives in endContent and visible only when there's a value.
+function DateFilterInput({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [focused, setFocused] = useState(false);
+  const showAsDate = !!value || focused;
+
+  return (
+    <Input
+      size="sm"
+      type={showAsDate ? "date" : "text"}
+      label={label}
+      placeholder=" "
+      value={value}
+      onValueChange={onChange}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      className="max-w-[160px]"
+      endContent={
+        value ? (
+          <button
+            type="button"
+            aria-label={`Clear ${label.toLowerCase()} date`}
+            className="text-default-400 hover:text-default-600"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={(e) => {
+              e.stopPropagation();
+              onChange("");
+            }}
+          >
+            <FaTimes size={12} />
+          </button>
+        ) : null
+      }
+    />
+  );
+}
+
 export default function PhotosPage() {
   const router = useRouter();
   const [photos, setPhotos] = useState<Photo[]>([]);
@@ -55,10 +123,18 @@ export default function PhotosPage() {
   const bulkAddDisclosure = useDisclosure();
   const [bulkTargetAlbumId, setBulkTargetAlbumId] = useState<string>("");
 
-  // Initialize filters from URL query params
-  // (?album=ID&from=YYYY-MM-DD&to=YYYY-MM-DD&favorites=1&person=ID)
+  // Initialize filters from URL query params EXACTLY ONCE when the router
+  // is first ready. This effect must NOT re-run on every router.query
+  // change — `router.query` is a fresh object reference on every render,
+  // so depending on it made the effect fire continuously and rewrite state
+  // from a stale URL. Symptom: clicking Clear reset state for one render,
+  // then the effect ran again with the still-unchanged URL and put the
+  // old filters right back.
+  const didInitFromUrl = useRef(false);
   useEffect(() => {
     if (!router.isReady) return;
+    if (didInitFromUrl.current) return;
+    didInitFromUrl.current = true;
     const { album, from, to, favorites, person } = router.query;
     if (typeof album === "string") setFilterAlbumId(album);
     if (typeof from === "string") setFromDate(from);
@@ -80,32 +156,49 @@ export default function PhotosPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
+    // Paginate through every model we display — Amplify's `.list({ limit })`
+    // is a single-page cap, not a total cap, and AppSync's DynamoDB
+    // resolver has a hard 1 MB response size. Passing limit: 1000 on
+    // homePhoto stopped somewhere around page 1 for photos with enough
+    // EXIF metadata, which silently capped the page's photo list to a
+    // subset of what DynamoDB actually contains. Same story for the
+    // join + face tables. The loop below follows nextToken until the
+    // full model is loaded.
+    const allPhotos = await listAllPages(
+      (token) => client.models.homePhoto.list({ limit: 1000, nextToken: token })
+    );
+    const allAlbums = await listAllPages(
+      (token) => client.models.homeAlbum.list({ limit: 500, nextToken: token })
+    );
+    const allJoins = await listAllPages(
+      (token) => client.models.homeAlbumPhoto.list({ limit: 1000, nextToken: token })
+    );
+    const allPeople = await listAllPages(
+      (token) => client.models.homePerson.list({ limit: 100, nextToken: token })
+    );
     // homePhotoFace is loaded with a soft failure: when the model isn't
     // deployed yet (e.g. between schema bump and ampx sandbox redeploy),
     // we don't want it to take down the whole photos page.
-    const [photosRes, albumsRes, joinRes, peopleRes, facesRes] = await Promise.all([
-      client.models.homePhoto.list({ limit: 1000 }),
-      client.models.homeAlbum.list({ limit: 500 }),
-      client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      client.models.homePerson.list({ limit: 100 }),
-      client.models.homePhotoFace
-        ?.list({ limit: 5000 })
-        .catch((err: unknown) => {
-          console.warn("homePhotoFace not available yet:", err);
-          return { data: [] as PhotoFace[] };
-        }) ?? Promise.resolve({ data: [] as PhotoFace[] }),
-    ]);
+    const allFaces = await listAllPages<PhotoFace>(
+      (token) =>
+        (client.models.homePhotoFace?.list({ limit: 1000, nextToken: token }) ??
+          Promise.resolve({ data: [] as PhotoFace[], nextToken: null })) as any
+    ).catch((err) => {
+      console.warn("homePhotoFace not available yet:", err);
+      return [] as PhotoFace[];
+    });
+
     setPhotos(
-      (photosRes.data ?? []).sort((a, b) => {
+      allPhotos.sort((a, b) => {
         const aDate = a.takenAt ?? a.createdAt;
         const bDate = b.takenAt ?? b.createdAt;
         return new Date(bDate).getTime() - new Date(aDate).getTime();
       })
     );
-    setAlbums((albumsRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
-    setAlbumPhotos(joinRes.data ?? []);
-    setPeople((peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
-    setPhotoFaces(facesRes.data ?? []);
+    setAlbums(allAlbums.sort((a, b) => a.name.localeCompare(b.name)));
+    setAlbumPhotos(allJoins);
+    setPeople(allPeople.sort((a, b) => a.name.localeCompare(b.name)));
+    setPhotoFaces(allFaces);
     setLoading(false);
   }, []);
 
@@ -375,22 +468,18 @@ export default function PhotosPage() {
               </>
             </Select>
           )}
-          <Input
-            size="sm"
-            type="date"
-            label="From"
-            value={fromDate}
-            onValueChange={setFromDate}
-            className="max-w-[160px]"
-          />
-          <Input
-            size="sm"
-            type="date"
-            label="To"
-            value={toDate}
-            onValueChange={setToDate}
-            className="max-w-[160px]"
-          />
+          {/*
+            Date inputs render as type="date" only when they have a value.
+            When empty, we swap to type="text" with a placeholder so the
+            browser's native date picker doesn't render today's date as a
+            ghost placeholder — which it does on Chrome/Safari on macOS
+            when value="" and the label is floating. On first focus we
+            flip back to type="date" so the native picker opens. This is
+            the simplest way to get a truly-empty visual state with the
+            native date input.
+          */}
+          <DateFilterInput label="From" value={fromDate} onChange={setFromDate} />
+          <DateFilterInput label="To" value={toDate} onChange={setToDate} />
           <Button
             variant={favoritesOnly ? "solid" : "flat"}
             color={favoritesOnly ? "danger" : "default"}
