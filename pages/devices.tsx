@@ -42,8 +42,24 @@ interface HassState {
   lastUpdated?: string | null;
 }
 
+/**
+ * homeDevice.lastState is stored as a JSON string (hass-sync writes
+ * it that way to satisfy AppSync's AWSJSON scalar input validation).
+ * Parse it here; also tolerate an already-parsed object for any legacy
+ * rows that might still be around.
+ */
 function getState(device: Device): HassState | null {
-  return (device.lastState as HassState) ?? null;
+  const raw = device.lastState;
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw) as HassState;
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") return raw as HassState;
+  return null;
 }
 
 function domainIcon(domain: string | null | undefined) {

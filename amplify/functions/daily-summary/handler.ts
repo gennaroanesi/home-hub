@@ -240,7 +240,7 @@ async function gatherHomeState(): Promise<SummaryData["home"]> {
       .map((d) => ({
         friendlyName: d.friendlyName ?? d.entityId,
         domain: d.domain ?? "unknown",
-        summary: summarizeDeviceState(d.domain ?? "", d.lastState as any),
+        summary: summarizeDeviceState(d.domain ?? "", parseLastState(d.lastState)),
       }))
       .filter((d) => d.summary !== "");
   } catch (err) {
@@ -255,6 +255,29 @@ async function gatherHomeState(): Promise<SummaryData["home"]> {
  * "" if there's nothing useful to say (which drops the device from the
  * summary). Kept deliberately minimal — Haiku handles the prose.
  */
+/**
+ * homeDevice.lastState is stored as a JSON string (hass-sync writes
+ * it that way to satisfy AppSync's AWSJSON scalar input validation).
+ * This helper unwraps either a string OR an already-parsed object
+ * for backward compatibility with any pre-existing rows.
+ */
+function parseLastState(
+  raw: unknown
+): { state?: string; attributes?: Record<string, any> } | null {
+  if (raw == null) return null;
+  if (typeof raw === "string") {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (typeof raw === "object") {
+    return raw as { state?: string; attributes?: Record<string, any> };
+  }
+  return null;
+}
+
 function summarizeDeviceState(
   domain: string,
   state: { state?: string; attributes?: Record<string, any> } | null

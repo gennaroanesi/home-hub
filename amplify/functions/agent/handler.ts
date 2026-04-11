@@ -955,14 +955,22 @@ async function executeTool(
       // Shape the response for Claude — only fields it needs, no internal ids.
       // lastState is the HA state blob so Claude can interpret e.g. climate
       // attributes (current_temperature, temperature, hvac_mode) or lock
-      // state strings ("locked"/"unlocked").
+      // state strings ("locked"/"unlocked"). It's stored as a JSON string
+      // (see hass-sync for why) so we parse it here before handing to Claude.
+      const parseLastState = (raw: unknown): unknown => {
+        if (raw == null) return null;
+        if (typeof raw === "string") {
+          try { return JSON.parse(raw); } catch { return null; }
+        }
+        return raw;
+      };
       const shaped = filtered.map((d) => ({
         entityId: d.entityId,
         friendlyName: d.friendlyName,
         domain: d.domain,
         area: d.area,
         sensitivity: d.sensitivity,
-        state: d.lastState,
+        state: parseLastState(d.lastState),
         lastSyncedAt: d.lastSyncedAt,
       }));
 

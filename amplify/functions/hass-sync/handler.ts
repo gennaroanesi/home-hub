@@ -93,17 +93,30 @@ async function runWithConcurrency<T>(
 }
 
 /**
- * Strip anything that could trip up AWSJSON serialization: undefined,
- * non-finite numbers, nested junk. Round-trip through JSON so the
- * whole tree gets scrubbed recursively.
+ * Serialize a value for an AWSJSON scalar field.
+ *
+ * The Amplify Gen 2 typed data client documents a.json() fields as
+ * accepting plain objects, but when called from Lambda (IAM signer
+ * context) AppSync rejects them with:
+ *
+ *   Variable 'lastState' has an invalid value.
+ *
+ * …at the GraphQL parse stage, because the AWSJSON scalar at the wire
+ * level expects a JSON-encoded string as input, not a structured
+ * object. The same workaround is already used in face-detector/handler.ts
+ * (see the boundingBox write — it stringifies and casts to any).
+ *
+ * Readers get the parsed object back either way — see parseLastState
+ * helpers in the readers.
+ *
+ * Also strips undefined (via JSON.stringify) and non-finite numbers
+ * (Infinity/NaN → null) as a bonus sanitization pass.
  */
-function sanitizeForAWSJSON<T>(value: T): T {
-  return JSON.parse(
-    JSON.stringify(value, (_key, v) => {
-      if (typeof v === "number" && !Number.isFinite(v)) return null;
-      return v;
-    })
-  );
+function sanitizeForAWSJSON(value: unknown): string {
+  return JSON.stringify(value, (_key, v) => {
+    if (typeof v === "number" && !Number.isFinite(v)) return null;
+    return v;
+  });
 }
 
 interface SyncResult {
@@ -164,11 +177,6 @@ async function runSync(): Promise<SyncResult> {
     `hass-sync: fetched ${entities.length} entities, syncing ${wanted.length} after skip filter`
   );
 
-  // Pick one entity for payload debug logging so we can see exactly
-  // what shape is being rejected. Only the first attempt logs, to
-  // avoid flooding CloudWatch with 90 copies.
-  let debugLogged = false;
-
   const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
     const area = (entity.attributes as any).area ?? null;
@@ -178,18 +186,6 @@ async function runSync(): Promise<SyncResult> {
       lastUpdated: entity.last_updated ?? null,
     });
 
-    if (!debugLogged) {
-      debugLogged = true;
-      console.log(
-        "DEBUG first payload:",
-        JSON.stringify({
-          entityId: entity.entity_id,
-          lastStateType: typeof lastState,
-          lastStateSample: lastState,
-        }).slice(0, 2000)
-      );
-    }
-
     const existingDevice = existingByEntityId.get(entity.entity_id);
 
     // IMPORTANT: Amplify data client returns errors as a field on the
@@ -197,6 +193,8 @@ async function runSync(): Promise<SyncResult> {
     // will count an auth-denied or validation-failed call as "fulfilled"
     // — we have to inspect errors explicitly and throw, otherwise
     // silent failures look like successes in the counter.
+    // `lastState` is a JSON string — see sanitizeForAWSJSON above for why.
+    // Cast to any so the generated `Nullable<Json>` type doesn't complain.
     try {
       if (existingDevice) {
         const res = await client.models.homeDevice.update({
@@ -204,7 +202,7 @@ async function runSync(): Promise<SyncResult> {
           friendlyName: friendlyName(entity),
           domain,
           area,
-          lastState,
+          lastState: lastState as any,
           lastSyncedAt: now,
         });
         if (res.errors?.length) {
@@ -220,7 +218,7 @@ async function runSync(): Promise<SyncResult> {
           area,
           sensitivity: "READ_ONLY",
           isPinned: AUTO_PIN_DOMAINS.has(domain),
-          lastState,
+          lastState: lastState as any,
           lastSyncedAt: now,
         });
         if (res.errors?.length) {
@@ -230,13 +228,8 @@ async function runSync(): Promise<SyncResult> {
         }
       }
     } catch (err: any) {
-      // Catch thrown errors too (the data client sometimes throws on
-      // client-side validation instead of returning res.errors). Include
-      // the full error for diagnosis.
       const detail = err?.errors ?? err?.message ?? String(err);
-      throw new Error(
-        `${entity.entity_id}: ${JSON.stringify(detail)}`
-      );
+      throw new Error(`${entity.entity_id}: ${JSON.stringify(detail)}`);
     }
   });
 
