@@ -92,6 +92,26 @@ async function runWithConcurrency<T>(
   return { ok, failed };
 }
 
+/**
+ * Strip anything AppSync's AWSJSON scalar can't represent: undefined,
+ * Infinity, NaN, functions, symbols. JSON.stringify drops undefined
+ * and converts non-finite numbers to null — which is what we want.
+ * Done as a round-trip through JSON so deeply nested junk gets
+ * scrubbed recursively.
+ *
+ * Returns a plain object/array tree, NOT a JSON string. AppSync's
+ * AWSJSON scalar expects objects (it serializes internally); passing
+ * a string would store it double-encoded.
+ */
+function sanitizeForAWSJSON<T>(value: T): T {
+  return JSON.parse(
+    JSON.stringify(value, (_key, v) => {
+      if (typeof v === "number" && !Number.isFinite(v)) return null;
+      return v;
+    })
+  );
+}
+
 interface SyncResult {
   synced: number;
   hassAvailable: boolean;
@@ -153,11 +173,16 @@ async function runSync(): Promise<SyncResult> {
   const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
     const area = (entity.attributes as any).area ?? null;
-    const lastState = {
+    // Sanitize the raw HA state blob before writing. Raw HA attributes
+    // can contain undefined, non-finite numbers (Infinity/NaN), and
+    // deeply-nested arrays that AppSync's AWSJSON scalar rejects with
+    // "Variable 'lastState' has an invalid value". Round-tripping
+    // through JSON strips all of that while keeping the shape.
+    const lastState = sanitizeForAWSJSON({
       state: entity.state,
       attributes: entity.attributes,
       lastUpdated: entity.last_updated ?? null,
-    };
+    });
 
     const existingDevice = existingByEntityId.get(entity.entity_id);
 
