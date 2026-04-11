@@ -196,7 +196,26 @@ export default function FacesPage() {
                 <CardBody className="flex flex-col gap-4">
                   <div className="flex flex-wrap gap-4">
                     {faces.map((face) => {
-                      const box = (face.boundingBox ?? null) as BBox | null;
+                      // boundingBox is `a.json()` in the schema → AWSJSON →
+                      // the Data client returns it as a JSON-encoded string,
+                      // not a parsed object. Parse before using its fields,
+                      // or face.Width / face.Left etc. all come out undefined
+                      // and the FaceCrop math collapses to NaN (blank
+                      // thumbnail). Defensive try/catch in case the field
+                      // is already an object on some code paths.
+                      let box: BBox | null = null;
+                      const raw = face.boundingBox;
+                      if (raw) {
+                        if (typeof raw === "string") {
+                          try {
+                            box = JSON.parse(raw) as BBox;
+                          } catch {
+                            box = null;
+                          }
+                        } else {
+                          box = raw as unknown as BBox;
+                        }
+                      }
                       return (
                         <div
                           key={face.id}
