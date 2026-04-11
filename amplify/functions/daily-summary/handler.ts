@@ -251,11 +251,6 @@ async function gatherHomeState(): Promise<SummaryData["home"]> {
 }
 
 /**
- * Condense an HA state blob into a short human-readable string. Returns
- * "" if there's nothing useful to say (which drops the device from the
- * summary). Kept deliberately minimal — Haiku handles the prose.
- */
-/**
  * homeDevice.lastState is stored as a JSON string (hass-sync writes
  * it that way to satisfy AppSync's AWSJSON scalar input validation).
  * This helper unwraps either a string OR an already-parsed object
@@ -278,35 +273,86 @@ function parseLastState(
   return null;
 }
 
+/**
+ * Condense an HA state blob into a short human-readable string.
+ *
+ * Design principle: **only mention things worth mentioning.** A morning
+ * briefing that lists every pinned device every day becomes noise.
+ * Rules by domain:
+ *
+ *   climate      — always show indoor temp + mode (useful context)
+ *   lock         — show only if UNLOCKED (actionable alert)
+ *   cover        — show only if not closed (garage open → alert)
+ *   vacuum       — show only if actively cleaning or in an error state
+ *   appliances   — show only if running (forgot the laundry)
+ *   battery      — any device at <20% appends "⚠️ low battery" to its line
+ *
+ * Returns "" to drop the device from the summary entirely.
+ */
 function summarizeDeviceState(
   domain: string,
   state: { state?: string; attributes?: Record<string, any> } | null
 ): string {
   if (!state) return "";
   const attrs = state.attributes ?? {};
+  const s = state.state ?? "";
+
+  // Low-battery suffix — applies to any domain. HA exposes this as
+  // attributes.battery_level on devices that report it (locks, some
+  // cameras, sensors). 20% cutoff is generous but not alarmist.
+  const batteryLevel = attrs.battery_level;
+  const lowBattery =
+    typeof batteryLevel === "number" && batteryLevel < 20
+      ? ` ⚠️ low battery (${batteryLevel}%)`
+      : "";
+
   switch (domain) {
     case "climate": {
+      // Always mentioned — glanceable context for "is the HVAC sane".
       const current = attrs.current_temperature;
       const target = attrs.temperature;
       const unit = attrs.temperature_unit ?? "°F";
-      const mode = state.state;
       const parts: string[] = [];
       if (typeof current === "number") parts.push(`${Math.round(current)}${unit}`);
       if (typeof target === "number" && target !== current)
         parts.push(`→ ${Math.round(target)}${unit}`);
-      if (mode && mode !== "off" && mode !== "unavailable") parts.push(mode);
-      return parts.join(" ");
+      if (s && s !== "off" && s !== "unavailable") parts.push(s);
+      return parts.length > 0 ? parts.join(" ") + lowBattery : lowBattery.trim();
     }
+
     case "lock":
-      return state.state === "locked"
-        ? "locked"
-        : state.state === "unlocked"
-          ? "UNLOCKED"
-          : "";
+      // Only alert on unlocked state. "locked" is the desired state
+      // and doesn't need a daily line. Unknown / unavailable filtered
+      // out (usually means the radio missed the last poll).
+      if (s === "unlocked") return "UNLOCKED" + lowBattery;
+      return lowBattery.trim();
+
     case "cover":
-      return state.state ?? "";
-    default:
-      return "";
+      // Garage doors, gates. "closed" is desired; everything else
+      // (open, opening, closing) gets a line.
+      if (s === "closed" || s === "unavailable" || s === "") return lowBattery.trim();
+      return (s === "open" ? "OPEN" : s) + lowBattery;
+
+    case "vacuum":
+      // Only when actively doing something or stuck.
+      if (s === "cleaning" || s === "returning") return s + lowBattery;
+      if (s === "error") return "⚠️ error" + lowBattery;
+      return lowBattery.trim();
+
+    default: {
+      // Generic appliance heuristic for media_player, washer, dryer,
+      // etc. Only surface when the state indicates active use.
+      const activeStates = new Set([
+        "on",
+        "running",
+        "playing",
+        "washing",
+        "drying",
+        "in_progress",
+      ]);
+      if (activeStates.has(s)) return s + lowBattery;
+      return lowBattery.trim();
+    }
   }
 }
 
@@ -352,7 +398,7 @@ Formatting rules:
 - Group into up to three sections: "*Today*", "*Coming up*", and "*Home*". Omit a section entirely if it has no content.
 - Under "*Today*", list tasks, events, and any notable day statuses (WFH, PTO, travel) as short bullet lines starting with "• ".
 - Under "*Coming up*", only show trips, all-day events, and multi-person events within the next 3 days. Include how many days away (e.g. "in 2 days").
-- Under "*Home*", give a one-line snapshot of device state from data.home.devices — e.g. "🏠 Inside 68°F heat · All doors locked". Only include locks/covers in this line if any are UNLOCKED or open (lowercase "locked" = silent), and only include climate if present. Drop the section entirely if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
+- Under "*Home*", render whatever is in data.home.devices as compact lines. The data is pre-filtered: devices only appear if they're notable (unlocked doors, open garage, running washer, low battery, current indoor temperature). Keep it short — a single line per device or merge into a summary line like "🏠 Inside 68°F heat, all else normal". If data.home.devices is empty but home.available is true, omit the Home section entirely. Drop the section if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.
