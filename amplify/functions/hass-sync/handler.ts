@@ -14,27 +14,83 @@ const client = generateClient<Schema>();
 // into the cache (so the agent can read it) but not pinned.
 const AUTO_PIN_DOMAINS = new Set(["climate", "lock", "cover", "camera"]);
 
-// Domains we skip entirely. HA surfaces a lot of internal entities
-// (automations, scripts, sun, zones, persistent notifications, etc) that
-// aren't useful to us and would bloat the table.
+// Domains we skip entirely. HA surfaces a LOT of internal entities
+// (automations, scripts, sun, zones, sensors, config helpers, etc) —
+// for v1 we only want actionable devices and what renders on the
+// dashboard. Every entity synced is a DynamoDB write, so every one
+// we skip saves latency on the refresh button.
+//
+// Notably skipped for v1:
+//   - sensor / binary_sensor: Unifi alone can surface 200+ of these
+//     (signal, throughput, client counts, poe, etc). Opt-in later.
+//   - device_tracker: used by v2 home-wifi detection, but read live
+//     from HA when needed — no reason to sync into the cache.
+//   - update / button / number / select / text: config helpers, not
+//     things you'd ever put on a dashboard.
+//
+// Allowed: climate, lock, cover, camera, vacuum, light, switch, fan,
+// media_player, alarm_control_panel, humidifier, water_heater, plus
+// anything new we haven't specifically skipped.
 const SKIP_DOMAINS = new Set([
+  // HA internals
   "automation",
   "script",
   "scene",
   "zone",
   "sun",
   "persistent_notification",
-  "input_boolean",
-  "input_number",
-  "input_select",
-  "input_text",
-  "input_datetime",
   "group",
   "conversation",
   "tts",
   "stt",
   "todo",
+  "calendar",
+  "weather",
+  // Config helpers
+  "input_boolean",
+  "input_number",
+  "input_select",
+  "input_text",
+  "input_datetime",
+  "number",
+  "select",
+  "text",
+  "button",
+  "update",
+  // Noisy at volume
+  "sensor",
+  "binary_sensor",
+  "device_tracker",
+  "event",
+  "image",
 ]);
+
+// Concurrency limit for parallel DynamoDB upserts. Each write goes
+// Lambda → AppSync → DDB, which is ~100-200ms per request; 10 at a
+// time keeps the refresh under AppSync's 30s timeout even with many
+// entities, without hammering AppSync's per-connection limit.
+const WRITE_CONCURRENCY = 10;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<void>
+): Promise<{ ok: number; failed: number }> {
+  let ok = 0;
+  let failed = 0;
+  for (let i = 0; i < items.length; i += limit) {
+    const chunk = items.slice(i, i + limit);
+    const results = await Promise.allSettled(chunk.map(fn));
+    for (const r of results) {
+      if (r.status === "fulfilled") ok++;
+      else {
+        failed++;
+        console.warn("upsert failed:", r.reason);
+      }
+    }
+  }
+  return { ok, failed };
+}
 
 interface SyncResult {
   synced: number;
@@ -58,8 +114,8 @@ async function runSync(): Promise<SyncResult> {
 
   const hass = new HassClient(baseUrl, token);
 
-  const ok = await hass.healthcheck();
-  if (!ok) {
+  const healthy = await hass.healthcheck();
+  if (!healthy) {
     return {
       synced: 0,
       hassAvailable: false,
@@ -86,16 +142,17 @@ async function runSync(): Promise<SyncResult> {
   );
 
   const now = new Date().toISOString();
-  let synced = 0;
 
-  for (const entity of entities) {
+  // Filter down to entities we actually want to sync before kicking off
+  // any writes. Log the counts so we can see what's happening in CloudWatch.
+  const wanted = entities.filter((e) => !SKIP_DOMAINS.has(entityDomain(e.entity_id)));
+  console.log(
+    `hass-sync: fetched ${entities.length} entities, syncing ${wanted.length} after skip filter`
+  );
+
+  const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
-    if (SKIP_DOMAINS.has(domain)) continue;
-
-    // Area comes from the entity's area_id attribute when populated via
-    // HA's area registry. Not every install sets this — fall back to null.
     const area = (entity.attributes as any).area ?? null;
-
     const lastState = {
       state: entity.state,
       attributes: entity.attributes,
@@ -129,10 +186,15 @@ async function runSync(): Promise<SyncResult> {
         lastSyncedAt: now,
       });
     }
-    synced++;
-  }
+  });
 
-  return { synced, hassAvailable: true, error: null };
+  console.log(`hass-sync: upserted ${ok} devices, ${failed} failed`);
+
+  return {
+    synced: ok,
+    hassAvailable: true,
+    error: failed > 0 ? `${failed} upserts failed (see logs)` : null,
+  };
 }
 
 // ── Handler ─────────────────────────────────────────────────────────────────

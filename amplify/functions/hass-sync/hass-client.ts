@@ -57,18 +57,26 @@ export class HassClient {
 
   /**
    * Fetch all entity states. HA returns an array of every entity's current
-   * state plus attributes. This is a single REST call and scales to
-   * hundreds of entities without trouble.
+   * state plus attributes. Timeout-bounded so we don't hang when HA is
+   * slow-but-responsive (which happens when the Nabu Casa tunnel is
+   * degraded).
    */
-  async getStates(): Promise<HassEntity[]> {
-    const res = await fetch(`${this.baseUrl}/api/states`, {
-      method: "GET",
-      headers: this.headers(),
-    });
-    if (!res.ok) {
-      throw new Error(`HA getStates failed: ${res.status} ${await res.text()}`);
+  async getStates(timeoutMs = 15000): Promise<HassEntity[]> {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/api/states`, {
+        method: "GET",
+        headers: this.headers(),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`HA getStates failed: ${res.status} ${await res.text()}`);
+      }
+      return (await res.json()) as HassEntity[];
+    } finally {
+      clearTimeout(timer);
     }
-    return (await res.json()) as HassEntity[];
   }
 
   /**
