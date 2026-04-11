@@ -35,6 +35,14 @@ Ideas for future features. Not committed — just a parking lot for things that 
   - **Pull-only ICS import** — periodically fetch an ICS URL (e.g. work calendar, shared family calendar) and mirror events into the home-hub calendar as read-only overlays.
   - Useful for: pulling in flight confirmations from TripIt, work calendars, school schedules, etc.
 
+### Weather / aviation briefing
+- **Location-based airport selection** — today the daily summary and Janet's `get_weather_briefing` tool hardcode `DEFAULT_ICAO = "KAUS"`. Instead, infer "where will I actually be today" from calendar events and trip destinations, then pick the nearest airport with a published TAF.
+  - Needs: a bundled dataset of ~2500 US airports with lat/lon + TAF availability (the FAA publishes this; ~200KB JSON), a nearest-point lookup (haversine, no index needed at this size), and a "whose location wins" rule when Gennaro and Cristine are in different places (household summary picks per-person if they differ).
+  - Source signals in priority order: active trip destination → today's calendar event with a `location.latitude/longitude` → home airport fallback.
+  - Hook point already exists: `getMorningWeatherBriefing(icao, ctx)` in `lib/aviation-weather.ts` takes the ICAO as a param, so swapping in a dynamic selector is a one-line change at the call site once the lookup function exists.
+- **Decoded TAF period summaries** — right now Haiku interprets raw TAF text on the fly ("TEMPO 1518 -SHRA BKN020" → "brief showers 3-6pm"). A deterministic parser would be testable and faster. Not urgent — Haiku does fine — but worth noting as a quality improvement for flying-day briefings.
+- **Weather fetch caching** — daily-summary runs once a day so it's fine, but Janet's agent tool hits aviationweather.gov on every call. Module-level memoization with a ~10 min TTL would cut latency for rapid follow-up questions. Only worth it if we see actual latency or rate-limit issues.
+
 ## Top 3 picks
 
 If picking three to build next, highest leverage given the current stack:

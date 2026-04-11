@@ -10,13 +10,24 @@ const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env)
 Amplify.configure(resourceConfig, libraryOptions);
 const client = generateClient<Schema>();
 
-// Domains we care about on the dashboard by default. Camera was in this
-// list originally but removed — camera state is always "recording" and
-// doesn't carry useful information for a glance-dashboard or a morning
-// summary. Users can still pin individual cameras manually if they want
-// snapshot tiles. Anything else is synced into the cache (so the agent
-// can read it) but stays unpinned until a human opts in.
-const AUTO_PIN_DOMAINS = new Set(["climate", "lock", "cover"]);
+// Domains we care about on the dashboard by default.
+//
+// Camera was in this list originally but removed — camera state is
+// always "recording" and doesn't add useful information to a glance
+// dashboard or the daily summary.
+//
+// Switch is deliberately NOT auto-pinned because Unifi surfaces dozens
+// of noise-switches per camera (doorbell_overlay_show_name,
+// privacy_mode, etc.) that would flood the dashboard. When the user
+// adds a real smart plug (e.g. Zooz ZEN04), it comes in as
+// switch.<friendly_name> and can be pinned manually with one click.
+//
+// Light IS auto-pinned — lights don't have the noise problem that
+// switches do, and they're always user-facing actionable devices.
+//
+// Anything else is synced into the cache (so the agent can read it)
+// but stays unpinned until a human opts in.
+const AUTO_PIN_DOMAINS = new Set(["climate", "lock", "cover", "light"]);
 
 // Domains we skip entirely. HA surfaces a LOT of internal entities
 // (automations, scripts, sun, zones, sensors, config helpers, etc) —
