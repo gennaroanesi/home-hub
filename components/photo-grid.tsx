@@ -170,7 +170,13 @@ export function PhotoGrid({
   return (
     <>
       <Masonry
-        key={`${photos.length}-${visibleCount}-${selectionEnabled}` /* re-init when window changes */}
+        // Re-init only when the photo *set* identity changes (filter swap,
+        // fresh upload, etc.) — NOT when visibleCount grows from infinite
+        // scroll. Including visibleCount in the key here unmounts and
+        // re-mounts the entire Masonry on every page load, which makes the
+        // grid flicker blank for ~300ms each time the user scrolls.
+        // masonic handles items being appended to the array natively.
+        key={`${photos.length}-${selectionEnabled}`}
         items={items}
         render={PhotoCard as any}
         columnWidth={200}
