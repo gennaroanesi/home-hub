@@ -34,6 +34,11 @@ export default function FacesPage() {
   const PAGE_SIZE = 20;
   const [visibleGroupCount, setVisibleGroupCount] = useState(PAGE_SIZE);
   const sentinelRef = useRef<HTMLDivElement>(null);
+  // Server-side pagination cursor for homePhotoFace. Null → no more pages.
+  // undefined → we haven't fetched yet (initial mount). When null we stop
+  // trying to extend the buffer from the server.
+  const [faceNextToken, setFaceNextToken] = useState<string | null | undefined>(undefined);
+  const loadingMoreRef = useRef(false);
   // Transient banner shown while / after a retroactive match sweep runs.
   // `null` = no banner; otherwise shows the result of the last run.
   const [retroStatus, setRetroStatus] = useState<
@@ -54,50 +59,87 @@ export default function FacesPage() {
     }
   }
 
+  // Fetches ONE server-side page of unmatched faces (≤200 rows), plus the
+  // homePhoto rows they reference. Appends onto existing state so repeated
+  // calls drive incremental loading as the user scrolls. Guarded against
+  // concurrent calls via loadingMoreRef.
+  const fetchFacePage = useCallback(
+    async (token: string | null | undefined): Promise<string | null> => {
+      if (loadingMoreRef.current) return token ?? null;
+      loadingMoreRef.current = true;
+      try {
+        const res: any = await client.models.homePhotoFace.list({
+          filter: { personId: { attributeExists: false } },
+          limit: 200,
+          nextToken: token ?? undefined,
+        });
+        const page = (res.data ?? []) as PhotoFace[];
+
+        // Fetch the homePhoto rows referenced by this page (deduped against
+        // what we already have). Parallel across the page — ~200 max per
+        // call keeps this reasonable.
+        const newPhotoIds = Array.from(
+          new Set(page.map((f) => f.photoId).filter((id) => !photos[id]))
+        );
+        const photoEntries = await Promise.all(
+          newPhotoIds.map(async (id) => {
+            const r = await client.models.homePhoto.get({ id });
+            return [id, r.data] as const;
+          })
+        );
+        setPhotos((prev) => {
+          const next = { ...prev };
+          for (const [id, p] of photoEntries) if (p) next[id] = p;
+          return next;
+        });
+
+        // Append faces, keeping them sorted newest-first. New pages come
+        // back in the order DynamoDB returns them; we do a stable sort
+        // after appending to keep the rendered order deterministic.
+        setUnmatched((prev) => {
+          const seen = new Set(prev.map((r) => r.id));
+          const appended = [...prev, ...page.filter((r) => !seen.has(r.id))];
+          appended.sort((a, b) => {
+            const ad = new Date(a.createdAt ?? 0).getTime();
+            const bd = new Date(b.createdAt ?? 0).getTime();
+            return bd - ad;
+          });
+          return appended;
+        });
+
+        const newToken = (res.nextToken ?? null) as string | null;
+        setFaceNextToken(newToken);
+        return newToken;
+      } finally {
+        loadingMoreRef.current = false;
+      }
+    },
+    [photos]
+  );
+
   const loadAll = useCallback(async () => {
     setLoading(true);
+    // Reset all state so a Refresh click does a clean reload instead of
+    // appending on top of the previous buffer.
+    setUnmatched([]);
+    setPhotos({});
+    setFaceNextToken(undefined);
+    setVisibleGroupCount(PAGE_SIZE);
 
     // People for the dropdown
     const peopleRes = await client.models.homePerson.list();
     const sortedPeople = (peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name));
     setPeople(sortedPeople);
 
-    // Unmatched faces. Filter server-side via attributeExists. Pagination
-    // loop in case there are >100 — Amplify caps each page at 100.
-    const collected: PhotoFace[] = [];
-    let nextToken: string | null | undefined = undefined;
-    do {
-      const res: any = await client.models.homePhotoFace.list({
-        filter: { personId: { attributeExists: false } },
-        limit: 200,
-        nextToken,
-      });
-      collected.push(...(res.data ?? []));
-      nextToken = res.nextToken;
-    } while (nextToken);
-
-    // Sort newest first
-    collected.sort((a, b) => {
-      const ad = new Date(a.createdAt ?? 0).getTime();
-      const bd = new Date(b.createdAt ?? 0).getTime();
-      return bd - ad;
-    });
-    setUnmatched(collected);
-
-    // Bulk-fetch the photos referenced by these faces (deduped). Sequential
-    // because the data client doesn't expose batch get; in practice the set
-    // is small (one row per unique unknown face).
-    const uniquePhotoIds = Array.from(new Set(collected.map((f) => f.photoId)));
-    const photoMap: Record<string, Photo> = {};
-    await Promise.all(
-      uniquePhotoIds.map(async (id) => {
-        const r = await client.models.homePhoto.get({ id });
-        if (r.data) photoMap[id] = r.data;
-      })
-    );
-    setPhotos(photoMap);
+    // First page of unmatched faces. Subsequent pages are loaded lazily as
+    // the user scrolls (see the visibleGroupCount effect below).
+    await fetchFacePage(undefined);
 
     setLoading(false);
+    // Intentionally omitting fetchFacePage from deps — it's stable enough
+    // across renders that re-creating loadAll on every photos change would
+    // just churn. The reset-then-fetch pattern handles stale state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function assignFace(face: PhotoFace) {
@@ -222,38 +264,51 @@ export default function FacesPage() {
     return Array.from(groups.entries());
   }, [unmatched]);
 
-  // Reset the visible window when the underlying list size changes — e.g.
-  // after loadAll() replaces the data or after a retroactive sweep drops a
-  // bunch of rows. Track length not reference identity so in-place edits
-  // (dismiss / assign) don't snap back to the top.
-  useEffect(() => {
-    setVisibleGroupCount(PAGE_SIZE);
-  }, [groupedByPhoto.length]);
-
-  // IntersectionObserver for the "load more" sentinel. Starts loading
-  // slightly before the sentinel enters the viewport so scrolling feels
-  // continuous.
+  // IntersectionObserver on the "loading more" sentinel. Bumps the
+  // rendered window by PAGE_SIZE when the sentinel enters the viewport.
+  // The cap is the FULL groupedByPhoto length, not a per-page slice —
+  // that way we can render past the current server buffer into whatever
+  // arrives next without a second tick.
   useEffect(() => {
     if (!sentinelRef.current) return;
-    if (visibleGroupCount >= groupedByPhoto.length) return;
+    // Only observe while there's something left to reveal (client buffer
+    // OR server pages).
+    if (visibleGroupCount >= groupedByPhoto.length && faceNextToken === null) {
+      return;
+    }
 
     const observer = new IntersectionObserver(
       (entries) => {
         if (entries[0].isIntersecting) {
-          setVisibleGroupCount((c) => Math.min(c + PAGE_SIZE, groupedByPhoto.length));
+          setVisibleGroupCount((c) => c + PAGE_SIZE);
         }
       },
       { rootMargin: "400px" }
     );
     observer.observe(sentinelRef.current);
     return () => observer.disconnect();
-  }, [visibleGroupCount, groupedByPhoto.length]);
+  }, [visibleGroupCount, groupedByPhoto.length, faceNextToken]);
+
+  // When the render window is approaching the end of the client buffer
+  // and there's still a server page to fetch, pull it in. We trigger at
+  // "less than one PAGE_SIZE of headroom" so the fetch kicks off before
+  // the user actually sees the bottom.
+  useEffect(() => {
+    if (loading) return;
+    if (faceNextToken === null || faceNextToken === undefined) return;
+    const headroom = groupedByPhoto.length - visibleGroupCount;
+    if (headroom >= PAGE_SIZE) return;
+    if (loadingMoreRef.current) return;
+    fetchFacePage(faceNextToken);
+  }, [visibleGroupCount, groupedByPhoto.length, faceNextToken, loading, fetchFacePage]);
 
   const visibleGroups = useMemo(
     () => groupedByPhoto.slice(0, visibleGroupCount),
     [groupedByPhoto, visibleGroupCount]
   );
-  const hasMore = visibleGroupCount < groupedByPhoto.length;
+  // "More to show" if either: client has unrendered groups, OR server has
+  // more pages we haven't fetched yet.
+  const hasMore = visibleGroupCount < groupedByPhoto.length || faceNextToken !== null;
 
   return (
     <DefaultLayout>
