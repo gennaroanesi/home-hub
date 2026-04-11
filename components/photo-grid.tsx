@@ -197,14 +197,24 @@ export function PhotoGrid({
   return (
     <>
       <Masonry
-        // Re-init only when the photo *set* identity changes (filter swap,
-        // fresh upload, etc.) — NOT when visibleCount grows from infinite
-        // scroll. Including visibleCount in the key here unmounts and
-        // re-mounts the entire Masonry on every page load, which makes the
-        // grid flicker blank for ~300ms each time the user scrolls.
-        // masonic handles items being appended to the array natively.
-        key={`${photos.length}-${selectionEnabled}`}
+        // Re-init when the photo *set* identity changes (filter swap, fresh
+        // upload, etc.) — NOT when visibleCount grows from infinite scroll.
+        // masonic maintains an internal `measuredCount` that indexes into
+        // items[] by position; when the filter shrinks the list, masonic
+        // can try to render past the end of the new array, reading
+        // `items[oldIndex] === undefined` and passing it into an internal
+        // WeakMap which then throws "WeakMap keys must be objects". Keying
+        // on (first-id, length, selection) catches both length-changing
+        // and same-length-different-content filter swaps. Using length
+        // alone wasn't enough because two filters can produce the same
+        // count with different photos.
+        //
+        // `itemKey` gives masonic a stable id per photo so its own internal
+        // render/measurement caches survive in-place edits (favorite
+        // toggles, selection changes) without re-laying out.
+        key={`${items[0]?.id ?? "empty"}-${items.length}-${selectionEnabled}`}
         items={items}
+        itemKey={(data) => (data as PhotoCardData).id}
         render={PhotoCard as any}
         columnWidth={200}
         rowGutter={6}

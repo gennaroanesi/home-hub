@@ -458,9 +458,15 @@ export default function PhotosPage() {
               className="max-w-[200px]"
             >
               <>
-                <SelectItem key={ALL}>Anyone</SelectItem>
+                <SelectItem key={ALL} textValue="Anyone">
+                  Anyone
+                </SelectItem>
                 {people.map((p) => (
-                  <SelectItem key={p.id}>
+                  // textValue is what HeroUI renders in the collapsed
+                  // trigger — without it, the Select shows a blank value
+                  // after selection because it can't extract a display
+                  // string from the mixed emoji + name children.
+                  <SelectItem key={p.id} textValue={p.name}>
                     {p.emoji ? `${p.emoji} ` : ""}
                     {p.name}
                   </SelectItem>
