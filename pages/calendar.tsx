@@ -44,6 +44,7 @@ type Trip = Schema["homeTrip"]["type"];
 type Event = Schema["homeCalendarEvent"]["type"];
 type Day = Schema["homeCalendarDay"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
+type TripReservation = Schema["homeTripReservation"]["type"];
 type Photo = Schema["homePhoto"]["type"];
 
 type StatusKey =
@@ -162,6 +163,7 @@ export default function CalendarPage() {
 
   // All legs across all trips, used for rendering on the calendar
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
+  const [allReservations, setAllReservations] = useState<TripReservation[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
   const [allAlbums, setAllAlbums] = useState<Schema["homeAlbum"]["type"][]>([]);
   const [allAlbumPhotos, setAllAlbumPhotos] = useState<Schema["homeAlbumPhoto"]["type"][]>([]);
@@ -183,22 +185,33 @@ export default function CalendarPage() {
 
   async function loadAll() {
     setLoading(true);
-    const [peopleRes, tripsRes, eventsRes, daysRes, legsRes, photosRes, albumsRes, albumPhotosRes] =
-      await Promise.all([
-        client.models.homePerson.list(),
-        client.models.homeTrip.list(),
-        client.models.homeCalendarEvent.list(),
-        client.models.homeCalendarDay.list({ limit: 1000 }),
-        client.models.homeTripLeg.list({ limit: 1000 }),
-        client.models.homePhoto.list({ limit: 1000 }),
-        client.models.homeAlbum.list({ limit: 500 }),
-        client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      ]);
+    const [
+      peopleRes,
+      tripsRes,
+      eventsRes,
+      daysRes,
+      legsRes,
+      reservationsRes,
+      photosRes,
+      albumsRes,
+      albumPhotosRes,
+    ] = await Promise.all([
+      client.models.homePerson.list(),
+      client.models.homeTrip.list(),
+      client.models.homeCalendarEvent.list(),
+      client.models.homeCalendarDay.list({ limit: 1000 }),
+      client.models.homeTripLeg.list({ limit: 1000 }),
+      client.models.homeTripReservation.list({ limit: 1000 }),
+      client.models.homePhoto.list({ limit: 1000 }),
+      client.models.homeAlbum.list({ limit: 500 }),
+      client.models.homeAlbumPhoto.list({ limit: 5000 }),
+    ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsRes.data ?? []);
     setAllLegs(legsRes.data ?? []);
+    setAllReservations(reservationsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);
     setAllAlbums(albumsRes.data ?? []);
     setAllAlbumPhotos(albumPhotosRes.data ?? []);
@@ -878,6 +891,7 @@ export default function CalendarPage() {
                     trip={selectedTrip}
                     people={people}
                     allLegs={allLegs}
+                    allReservations={allReservations}
                     allPhotos={allPhotos}
                     albums={allAlbums}
                     albumPhotos={allAlbumPhotos}

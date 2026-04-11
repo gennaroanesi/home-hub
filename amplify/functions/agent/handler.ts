@@ -346,7 +346,7 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "delete_trip",
-    description: "Hard-delete a trip by its ID. Cascade-deletes all transportation legs attached to the trip first (they are keyed by tripId). Irreversible.",
+    description: "Hard-delete a trip by its ID. Cascade-deletes all transportation legs and reservations attached to the trip first (they are keyed by tripId). Irreversible.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -505,6 +505,133 @@ const tools: Anthropic.Tool[] = [
   {
     name: "list_trip_legs",
     description: "List all transportation legs for a given tripId, sorted by sortOrder then departAt. list_trips already inlines legs, so only call this when you have a specific tripId already and want just the legs.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+      },
+      required: ["tripId"],
+    },
+  },
+  {
+    name: "create_trip_reservation",
+    description:
+      "Add a non-transportation reservation (hotel, car rental, ticket, tour, restaurant, activity, etc.) to a trip. For flights/trains/drives use create_trip_leg instead — reservations are for bookings that happen once you've already arrived somewhere.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+        type: {
+          type: "string",
+          enum: [
+            "HOTEL",
+            "CAR_RENTAL",
+            "TICKET",
+            "TOUR",
+            "RESTAURANT",
+            "ACTIVITY",
+            "OTHER",
+          ],
+        },
+        name: {
+          type: "string",
+          description: "Human-readable name, e.g. 'Hotel Roma' or 'Colosseum guided tour'.",
+        },
+        startAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE RESERVATION LOCATION, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The trailing Z is a syntactic placeholder required by the storage format — it is NOT a UTC assertion. Do NOT perform any timezone conversion. If the user says 'check in at 3:00 PM in Rome on July 2 2026', write literally '2026-07-02T15:00:00.000Z'. The HH:mm is always the local wall-clock time at the reservation location. Never convert to UTC, never apply an offset, never call any timezone function — just take the local time the user stated and format it with a Z suffix.",
+        },
+        endAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE RESERVATION LOCATION, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion. If the user says 'check out at 11:00 AM in Rome on July 5 2026', write literally '2026-07-05T11:00:00.000Z'. Example of a hotel stay: check-in 3:00 PM 2026-07-02, check-out 11:00 AM 2026-07-05 stores as startAt='2026-07-02T15:00:00.000Z' and endAt='2026-07-05T11:00:00.000Z'.",
+        },
+        location: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        confirmationCode: { type: "string" },
+        url: { type: "string" },
+        cost: { type: "number" },
+        currency: { type: "string", description: "ISO currency code, e.g. USD, EUR." },
+        notes: { type: "string" },
+        sortOrder: { type: "integer" },
+      },
+      required: ["tripId", "name"],
+    },
+  },
+  {
+    name: "update_trip_reservation",
+    description:
+      "Update fields on an existing trip reservation by its ID. Only the fields you pass are changed; omit fields to leave them untouched.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reservationId: { type: "string" },
+        type: {
+          type: "string",
+          enum: [
+            "HOTEL",
+            "CAR_RENTAL",
+            "TICKET",
+            "TOUR",
+            "RESTAURANT",
+            "ACTIVITY",
+            "OTHER",
+          ],
+        },
+        name: { type: "string" },
+        startAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE RESERVATION LOCATION, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion; write the HH:mm the user stated for the reservation location literally. Example: 'check in 3:00 PM Rome 2026-07-02' -> '2026-07-02T15:00:00.000Z'. Pass empty string to clear.",
+        },
+        endAt: {
+          type: "string",
+          description:
+            "Local wall-clock time AT THE RESERVATION LOCATION, formatted as YYYY-MM-DDTHH:mm:ss.sssZ. The Z is a syntactic placeholder — NOT UTC. Do NOT perform timezone conversion; write the HH:mm the user stated for the reservation location literally. Example: 'check out 11:00 AM Rome 2026-07-05' -> '2026-07-05T11:00:00.000Z'. Pass empty string to clear.",
+        },
+        location: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        confirmationCode: { type: "string", description: "Pass empty string to clear." },
+        url: { type: "string", description: "Pass empty string to clear." },
+        cost: { type: "number" },
+        currency: { type: "string", description: "Pass empty string to clear." },
+        notes: { type: "string", description: "Pass empty string to clear." },
+        sortOrder: { type: "integer" },
+      },
+      required: ["reservationId"],
+    },
+  },
+  {
+    name: "delete_trip_reservation",
+    description: "Hard-delete a single trip reservation by its ID. Does not delete the parent trip.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reservationId: { type: "string" },
+      },
+      required: ["reservationId"],
+    },
+  },
+  {
+    name: "list_trip_reservations",
+    description: "List all reservations for a given tripId, sorted by sortOrder then startAt.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1147,7 +1274,8 @@ async function executeTool(
     }
 
     case "delete_trip": {
-      // Cascade-delete the trip's legs first (they are keyed by tripId).
+      // Cascade-delete the trip's legs and reservations first (they are
+      // keyed by tripId).
       const { data: legs } = await client.models.homeTripLeg.list({
         filter: { tripId: { eq: input.tripId } },
       });
@@ -1156,9 +1284,22 @@ async function executeTool(
         await client.models.homeTripLeg.delete({ id: leg.id });
         legsDeleted++;
       }
+      const { data: reservations } = await client.models.homeTripReservation.list({
+        filter: { tripId: { eq: input.tripId } },
+      });
+      let reservationsDeleted = 0;
+      for (const r of reservations ?? []) {
+        await client.models.homeTripReservation.delete({ id: r.id });
+        reservationsDeleted++;
+      }
       const { errors } = await client.models.homeTrip.delete({ id: input.tripId });
       if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, tripId: input.tripId, legsDeleted });
+      return JSON.stringify({
+        success: true,
+        tripId: input.tripId,
+        legsDeleted,
+        reservationsDeleted,
+      });
     }
 
     case "create_trip_leg": {
@@ -1218,6 +1359,69 @@ async function executeTool(
         return (a.departAt ?? "").localeCompare(b.departAt ?? "");
       });
       return JSON.stringify({ legs: sorted });
+    }
+
+    case "create_trip_reservation": {
+      const { data, errors } = await client.models.homeTripReservation.create({
+        tripId: input.tripId,
+        type: input.type ?? null,
+        name: input.name,
+        startAt: input.startAt ?? null,
+        endAt: input.endAt ?? null,
+        location: input.location ?? null,
+        confirmationCode: input.confirmationCode ?? null,
+        url: input.url ?? null,
+        cost: input.cost ?? null,
+        currency: input.currency ?? null,
+        notes: input.notes ?? null,
+        sortOrder: input.sortOrder ?? 0,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        reservationId: data?.id,
+        tripId: input.tripId,
+      });
+    }
+
+    case "update_trip_reservation": {
+      const updates: { id: string } & Record<string, any> = { id: input.reservationId };
+      if (input.type !== undefined) updates.type = input.type;
+      if (input.name !== undefined) updates.name = input.name;
+      if (input.startAt !== undefined) updates.startAt = input.startAt || null;
+      if (input.endAt !== undefined) updates.endAt = input.endAt || null;
+      if (input.location !== undefined) updates.location = input.location || null;
+      if (input.confirmationCode !== undefined)
+        updates.confirmationCode = input.confirmationCode || null;
+      if (input.url !== undefined) updates.url = input.url || null;
+      if (input.cost !== undefined) updates.cost = input.cost;
+      if (input.currency !== undefined) updates.currency = input.currency || null;
+      if (input.notes !== undefined) updates.notes = input.notes || null;
+      if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+      const { data, errors } = await client.models.homeTripReservation.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, reservationId: data?.id });
+    }
+
+    case "delete_trip_reservation": {
+      const { errors } = await client.models.homeTripReservation.delete({
+        id: input.reservationId,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, reservationId: input.reservationId });
+    }
+
+    case "list_trip_reservations": {
+      const { data: reservations } = await client.models.homeTripReservation.list({
+        filter: { tripId: { eq: input.tripId } },
+      });
+      const sorted = (reservations ?? []).sort((a, b) => {
+        const orderA = a.sortOrder ?? 0;
+        const orderB = b.sortOrder ?? 0;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.startAt ?? "").localeCompare(b.startAt ?? "");
+      });
+      return JSON.stringify({ reservations: sorted });
     }
 
     case "set_calendar_day": {

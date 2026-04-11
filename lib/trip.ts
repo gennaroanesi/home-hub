@@ -6,6 +6,7 @@ import type { Schema } from "@/amplify/data/resource";
 
 export type Trip = Schema["homeTrip"]["type"];
 export type TripLeg = Schema["homeTripLeg"]["type"];
+export type TripReservation = Schema["homeTripReservation"]["type"];
 
 export type TripType = "LEISURE" | "WORK" | "FLYING" | "FAMILY";
 
@@ -66,6 +67,92 @@ export interface LegFormRow {
   sortOrder: number;
 }
 
+// ── Reservations ────────────────────────────────────────────────────────
+export type ReservationType =
+  | "HOTEL"
+  | "CAR_RENTAL"
+  | "TICKET"
+  | "TOUR"
+  | "RESTAURANT"
+  | "ACTIVITY"
+  | "OTHER";
+
+export const RESERVATION_TYPE_LABEL: Record<ReservationType, string> = {
+  HOTEL: "Hotel",
+  CAR_RENTAL: "Car rental",
+  TICKET: "Ticket",
+  TOUR: "Tour",
+  RESTAURANT: "Restaurant",
+  ACTIVITY: "Activity",
+  OTHER: "Other",
+};
+
+export const RESERVATION_TYPE_EMOJI: Record<ReservationType, string> = {
+  HOTEL: "🏨",
+  CAR_RENTAL: "🚗",
+  TICKET: "🎫",
+  TOUR: "🗺️",
+  RESTAURANT: "🍽️",
+  ACTIVITY: "🎯",
+  OTHER: "📌",
+};
+
+// Form-side reservation shape (id empty = not yet saved)
+export interface ReservationFormRow {
+  id: string;
+  type: ReservationType;
+  name: string;
+  startAt: string; // datetime-local string — SAME local-wall-clock rule as legs
+  endAt: string;
+  city: string;
+  country: string;
+  confirmationCode: string;
+  url: string;
+  cost: string; // kept as string in the form, parsed on save
+  currency: string;
+  notes: string;
+  sortOrder: number;
+}
+
+export function emptyReservation(sortOrder: number): ReservationFormRow {
+  return {
+    id: "",
+    type: "HOTEL",
+    name: "",
+    startAt: "",
+    endAt: "",
+    city: "",
+    country: "",
+    confirmationCode: "",
+    url: "",
+    cost: "",
+    currency: "",
+    notes: "",
+    sortOrder,
+  };
+}
+
+export function reservationToFormRow(r: TripReservation): ReservationFormRow {
+  const loc = (r.location ?? {}) as any;
+  return {
+    id: r.id,
+    type: (r.type ?? "HOTEL") as ReservationType,
+    name: r.name ?? "",
+    // Same slice-first-16-chars trick as legs — never run through new Date().
+    // See the convention note further down in this file.
+    startAt: r.startAt ? r.startAt.slice(0, 16) : "",
+    endAt: r.endAt ? r.endAt.slice(0, 16) : "",
+    city: loc.city ?? "",
+    country: loc.country ?? "",
+    confirmationCode: r.confirmationCode ?? "",
+    url: r.url ?? "",
+    cost: r.cost != null ? String(r.cost) : "",
+    currency: r.currency ?? "",
+    notes: r.notes ?? "",
+    sortOrder: r.sortOrder ?? 0,
+  };
+}
+
 export interface TripFormState {
   id: string; // empty = new
   name: string;
@@ -79,6 +166,7 @@ export interface TripFormState {
   notes: string;
   participantIds: string[];
   legs: LegFormRow[];
+  reservations: ReservationFormRow[];
 }
 
 export function emptyLeg(sortOrder: number): LegFormRow {
@@ -142,6 +230,7 @@ export function newTripFormState(): TripFormState {
     notes: "",
     participantIds: [],
     legs: [],
+    reservations: [],
   };
 }
 
@@ -199,12 +288,20 @@ export function legIsoToLocalDate(iso: string | null | undefined): Date | null {
   return new Date(p.year, p.month - 1, p.day, p.hour, p.minute, 0, 0);
 }
 
-export function tripToFormState(trip: Trip, allLegs: TripLeg[]): TripFormState {
+export function tripToFormState(
+  trip: Trip,
+  allLegs: TripLeg[],
+  allReservations: TripReservation[] = []
+): TripFormState {
   const dest = (trip.destination ?? {}) as any;
   const tripLegs = allLegs
     .filter((l) => l.tripId === trip.id)
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
     .map(legToFormRow);
+  const tripReservations = allReservations
+    .filter((r) => r.tripId === trip.id)
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    .map(reservationToFormRow);
   return {
     id: trip.id,
     name: trip.name,
@@ -218,5 +315,6 @@ export function tripToFormState(trip: Trip, allLegs: TripLeg[]): TripFormState {
     notes: trip.notes ?? "",
     participantIds: (trip.participantIds ?? []).filter((id): id is string => !!id),
     legs: tripLegs,
+    reservations: tripReservations,
   };
 }

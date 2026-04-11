@@ -5,7 +5,8 @@ import { generateClient } from "aws-amplify/data";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaPlus, FaTrash } from "react-icons/fa";
+import { addToast } from "@heroui/react";
+import { FaPlus, FaTrash, FaCalendarPlus } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { FreeCombobox } from "@/components/free-combobox";
@@ -15,14 +16,20 @@ import { AIRLINES } from "@/lib/airlines";
 import {
   type Trip,
   type TripLeg,
+  type TripReservation,
   type TripType,
   type LegFormRow,
   type LegMode,
+  type ReservationFormRow,
+  type ReservationType,
   type TripFormState,
   TRIP_TYPE_CONFIG,
   LEG_MODE_LABEL,
   LEG_MODE_EMOJI,
+  RESERVATION_TYPE_LABEL,
+  RESERVATION_TYPE_EMOJI,
   emptyLeg,
+  emptyReservation,
   newTripFormState,
   tripToFormState,
 } from "@/lib/trip";
@@ -42,6 +49,7 @@ export interface TripFormProps {
   // shared loadAll() and be reused across the page/modal.
   people: Person[];
   allLegs: TripLeg[];
+  allReservations?: TripReservation[];
   allPhotos: Photo[];
   albums: Album[];
   albumPhotos: AlbumPhoto[];
@@ -75,6 +83,7 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
     trip,
     people,
     allLegs,
+    allReservations = [],
     allPhotos,
     albums,
     albumPhotos,
@@ -87,13 +96,13 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
   ref
 ) {
   const [form, setForm] = useState<TripFormState>(() =>
-    trip ? tripToFormState(trip, allLegs) : newTripFormState()
+    trip ? tripToFormState(trip, allLegs, allReservations) : newTripFormState()
   );
 
   // Re-initialize when the trip prop changes (e.g. switching between trips
   // in a modal, or navigating between /trips/[id] pages)
   useEffect(() => {
-    setForm(trip ? tripToFormState(trip, allLegs) : newTripFormState());
+    setForm(trip ? tripToFormState(trip, allLegs, allReservations) : newTripFormState());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trip?.id]);
 
@@ -140,25 +149,88 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
 
     if (saved?.id) {
       await syncLegs(saved.id, form.legs, allLegs);
+      await syncReservations(saved.id, form.reservations, allReservations);
     }
 
     if (saved) onSaved?.(saved);
     return saved;
-  }, [form, allLegs, onSaved]);
+  }, [form, allLegs, allReservations, onSaved]);
 
   const deleteTrip = useCallback(async (): Promise<boolean> => {
     if (!form.id) return false;
-    if (!confirm("Delete this trip? All legs will be deleted. Days linked to it will keep their status but lose the trip link.")) {
+    if (!confirm("Delete this trip? All legs and reservations will be deleted. Days linked to it will keep their status but lose the trip link.")) {
       return false;
     }
     const tripLegs = allLegs.filter((l) => l.tripId === form.id);
     for (const leg of tripLegs) {
       await client.models.homeTripLeg.delete({ id: leg.id });
     }
+    const tripReservations = allReservations.filter((r) => r.tripId === form.id);
+    for (const r of tripReservations) {
+      await client.models.homeTripReservation.delete({ id: r.id });
+    }
     await client.models.homeTrip.delete({ id: form.id });
     onDeleted?.();
     return true;
-  }, [form.id, allLegs, onDeleted]);
+  }, [form.id, allLegs, allReservations, onDeleted]);
+
+  // ── Create calendar event from a saved reservation ────────────────────
+  // Direct API call via the data client; toast on success/error. No
+  // navigation — user stays in the trip form. Only enabled once the
+  // reservation has been saved (has an id), since the event references
+  // tripId and we need the reservation's saved fields to be authoritative.
+  const createEventFromReservation = useCallback(
+    async (r: ReservationFormRow) => {
+      if (!r.id || !form.id) return;
+      try {
+        const descParts: string[] = [];
+        descParts.push(RESERVATION_TYPE_LABEL[r.type]);
+        if (r.confirmationCode) descParts.push(`Confirmation: ${r.confirmationCode}`);
+        if (r.notes) descParts.push(r.notes);
+        const description = descParts.join("\n");
+
+        const location =
+          r.city || r.country
+            ? { city: r.city || null, country: r.country || null }
+            : null;
+
+        // startAt is required on homeCalendarEvent; fall back to the trip
+        // start date at noon (wall-clock) if the user didn't fill it in.
+        const startAt = r.startAt
+          ? `${r.startAt}:00.000Z`
+          : `${form.startDate}T12:00:00.000Z`;
+        const endAt = r.endAt ? `${r.endAt}:00.000Z` : null;
+
+        const { data, errors } = await client.models.homeCalendarEvent.create({
+          title: r.name,
+          description: description || null,
+          startAt,
+          endAt,
+          location,
+          url: r.url || null,
+          tripId: form.id,
+          assignedPersonIds: form.participantIds,
+        });
+        if (errors && errors.length > 0) {
+          addToast({
+            title: "Failed to create event",
+            description: errors.map((e) => e.message).join(", "),
+          });
+          return;
+        }
+        addToast({
+          title: "Event created",
+          description: data?.title ?? r.name,
+        });
+      } catch (err) {
+        addToast({
+          title: "Failed to create event",
+          description: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+    [form.id, form.startDate, form.participantIds]
+  );
 
   React.useImperativeHandle(
     ref,
@@ -425,6 +497,171 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         </div>
       </div>
 
+      {/* ── Reservations editor ──────────────────────────────────────── */}
+      <div className="border-t border-default-200 pt-4">
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-sm font-medium">Reservations</p>
+          <Button
+            size="sm"
+            variant="flat"
+            startContent={<FaPlus size={10} />}
+            onPress={() =>
+              setForm((f) => ({
+                ...f,
+                reservations: [...f.reservations, emptyReservation(f.reservations.length)],
+              }))
+            }
+          >
+            Add reservation
+          </Button>
+        </div>
+        {form.reservations.length === 0 && (
+          <p className="text-xs text-default-400">
+            Hotels, car rentals, tickets, tours, etc.
+          </p>
+        )}
+        <div className="space-y-3">
+          {form.reservations.map((res, idx) => {
+            const updateRes = (patch: Partial<ReservationFormRow>) =>
+              setForm((f) => ({
+                ...f,
+                reservations: f.reservations.map((r, i) =>
+                  i === idx ? { ...r, ...patch } : r
+                ),
+              }));
+            const removeRes = () =>
+              setForm((f) => ({
+                ...f,
+                reservations: f.reservations.filter((_, i) => i !== idx),
+              }));
+            return (
+              <div
+                key={idx}
+                className="border border-default-200 rounded-md p-3 space-y-2 bg-default-50"
+              >
+                <div className="flex items-center gap-2">
+                  <Select
+                    size="sm"
+                    label="Type"
+                    selectedKeys={[res.type]}
+                    onChange={(e) => updateRes({ type: e.target.value as ReservationType })}
+                    className="flex-1"
+                  >
+                    {(Object.keys(RESERVATION_TYPE_LABEL) as ReservationType[]).map((t) => (
+                      // textValue required — same reason as the leg mode Select
+                      // (mixed emoji + label children). See commit 541b895e.
+                      <SelectItem key={t} textValue={RESERVATION_TYPE_LABEL[t]}>
+                        {RESERVATION_TYPE_EMOJI[t]} {RESERVATION_TYPE_LABEL[t]}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                  <Button
+                    size="sm"
+                    isIconOnly
+                    variant="light"
+                    color="danger"
+                    onPress={removeRes}
+                  >
+                    <FaTrash size={10} />
+                  </Button>
+                </div>
+                <Input
+                  size="sm"
+                  label="Name"
+                  placeholder="Hotel Roma"
+                  value={res.name}
+                  onValueChange={(v) => updateRes({ name: v })}
+                  isRequired
+                />
+                <div className="flex gap-2">
+                  <Input
+                    size="sm"
+                    label="Start"
+                    type="datetime-local"
+                    value={res.startAt}
+                    onValueChange={(v) => updateRes({ startAt: v })}
+                  />
+                  <Input
+                    size="sm"
+                    label="End"
+                    type="datetime-local"
+                    value={res.endAt}
+                    onValueChange={(v) => updateRes({ endAt: v })}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    size="sm"
+                    label="City"
+                    value={res.city}
+                    onValueChange={(v) => updateRes({ city: v })}
+                  />
+                  <Input
+                    size="sm"
+                    label="Country"
+                    value={res.country}
+                    onValueChange={(v) => updateRes({ country: v })}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    size="sm"
+                    label="Confirmation #"
+                    value={res.confirmationCode}
+                    onValueChange={(v) => updateRes({ confirmationCode: v })}
+                  />
+                  <Input
+                    size="sm"
+                    label="URL"
+                    value={res.url}
+                    onValueChange={(v) => updateRes({ url: v })}
+                  />
+                </div>
+                <div className="flex gap-2">
+                  <Input
+                    size="sm"
+                    label="Cost"
+                    type="number"
+                    value={res.cost}
+                    onValueChange={(v) => updateRes({ cost: v })}
+                  />
+                  <Input
+                    size="sm"
+                    label="Currency"
+                    placeholder="USD"
+                    value={res.currency}
+                    onValueChange={(v) => updateRes({ currency: v })}
+                    className="max-w-[6rem]"
+                  />
+                </div>
+                <Textarea
+                  size="sm"
+                  label="Notes"
+                  value={res.notes}
+                  onValueChange={(v) => updateRes({ notes: v })}
+                  minRows={1}
+                />
+                <div className="flex justify-end">
+                  <Button
+                    size="sm"
+                    variant="flat"
+                    startContent={<FaCalendarPlus size={10} />}
+                    onPress={() => createEventFromReservation(res)}
+                    // Disabled until the reservation is saved — we need its
+                    // id before creating an event that references this trip,
+                    // and saving-then-creating keeps the event in sync with
+                    // what the user actually persisted.
+                    isDisabled={!res.id}
+                  >
+                    Create calendar event
+                  </Button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       {/* ── Photos (only available once the trip is saved) ──────────────── */}
       {showPhotos && form.id && (
         <TripPhotosSection
@@ -610,6 +847,55 @@ async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: Tri
       await client.models.homeTripLeg.update({ id: leg.id, ...payload });
     } else {
       await client.models.homeTripLeg.create(payload);
+    }
+  }
+}
+
+// Mirror of syncLegs for reservations — diffs the form rows against the
+// existing reservations, deleting removed rows and upserting the rest.
+async function syncReservations(
+  tripId: string,
+  formRes: ReservationFormRow[],
+  existingAll: TripReservation[]
+) {
+  const existing = existingAll.filter((r) => r.tripId === tripId);
+  const formIds = new Set(formRes.map((r) => r.id).filter((id) => id !== ""));
+
+  for (const ex of existing) {
+    if (!formIds.has(ex.id)) {
+      await client.models.homeTripReservation.delete({ id: ex.id });
+    }
+  }
+
+  for (let i = 0; i < formRes.length; i++) {
+    const r = formRes[i];
+    const location =
+      r.city || r.country
+        ? { city: r.city || null, country: r.country || null }
+        : null;
+    const cost = r.cost.trim() === "" ? null : Number(r.cost);
+    const payload = {
+      tripId,
+      type: r.type,
+      name: r.name,
+      // Reservation times follow the SAME local-wall-clock-at-the-
+      // reservation-location rule as trip leg times. Append ":00.000Z"
+      // literally; the Z is a syntactic placeholder, not a UTC assertion.
+      // See lib/trip.ts convention note.
+      startAt: r.startAt ? `${r.startAt}:00.000Z` : null,
+      endAt: r.endAt ? `${r.endAt}:00.000Z` : null,
+      location,
+      confirmationCode: r.confirmationCode || null,
+      url: r.url || null,
+      cost: cost != null && !Number.isNaN(cost) ? cost : null,
+      currency: r.currency || null,
+      notes: r.notes || null,
+      sortOrder: i,
+    };
+    if (r.id) {
+      await client.models.homeTripReservation.update({ id: r.id, ...payload });
+    } else {
+      await client.models.homeTripReservation.create(payload);
     }
   }
 }

@@ -15,6 +15,7 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Trip = Schema["homeTrip"]["type"];
 type TripLeg = Schema["homeTripLeg"]["type"];
+type TripReservation = Schema["homeTripReservation"]["type"];
 type Photo = Schema["homePhoto"]["type"];
 type Person = Schema["homePerson"]["type"];
 type Album = Schema["homeAlbum"]["type"];
@@ -30,6 +31,7 @@ export default function TripDetailPage() {
   const [trip, setTrip] = useState<Trip | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [allLegs, setAllLegs] = useState<TripLeg[]>([]);
+  const [allReservations, setAllReservations] = useState<TripReservation[]>([]);
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
@@ -52,15 +54,18 @@ export default function TripDetailPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [peopleRes, legsRes, photosRes, albumsRes, albumPhotosRes] = await Promise.all([
-      client.models.homePerson.list(),
-      client.models.homeTripLeg.list({ limit: 1000 }),
-      client.models.homePhoto.list({ limit: 1000 }),
-      client.models.homeAlbum.list({ limit: 500 }),
-      client.models.homeAlbumPhoto.list({ limit: 5000 }),
-    ]);
+    const [peopleRes, legsRes, reservationsRes, photosRes, albumsRes, albumPhotosRes] =
+      await Promise.all([
+        client.models.homePerson.list(),
+        client.models.homeTripLeg.list({ limit: 1000 }),
+        client.models.homeTripReservation.list({ limit: 1000 }),
+        client.models.homePhoto.list({ limit: 1000 }),
+        client.models.homeAlbum.list({ limit: 500 }),
+        client.models.homeAlbumPhoto.list({ limit: 5000 }),
+      ]);
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setAllLegs(legsRes.data ?? []);
+    setAllReservations(reservationsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);
     setAlbums(albumsRes.data ?? []);
     setAlbumPhotos(albumPhotosRes.data ?? []);
@@ -170,6 +175,7 @@ export default function TripDetailPage() {
           trip={trip}
           people={people}
           allLegs={allLegs}
+          allReservations={allReservations}
           allPhotos={allPhotos}
           albums={albums}
           albumPhotos={albumPhotos}

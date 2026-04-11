@@ -53,6 +53,7 @@ const schema = a
         notes: a.string(),
         participantIds: a.id().array(), // FK array → homePerson.id
         legs: a.hasMany("homeTripLeg", "tripId"),
+        reservations: a.hasMany("homeTripReservation", "tripId"),
       })
       .authorization((allow) => [allow.group("home-users")]),
 
@@ -84,6 +85,45 @@ const schema = a
         flightNumber: a.string(),
         // Personal flight field
         aircraft: a.string(), // tail number, e.g. N12345
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("tripId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Trip Reservation ────────────────────────────────────────────────
+    // Non-transportation bookings for a trip: hotels, car rentals,
+    // tickets, tours, etc. Separate from homeTripLeg because legs are
+    // strictly about getting from A to B.
+    //
+    // TIME CONVENTION: startAt/endAt follow the SAME local-wall-clock
+    // rule as homeTripLeg.departAt/arriveAt — an ISO 8601 string with a
+    // "Z" suffix that is a syntactic placeholder only (NOT UTC). A 3:00
+    // PM check-in in Rome is stored as "2026-07-02T15:00:00.000Z"
+    // regardless of where the entry is made from. Use the helpers in
+    // lib/trip.ts (parseLegIso / formatLegTime / legIsoToLocalDate) to
+    // display these values — never run them through new Date().
+    homeTripReservation: a
+      .model({
+        tripId: a.id().required(),
+        trip: a.belongsTo("homeTrip", "tripId"),
+        type: a.enum([
+          "HOTEL",
+          "CAR_RENTAL",
+          "TICKET",
+          "TOUR",
+          "RESTAURANT",
+          "ACTIVITY",
+          "OTHER",
+        ]),
+        name: a.string().required(),
+        startAt: a.datetime(),
+        endAt: a.datetime(),
+        location: locationCustomType,
+        confirmationCode: a.string(),
+        url: a.url(),
+        cost: a.float(),
+        currency: a.string(),
+        notes: a.string(),
         sortOrder: a.integer().default(0),
       })
       .secondaryIndexes((index) => [index("tripId")])
