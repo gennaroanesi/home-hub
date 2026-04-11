@@ -3,6 +3,7 @@ import { homeAgent } from "../functions/agent/resource";
 import { recurringTasks } from "../functions/recurring-tasks/resource";
 import { dailySummary } from "../functions/daily-summary/resource";
 import { faceDetector } from "../functions/face-detector/resource";
+import { retroactiveFaceMatch } from "../functions/retroactive-face-match/resource";
 import { hassSync } from "../functions/hass-sync/resource";
 
 // Reusable location shape for trips, days, and events
@@ -459,12 +460,38 @@ const schema = a
       })
       .returns(a.ref("homeAgentResponse"))
       .handler(a.handler.function(homeAgent)),
+
+    // ── Retroactive face match ──────────────────────────────────────────
+    // Called from /admin/faces after enrolling a face to a person. The
+    // lambda runs SearchFaces against every enrolled face for that person
+    // and bulk-updates matching unmatched homePhotoFace rows. Gated on
+    // MIN_ENROLLMENTS (5) in the handler to avoid false-positive sweeps
+    // from thin training data.
+    retroactiveFaceMatchResponse: a.customType({
+      status: a.string().required(), // "MATCHED" | "SKIPPED"
+      reason: a.string(),
+      enrolledCount: a.integer().required(),
+      candidateCount: a.integer().required(),
+      updatedCount: a.integer().required(),
+    }),
+    retroactiveFaceMatch: a
+      .mutation()
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ])
+      .arguments({
+        personId: a.string().required(),
+      })
+      .returns(a.ref("retroactiveFaceMatchResponse"))
+      .handler(a.handler.function(retroactiveFaceMatch)),
   })
   .authorization((allow) => [
     allow.resource(homeAgent),
     allow.resource(recurringTasks),
     allow.resource(dailySummary),
     allow.resource(faceDetector),
+    allow.resource(retroactiveFaceMatch),
     allow.resource(hassSync),
   ]);
 

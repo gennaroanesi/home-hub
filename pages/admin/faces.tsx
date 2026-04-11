@@ -29,6 +29,12 @@ export default function FacesPage() {
   const [pendingAssign, setPendingAssign] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
+  // Transient banner shown while / after a retroactive match sweep runs.
+  // `null` = no banner; otherwise shows the result of the last run.
+  const [retroStatus, setRetroStatus] = useState<
+    | { personId: string; state: "running" | "done" | "skipped" | "error"; message: string }
+    | null
+  >(null);
 
   useEffect(() => {
     checkAuth();
@@ -118,11 +124,74 @@ export default function FacesPage() {
         delete next[face.id];
         return next;
       });
+
+      // 3. Fire the retroactive match in the background. The lambda itself
+      //    gates on MIN_ENROLLMENTS=5 so we don't need to check client-side —
+      //    calls for under-threshold persons return SKIPPED cheaply. No
+      //    `await` on the surrounding try/finally: this is best-effort and
+      //    shouldn't block the UI if it fails or takes a while.
+      runRetroactiveMatch(personId);
     } catch (err) {
       console.error("Failed to assign face:", err);
       alert("Failed to assign face. See console.");
     } finally {
       setBusy((b) => ({ ...b, [face.id]: false }));
+    }
+  }
+
+  // Runs in the background after each enrollment. The lambda decides
+  // whether to actually sweep (needs ≥5 enrolled faces per person); we
+  // just surface the result via a transient status message.
+  async function runRetroactiveMatch(personId: string) {
+    setRetroStatus({ personId, state: "running", message: "Searching for matching photos…" });
+    try {
+      const res: any = await (client.mutations as any).retroactiveFaceMatch({ personId });
+      if (res.errors?.length) {
+        console.error("retroactiveFaceMatch errors:", res.errors);
+        setRetroStatus({
+          personId,
+          state: "error",
+          message: `Retroactive match failed: ${res.errors[0]?.message ?? "unknown error"}`,
+        });
+        return;
+      }
+      const data = res.data as
+        | { status: "MATCHED" | "SKIPPED"; reason: string | null; updatedCount: number; enrolledCount: number }
+        | null;
+      if (!data) {
+        setRetroStatus(null);
+        return;
+      }
+      const person = people.find((p) => p.id === personId);
+      const pname = person?.name ?? "person";
+      if (data.status === "SKIPPED") {
+        setRetroStatus({
+          personId,
+          state: "skipped",
+          message: `${pname}: ${data.reason ?? "not enough enrollments yet"}. Keep labeling to unlock retroactive matching.`,
+        });
+      } else if (data.updatedCount === 0) {
+        setRetroStatus({
+          personId,
+          state: "done",
+          message: `${pname}: no additional matches found.`,
+        });
+      } else {
+        setRetroStatus({
+          personId,
+          state: "done",
+          message: `${pname}: auto-tagged ${data.updatedCount} more photo${data.updatedCount === 1 ? "" : "s"} ✨`,
+        });
+        // Refresh the unmatched list so the now-matched faces drop out.
+        loadAll();
+      }
+    } catch (err: any) {
+      console.error("Retroactive match threw:", err);
+      setRetroStatus({
+        personId,
+        state: "error",
+        message: `Retroactive match failed: ${err?.message ?? err}`,
+      });
     }
   }
 
@@ -162,6 +231,32 @@ export default function FacesPage() {
             Refresh
           </Button>
         </div>
+
+        {retroStatus && (
+          <Card
+            className={`mb-4 ${
+              retroStatus.state === "error"
+                ? "border-danger"
+                : retroStatus.state === "running"
+                  ? "border-primary"
+                  : retroStatus.state === "done"
+                    ? "border-success"
+                    : ""
+            }`}
+          >
+            <CardBody className="flex flex-row items-center justify-between gap-2 py-2">
+              <p className="text-sm">{retroStatus.message}</p>
+              <Button
+                size="sm"
+                variant="light"
+                onPress={() => setRetroStatus(null)}
+                isDisabled={retroStatus.state === "running"}
+              >
+                Dismiss
+              </Button>
+            </CardBody>
+          </Card>
+        )}
 
         {loading && (
           <p className="text-center text-default-300 py-10">Loading…</p>

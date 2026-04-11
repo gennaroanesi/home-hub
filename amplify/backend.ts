@@ -44,6 +44,7 @@ import { homeScheduler } from "./functions/scheduler/resource";
 import { recurringTasks } from "./functions/recurring-tasks/resource";
 import { dailySummary } from "./functions/daily-summary/resource";
 import { faceDetector } from "./functions/face-detector/resource";
+import { retroactiveFaceMatch } from "./functions/retroactive-face-match/resource";
 import { hassSync } from "./functions/hass-sync/resource";
 
 const backend = defineBackend({
@@ -54,6 +55,7 @@ const backend = defineBackend({
   recurringTasks,
   dailySummary,
   faceDetector,
+  retroactiveFaceMatch,
   hassSync,
 });
 
@@ -66,6 +68,7 @@ const lambdaDescriptions: Record<string, string> = {
   recurringTasks: "Home Hub — Daily recurring task sweep",
   dailySummary: "Home Hub — Daily summary composer (writes outbound message)",
   faceDetector: "Home Hub — Rekognition face detection on new photos (DDB stream)",
+  retroactiveFaceMatch: "Home Hub — Bulk-assign existing unmatched faces after new enrollment (AppSync mutation)",
   hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
 };
 
@@ -288,6 +291,24 @@ faceDetectorLambda.addEventSource(
     filters: [FilterCriteria.filter({ eventName: FilterRule.isEqual("INSERT") })],
   })
 );
+
+// Retroactive face match lambda — called from /admin/faces via the
+// retroactiveFaceMatch custom mutation. Runs SearchFaces against each
+// enrolled face for a person and bulk-assigns any matching unmatched
+// homePhotoFace rows. Only needs SearchFaces on the same collection;
+// all reads/writes to homePersonFace and homePhotoFace go through the
+// Amplify Data client (authorized via allow.resource in data/resource.ts).
+const retroFaceLambda = backend.retroactiveFaceMatch.resources.lambda as LambdaFunction;
+retroFaceLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["rekognition:SearchFaces"],
+    resources: [
+      `arn:aws:rekognition:${faceDetectorStack.region}:${faceDetectorStack.account}:collection/${REKOGNITION_COLLECTION_ID}`,
+    ],
+  })
+);
+retroFaceLambda.addEnvironment("REKOGNITION_COLLECTION_ID", REKOGNITION_COLLECTION_ID);
 
 // ── WhatsApp bot — ECS Fargate + Baileys ────────────────────────────────────
 
