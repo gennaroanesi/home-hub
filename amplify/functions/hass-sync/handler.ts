@@ -161,10 +161,13 @@ async function runSync(): Promise<SyncResult> {
 
     const existingDevice = existingByEntityId.get(entity.entity_id);
 
+    // IMPORTANT: Amplify data client returns errors as a field on the
+    // resolved result rather than throwing. Promise.allSettled alone
+    // will count an auth-denied or validation-failed call as "fulfilled"
+    // — we have to inspect errors explicitly and throw, otherwise
+    // silent failures look like successes in the counter.
     if (existingDevice) {
-      // Update: preserve user-set fields (sensitivity, isPinned), refresh
-      // state and metadata.
-      await client.models.homeDevice.update({
+      const res = await client.models.homeDevice.update({
         id: existingDevice.id,
         friendlyName: friendlyName(entity),
         domain,
@@ -172,10 +175,11 @@ async function runSync(): Promise<SyncResult> {
         lastState,
         lastSyncedAt: now,
       });
+      if (res.errors?.length) {
+        throw new Error(`update ${entity.entity_id}: ${res.errors[0].message}`);
+      }
     } else {
-      // New: auto-pin if the domain is in the whitelist, default sensitivity
-      // to READ_ONLY so controls stay opt-in.
-      await client.models.homeDevice.create({
+      const res = await client.models.homeDevice.create({
         entityId: entity.entity_id,
         friendlyName: friendlyName(entity),
         domain,
@@ -185,6 +189,9 @@ async function runSync(): Promise<SyncResult> {
         lastState,
         lastSyncedAt: now,
       });
+      if (res.errors?.length) {
+        throw new Error(`create ${entity.entity_id}: ${res.errors[0].message}`);
+      }
     }
   });
 

@@ -301,7 +301,15 @@ const schema = a
         lastSyncedAt: a.datetime(),
       })
       .secondaryIndexes((index) => [index("entityId"), index("domain")])
-      .authorization((allow) => [allow.group("home-users")]),
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // Schema-level allow.resource(hassSync) is not enough on its
+        // own — Amplify Gen 2 treats per-model auth rules as exclusive,
+        // so we need an explicit IAM/identity-pool grant here for the
+        // hass-sync lambda to write device state. Same pattern as
+        // homePersonFace / homePhotoFace which the face-detector writes.
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── Home Assistant Device Action (audit log) ────────────────────────
     // Scaffold for v2 — the /devices page and agent will write here on
@@ -321,7 +329,12 @@ const schema = a
         error: a.string(),
       })
       .secondaryIndexes((index) => [index("entityId"), index("personId")])
-      .authorization((allow) => [allow.group("home-users")]),
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // v2 will have the hass-control lambda writing here on every
+        // control attempt. Same per-model auth fix as homeDevice.
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── Sync HA devices mutation ────────────────────────────────────────
     // Invokes the hass-sync Lambda on demand. Used by the /devices page
