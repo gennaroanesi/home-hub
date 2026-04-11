@@ -6,6 +6,13 @@ import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtim
 import { env } from "$amplify/env/daily-summary";
 import type { Schema } from "../../data/resource";
 import { HassClient } from "../hass-sync/hass-client.js";
+import {
+  DEFAULT_ICAO,
+  getMorningWeatherBriefing,
+  type ParsedMetar,
+  type ParsedTaf,
+  type FlyingDetection,
+} from "../../../lib/aviation-weather.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -64,6 +71,18 @@ interface SummaryData {
   home: {
     available: boolean;
     devices: { friendlyName: string; domain: string; summary: string }[];
+  };
+  // Aviation weather briefing for the household's default airport.
+  // Mode switches to "aviation" when someone is flying in the next 2
+  // days (either a PERSONAL_FLIGHT trip leg or a flight-ish calendar
+  // event). Haiku renders the plain or aviation flavor accordingly.
+  weather: {
+    available: boolean;
+    icao: string;
+    mode: "plain" | "aviation";
+    metar: ParsedMetar | null;
+    taf: ParsedTaf | null;
+    flyingContext: FlyingDetection;
   };
 }
 
@@ -202,7 +221,59 @@ async function gatherData(): Promise<SummaryData> {
     upcomingAllDayEvents,
     upcomingMultiPersonEvents,
     home: await gatherHomeState(),
+    weather: await gatherWeatherBriefing(allEvents ?? []),
   };
+}
+
+// ── Weather ──────────────────────────────────────────────────────────────────
+// Fetches METAR + TAF for the household's default airport and decides
+// plain vs aviation mode based on flight signals (trip legs + calendar).
+
+async function gatherWeatherBriefing(
+  allEvents: {
+    title?: string | null;
+    description?: string | null;
+    startAt?: string | null;
+  }[]
+): Promise<SummaryData["weather"]> {
+  try {
+    // Fetch all trip legs — briefing filters to PERSONAL_FLIGHT in the
+    // lookahead window itself. Cap at 500; we never have more than a
+    // handful in flight at once.
+    const { data: legs } = await client.models.homeTripLeg.list({ limit: 500 });
+
+    const briefing = await getMorningWeatherBriefing(DEFAULT_ICAO, {
+      tripLegs: (legs ?? []).map((l) => ({
+        mode: l.mode,
+        departAt: l.departAt,
+      })),
+      events: allEvents.map((e) => ({
+        title: e.title,
+        description: e.description,
+        startAt: e.startAt,
+      })),
+      lookaheadDays: 2,
+    });
+
+    return {
+      available: briefing.metar !== null || briefing.taf !== null,
+      icao: briefing.icao,
+      mode: briefing.mode,
+      metar: briefing.metar,
+      taf: briefing.taf,
+      flyingContext: briefing.flyingContext,
+    };
+  } catch (err) {
+    console.warn("Weather briefing failed:", err);
+    return {
+      available: false,
+      icao: DEFAULT_ICAO,
+      mode: "plain",
+      metar: null,
+      taf: null,
+      flyingContext: { flying: false },
+    };
+  }
 }
 
 // ── Home Assistant state ─────────────────────────────────────────────────────
@@ -399,6 +470,10 @@ Formatting rules:
 - Under "*Today*", list tasks, events, and any notable day statuses (WFH, PTO, travel) as short bullet lines starting with "• ".
 - Under "*Coming up*", only show trips, all-day events, and multi-person events within the next 3 days. Include how many days away (e.g. "in 2 days").
 - Under "*Home*", render whatever is in data.home.devices as compact lines. The data is pre-filtered: devices only appear if they're notable (unlocked doors, open garage, running washer, low battery, current indoor temperature). Keep it short — a single line per device or merge into a summary line like "🏠 Inside 68°F heat, all else normal". If data.home.devices is empty but home.available is true, omit the Home section entirely. Drop the section if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
+- Under "*Weather*", render data.weather if available. Two modes:
+  - If data.weather.mode is "plain": one line with the temp, wind (if notable), conditions, and flight rules. Format like "☀️ 82°F, winds 160@12, VFR". Use the parsed metar fields — don't paste the raw METAR string. Include a brief TAF summary ("clear through afternoon, TSRA expected after 6pm") if the taf has meaningful periods, otherwise just the METAR line.
+  - If data.weather.mode is "aviation": the user is flying today or soon, so be more thorough. Include the raw METAR line, raw TAF, a decoded summary of significant weather in the TAF periods, and a one-line "flight conditions" verdict (VFR/MVFR/IFR). Mention the flyingContext.title so they know WHY it's in aviation mode ("For your flight on 4/12..."). Still keep it under ~150 words total.
+  - If data.weather.available is false, omit the section entirely.
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.
