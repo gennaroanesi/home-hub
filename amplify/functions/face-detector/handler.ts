@@ -177,10 +177,15 @@ async function processPhoto(photoId: string, s3key: string) {
     // aren't present in the input, which produces a sparse-index-friendly
     // PutItem. Same applies to similarity (no GSI on it but be defensive
     // and avoid sending nulls when we don't have a value).
+    //
+    // boundingBox is `a.json()` in the schema → AWSJSON scalar → must be
+    // sent as a JSON-encoded STRING, not the raw object. Passing the raw
+    // BoundingBox literal results in
+    // `Variable 'boundingBox' has an invalid value.` from AppSync.
     const createInput: Parameters<typeof client.models.homePhotoFace.create>[0] = {
       photoId,
       rekognitionFaceId: storedFaceId,
-      boundingBox: boundingBox as any,
+      boundingBox: boundingBox ? (JSON.stringify(boundingBox) as any) : undefined,
     };
     if (matchedPersonId) createInput.personId = matchedPersonId;
     if (similarity !== null) createInput.similarity = similarity;
