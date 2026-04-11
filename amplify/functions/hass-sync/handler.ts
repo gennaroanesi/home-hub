@@ -10,9 +10,13 @@ const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env)
 Amplify.configure(resourceConfig, libraryOptions);
 const client = generateClient<Schema>();
 
-// Domains we care about for the dashboard. Anything else is still synced
-// into the cache (so the agent can read it) but not pinned.
-const AUTO_PIN_DOMAINS = new Set(["climate", "lock", "cover", "camera"]);
+// Domains we care about on the dashboard by default. Camera was in this
+// list originally but removed — camera state is always "recording" and
+// doesn't carry useful information for a glance-dashboard or a morning
+// summary. Users can still pin individual cameras manually if they want
+// snapshot tiles. Anything else is synced into the cache (so the agent
+// can read it) but stays unpinned until a human opts in.
+const AUTO_PIN_DOMAINS = new Set(["climate", "lock", "cover"]);
 
 // Domains we skip entirely. HA surfaces a LOT of internal entities
 // (automations, scripts, sun, zones, sensors, config helpers, etc) —
@@ -97,26 +101,15 @@ async function runWithConcurrency<T>(
  *
  * The Amplify Gen 2 typed data client documents a.json() fields as
  * accepting plain objects, but when called from Lambda (IAM signer
- * context) AppSync rejects them with:
+ * context) AppSync rejects them at the GraphQL parse stage with
+ * "Variable 'X' has an invalid value" — AWSJSON at the wire level
+ * expects a JSON-encoded string, not a structured object. Same
+ * workaround used in face-detector/handler.ts for boundingBox.
  *
- *   Variable 'lastState' has an invalid value.
- *
- * …at the GraphQL parse stage, because the AWSJSON scalar at the wire
- * level expects a JSON-encoded string as input, not a structured
- * object. The same workaround is already used in face-detector/handler.ts
- * (see the boundingBox write — it stringifies and casts to any).
- *
- * Readers get the parsed object back either way — see parseLastState
- * helpers in the readers.
- *
- * Also strips undefined (via JSON.stringify) and non-finite numbers
- * (Infinity/NaN → null) as a bonus sanitization pass.
+ * Readers get the parsed object back via parseLastState helpers.
  */
 function sanitizeForAWSJSON(value: unknown): string {
-  return JSON.stringify(value, (_key, v) => {
-    if (typeof v === "number" && !Number.isFinite(v)) return null;
-    return v;
-  });
+  return JSON.stringify(value);
 }
 
 interface SyncResult {
