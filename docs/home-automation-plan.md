@@ -1,7 +1,7 @@
 # Home Automation Integration — Design Doc
 
-Status: **Planning / blocked on infrastructure setup**
-Last updated: 2026-04-09
+Status: **v1 read-only deployed; hardware expansion phase**
+Last updated: 2026-04-11
 
 Plan for integrating physical devices (thermostat, locks, cameras, appliances, networking) into Home Hub — both the web frontend and the agent. Scoped to v1 (read-only) with a clear path to v2 (control).
 
@@ -17,6 +17,88 @@ Plan for integrating physical devices (thermostat, locks, cameras, appliances, n
 | Vacuum | iRobot Roomba | Via Home Assistant (local LAN, unofficial protocol) |
 
 **Why Home Assistant instead of direct integrations:** four of the six devices (Unifi, Eufy, MyQ, most Samsung) have no stable cloud API or are LAN-only. HA has maintained integrations for all of them and absorbs every vendor-specific quirk. We build one HA integration, we get all six devices.
+
+## Radio stack
+
+HA sits behind two USB radios plugged into the Hyper-V VM's host PC (passed through to the VM):
+
+| Radio | Purpose | Status |
+|---|---|---|
+| **Zooz ZST39 LR** | Z-Wave (classic + Long Range 800-series) | ✅ In hand |
+| **HA Connect ZBT-2** | Zigbee + Thread / Matter | 🛒 To purchase |
+
+**Why two radios:** each protocol has strengths and the ecosystems don't overlap much. Z-Wave dominates for battery-efficient switches/locks/sensors from US vendors (Zooz, Aeotec, Inovelli); Zigbee/Matter dominates for bulbs and cheap environmental sensors (Hue, Ikea, Aqara). Running both is the canonical HA setup. HA treats both as native integrations (Z-Wave JS + ZHA + Matter controller) with a unified entity model.
+
+**Why ZST39 LR specifically:** Z-Wave Long Range gives ~4x range over classic Z-Wave (up to ~80 ft reliable through walls vs ~30 ft), star topology that skips mesh routing, and ~10 year battery life on LR-capable sensors. Classic 700/800 devices still work on the same stick — LR is backward compatible. The "LR" designation matters per-device, not per-network; we buy LR-variant Zooz devices where they exist, classic where they don't.
+
+**Why Connect ZBT-2 specifically:** newest generation replacement for SkyConnect. Supports Zigbee and Thread simultaneously, Matter commissioning via HA natively, same ~$40 price point, official HA product so no driver weirdness.
+
+**Installation gotcha:** the two radios must be physically separated by ~1 ft (use a short USB extension cable for one). Both use 2.4GHz-adjacent frequencies and interfere when adjacent. HA docs explicitly call this out.
+
+## Device enrollment plan
+
+Purchase order, lowest-commitment first. Each step is independent — stop at any point if it's doing what you need.
+
+### Phase 1 — validate the stack (Z-Wave only)
+
+Goal: prove the ZST39 pairs correctly, devices sync into the `homeDevice` cache, and the `/devices` page renders their state. Two cheap plug-in devices, no wiring.
+
+- **2× Zooz ZEN04 800LR Smart Plug** (~$25 each) — nightstand lamp power. Pair in HA via Z-Wave JS, verify they appear as `switch.*` entities, pin to dashboard manually.
+  - Inclusion gotcha: device must be within ~10 ft of the stick during pairing. Either carry the laptop to the bedroom or temporarily place the ZST39 on a USB extension cable during first-pair.
+  - LR vs classic: during inclusion, Z-Wave JS will ask whether to pair as LR or classic. Choose LR — the ZEN04 supports it and we want the range/battery benefits.
+
+### Phase 2 — overhead lighting (Z-Wave in-wall)
+
+Goal: replace one room's wall switch with a smart paddle. Proves neutral-wire installation works and builds confidence for whole-house rollout.
+
+- **Neutral-wire precheck** (before purchase): kill power at breaker, pull a switch out of its box, verify a bundle of capped white wires at the back of the gang box. Austin homes ~30 years or newer almost always have neutral. No neutral → narrower options (Zooz ZEN77 no-neutral dimmer, with LED compatibility caveats).
+- **1× Zooz ZEN72 800LR Dimmer** (~$35) or **ZEN71 on/off switch** — replaces the paddle but keeps the existing wall plate / gang box. Requires neutral.
+- Start with one room. If it pairs cleanly and the paddle feels right, scale to the rest of the house.
+
+### Phase 3 — add Zigbee/Matter radio
+
+Goal: second radio network alive in HA, one bulb working.
+
+- **1× Home Assistant Connect ZBT-2** (~$40) — Zigbee + Thread/Matter radio. Plug into PC, HA auto-detects, ZHA integration installs.
+- **2× Philips Hue White & Color Ambiance E26** (~$50 each) — nightstand color lamps. Pair to ZHA directly (no Hue bridge needed). Enter HA as `light.*` entities, **auto-pin** on next sync (since `light` is in `AUTO_PIN_DOMAINS` as of ef20d71).
+- Critical: smart bulbs go in **plug-in lamps only**. Never in a ceiling fixture controlled by a wall switch — if anyone flips the physical switch off, the bulb loses power and disappears from HA until someone flips it back on. For overhead lights, use phase 2 smart switches instead.
+
+### Phase 4 — sensors (Zigbee, optional)
+
+Ambient data for automations and morning-summary enrichment. All Zigbee, all battery-powered, ~1-2 year coin cell life.
+
+- **Aqara temperature/humidity sensors** (~$15 each) — one per interesting room (bedroom, garage, maybe the closet that has the HVAC intake). Used by the daily summary for "bedroom got to 78°F overnight" context, and for HVAC automations in v2.
+- **Aqara motion sensors** (~$20 each) — pair with phase-2 switches for "turn on bathroom light between 11pm and 6am if motion detected". HA-native automation, no Home Hub involvement needed.
+- **Aqara door/window contact sensors** (~$15 each) — tied into HVAC automations ("don't run AC if the back door is open") and daily summary ("⚠️ garage side door has been open for 3 hours").
+- All pair to ZHA, no Aqara bridge required (HA bypasses the Aqara hub).
+
+### Phase 5 — whole-house rollout
+
+If phases 1-3 all work, scale up:
+- More Zooz dimmers (ZEN72 / ZEN71) for every interior wall switch
+- Outdoor lighting (porch, backyard) via waterproof Zooz relays
+- Kitchen / bath under-cabinet LED strips via Zigbee controllers
+- Whatever specific automations prove valuable from phase 4 sensor data
+
+**Stop criteria for whole-house:** if the first two rooms in phase 2 are flaky (switches missing events, mesh routing issues, inclusion problems) I'd pause and debug before spreading the problem across 15 more switches. Z-Wave LR's star topology makes this less likely than classic Z-Wave, but worth a checkpoint.
+
+## Policy implications for v2 device control
+
+Once we start shipping device control (v2), the new device classes map to the risk matrix in `lib/devicePolicy.ts`:
+
+| Device class | Sensitivity | Rationale |
+|---|---|---|
+| Smart plugs (Zooz ZEN04) | LOW | Turning off a lamp is always safe |
+| In-wall switches (Zooz ZEN71/72) | LOW | Same |
+| Smart bulbs (Hue) | LOW | Same — includes color changes |
+| Temp/humidity sensors | READ_ONLY | No actionable state |
+| Motion sensors | READ_ONLY | Same |
+| Contact sensors | READ_ONLY | Same |
+| Door locks (Eufy) | HIGH | Existing rule, never over WA |
+| Garage door (MyQ) | HIGH | Existing rule |
+| Thermostat (Resideo) | LOW if ±3°F swing, MEDIUM if larger | Existing rule |
+
+**No schema changes needed** for any of the new device classes — all slot into the existing tiers. The `/devices` page admin UI (not built yet) will let us set `sensitivity` per device during enrollment.
 
 ## Architecture
 
@@ -128,14 +210,34 @@ Builds on top of v1 without changing the data model. Adds:
 
 These unblock me from starting the code. Ordered by what I need first.
 
-### Infrastructure setup
+### Infrastructure setup — done
 
-- [ ] **Enable Hyper-V on Windows 11 Home.** Home doesn't ship with it — there's a well-known installer script (search "enable Hyper-V on Windows 11 Home script"). After running it, reboot and verify with `bcdedit /enum | findstr hypervisorlaunchtype` — should show `Auto`.
-- [ ] **Download the HA OS Hyper-V image** from [Home Assistant's install docs](https://www.home-assistant.io/installation/windows/) (`.vhdx` file). Don't use VirtualBox — it conflicts with WSL2.
-- [ ] **Create the Hyper-V VM**: 4 GB RAM, 2 vCPUs, attach the `.vhdx`, use a **External virtual switch** (not Default Switch — HA needs a stable IP on your LAN). Start the VM.
-- [ ] **Open HA in a browser** at `http://homeassistant.local:8123` and complete the onboarding (create a user, set the home location).
-- [ ] **Install the Unifi integration** in HA first (Settings → Devices & services → Add integration → "Unifi Network"). This gives us `device_tracker` entities for future home-wifi detection. Point it at your Unifi controller.
-- [ ] **Install integrations for each device**, in priority order: Resideo (thermostat) → Eufy (locks) → Samsung SmartThings (TV/appliances) → MyQ (garage) → iRobot Roomba. Some of these require cloud account linking (Resideo, SmartThings); Eufy and MyQ use community add-ons that may need HACS. Roomba is built-in and local — should auto-discover on the LAN.
+- [x] **Hyper-V enabled on Windows 11 Home** and HA OS VM running 24/7 on the Lenovo IdeaCentre Mini.
+- [x] **Nabu Casa account + Remote UI enabled** — gives us the stable `*.ui.nabu.casa` URL.
+- [x] **Long-lived access token** generated and stored as Amplify secrets (`HASS_BASE_URL`, `HASS_TOKEN`) for both the `hass-sync` and `daily-summary` lambdas.
+- [x] **Unifi integration installed** — provides `device_tracker` entities (used later for v2 home-wifi detection) and lots of network state we ignore by default.
+- [x] **Other integrations installed** at least partially — Samsung SmartThings for appliances. Resideo / Eufy / MyQ pending availability. Roomba pending purchase.
+
+### Hardware purchasing checklist — in progress
+
+Ordered by the phases in the "Device enrollment plan" section above.
+
+**Phase 1 — validate the Z-Wave stack**
+- [ ] 2× **Zooz ZEN04 800LR Smart Plug** (~$50 total). Nightstand lamps. Purchase from Zooz direct or Amazon.
+
+**Phase 2 — overhead lighting**
+- [ ] Neutral-wire check on one switch (breaker off, pull the switch, look for white wire bundle at back of box).
+- [ ] 1× **Zooz ZEN72 800LR Dimmer** (~$35) if dimming is wanted, OR **ZEN71 on/off switch** (~$30). Start with one room.
+
+**Phase 3 — Zigbee / Matter radio**
+- [ ] 1× **Home Assistant Connect ZBT-2** (~$40). Official HA product, ZBT-2 replaces the original SkyConnect. Buy direct from the HA store or authorized reseller.
+- [ ] **Short USB extension cable** (~$5) to physically separate the ZBT-2 from the ZST39 LR stick — they interfere when adjacent.
+- [ ] 2× **Philips Hue White and Color Ambiance E26** (~$50 each) for color-changing nightstand lamps. Pair directly to ZHA, no Hue bridge needed.
+
+**Phase 4 — sensors (optional, any time)**
+- [ ] Aqara temperature/humidity sensors for the bedroom and any other rooms of interest (~$15 each)
+- [ ] Aqara motion sensors for hallway/bathroom auto-on automations (~$20 each)
+- [ ] Aqara door/window contact sensors if you want HVAC automations or door-left-open alerts (~$15 each)
 
 #### Setup gotchas to watch out for
 
