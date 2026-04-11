@@ -7,6 +7,11 @@ import { RRule } from "rrule";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
 import { env } from "$amplify/env/home-agent";
 import type { Schema } from "../../data/resource";
+import {
+  DEFAULT_ICAO,
+  fetchAirportWeather,
+  getMorningWeatherBriefing,
+} from "../../../lib/aviation-weather.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -394,6 +399,25 @@ const tools: Anthropic.Tool[] = [
         pinnedOnly: {
           type: "boolean",
           description: "If true (default), only return devices marked as pinned. Pass false to include everything in the cache.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_weather_briefing",
+    description:
+      "Fetch current METAR + TAF for an airport via the FAA aviationweather.gov API. Default airport is KAUS (Austin). Auto-selects 'plain' mode for household questions ('what's the weather') and 'aviation' mode when the user is flying in the next 2 days or explicitly asks about flight conditions. Returns parsed METAR fields (temp, wind, visibility, flight rules) AND raw METAR/TAF strings. Pilot-useful: flightRules is one of VFR/MVFR/IFR/LIFR derived from ceiling and visibility.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        icao: {
+          type: "string",
+          description: "ICAO airport code (e.g. KAUS, KORD, KMDW). Defaults to KAUS if omitted.",
+        },
+        mode: {
+          type: "string",
+          enum: ["plain", "aviation", "auto"],
+          description: "plain = household-friendly line. aviation = full METAR+TAF for flying. auto (default) picks based on upcoming flights in the calendar and trip legs.",
         },
       },
     },
@@ -982,6 +1006,61 @@ async function executeTool(
       });
     }
 
+    case "get_weather_briefing": {
+      const icao = (input.icao ?? DEFAULT_ICAO).toUpperCase();
+      const mode = input.mode ?? "auto";
+
+      // If user explicitly asked for plain or aviation, skip the trip/
+      // calendar scan — they've already made the choice. For "auto",
+      // fetch the signals and let detectFlyingWindow decide.
+      if (mode === "plain" || mode === "aviation") {
+        const { metar, taf } = await fetchAirportWeather(icao);
+        return JSON.stringify({
+          icao,
+          mode,
+          metar,
+          taf,
+          flyingContext: { flying: mode === "aviation" },
+          note:
+            mode === "aviation"
+              ? "Render as a pilot briefing: raw METAR, raw TAF, flight rules verdict."
+              : "Render as a one-line plain-English weather summary.",
+        });
+      }
+
+      // Auto mode: pull trip legs + upcoming events so the briefing
+      // can decide plain vs aviation. Cap at modest limits — we only
+      // care about the next 2 days.
+      const [legsRes, eventsRes] = await Promise.all([
+        client.models.homeTripLeg.list({ limit: 500 }),
+        client.models.homeCalendarEvent.list({ limit: 500 }),
+      ]);
+      const briefing = await getMorningWeatherBriefing(icao, {
+        tripLegs: (legsRes.data ?? []).map((l) => ({
+          mode: l.mode,
+          departAt: l.departAt,
+        })),
+        events: (eventsRes.data ?? []).map((e) => ({
+          title: e.title,
+          description: e.description,
+          startAt: e.startAt,
+        })),
+        lookaheadDays: 2,
+      });
+
+      return JSON.stringify({
+        icao: briefing.icao,
+        mode: briefing.mode,
+        metar: briefing.metar,
+        taf: briefing.taf,
+        flyingContext: briefing.flyingContext,
+        note:
+          briefing.mode === "aviation"
+            ? `Auto-selected aviation mode: ${briefing.flyingContext.source} "${briefing.flyingContext.title}" at ${briefing.flyingContext.when}. Render as a pilot briefing.`
+            : "Auto-selected plain mode (no flights detected in next 2 days). Render as a one-line summary.",
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -1028,7 +1107,7 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
     timeZoneName: "short",
   });
 
-  const systemPrompt = `You are a helpful household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, and reminders for the household.
+  const systemPrompt = `You are Janet, the household assistant for Gennaro and Cristine. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, and reminders.
 
 Household members: ${peopleNames}
 Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
@@ -1040,6 +1119,8 @@ When assigning tasks/bills/events to people, pass their names in the assignedPeo
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
 Home devices (thermostat, locks, cameras, etc.) can be read via get_home_devices. Device control is NOT available yet — if the user asks to change something (e.g. "set the thermostat to 72"), tell them to do it in the web app.
+
+For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions, call get_weather_briefing. By default it uses KAUS and auto-selects plain vs aviation mode. Pass mode="aviation" if the user is clearly asking about flying conditions, or pass a different ICAO if they name an airport. The tool returns structured data including the raw METAR and TAF — for a household-level question render a plain line; for a pilot question include the raw strings and the VFR/MVFR/IFR verdict.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
