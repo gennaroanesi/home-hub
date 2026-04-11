@@ -93,15 +93,9 @@ async function runWithConcurrency<T>(
 }
 
 /**
- * Strip anything AppSync's AWSJSON scalar can't represent: undefined,
- * Infinity, NaN, functions, symbols. JSON.stringify drops undefined
- * and converts non-finite numbers to null — which is what we want.
- * Done as a round-trip through JSON so deeply nested junk gets
- * scrubbed recursively.
- *
- * Returns a plain object/array tree, NOT a JSON string. AppSync's
- * AWSJSON scalar expects objects (it serializes internally); passing
- * a string would store it double-encoded.
+ * Strip anything that could trip up AWSJSON serialization: undefined,
+ * non-finite numbers, nested junk. Round-trip through JSON so the
+ * whole tree gets scrubbed recursively.
  */
 function sanitizeForAWSJSON<T>(value: T): T {
   return JSON.parse(
@@ -170,19 +164,31 @@ async function runSync(): Promise<SyncResult> {
     `hass-sync: fetched ${entities.length} entities, syncing ${wanted.length} after skip filter`
   );
 
+  // Pick one entity for payload debug logging so we can see exactly
+  // what shape is being rejected. Only the first attempt logs, to
+  // avoid flooding CloudWatch with 90 copies.
+  let debugLogged = false;
+
   const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
     const area = (entity.attributes as any).area ?? null;
-    // Sanitize the raw HA state blob before writing. Raw HA attributes
-    // can contain undefined, non-finite numbers (Infinity/NaN), and
-    // deeply-nested arrays that AppSync's AWSJSON scalar rejects with
-    // "Variable 'lastState' has an invalid value". Round-tripping
-    // through JSON strips all of that while keeping the shape.
     const lastState = sanitizeForAWSJSON({
       state: entity.state,
       attributes: entity.attributes,
       lastUpdated: entity.last_updated ?? null,
     });
+
+    if (!debugLogged) {
+      debugLogged = true;
+      console.log(
+        "DEBUG first payload:",
+        JSON.stringify({
+          entityId: entity.entity_id,
+          lastStateType: typeof lastState,
+          lastStateSample: lastState,
+        }).slice(0, 2000)
+      );
+    }
 
     const existingDevice = existingByEntityId.get(entity.entity_id);
 
@@ -191,32 +197,46 @@ async function runSync(): Promise<SyncResult> {
     // will count an auth-denied or validation-failed call as "fulfilled"
     // — we have to inspect errors explicitly and throw, otherwise
     // silent failures look like successes in the counter.
-    if (existingDevice) {
-      const res = await client.models.homeDevice.update({
-        id: existingDevice.id,
-        friendlyName: friendlyName(entity),
-        domain,
-        area,
-        lastState,
-        lastSyncedAt: now,
-      });
-      if (res.errors?.length) {
-        throw new Error(`update ${entity.entity_id}: ${res.errors[0].message}`);
+    try {
+      if (existingDevice) {
+        const res = await client.models.homeDevice.update({
+          id: existingDevice.id,
+          friendlyName: friendlyName(entity),
+          domain,
+          area,
+          lastState,
+          lastSyncedAt: now,
+        });
+        if (res.errors?.length) {
+          throw new Error(
+            `update ${entity.entity_id}: ${JSON.stringify(res.errors)}`
+          );
+        }
+      } else {
+        const res = await client.models.homeDevice.create({
+          entityId: entity.entity_id,
+          friendlyName: friendlyName(entity),
+          domain,
+          area,
+          sensitivity: "READ_ONLY",
+          isPinned: AUTO_PIN_DOMAINS.has(domain),
+          lastState,
+          lastSyncedAt: now,
+        });
+        if (res.errors?.length) {
+          throw new Error(
+            `create ${entity.entity_id}: ${JSON.stringify(res.errors)}`
+          );
+        }
       }
-    } else {
-      const res = await client.models.homeDevice.create({
-        entityId: entity.entity_id,
-        friendlyName: friendlyName(entity),
-        domain,
-        area,
-        sensitivity: "READ_ONLY",
-        isPinned: AUTO_PIN_DOMAINS.has(domain),
-        lastState,
-        lastSyncedAt: now,
-      });
-      if (res.errors?.length) {
-        throw new Error(`create ${entity.entity_id}: ${res.errors[0].message}`);
-      }
+    } catch (err: any) {
+      // Catch thrown errors too (the data client sometimes throws on
+      // client-side validation instead of returning res.errors). Include
+      // the full error for diagnosis.
+      const detail = err?.errors ?? err?.message ?? String(err);
+      throw new Error(
+        `${entity.entity_id}: ${JSON.stringify(detail)}`
+      );
     }
   });
 
