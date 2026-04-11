@@ -7,6 +7,7 @@ import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
+import { Switch } from "@heroui/switch";
 import {
   FaArrowLeft,
   FaSync,
@@ -18,6 +19,8 @@ import {
   FaPlug,
   FaRobot,
   FaQuestion,
+  FaStar,
+  FaRegStar,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
@@ -142,6 +145,11 @@ export default function DevicesPage() {
   const [syncing, setSyncing] = useState(false);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  // When true, unpinned devices are shown too — use this to discover
+  // things in the cache and pin them. Persists across renders only; not
+  // saved to the user's profile because the expected flow is "flip it
+  // on, pin the things you care about, flip it off".
+  const [showUnpinned, setShowUnpinned] = useState(false);
 
   useEffect(() => {
     checkAuth();
@@ -161,11 +169,12 @@ export default function DevicesPage() {
     // Soft-fail if the model isn't deployed yet — lets the page render
     // something useful in the gap between schema bump and sandbox redeploy.
     try {
-      const { data } = await client.models.homeDevice.list({ limit: 500 });
-      const pinned = (data ?? []).filter((d) => d.isPinned);
-      setDevices(pinned);
-      // Compute the most recent sync time so the header can show it
-      const latest = pinned
+      const { data } = await client.models.homeDevice.list({ limit: 1000 });
+      const all = data ?? [];
+      setDevices(all);
+      // Latest sync time across *all* devices — "last sync" is a global
+      // concept, not per-pin.
+      const latest = all
         .map((d) => d.lastSyncedAt)
         .filter((t): t is string => !!t)
         .sort()
@@ -177,6 +186,24 @@ export default function DevicesPage() {
     }
     setLoading(false);
   }, []);
+
+  async function togglePin(device: Device) {
+    // Optimistic update — flip locally, then write. On failure we just
+    // re-load from the source of truth.
+    const next = !device.isPinned;
+    setDevices((prev) =>
+      prev.map((d) => (d.id === device.id ? { ...d, isPinned: next } : d))
+    );
+    try {
+      await client.models.homeDevice.update({
+        id: device.id,
+        isPinned: next,
+      });
+    } catch (err) {
+      console.error("Failed to toggle pin:", err);
+      await loadDevices();
+    }
+  }
 
   async function handleSync() {
     setSyncing(true);
@@ -194,10 +221,18 @@ export default function DevicesPage() {
     setSyncing(false);
   }
 
+  // Filter to visible devices (pinned only, or all if showUnpinned is on)
+  const visibleDevices = useMemo(
+    () => (showUnpinned ? devices : devices.filter((d) => d.isPinned)),
+    [devices, showUnpinned]
+  );
+
+  const pinnedCount = useMemo(() => devices.filter((d) => d.isPinned).length, [devices]);
+
   // Group devices by area; devices without an area go in "Unassigned"
   const byArea = useMemo(() => {
     const groups = new Map<string, Device[]>();
-    for (const d of devices) {
+    for (const d of visibleDevices) {
       const area = d.area ?? "Unassigned";
       if (!groups.has(area)) groups.set(area, []);
       groups.get(area)!.push(d);
@@ -215,7 +250,7 @@ export default function DevicesPage() {
       if (b === "Unassigned") return -1;
       return a.localeCompare(b);
     });
-  }, [devices]);
+  }, [visibleDevices]);
 
   function formatLastSync(iso: string | null): string {
     if (!iso) return "never";
@@ -239,7 +274,7 @@ export default function DevicesPage() {
             <div>
               <h1 className="text-2xl font-bold text-foreground">Devices</h1>
               <p className="text-xs text-default-400">
-                Last sync: {formatLastSync(lastSyncedAt)}
+                {pinnedCount} pinned · {devices.length} in cache · synced {formatLastSync(lastSyncedAt)}
               </p>
             </div>
           </div>
@@ -263,12 +298,43 @@ export default function DevicesPage() {
           </Card>
         )}
 
+        {/* Show-unpinned toggle — hidden until there's actually something in
+            the cache, otherwise it's just clutter. */}
+        {devices.length > 0 && (
+          <div className="flex justify-end mb-3">
+            <Switch
+              size="sm"
+              isSelected={showUnpinned}
+              onValueChange={setShowUnpinned}
+            >
+              <span className="text-xs text-default-500">Show unpinned</span>
+            </Switch>
+          </div>
+        )}
+
+        {/* Empty states — three cases:
+            - Nothing in cache: never synced, or sync failed
+            - Things in cache but none pinned: show a helpful hint
+            - Things pinned: rendered below this block */}
         {!loading && devices.length === 0 && (
           <Card>
             <CardBody className="px-4 py-10 text-center">
               <p className="text-sm text-default-500 mb-2">No devices synced yet.</p>
               <p className="text-xs text-default-400 mb-4">
                 Hit Refresh to pull the current state from Home Assistant.
+              </p>
+            </CardBody>
+          </Card>
+        )}
+
+        {!loading && devices.length > 0 && pinnedCount === 0 && !showUnpinned && (
+          <Card>
+            <CardBody className="px-4 py-8 text-center">
+              <p className="text-sm text-default-500 mb-1">
+                {devices.length} devices in the cache, but none are pinned.
+              </p>
+              <p className="text-xs text-default-400">
+                Turn on <strong>Show unpinned</strong> above, then star the ones you want on the dashboard.
               </p>
             </CardBody>
           </Card>
@@ -282,7 +348,7 @@ export default function DevicesPage() {
               </h2>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 {areaDevices.map((device) => (
-                  <Card key={device.id}>
+                  <Card key={device.id} className={device.isPinned ? "" : "opacity-70"}>
                     <CardHeader className="flex items-center gap-2 px-4 pt-3 pb-1">
                       <div className="text-default-500">{domainIcon(device.domain)}</div>
                       <p className="text-sm font-medium flex-1 min-w-0 truncate">
@@ -291,6 +357,18 @@ export default function DevicesPage() {
                       <Chip size="sm" variant="flat" className="capitalize">
                         {device.domain}
                       </Chip>
+                      <button
+                        onClick={() => togglePin(device)}
+                        className="text-default-400 hover:text-warning transition-colors p-1"
+                        title={device.isPinned ? "Unpin" : "Pin to dashboard"}
+                        aria-label={device.isPinned ? "Unpin" : "Pin to dashboard"}
+                      >
+                        {device.isPinned ? (
+                          <FaStar size={14} className="text-warning" />
+                        ) : (
+                          <FaRegStar size={14} />
+                        )}
+                      </button>
                     </CardHeader>
                     <CardBody className="px-4 pt-0 pb-3">
                       <p className="text-sm">{renderDeviceState(device)}</p>
