@@ -357,7 +357,7 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "create_trip_leg",
-    description: "Add a transportation leg (flight, car, train, etc.) to a trip. Use this to record specific segments of travel alongside the parent trip. Airline/flightNumber apply to COMMERCIAL_FLIGHT; aircraft (tail number) applies to PERSONAL_FLIGHT.",
+    description: "Add a transportation leg (flight, car, train, etc.) to a trip. Use this to record specific segments of travel alongside the parent trip. Airline/flightNumber apply to COMMERCIAL_FLIGHT; aircraft (tail number) applies to PERSONAL_FLIGHT. When the user mentions an airport by name or code (e.g. 'from Austin Bergstrom', 'KAUS', 'JFK', 'TX99'), fill fromLocation.airportCode / toLocation.airportCode — ICAO, IATA, or private field codes are all accepted and stored as the user provided.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -392,6 +392,10 @@ const tools: Anthropic.Tool[] = [
             latitude: { type: "number" },
             longitude: { type: "number" },
             timezone: { type: "string" },
+            airportCode: {
+              type: "string",
+              description: "Optional airport code (ICAO like KAUS, IATA like AUS, or private field code like TX99). Store as the user provided.",
+            },
           },
         },
         toLocation: {
@@ -402,6 +406,10 @@ const tools: Anthropic.Tool[] = [
             latitude: { type: "number" },
             longitude: { type: "number" },
             timezone: { type: "string" },
+            airportCode: {
+              type: "string",
+              description: "Optional airport code (ICAO like KAUS, IATA like AUS, or private field code like TX99). Store as the user provided.",
+            },
           },
         },
         confirmationCode: { type: "string" },
@@ -417,7 +425,7 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "update_trip_leg",
-    description: "Update fields on an existing trip leg by its ID. Only the fields you pass are changed; omit fields to leave them untouched.",
+    description: "Update fields on an existing trip leg by its ID. Only the fields you pass are changed; omit fields to leave them untouched. When the user mentions an airport by name or code (e.g. 'KAUS', 'AUS', 'TX99'), fill fromLocation.airportCode / toLocation.airportCode — ICAO, IATA, or private field codes are all accepted and stored as the user provided.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -452,6 +460,10 @@ const tools: Anthropic.Tool[] = [
             latitude: { type: "number" },
             longitude: { type: "number" },
             timezone: { type: "string" },
+            airportCode: {
+              type: "string",
+              description: "Optional airport code (ICAO like KAUS, IATA like AUS, or private field code like TX99). Store as the user provided.",
+            },
           },
         },
         toLocation: {
@@ -462,6 +474,10 @@ const tools: Anthropic.Tool[] = [
             latitude: { type: "number" },
             longitude: { type: "number" },
             timezone: { type: "string" },
+            airportCode: {
+              type: "string",
+              description: "Optional airport code (ICAO like KAUS, IATA like AUS, or private field code like TX99). Store as the user provided.",
+            },
           },
         },
         confirmationCode: { type: "string", description: "Pass empty string to clear." },

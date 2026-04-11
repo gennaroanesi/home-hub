@@ -13,6 +13,10 @@ const locationCustomType = a.customType({
   latitude: a.float(),
   longitude: a.float(),
   timezone: a.string(),
+  // Optional airport code for flight legs. Accepts whatever the user gives
+  // us — ICAO (KAUS), IATA (AUS), or private field codes (TX99). No
+  // validation; stored as-entered.
+  airportCode: a.string(),
 });
 
 const schema = a

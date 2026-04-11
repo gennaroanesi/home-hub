@@ -53,6 +53,10 @@ export interface LegFormRow {
   arriveAt: string;
   fromCity: string;
   toCity: string;
+  // Optional airport codes — only exposed in the UI for flight modes,
+  // but the field lives on the leg's from/to location regardless.
+  fromAirport: string;
+  toAirport: string;
   airline: string;
   flightNumber: string;
   aircraft: string;
@@ -85,6 +89,8 @@ export function emptyLeg(sortOrder: number): LegFormRow {
     arriveAt: "",
     fromCity: "",
     toCity: "",
+    fromAirport: "",
+    toAirport: "",
     airline: "",
     flightNumber: "",
     aircraft: "",
@@ -109,6 +115,8 @@ export function legToFormRow(leg: TripLeg): LegFormRow {
     arriveAt: leg.arriveAt ? leg.arriveAt.slice(0, 16) : "",
     fromCity: from.city ?? "",
     toCity: to.city ?? "",
+    fromAirport: from.airportCode ?? "",
+    toAirport: to.airportCode ?? "",
     airline: leg.airline ?? "",
     flightNumber: leg.flightNumber ?? "",
     aircraft: leg.aircraft ?? "",

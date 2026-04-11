@@ -330,6 +330,28 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                     onValueChange={(v) => updateLeg({ toCity: v })}
                   />
                 </div>
+                {(leg.mode === "COMMERCIAL_FLIGHT" || leg.mode === "PERSONAL_FLIGHT") && (
+                  // Airport codes live on the from/to location object. We
+                  // only expose the input for flight modes — for cars/trains
+                  // the field is meaningless. ICAO / IATA / private field
+                  // codes are all accepted; no validation.
+                  <div className="flex gap-2">
+                    <Input
+                      size="sm"
+                      label="Airport"
+                      placeholder="KAUS"
+                      value={leg.fromAirport}
+                      onValueChange={(v) => updateLeg({ fromAirport: v })}
+                    />
+                    <Input
+                      size="sm"
+                      label="Airport"
+                      placeholder="KEWR"
+                      value={leg.toAirport}
+                      onValueChange={(v) => updateLeg({ toAirport: v })}
+                    />
+                  </div>
+                )}
                 <div className="flex gap-2">
                   <Input
                     size="sm"
@@ -550,8 +572,20 @@ async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: Tri
   // Create or update each form leg
   for (let i = 0; i < formLegs.length; i++) {
     const leg = formLegs[i];
-    const fromLocation = leg.fromCity ? { city: leg.fromCity } : null;
-    const toLocation = leg.toCity ? { city: leg.toCity } : null;
+    const fromLocation =
+      leg.fromCity || leg.fromAirport
+        ? {
+            city: leg.fromCity || null,
+            airportCode: leg.fromAirport || null,
+          }
+        : null;
+    const toLocation =
+      leg.toCity || leg.toAirport
+        ? {
+            city: leg.toCity || null,
+            airportCode: leg.toAirport || null,
+          }
+        : null;
     const payload = {
       tripId,
       mode: leg.mode,
