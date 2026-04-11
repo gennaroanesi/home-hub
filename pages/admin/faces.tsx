@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -29,6 +29,11 @@ export default function FacesPage() {
   const [pendingAssign, setPendingAssign] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
+  // Windowed render so thousands of unmatched faces don't render at once.
+  // PAGE_SIZE groups are shown; scrolling to the sentinel bumps the count.
+  const PAGE_SIZE = 20;
+  const [visibleGroupCount, setVisibleGroupCount] = useState(PAGE_SIZE);
+  const sentinelRef = useRef<HTMLDivElement>(null);
   // Transient banner shown while / after a retroactive match sweep runs.
   // `null` = no banner; otherwise shows the result of the last run.
   const [retroStatus, setRetroStatus] = useState<
@@ -217,6 +222,39 @@ export default function FacesPage() {
     return Array.from(groups.entries());
   }, [unmatched]);
 
+  // Reset the visible window when the underlying list size changes — e.g.
+  // after loadAll() replaces the data or after a retroactive sweep drops a
+  // bunch of rows. Track length not reference identity so in-place edits
+  // (dismiss / assign) don't snap back to the top.
+  useEffect(() => {
+    setVisibleGroupCount(PAGE_SIZE);
+  }, [groupedByPhoto.length]);
+
+  // IntersectionObserver for the "load more" sentinel. Starts loading
+  // slightly before the sentinel enters the viewport so scrolling feels
+  // continuous.
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    if (visibleGroupCount >= groupedByPhoto.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) {
+          setVisibleGroupCount((c) => Math.min(c + PAGE_SIZE, groupedByPhoto.length));
+        }
+      },
+      { rootMargin: "400px" }
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [visibleGroupCount, groupedByPhoto.length]);
+
+  const visibleGroups = useMemo(
+    () => groupedByPhoto.slice(0, visibleGroupCount),
+    [groupedByPhoto, visibleGroupCount]
+  );
+  const hasMore = visibleGroupCount < groupedByPhoto.length;
+
   return (
     <DefaultLayout>
       <div className="max-w-4xl mx-auto px-4 py-10">
@@ -282,8 +320,16 @@ export default function FacesPage() {
           </Card>
         )}
 
+        {!loading && groupedByPhoto.length > 0 && (
+          <p className="text-xs text-default-400 mb-3">
+            {unmatched.length} unmatched face{unmatched.length === 1 ? "" : "s"} across{" "}
+            {groupedByPhoto.length} photo{groupedByPhoto.length === 1 ? "" : "s"}
+            {hasMore ? ` — showing ${visibleGroupCount}` : ""}
+          </p>
+        )}
+
         <div className="space-y-3">
-          {groupedByPhoto.map(([photoId, faces]) => {
+          {visibleGroups.map(([photoId, faces]) => {
             const photo = photos[photoId];
             if (!photo) return null;
             return (
@@ -370,6 +416,14 @@ export default function FacesPage() {
               </Card>
             );
           })}
+          {hasMore && (
+            <div
+              ref={sentinelRef}
+              className="py-6 text-center text-xs text-default-400"
+            >
+              Loading more… ({visibleGroupCount} of {groupedByPhoto.length})
+            </div>
+          )}
         </div>
       </div>
     </DefaultLayout>
