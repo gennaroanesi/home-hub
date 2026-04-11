@@ -265,6 +265,385 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "delete_event",
+    description: "Hard-delete a calendar event by its ID. Use when the user says 'cancel'/'delete'/'remove' an event. There is no soft-delete, so this is irreversible.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        eventId: { type: "string" },
+      },
+      required: ["eventId"],
+    },
+  },
+  {
+    name: "create_trip",
+    description: "Create a trip. Use for multi-day travel (leisure, work, flying, family). Destination is an optional structured location.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: { type: "string" },
+        type: {
+          type: "string",
+          enum: ["LEISURE", "WORK", "FLYING", "FAMILY"],
+        },
+        startDate: { type: "string", description: "ISO date (YYYY-MM-DD)" },
+        endDate: { type: "string", description: "ISO date (YYYY-MM-DD)" },
+        destination: {
+          type: "object",
+          description: "Optional structured destination.",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        notes: { type: "string" },
+        participants: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
+      },
+      required: ["name", "startDate", "endDate"],
+    },
+  },
+  {
+    name: "update_trip",
+    description: "Update fields on an existing trip by its ID. Only the fields you pass are changed; omit fields to leave them untouched.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+        name: { type: "string" },
+        type: {
+          type: "string",
+          enum: ["LEISURE", "WORK", "FLYING", "FAMILY"],
+        },
+        startDate: { type: "string", description: "ISO date (YYYY-MM-DD)" },
+        endDate: { type: "string", description: "ISO date (YYYY-MM-DD)" },
+        destination: {
+          type: "object",
+          description: "Structured destination. Pass null to clear.",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        notes: { type: "string", description: "Pass empty string to clear." },
+        participants: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
+      },
+      required: ["tripId"],
+    },
+  },
+  {
+    name: "delete_trip",
+    description: "Hard-delete a trip by its ID. Cascade-deletes all transportation legs attached to the trip first (they are keyed by tripId). Irreversible.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+      },
+      required: ["tripId"],
+    },
+  },
+  {
+    name: "create_trip_leg",
+    description: "Add a transportation leg (flight, car, train, etc.) to a trip. Use this to record specific segments of travel alongside the parent trip. Airline/flightNumber apply to COMMERCIAL_FLIGHT; aircraft (tail number) applies to PERSONAL_FLIGHT.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+        mode: {
+          type: "string",
+          enum: [
+            "COMMERCIAL_FLIGHT",
+            "PERSONAL_FLIGHT",
+            "CAR",
+            "TRAIN",
+            "BUS",
+            "BOAT",
+            "OTHER",
+          ],
+        },
+        departAt: { type: "string", description: "ISO 8601 datetime" },
+        arriveAt: { type: "string", description: "ISO 8601 datetime" },
+        fromLocation: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        toLocation: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        confirmationCode: { type: "string" },
+        url: { type: "string" },
+        notes: { type: "string" },
+        airline: { type: "string" },
+        flightNumber: { type: "string" },
+        aircraft: { type: "string", description: "Tail number for PERSONAL_FLIGHT, e.g. N12345" },
+        sortOrder: { type: "integer" },
+      },
+      required: ["tripId"],
+    },
+  },
+  {
+    name: "update_trip_leg",
+    description: "Update fields on an existing trip leg by its ID. Only the fields you pass are changed; omit fields to leave them untouched.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        legId: { type: "string" },
+        mode: {
+          type: "string",
+          enum: [
+            "COMMERCIAL_FLIGHT",
+            "PERSONAL_FLIGHT",
+            "CAR",
+            "TRAIN",
+            "BUS",
+            "BOAT",
+            "OTHER",
+          ],
+        },
+        departAt: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
+        arriveAt: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
+        fromLocation: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        toLocation: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        confirmationCode: { type: "string", description: "Pass empty string to clear." },
+        url: { type: "string", description: "Pass empty string to clear." },
+        notes: { type: "string", description: "Pass empty string to clear." },
+        airline: { type: "string", description: "Pass empty string to clear." },
+        flightNumber: { type: "string", description: "Pass empty string to clear." },
+        aircraft: { type: "string", description: "Pass empty string to clear." },
+        sortOrder: { type: "integer" },
+      },
+      required: ["legId"],
+    },
+  },
+  {
+    name: "delete_trip_leg",
+    description: "Hard-delete a single trip leg (one flight/drive/etc.) by its ID. Does not delete the parent trip.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        legId: { type: "string" },
+      },
+      required: ["legId"],
+    },
+  },
+  {
+    name: "list_trip_legs",
+    description: "List all transportation legs for a given tripId, sorted by sortOrder then departAt. list_trips already inlines legs, so only call this when you have a specific tripId already and want just the legs.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        tripId: { type: "string" },
+      },
+      required: ["tripId"],
+    },
+  },
+  {
+    name: "set_calendar_day",
+    description: "Upsert a homeCalendarDay row for a single (date, person) pair. If a row already exists it is updated; otherwise a new one is created. Use for marking PTO, remote/office days, travel days, etc. Returns whether the row was created or updated.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        date: { type: "string", description: "ISO date (YYYY-MM-DD)" },
+        person: { type: "string", description: "Person name (e.g. 'Gennaro' or 'Cristine')" },
+        status: {
+          type: "string",
+          enum: [
+            "WORKING_HOME",
+            "WORKING_OFFICE",
+            "TRAVEL",
+            "VACATION",
+            "WEEKEND_HOLIDAY",
+            "PTO",
+            "CHOICE_DAY",
+          ],
+        },
+        timezone: { type: "string" },
+        location: {
+          type: "object",
+          properties: {
+            city: { type: "string" },
+            country: { type: "string" },
+            latitude: { type: "number" },
+            longitude: { type: "number" },
+            timezone: { type: "string" },
+          },
+        },
+        notes: { type: "string" },
+        ptoFraction: {
+          type: "number",
+          description: "Fraction of the day taken as PTO (0-1). Default 0.",
+        },
+        tripId: { type: "string", description: "Optional FK to a homeTrip" },
+      },
+      required: ["date", "person"],
+    },
+  },
+  {
+    name: "list_calendar_days",
+    description: "List calendar day rows (status/PTO/location per person per date). Filter by date range with fromDate/toDate (both inclusive, YYYY-MM-DD) and optionally by person name.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        fromDate: { type: "string", description: "Earliest date, YYYY-MM-DD. Defaults to today (local CT)." },
+        toDate: { type: "string", description: "Latest date, YYYY-MM-DD (inclusive)." },
+        person: { type: "string", description: "Optional person name filter." },
+      },
+    },
+  },
+  {
+    name: "delete_task",
+    description: "Hard-delete a task by its ID. Use ONLY when the user explicitly wants to remove a task entirely (e.g. 'delete that task', 'never mind, drop it'). For normal completion use complete_task instead — that sets isCompleted=true and handles recurrence.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        taskId: { type: "string" },
+      },
+      required: ["taskId"],
+    },
+  },
+  {
+    name: "update_bill",
+    description: "Update fields on an existing bill by its ID. Only the fields you pass are changed; omit fields to leave them untouched. To mark a bill as paid, use mark_bill_paid instead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        billId: { type: "string" },
+        name: { type: "string" },
+        amount: { type: "number" },
+        currency: { type: "string" },
+        dueDay: { type: "integer", description: "Day of month (1-31) for recurring bills" },
+        dueDate: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
+        isRecurring: { type: "boolean" },
+        category: { type: "string", description: "Pass empty string to clear." },
+        url: { type: "string", description: "Pass empty string to clear." },
+        notes: { type: "string", description: "Pass empty string to clear." },
+        assignedPeople: {
+          type: "array",
+          items: { type: "string" },
+          description: "Array of person names. Use ['both'] or empty for household.",
+        },
+      },
+      required: ["billId"],
+    },
+  },
+  {
+    name: "delete_bill",
+    description: "Hard-delete a bill by its ID. Use when the user wants to remove a bill entirely. To just mark it as paid, use mark_bill_paid instead.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        billId: { type: "string" },
+      },
+      required: ["billId"],
+    },
+  },
+  {
+    name: "update_shopping_list",
+    description: "Update fields on an existing shopping list by its ID. For archive/unarchive use archive_shopping_list / unarchive_shopping_list.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listId: { type: "string" },
+        name: { type: "string" },
+        emoji: { type: "string" },
+        sortOrder: { type: "integer" },
+      },
+      required: ["listId"],
+    },
+  },
+  {
+    name: "delete_shopping_list",
+    description: "Hard-delete a shopping list by its ID. Cascade-deletes all items on the list first. Irreversible — prefer archive_shopping_list unless the user explicitly says 'delete'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        listId: { type: "string" },
+      },
+      required: ["listId"],
+    },
+  },
+  {
+    name: "update_shopping_item",
+    description: "Update fields on an existing shopping item by its ID. For checking items off use check_shopping_item; to uncheck use uncheck_shopping_item.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+        name: { type: "string" },
+        quantity: { type: "string", description: "Pass empty string to clear." },
+        notes: { type: "string", description: "Pass empty string to clear." },
+        sortOrder: { type: "integer" },
+      },
+      required: ["itemId"],
+    },
+  },
+  {
+    name: "delete_shopping_item",
+    description: "Hard-delete a shopping item by its ID. Use when the user wants to fully remove an item (typo, added to the wrong list) rather than mark it as bought.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+      },
+      required: ["itemId"],
+    },
+  },
+  {
+    name: "uncheck_shopping_item",
+    description: "Un-check a shopping item by its ID (sets isChecked=false and clears checkedAt). Mirror of check_shopping_item — use when the user says they did NOT actually buy something or want to restore it to the active list.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+      },
+      required: ["itemId"],
+    },
+  },
+  {
     name: "list_shopping_lists",
     description: "List active shopping lists (e.g. Supermarket, Home Depot) with unchecked item counts. Pass includeArchived=true to also include archived lists.",
     input_schema: {
@@ -698,6 +1077,222 @@ async function executeTool(
       return JSON.stringify({ trips: tripsWithLegs });
     }
 
+    case "delete_event": {
+      const { errors } = await client.models.homeCalendarEvent.delete({ id: input.eventId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, eventId: input.eventId });
+    }
+
+    case "create_trip": {
+      const participantIds = await resolvePersonIds(input.participants);
+      const { data, errors } = await client.models.homeTrip.create({
+        name: input.name,
+        type: input.type ?? null,
+        startDate: input.startDate,
+        endDate: input.endDate,
+        destination: input.destination ?? null,
+        notes: input.notes ?? null,
+        participantIds,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, tripId: data?.id, name: input.name });
+    }
+
+    case "update_trip": {
+      const updates: { id: string } & Record<string, any> = { id: input.tripId };
+      if (input.name !== undefined) updates.name = input.name;
+      if (input.type !== undefined) updates.type = input.type;
+      if (input.startDate !== undefined) updates.startDate = input.startDate;
+      if (input.endDate !== undefined) updates.endDate = input.endDate;
+      if (input.destination !== undefined) updates.destination = input.destination || null;
+      if (input.notes !== undefined) updates.notes = input.notes || null;
+      if (input.participants !== undefined) {
+        updates.participantIds = await resolvePersonIds(input.participants);
+      }
+      const { data, errors } = await client.models.homeTrip.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, tripId: data?.id, name: data?.name });
+    }
+
+    case "delete_trip": {
+      // Cascade-delete the trip's legs first (they are keyed by tripId).
+      const { data: legs } = await client.models.homeTripLeg.list({
+        filter: { tripId: { eq: input.tripId } },
+      });
+      let legsDeleted = 0;
+      for (const leg of legs ?? []) {
+        await client.models.homeTripLeg.delete({ id: leg.id });
+        legsDeleted++;
+      }
+      const { errors } = await client.models.homeTrip.delete({ id: input.tripId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, tripId: input.tripId, legsDeleted });
+    }
+
+    case "create_trip_leg": {
+      const { data, errors } = await client.models.homeTripLeg.create({
+        tripId: input.tripId,
+        mode: input.mode ?? null,
+        departAt: input.departAt ?? null,
+        arriveAt: input.arriveAt ?? null,
+        fromLocation: input.fromLocation ?? null,
+        toLocation: input.toLocation ?? null,
+        confirmationCode: input.confirmationCode ?? null,
+        url: input.url ?? null,
+        notes: input.notes ?? null,
+        airline: input.airline ?? null,
+        flightNumber: input.flightNumber ?? null,
+        aircraft: input.aircraft ?? null,
+        sortOrder: input.sortOrder ?? 0,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, legId: data?.id, tripId: input.tripId });
+    }
+
+    case "update_trip_leg": {
+      const updates: { id: string } & Record<string, any> = { id: input.legId };
+      if (input.mode !== undefined) updates.mode = input.mode;
+      if (input.departAt !== undefined) updates.departAt = input.departAt || null;
+      if (input.arriveAt !== undefined) updates.arriveAt = input.arriveAt || null;
+      if (input.fromLocation !== undefined) updates.fromLocation = input.fromLocation || null;
+      if (input.toLocation !== undefined) updates.toLocation = input.toLocation || null;
+      if (input.confirmationCode !== undefined)
+        updates.confirmationCode = input.confirmationCode || null;
+      if (input.url !== undefined) updates.url = input.url || null;
+      if (input.notes !== undefined) updates.notes = input.notes || null;
+      if (input.airline !== undefined) updates.airline = input.airline || null;
+      if (input.flightNumber !== undefined) updates.flightNumber = input.flightNumber || null;
+      if (input.aircraft !== undefined) updates.aircraft = input.aircraft || null;
+      if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+      const { data, errors } = await client.models.homeTripLeg.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, legId: data?.id });
+    }
+
+    case "delete_trip_leg": {
+      const { errors } = await client.models.homeTripLeg.delete({ id: input.legId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, legId: input.legId });
+    }
+
+    case "list_trip_legs": {
+      const { data: legs } = await client.models.homeTripLeg.list({
+        filter: { tripId: { eq: input.tripId } },
+      });
+      const sorted = (legs ?? []).sort((a, b) => {
+        const orderA = a.sortOrder ?? 0;
+        const orderB = b.sortOrder ?? 0;
+        if (orderA !== orderB) return orderA - orderB;
+        return (a.departAt ?? "").localeCompare(b.departAt ?? "");
+      });
+      return JSON.stringify({ legs: sorted });
+    }
+
+    case "set_calendar_day": {
+      const personIds = await resolvePersonIds([input.person]);
+      if (personIds.length === 0) {
+        return JSON.stringify({ error: `No person matching "${input.person}"` });
+      }
+      const personId = personIds[0];
+      // Find an existing row for (date, personId). Filter on date first
+      // (secondary index) then match personId client-side.
+      const { data: existingRows } = await client.models.homeCalendarDay.list({
+        filter: { date: { eq: input.date } },
+      });
+      const existing = (existingRows ?? []).find((r) => r.personId === personId);
+
+      const payload: Record<string, any> = {
+        date: input.date,
+        personId,
+      };
+      if (input.status !== undefined) payload.status = input.status;
+      if (input.timezone !== undefined) payload.timezone = input.timezone || null;
+      if (input.location !== undefined) payload.location = input.location || null;
+      if (input.notes !== undefined) payload.notes = input.notes || null;
+      if (input.ptoFraction !== undefined) payload.ptoFraction = input.ptoFraction;
+      if (input.tripId !== undefined) payload.tripId = input.tripId || null;
+
+      if (existing) {
+        const { data, errors } = await client.models.homeCalendarDay.update({
+          id: existing.id,
+          ...payload,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({
+          success: true,
+          action: "updated",
+          dayId: data?.id,
+          date: input.date,
+          person: input.person,
+        });
+      }
+
+      const { data, errors } = await client.models.homeCalendarDay.create({
+        ...payload,
+        ptoFraction: input.ptoFraction ?? 0,
+      } as any);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        action: "created",
+        dayId: data?.id,
+        date: input.date,
+        person: input.person,
+      });
+    }
+
+    case "list_calendar_days": {
+      const fromDate =
+        input.fromDate ??
+        new Intl.DateTimeFormat("en-CA", { timeZone: "America/Chicago" }).format(new Date());
+      const { data: days } = await client.models.homeCalendarDay.list({
+        filter: { date: { ge: fromDate } },
+      });
+      let filtered = days ?? [];
+      if (input.toDate) {
+        filtered = filtered.filter((d) => d.date && d.date <= input.toDate);
+      }
+      if (input.person) {
+        const personIds = await resolvePersonIds([input.person]);
+        if (personIds.length > 0) {
+          filtered = filtered.filter((d) => personIds.includes(d.personId));
+        }
+      }
+      filtered.sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""));
+      return JSON.stringify({ days: filtered });
+    }
+
+    case "delete_task": {
+      const { errors } = await client.models.homeTask.delete({ id: input.taskId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, taskId: input.taskId });
+    }
+
+    case "update_bill": {
+      const updates: { id: string } & Record<string, any> = { id: input.billId };
+      if (input.name !== undefined) updates.name = input.name;
+      if (input.amount !== undefined) updates.amount = input.amount;
+      if (input.currency !== undefined) updates.currency = input.currency;
+      if (input.dueDay !== undefined) updates.dueDay = input.dueDay;
+      if (input.dueDate !== undefined) updates.dueDate = input.dueDate || null;
+      if (input.isRecurring !== undefined) updates.isRecurring = input.isRecurring;
+      if (input.category !== undefined) updates.category = input.category || null;
+      if (input.url !== undefined) updates.url = input.url || null;
+      if (input.notes !== undefined) updates.notes = input.notes || null;
+      if (input.assignedPeople !== undefined) {
+        updates.assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      }
+      const { data, errors } = await client.models.homeBill.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, billId: data?.id, name: data?.name });
+    }
+
+    case "delete_bill": {
+      const { errors } = await client.models.homeBill.delete({ id: input.billId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, billId: input.billId });
+    }
+
     case "list_shopping_lists": {
       const { data: lists } = await client.models.homeShoppingList.list();
       const filtered = (lists ?? []).filter((l) => input.includeArchived || !l.isArchived);
@@ -798,6 +1393,58 @@ async function executeTool(
         isChecked: true,
         checkedAt: new Date().toISOString(),
       });
+      return JSON.stringify({ success: true, itemId: input.itemId });
+    }
+
+    case "uncheck_shopping_item": {
+      const { data, errors } = await client.models.homeShoppingItem.update({
+        id: input.itemId,
+        isChecked: false,
+        checkedAt: null,
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, itemId: data?.id });
+    }
+
+    case "update_shopping_list": {
+      const updates: { id: string } & Record<string, any> = { id: input.listId };
+      if (input.name !== undefined) updates.name = input.name;
+      if (input.emoji !== undefined) updates.emoji = input.emoji || null;
+      if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+      const { data, errors } = await client.models.homeShoppingList.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, listId: data?.id, name: data?.name });
+    }
+
+    case "delete_shopping_list": {
+      // Cascade-delete items first (they are keyed by listId).
+      const { data: items } = await client.models.homeShoppingItem.list({
+        filter: { listId: { eq: input.listId } },
+      });
+      let itemsDeleted = 0;
+      for (const item of items ?? []) {
+        await client.models.homeShoppingItem.delete({ id: item.id });
+        itemsDeleted++;
+      }
+      const { errors } = await client.models.homeShoppingList.delete({ id: input.listId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, listId: input.listId, itemsDeleted });
+    }
+
+    case "update_shopping_item": {
+      const updates: { id: string } & Record<string, any> = { id: input.itemId };
+      if (input.name !== undefined) updates.name = input.name;
+      if (input.quantity !== undefined) updates.quantity = input.quantity || null;
+      if (input.notes !== undefined) updates.notes = input.notes || null;
+      if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
+      const { data, errors } = await client.models.homeShoppingItem.update(updates);
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, itemId: data?.id, name: data?.name });
+    }
+
+    case "delete_shopping_item": {
+      const { errors } = await client.models.homeShoppingItem.delete({ id: input.itemId });
+      if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, itemId: input.itemId });
     }
 
