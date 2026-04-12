@@ -1169,26 +1169,30 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_checklist",
     description:
-      "Create, rename, or delete a checklist for an entity (trip, event, bill, document, task). Use to manage named checklists like 'packing list' or 'pre-departure checklist' on any entity.",
+      "Create, rename, delete, duplicate, or save-as-template a checklist. Checklists attach to entities (trip, event, bill, document, task). 'duplicate' copies all items (unchecked) to the same or a different entity. 'save_as_template' saves a copy as a reusable template. 'from_template' creates a checklist from an existing template.",
     input_schema: {
       type: "object" as const,
       properties: {
         action: {
           type: "string",
-          enum: ["create", "rename", "delete"],
+          enum: ["create", "rename", "delete", "duplicate", "save_as_template", "from_template"],
         },
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "OTHER"],
-          description: "Required for create. The type of entity this checklist belongs to.",
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "TEMPLATE", "OTHER"],
+          description: "Required for create/duplicate/from_template. The type of entity this checklist belongs to.",
         },
         entityId: {
           type: "string",
-          description: "Required for create. The ID of the entity this checklist belongs to.",
+          description: "Required for create/duplicate/from_template. The ID of the entity this checklist belongs to.",
         },
         checklistId: {
           type: "string",
-          description: "Required for rename/delete. The ID of the checklist.",
+          description: "Required for rename/delete/duplicate/save_as_template. The source checklist ID.",
+        },
+        templateId: {
+          type: "string",
+          description: "Required for from_template. The template checklist ID to copy from.",
         },
         name: {
           type: "string",
@@ -1201,7 +1205,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_checklist_items",
     description:
-      "Add, toggle, rename, or remove items from a checklist. Use after creating a checklist with manage_checklist.",
+      "Add, toggle, rename, or remove items from a checklist. Items can optionally belong to a section (e.g. 'Clothes', 'Gear', 'Documents' within a packing list). Use after creating a checklist with manage_checklist.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1221,6 +1225,10 @@ const tools: Anthropic.Tool[] = [
           type: "string",
           description: "Required for add/rename. The item text.",
         },
+        section: {
+          type: "string",
+          description: "Optional for add. Groups the item under a section heading (e.g. 'Clothes', 'Gear'). Items with the same section render together.",
+        },
       },
       required: ["action", "checklistId"],
     },
@@ -1234,8 +1242,8 @@ const tools: Anthropic.Tool[] = [
       properties: {
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "OTHER"],
-          description: "Optional. Filter by entity type.",
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "TEMPLATE", "OTHER"],
+          description: "Optional. Filter by entity type. Use TEMPLATE to list saved templates.",
         },
         entityId: {
           type: "string",
@@ -3229,9 +3237,9 @@ async function executeTool(
           return JSON.stringify({ error: "checklistId is required for delete" });
         }
         // Cascade-delete items first
-        const { data: items } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
-          { checklistId: input.checklistId },
-        );
+        const { data: items } = await client.models.homeChecklistItem.list({
+          filter: { checklistId: { eq: input.checklistId } }, limit: 500,
+        });
         let itemsDeleted = 0;
         for (const item of items ?? []) {
           await client.models.homeChecklistItem.delete({ id: item.id });
@@ -3240,6 +3248,81 @@ async function executeTool(
         const { errors } = await client.models.homeChecklist.delete({ id: input.checklistId });
         if (errors) return JSON.stringify({ error: errors[0].message });
         return JSON.stringify({ success: true, checklistId: input.checklistId, itemsDeleted });
+      }
+
+      // Duplicate a checklist (all items copied with isDone=false) to a
+      // target entity. If no target specified, duplicates to the same entity.
+      if (action === "duplicate") {
+        if (!input.checklistId) {
+          return JSON.stringify({ error: "checklistId is required for duplicate" });
+        }
+        const { data: source } = await client.models.homeChecklist.get({ id: input.checklistId });
+        if (!source) return JSON.stringify({ error: "Source checklist not found" });
+        const eType = input.entityType ?? source.entityType;
+        const eId = input.entityId ?? source.entityId;
+        const { data: newCl } = await client.models.homeChecklist.create({
+          entityType: eType, entityId: eId, name: source.name, sortOrder: 0,
+        });
+        if (!newCl) return JSON.stringify({ error: "Failed to create duplicate" });
+        const { data: srcItems } = await client.models.homeChecklistItem.list({
+          filter: { checklistId: { eq: source.id } }, limit: 500,
+        });
+        let itemsCopied = 0;
+        for (const item of (srcItems ?? []).sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
+          await client.models.homeChecklistItem.create({
+            checklistId: newCl.id, text: item.text, section: item.section, isDone: false, sortOrder: item.sortOrder ?? 0,
+          });
+          itemsCopied++;
+        }
+        return JSON.stringify({ success: true, checklistId: newCl.id, name: source.name, itemsCopied });
+      }
+
+      // Save a checklist as a reusable template
+      if (action === "save_as_template") {
+        if (!input.checklistId) {
+          return JSON.stringify({ error: "checklistId is required for save_as_template" });
+        }
+        const { data: source } = await client.models.homeChecklist.get({ id: input.checklistId });
+        if (!source) return JSON.stringify({ error: "Source checklist not found" });
+        const { data: tmpl } = await client.models.homeChecklist.create({
+          entityType: "TEMPLATE" as any, entityId: "templates", name: source.name, sortOrder: 0,
+        });
+        if (!tmpl) return JSON.stringify({ error: "Failed to create template" });
+        const { data: srcItems } = await client.models.homeChecklistItem.list({
+          filter: { checklistId: { eq: source.id } }, limit: 500,
+        });
+        let itemsCopied = 0;
+        for (const item of (srcItems ?? []).sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
+          await client.models.homeChecklistItem.create({
+            checklistId: tmpl.id, text: item.text, section: item.section, isDone: false, sortOrder: item.sortOrder ?? 0,
+          });
+          itemsCopied++;
+        }
+        return JSON.stringify({ success: true, templateId: tmpl.id, name: source.name, itemsCopied });
+      }
+
+      // Create a checklist from an existing template
+      if (action === "from_template") {
+        if (!input.templateId || !input.entityType || !input.entityId) {
+          return JSON.stringify({ error: "templateId, entityType, and entityId are required for from_template" });
+        }
+        const { data: tmpl } = await client.models.homeChecklist.get({ id: input.templateId });
+        if (!tmpl) return JSON.stringify({ error: "Template not found" });
+        const { data: newCl } = await client.models.homeChecklist.create({
+          entityType: input.entityType, entityId: input.entityId, name: tmpl.name, sortOrder: 0,
+        });
+        if (!newCl) return JSON.stringify({ error: "Failed to create checklist from template" });
+        const { data: tmplItems } = await client.models.homeChecklistItem.list({
+          filter: { checklistId: { eq: tmpl.id } }, limit: 500,
+        });
+        let itemsCopied = 0;
+        for (const item of (tmplItems ?? []).sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
+          await client.models.homeChecklistItem.create({
+            checklistId: newCl.id, text: item.text, section: item.section, isDone: false, sortOrder: item.sortOrder ?? 0,
+          });
+          itemsCopied++;
+        }
+        return JSON.stringify({ success: true, checklistId: newCl.id, name: tmpl.name, itemsCopied });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });
@@ -3255,11 +3338,12 @@ async function executeTool(
         const { data, errors } = await client.models.homeChecklistItem.create({
           checklistId,
           text: input.text,
+          section: input.section ?? null,
           isDone: false,
           sortOrder: 0,
         });
         if (errors) return JSON.stringify({ error: errors[0].message });
-        return JSON.stringify({ success: true, itemId: data?.id, text: input.text });
+        return JSON.stringify({ success: true, itemId: data?.id, text: input.text, section: input.section ?? null });
       }
 
       if (action === "toggle") {
@@ -3306,14 +3390,14 @@ async function executeTool(
       let checklists: Schema["homeChecklist"]["type"][];
 
       if (input.entityId) {
-        const { data } = await client.models.homeChecklist.listhomeChecklistByEntityId(
-          { entityId: input.entityId },
-        );
+        const { data } = await client.models.homeChecklist.list({
+          filter: { entityId: { eq: input.entityId } }, limit: 500,
+        });
         checklists = data ?? [];
       } else if (input.entityType) {
-        const { data } = await client.models.homeChecklist.listhomeChecklistByEntityType(
-          { entityType: input.entityType },
-        );
+        const { data } = await client.models.homeChecklist.list({
+          filter: { entityType: { eq: input.entityType } }, limit: 500,
+        });
         checklists = data ?? [];
       } else {
         const { data } = await client.models.homeChecklist.list();
@@ -3323,9 +3407,9 @@ async function executeTool(
       // Fetch items for each checklist
       const results = await Promise.all(
         checklists.map(async (cl) => {
-          const { data: items } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
-            { checklistId: cl.id },
-          );
+          const { data: items } = await client.models.homeChecklistItem.list({
+            filter: { checklistId: { eq: cl.id } }, limit: 500,
+          });
           const sortedItems = (items ?? []).sort(
             (a: Schema["homeChecklistItem"]["type"], b: Schema["homeChecklistItem"]["type"]) =>
               (a.sortOrder ?? 0) - (b.sortOrder ?? 0)

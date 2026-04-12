@@ -106,8 +106,9 @@ export default function ChecklistsPage() {
       await Promise.all(
         nonTemplate.map(async (cl) => {
           const { data } =
-            await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId({
-              checklistId: cl.id,
+            await client.models.homeChecklistItem.list({
+              filter: { checklistId: { eq: cl.id } },
+              limit: 500,
             });
           grouped[cl.id] = (data ?? []).sort(
             (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0),

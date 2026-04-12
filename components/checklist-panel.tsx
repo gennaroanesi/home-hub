@@ -72,9 +72,10 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
 
   const loadData = useCallback(async () => {
     try {
-      const { data: clData } = await client.models.homeChecklist.listhomeChecklistByEntityId(
-        { entityId },
-      );
+      const { data: clData } = await client.models.homeChecklist.list({
+        filter: { entityId: { eq: entityId } },
+        limit: 500,
+      });
       const lists = (clData ?? []).sort(
         (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)
       );
@@ -83,9 +84,10 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       const grouped: Record<string, ChecklistItem[]> = {};
       await Promise.all(
         lists.map(async (cl) => {
-          const { data: items } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
-            { checklistId: cl.id },
-          );
+          const { data: items } = await client.models.homeChecklistItem.list({
+            filter: { checklistId: { eq: cl.id } },
+            limit: 500,
+          });
           grouped[cl.id] = (items ?? []).sort(
             (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
           );
@@ -104,9 +106,10 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
   // Load templates once (entityType=TEMPLATE)
   const loadTemplates = useCallback(async () => {
     try {
-      const { data } = await client.models.homeChecklist.listhomeChecklistByEntityType(
-        { entityType: "TEMPLATE" as any },
-      );
+      const { data } = await client.models.homeChecklist.list({
+        filter: { entityType: { eq: "TEMPLATE" as any } },
+        limit: 500,
+      });
       setTemplates((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     } catch {
       // Table may not exist yet — templates just won't show.
@@ -180,9 +183,10 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     if (!newCl) return;
 
     // Fetch source items
-    const { data: sourceItems } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
-      { checklistId: source.id },
-    );
+    const { data: sourceItems } = await client.models.homeChecklistItem.list({
+      filter: { checklistId: { eq: source.id } },
+      limit: 500,
+    });
     for (const item of (sourceItems ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
       const dupPayload: Record<string, any> = {
         checklistId: newCl.id,
