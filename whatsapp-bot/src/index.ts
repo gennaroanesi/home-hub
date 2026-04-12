@@ -224,6 +224,13 @@ async function startBot() {
     logger,
     printQRInTerminal: true,
     getMessage,
+    // Explicitly enable history sync so the linked device receives
+    // encryption keys for DM chats. Without this, only group messages
+    // are delivered — DMs require the key exchange that happens during
+    // history sync. syncFullHistory=false keeps it lightweight (recent
+    // messages only, not the full archive).
+    shouldSyncHistoryMessage: () => true,
+    syncFullHistory: false,
   });
 
   // Bot's own identifiers (set on connection open). WhatsApp groups now use
@@ -235,6 +242,18 @@ async function startBot() {
   // Outbound message poller handle — reset on each connection cycle
   let outboundPollHandle: NodeJS.Timeout | null = null;
   let phoneCacheHandle: NodeJS.Timeout | null = null;
+
+  // Log history sync events — this confirms whether the linked device
+  // receives DM chat keys during the initial sync handshake.
+  socket.ev.on("messaging-history.set" as any, (data: any) => {
+    const chatCount = data?.chats?.length ?? 0;
+    const contactCount = data?.contacts?.length ?? 0;
+    const msgCount = data?.messages?.length ?? 0;
+    logger.info(
+      { chatCount, contactCount, msgCount, isLatest: data?.isLatest },
+      "History sync received"
+    );
+  });
 
   // Connection updates — QR code and status
   socket.ev.on("connection.update", (update) => {
