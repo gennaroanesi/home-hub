@@ -1205,7 +1205,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_checklist_items",
     description:
-      "Add, toggle, rename, or remove items from a checklist. Items can optionally belong to a section (e.g. 'Clothes', 'Gear', 'Documents' within a packing list). Use after creating a checklist with manage_checklist.",
+      "Add, toggle, rename, or remove items from a checklist. Supports BATCH operations: pass an array of 'items' to add/toggle/remove multiple items in one call (much faster than calling this tool once per item). Items can optionally belong to a section.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1217,17 +1217,31 @@ const tools: Anthropic.Tool[] = [
           type: "string",
           description: "The checklist to modify.",
         },
+        // Single-item fields (backward compatible)
         itemId: {
           type: "string",
-          description: "Required for toggle/rename/remove. The item ID.",
+          description: "For toggle/rename/remove of a single item.",
         },
         text: {
           type: "string",
-          description: "Required for add/rename. The item text.",
+          description: "For add/rename of a single item.",
         },
         section: {
           type: "string",
-          description: "Optional for add. Groups the item under a section heading (e.g. 'Clothes', 'Gear'). Items with the same section render together.",
+          description: "Optional for add. Section heading (e.g. 'Clothes').",
+        },
+        // Batch field — preferred for adding multiple items at once
+        items: {
+          type: "array",
+          description: "For batch add: array of {text, section?}. For batch toggle/remove: array of {itemId}. Use this instead of calling the tool once per item.",
+          items: {
+            type: "object",
+            properties: {
+              text: { type: "string" },
+              section: { type: "string" },
+              itemId: { type: "string" },
+            },
+          },
         },
       },
       required: ["action", "checklistId"],
@@ -3330,33 +3344,60 @@ async function executeTool(
 
     case "manage_checklist_items": {
       const { action, checklistId } = input;
+      const batchItems = (input.items as any[]) ?? [];
 
       if (action === "add") {
-        if (!input.text) {
-          return JSON.stringify({ error: "text is required for add" });
+        // Batch add: if items array provided, create all at once
+        if (batchItems.length > 0) {
+          const results: { text: string; section?: string }[] = [];
+          for (const item of batchItems) {
+            const text = (item.text ?? "").trim();
+            if (!text) continue;
+            const payload: Record<string, any> = {
+              checklistId, text, isDone: false, sortOrder: results.length,
+            };
+            if (item.section) payload.section = item.section;
+            await (client.models.homeChecklistItem as any).create(payload);
+            results.push({ text, section: item.section });
+          }
+          return JSON.stringify({ success: true, added: results.length, items: results });
         }
-        const { data, errors } = await client.models.homeChecklistItem.create({
-          checklistId,
-          text: input.text,
-          section: input.section ?? null,
-          isDone: false,
-          sortOrder: 0,
-        });
+        // Single add (backward compatible)
+        if (!input.text) {
+          return JSON.stringify({ error: "text or items array is required for add" });
+        }
+        const payload: Record<string, any> = {
+          checklistId, text: input.text, isDone: false, sortOrder: 0,
+        };
+        if (input.section) payload.section = input.section;
+        const { data, errors } = await (client.models.homeChecklistItem as any).create(payload);
         if (errors) return JSON.stringify({ error: errors[0].message });
         return JSON.stringify({ success: true, itemId: data?.id, text: input.text, section: input.section ?? null });
       }
 
       if (action === "toggle") {
-        if (!input.itemId) {
-          return JSON.stringify({ error: "itemId is required for toggle" });
+        // Batch toggle
+        if (batchItems.length > 0) {
+          const results: { itemId: string; isDone: boolean }[] = [];
+          for (const item of batchItems) {
+            if (!item.itemId) continue;
+            const { data: existing } = await client.models.homeChecklistItem.get({ id: item.itemId });
+            if (!existing) continue;
+            const nowDone = !existing.isDone;
+            await client.models.homeChecklistItem.update({
+              id: item.itemId, isDone: nowDone, doneAt: nowDone ? new Date().toISOString() : null,
+            });
+            results.push({ itemId: item.itemId, isDone: nowDone });
+          }
+          return JSON.stringify({ success: true, toggled: results.length, items: results });
         }
+        // Single toggle
+        if (!input.itemId) return JSON.stringify({ error: "itemId is required for toggle" });
         const { data: item } = await client.models.homeChecklistItem.get({ id: input.itemId });
         if (!item) return JSON.stringify({ error: "Item not found" });
         const nowDone = !item.isDone;
         const { data, errors } = await client.models.homeChecklistItem.update({
-          id: input.itemId,
-          isDone: nowDone,
-          doneAt: nowDone ? new Date().toISOString() : null,
+          id: input.itemId, isDone: nowDone, doneAt: nowDone ? new Date().toISOString() : null,
         });
         if (errors) return JSON.stringify({ error: errors[0].message });
         return JSON.stringify({ success: true, itemId: data?.id, isDone: nowDone, text: item.text });
@@ -3366,18 +3407,24 @@ async function executeTool(
         if (!input.itemId || !input.text) {
           return JSON.stringify({ error: "itemId and text are required for rename" });
         }
-        const { data, errors } = await client.models.homeChecklistItem.update({
-          id: input.itemId,
-          text: input.text,
-        });
+        const { data, errors } = await client.models.homeChecklistItem.update({ id: input.itemId, text: input.text });
         if (errors) return JSON.stringify({ error: errors[0].message });
         return JSON.stringify({ success: true, itemId: data?.id, text: input.text });
       }
 
       if (action === "remove") {
-        if (!input.itemId) {
-          return JSON.stringify({ error: "itemId is required for remove" });
+        // Batch remove
+        if (batchItems.length > 0) {
+          let removed = 0;
+          for (const item of batchItems) {
+            if (!item.itemId) continue;
+            await client.models.homeChecklistItem.delete({ id: item.itemId });
+            removed++;
+          }
+          return JSON.stringify({ success: true, removed });
         }
+        // Single remove
+        if (!input.itemId) return JSON.stringify({ error: "itemId is required for remove" });
         const { errors } = await client.models.homeChecklistItem.delete({ id: input.itemId });
         if (errors) return JSON.stringify({ error: errors[0].message });
         return JSON.stringify({ success: true, itemId: input.itemId });
