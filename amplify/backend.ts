@@ -419,7 +419,13 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   cluster: botCluster,
   taskDefinition: botTaskDef,
-  desiredCount: 0,
+  // Was 0 during initial bootstrap (before the first valid image existed
+  // in ECR — with a broken image the service would crash-loop). Now that
+  // CodeBuild produces working images, we want the bot running. Leaving
+  // this at 0 silently reconciles the service back to zero on every
+  // Amplify deploy, which is how we discovered that phase 3 wasn't live —
+  // the service had no running tasks at all, not a wedged container.
+  desiredCount: 1,
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
