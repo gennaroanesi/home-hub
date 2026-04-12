@@ -54,6 +54,16 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - **Decoded TAF period summaries** — right now Haiku interprets raw TAF text on the fly ("TEMPO 1518 -SHRA BKN020" → "brief showers 3-6pm"). A deterministic parser would be testable and faster. Not urgent — Haiku does fine — but worth noting as a quality improvement for flying-day briefings.
 - **Weather fetch caching** — daily-summary runs once a day so it's fine, but Janet's agent tool hits aviationweather.gov on every call. Module-level memoization with a ~10 min TTL would cut latency for rapid follow-up questions. Only worth it if we see actual latency or rate-limit issues.
 
+### Fitness / gym tracker
+- **Gym check-in tracker** — the core feature. Optimized for the WhatsApp flow: message Janet "gym" or "worked out" and she logs it. No forms, no reps/sets, no friction. Tracks per-person streaks (consecutive days with rest-day awareness) and weekly goal progress (e.g. "3/4 this week").
+  - Data model: `homeGymCheckin` (personId, checkedInAt, activityDate, notes, source) + `homeGymGoal` (personId, weeklyTarget, restDays).
+  - Agent tools: `gym_checkin(person?, notes?)`, `gym_status(person?)`, `gym_set_goal(person, weeklyTarget, restDays?)`.
+  - Daily summary line: "Gennaro: 12-day streak, 3/4 this week | Cristine: 8-day streak, 2/3 this week — 1 more to hit goal". Mid-week nudge if behind pace.
+  - `/fitness` page: streak counter, weekly progress bar, GitHub-style contribution calendar (~3 months), check-in button, recent history list, goal settings. Simple single page, everything above the fold.
+- **Workout notes (tier 2)** — optional free-text notes on check-ins ("upper body", "legs + cardio"). Janet can answer "when was my last leg day?" or "how many cardio sessions this month?". Only build if tier 1 sticks after 2 weeks of use.
+- **Weight tracking (tier 2)** — log via Janet ("175 lbs today") or the web UI. Weekly/monthly trend line on `/fitness`. Opt-in per person. Only build if requested.
+- **Apple Health / Google Fit sync (tier 3)** — auto-detect gym visits from phone activity data. Technically hard (iOS-only API, Google deprecating Fit, needs mobile app or Shortcuts). Not worth building — the WhatsApp check-in is already 3 seconds.
+
 ## Top 3 picks
 
 If picking three to build next, highest leverage given the current stack:

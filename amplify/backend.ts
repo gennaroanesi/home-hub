@@ -359,6 +359,13 @@ retroFaceLambda.addEnvironment("REKOGNITION_COLLECTION_ID", REKOGNITION_COLLECTI
 
 // ── WhatsApp bot — ECS Fargate + Baileys ────────────────────────────────────
 
+// In sandbox deploys the ECR repo has no image, so setting desiredCount=1
+// makes CloudFormation wait ~30 min for a task that can never start, then
+// time out. Detect sandbox via the CDK context that Amplify Gen 2 passes
+// and force desiredCount=0.
+const isSandbox =
+  backend.stack.node.tryGetContext("amplify-backend-type") === "sandbox";
+
 const botStack = backend.createStack("whatsappBot");
 
 const botVpc = new ec2.Vpc(botStack, "whatsappBotVpc", {
@@ -461,7 +468,7 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   // this at 0 silently reconciles the service back to zero on every
   // Amplify deploy, which is how we discovered that phase 3 wasn't live —
   // the service had no running tasks at all, not a wedged container.
-  desiredCount: 1,
+  desiredCount: isSandbox ? 0 : 1,
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
