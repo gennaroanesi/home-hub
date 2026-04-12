@@ -19,6 +19,7 @@ import {
 import { FaPlus, FaTrash, FaPen, FaArrowLeft, FaArchive, FaBoxOpen } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { Markdown } from "@/components/markdown";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -330,7 +331,7 @@ export default function ShoppingPage() {
                             )}
                           </p>
                           {item.notes && (
-                            <p className="text-xs text-default-500">{item.notes}</p>
+                            <Markdown content={item.notes} className="text-xs text-default-500" />
                           )}
                         </div>
                         <Button size="sm" isIconOnly variant="light" onPress={() => openEditItem(item)}>

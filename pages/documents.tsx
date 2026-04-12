@@ -29,6 +29,7 @@ import {
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { Markdown } from "@/components/markdown";
 import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -882,7 +883,7 @@ export default function DocumentsPage() {
                   {detailDoc.notes && (
                     <div>
                       <span className="text-default-500">Notes: </span>
-                      <span className="whitespace-pre-wrap">{detailDoc.notes}</span>
+                      <Markdown content={detailDoc.notes} />
                     </div>
                   )}
                   {detailDoc.s3Key ? (
