@@ -21,6 +21,7 @@ import { Spinner } from "@heroui/react";
 import DefaultLayout from "@/layouts/default";
 import { PhotoGrid } from "@/components/photo-grid";
 import { PhotoUploader } from "@/components/photo-uploader";
+import { DateInput } from "@/components/date-input";
 import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -36,53 +37,10 @@ const ALL = "all";
 const UNFILED = "unfiled";
 
 // A date filter input that renders truly empty when cleared. HeroUI's
-// Input with type="date" and value="" shows today's date as a ghost
-// placeholder on Chrome/Safari macOS, which looks like a bug. We work
-// around it by rendering type="text" with an empty value when the field
-// is both blank AND not focused — swapping to type="date" the moment
-// the user focuses so the native date picker opens normally. Clear
-// button lives in endContent and visible only when there's a value.
-function DateFilterInput({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: string;
-  onChange: (next: string) => void;
-}) {
-  const [focused, setFocused] = useState(false);
-  const showAsDate = !!value || focused;
-
-  return (
-    <Input
-      size="sm"
-      type={showAsDate ? "date" : "text"}
-      label={label}
-      placeholder=" "
-      value={value}
-      onValueChange={onChange}
-      onFocus={() => setFocused(true)}
-      onBlur={() => setFocused(false)}
-      className="max-w-[160px]"
-      endContent={
-        value ? (
-          <button
-            type="button"
-            aria-label={`Clear ${label.toLowerCase()} date`}
-            className="text-default-400 hover:text-default-600"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={(e) => {
-              e.stopPropagation();
-              onChange("");
-            }}
-          >
-            <FaTimes size={12} />
-          </button>
-        ) : null
-      }
-    />
-  );
+// Date filter uses the shared DateInput component with size="sm" and a
+// fixed max-width for the filter bar layout.
+function DateFilterInput({ label, value, onChange }: { label: string; value: string; onChange: (next: string) => void }) {
+  return <DateInput label={label} value={value} onChange={onChange} size="sm" className="max-w-[160px]" />;
 }
 
 export default function PhotosPage() {

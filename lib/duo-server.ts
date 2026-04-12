@@ -9,8 +9,9 @@
  * from lib/ — trying to share one file across both would require a
  * monorepo workspace setup that isn't worth the complexity.
  *
- * The only endpoint exposed here is `preauth`, which the /security
- * page uses to verify a Duo username before saving homePersonAuth.
+ * Exposes `preauth` (used by /security to verify a Duo username before
+ * saving homePersonAuth) and `pushAuth` (used by /api/documents/download
+ * to gate file retrieval behind a Duo push approval).
  */
 
 import {
@@ -110,27 +111,65 @@ export interface PreauthResponse {
  * Run Duo preauth to verify a username is enrolled and can receive a
  * push. Used by /api/security/duo-preauth before saving homePersonAuth.
  */
-export async function preauth(username: string): Promise<PreauthResponse> {
+async function duoRequest<T>(
+  method: "GET" | "POST",
+  path: string,
+  params: Record<string, string>
+): Promise<T> {
   const creds = await getCredentials();
-  const params = { username };
   const { headers, body } = signRequest(
-    "POST",
+    method,
     creds.apiHostname,
-    "/auth/v2/preauth",
+    path,
     params,
     creds.integrationKey,
     creds.secretKey
   );
-  const url = `https://${creds.apiHostname}/auth/v2/preauth`;
-  const res = await fetch(url, { method: "POST", headers, body });
-  const json = (await res.json()) as DuoEnvelope<PreauthResponse>;
+  const url = `https://${creds.apiHostname}${path}`;
+  const res = await fetch(method === "POST" ? url : `${url}?${body}`, {
+    method,
+    headers,
+    ...(method === "POST" ? { body } : {}),
+  });
+  const json = (await res.json()) as DuoEnvelope<T>;
   if (json.stat !== "OK") {
     const detail = json.message_detail ? ` — ${json.message_detail}` : "";
     throw new Error(
-      `Duo preauth failed: ${json.message ?? "unknown"} (${
+      `Duo ${path} failed: ${json.message ?? "unknown"} (${
         json.code ?? "no code"
       })${detail}`
     );
   }
-  return json.response as PreauthResponse;
+  return json.response as T;
+}
+
+export async function preauth(username: string): Promise<PreauthResponse> {
+  return duoRequest<PreauthResponse>("POST", "/auth/v2/preauth", { username });
+}
+
+export interface AuthResponse {
+  result: "allow" | "deny";
+  status: string;
+  status_msg: string;
+}
+
+/**
+ * Send a Duo Push to the user's device and block until they respond
+ * or the push times out (~60s). Used by /api/documents/download to
+ * gate file retrieval behind a Duo push approval.
+ */
+export async function pushAuth(params: {
+  username: string;
+  pushinfo: Record<string, string>;
+}): Promise<AuthResponse> {
+  const pushinfoEncoded = Object.entries(params.pushinfo)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+    .join("&");
+  return duoRequest<AuthResponse>("POST", "/auth/v2/auth", {
+    username: params.username,
+    factor: "push",
+    device: "auto",
+    async: "0",
+    pushinfo: pushinfoEncoded,
+  });
 }

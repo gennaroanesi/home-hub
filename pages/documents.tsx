@@ -6,6 +6,7 @@ import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
+import { DateInput } from "../components/date-input";
 import { Select, SelectItem } from "@heroui/select";
 import { Card, CardBody } from "@heroui/card";
 import { Tooltip } from "@heroui/tooltip";
@@ -176,6 +177,10 @@ export default function DocumentsPage() {
   const [deleteConfirm, setDeleteConfirm] = useState("");
   const [deleting, setDeleting] = useState(false);
 
+  // Duo auth state
+  const [myDuoUsername, setMyDuoUsername] = useState<string | null>(null);
+  const [downloading, setDownloading] = useState(false);
+
   useEffect(() => {
     (async () => {
       try {
@@ -192,19 +197,75 @@ export default function DocumentsPage() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [allDocs, allPeople] = await Promise.all([
+      const [allDocs, allPeople, allAuths] = await Promise.all([
         listAllPages<HomeDocument>(client.models.homeDocument, { limit: 500 }),
         listAllPages<Person>(client.models.homePerson, { limit: 100 }),
+        listAllPages<any>(client.models.homePersonAuth, { limit: 100 }),
       ]);
       setDocuments(allDocs);
-      setPeople(allPeople.filter((p) => p.active).sort((a, b) => a.name.localeCompare(b.name)));
+      const activePeople = allPeople.filter((p) => p.active).sort((a, b) => a.name.localeCompare(b.name));
+      setPeople(activePeople);
+
+      // Find the current user's Duo username by matching their Cognito
+      // login to a homePerson (by name or email) then looking up the auth row.
+      const me = activePeople.find(
+        (p) => uploadedBy && (
+          p.name.toLowerCase() === uploadedBy.toLowerCase() ||
+          uploadedBy.toLowerCase().includes(p.name.toLowerCase())
+        )
+      );
+      if (me) {
+        const myAuth = allAuths.find((a: any) => a.personId === me.id);
+        setMyDuoUsername(myAuth?.duoUsername ?? null);
+      }
     } catch (err) {
       console.error("loadAll failed", err);
       addToast({ title: "Could not load documents", color: "danger" });
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [uploadedBy]);
+
+  const handleDownload = useCallback(async (doc: HomeDocument) => {
+    if (!myDuoUsername) {
+      addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
+      return;
+    }
+    if (!doc.s3Key && !doc.documentNumber) {
+      addToast({ title: "Nothing to download", description: "This document has no file or number.", color: "warning" });
+      return;
+    }
+    setDownloading(true);
+    addToast({ title: "Duo push sent", description: "Approve on your phone…", color: "primary" });
+    try {
+      const res = await fetch("/api/documents/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId: doc.id,
+          duoUsername: myDuoUsername,
+          s3Key: doc.s3Key ?? undefined,
+          originalFilename: doc.originalFilename ?? undefined,
+          documentNumber: doc.s3Key ? undefined : (doc.documentNumber ?? undefined),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast({ title: "Download denied", description: data.error ?? "Unknown error", color: "danger" });
+        return;
+      }
+      if (data.url) {
+        window.open(data.url, "_blank");
+        addToast({ title: "Download started", description: `Link expires at ${new Date(data.expiresAt).toLocaleTimeString()}` });
+      } else if (data.documentNumber) {
+        addToast({ title: doc.title, description: `Number: ${data.documentNumber}`, color: "primary" });
+      }
+    } catch (err) {
+      addToast({ title: "Download failed", description: err instanceof Error ? err.message : String(err), color: "danger" });
+    } finally {
+      setDownloading(false);
+    }
+  }, [myDuoUsername]);
 
   const personById = useMemo(() => {
     const map = new Map<string, Person>();
@@ -574,18 +635,22 @@ export default function DocumentsPage() {
                               )}
                             </div>
                           </div>
-                          <Tooltip content="Duo authentication required — wave 2">
-                            <div>
-                              <Button
-                                size="sm"
-                                variant="flat"
-                                isDisabled
-                                startContent={<FaDownload size={10} />}
-                              >
-                                Download
-                              </Button>
-                            </div>
-                          </Tooltip>
+                          {(doc.s3Key || doc.documentNumber) && (
+                            <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                              <div>
+                                <Button
+                                  size="sm"
+                                  variant="flat"
+                                  isDisabled={!myDuoUsername || downloading}
+                                  isLoading={downloading}
+                                  startContent={!downloading ? <FaDownload size={10} /> : undefined}
+                                  onPress={() => handleDownload(doc)}
+                                >
+                                  Download
+                                </Button>
+                              </div>
+                            </Tooltip>
+                          )}
                         </CardBody>
                       </Card>
                     );
@@ -681,17 +746,15 @@ export default function DocumentsPage() {
                   onValueChange={(v) => setForm((f) => ({ ...f, documentNumber: v }))}
                 />
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <Input
+                  <DateInput
                     label="Issued date"
-                    type="date"
                     value={form.issuedDate}
-                    onValueChange={(v) => setForm((f) => ({ ...f, issuedDate: v }))}
+                    onChange={(v) => setForm((f) => ({ ...f, issuedDate: v }))}
                   />
-                  <Input
+                  <DateInput
                     label="Expires date"
-                    type="date"
                     value={form.expiresDate}
-                    onValueChange={(v) => setForm((f) => ({ ...f, expiresDate: v }))}
+                    onChange={(v) => setForm((f) => ({ ...f, expiresDate: v }))}
                   />
                 </div>
                 <Textarea
@@ -830,20 +893,24 @@ export default function DocumentsPage() {
                       Metadata-only entry — no file attached.
                     </div>
                   )}
-                  <div className="pt-2">
-                    <Tooltip content="Duo authentication required — wave 2">
-                      <div className="inline-block">
-                        <Button
-                          size="sm"
-                          variant="flat"
-                          isDisabled
-                          startContent={<FaLock size={10} />}
-                        >
-                          Download
-                        </Button>
-                      </div>
-                    </Tooltip>
-                  </div>
+                  {detailDoc && (detailDoc.s3Key || detailDoc.documentNumber) && (
+                    <div className="pt-2">
+                      <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                        <div className="inline-block">
+                          <Button
+                            size="sm"
+                            variant="flat"
+                            isDisabled={!myDuoUsername || downloading}
+                            isLoading={downloading}
+                            startContent={!downloading ? <FaLock size={10} /> : undefined}
+                            onPress={() => handleDownload(detailDoc)}
+                          >
+                            Download
+                          </Button>
+                        </div>
+                      </Tooltip>
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter className="justify-between">
                   <Button

@@ -4,6 +4,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { generateClient } from "aws-amplify/data";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
+import { DateInput } from "./date-input";
 import { Select, SelectItem } from "@heroui/select";
 import { addToast } from "@heroui/react";
 import { FaPlus, FaTrash, FaCalendarPlus } from "react-icons/fa";
@@ -263,11 +264,10 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         ))}
       </Select>
       <div className="flex gap-2">
-        <Input
+        <DateInput
           label="Start date"
-          type="date"
           value={form.startDate}
-          onValueChange={(v) =>
+          onChange={(v) =>
             setForm((f) => ({
               ...f,
               startDate: v,
@@ -276,12 +276,13 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
               endDate: !f.endDate || f.endDate < v ? v : f.endDate,
             }))
           }
+          isRequired
         />
-        <Input
+        <DateInput
           label="End date"
-          type="date"
           value={form.endDate}
-          onValueChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
+          onChange={(v) => setForm((f) => ({ ...f, endDate: v }))}
+          isRequired
         />
       </div>
       <CityAutocomplete
