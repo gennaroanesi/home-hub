@@ -206,18 +206,23 @@ export default function DocumentsPage() {
       const activePeople = allPeople.filter((p) => p.active).sort((a, b) => a.name.localeCompare(b.name));
       setPeople(activePeople);
 
-      // Find the current user's Duo username by matching their Cognito
-      // login to a homePerson (by name or email) then looking up the auth row.
-      const me = activePeople.find(
-        (p) => uploadedBy && (
-          p.name.toLowerCase() === uploadedBy.toLowerCase() ||
-          uploadedBy.toLowerCase().includes(p.name.toLowerCase())
+      // Any household member with a linked Duo account can download any
+      // document — the Duo push is the real auth gate, not person matching.
+      // Find the first auth row that belongs to a person whose name matches
+      // the Cognito login, falling back to the first auth row if the match
+      // fails (household trust boundary — both members are admins).
+      const loginLower = uploadedBy?.toLowerCase() ?? "";
+      const myPerson = activePeople.find(
+        (p) => loginLower && (
+          loginLower === p.name.toLowerCase() ||
+          loginLower.includes(p.name.toLowerCase()) ||
+          p.name.toLowerCase().includes(loginLower.split("@")[0])
         )
       );
-      if (me) {
-        const myAuth = allAuths.find((a: any) => a.personId === me.id);
-        setMyDuoUsername(myAuth?.duoUsername ?? null);
-      }
+      const myAuth = myPerson
+        ? allAuths.find((a: any) => a.personId === myPerson.id)
+        : allAuths[0]; // fallback: any enrolled person
+      setMyDuoUsername(myAuth?.duoUsername ?? null);
     } catch (err) {
       console.error("loadAll failed", err);
       addToast({ title: "Could not load documents", color: "danger" });
