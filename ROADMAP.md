@@ -35,6 +35,10 @@ Ideas for future features. Not committed — just a parking lot for things that 
   - **Pull-only ICS import** — periodically fetch an ICS URL (e.g. work calendar, shared family calendar) and mirror events into the home-hub calendar as read-only overlays.
   - Useful for: pulling in flight confirmations from TripIt, work calendars, school schedules, etc.
 
+### Vehicle integration
+- **BMW ConnectedDrive** — both cars are BMWs with MyBMW app access. HA's `bmw_connected_drive` integration (via `bimmer_connected`) would surface location, odometer, fuel/charge, door/lock status, and remote services (lock/unlock, climate pre-conditioning) as entities that flow into `homeDevice` through `hass-sync` for free. **Blocker:** BMW discontinued public API access for this use case — needs a workaround or a future re-enablement before it's feasible. Parked until then.
+- Once unblocked, natural integrations: "where's Cristine's car?", "enough gas for the weekend trip?", fuel-level warnings in the daily summary, lock-cars-before-bed automation (gated on HIGH sensitivity in v2 device control).
+
 ### Agent capabilities
 - **WhatsApp image attachments → agent vision** — today Janet drops any incoming media on the floor. Three layers need changes to make "send a screenshot of a flight confirmation → agent parses it → creates trip legs" work:
   1. **WA bot** ([whatsapp-bot/src/index.ts](whatsapp-bot/src/index.ts)) — detect `imageMessage`, download via Baileys `downloadMediaMessage`, upload to S3 (or base64-encode under the size limit), pass to the agent mutation.
