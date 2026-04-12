@@ -38,6 +38,14 @@ if (GROUP_JID) {
 const cooldowns = new Map<string, number>();
 const COOLDOWN_MS = 3000;
 
+// Track message IDs sent by the bot so we can detect reply-to-bot.
+// The contextInfo.participant JID on a reply may use an @lid form
+// that doesn't match the bot's known JIDs, so we fall back to checking
+// whether the quoted message's stanzaId is in this set.
+const sentMessageIds = new Set<string>();
+// Bounded by bot container restart cadence (~daily). At ~50 msgs/day
+// this stays well under 1000 entries — no pruning needed.
+
 // Per-chat short-term memory. We keep the last N user/assistant turns per
 // group JID so the agent has context for follow-up questions ("did I do
 // well?", "what did I just ask you to do?"). Memory is in-process only —
@@ -158,7 +166,8 @@ async function deliverOutboundMessage(
     }
   }
 
-  await socket.sendMessage(toJid, { text: msg.text });
+  const sent = await socket.sendMessage(toJid, { text: msg.text });
+  if (sent?.key?.id) sentMessageIds.add(sent.key.id);
   await markOutboundMessageSent(msg.id);
   logger.info({ id: msg.id, kind: msg.kind, toJid }, "Outbound message sent");
 }
@@ -302,7 +311,14 @@ async function startBot() {
         }
       }
     }
-    if (type !== "notify") return;
+    // DMs may arrive as type "append" (not "notify") depending on
+    // Baileys' linked-device sync state for that chat. Only filter
+    // out non-notify for group messages — DMs from known members
+    // should always be processed regardless of upsert type.
+    const hasDm = messages.some(
+      (m) => !m.key.fromMe && m.key.remoteJid?.endsWith("@s.whatsapp.net")
+    );
+    if (type !== "notify" && !hasDm) return;
     if (botIds.size === 0) return; // Not connected yet
 
     for (const msg of messages) {
@@ -374,22 +390,23 @@ async function startBot() {
         // Group messages require @mention OR reply-to-bot.
         const mentionedJid = ext.contextInfo?.mentionedJid ?? [];
         const isMention = mentionedJid.some((j: string) => botIds.has(j));
-        // contextInfo.participant is the JID of the author of the quoted
-        // message. WA may use @s.whatsapp.net or @lid form depending on
-        // the client and group settings. Check both, plus normalize the
-        // @lid form in case it differs from the bot's global LID.
+
+        // Reply-to-bot detection. Three checks in order:
+        // 1. stanzaId match — the quoted message's ID is in our sent set
+        //    (most reliable, works regardless of JID format)
+        // 2. participant JID exact match against botIds
+        // 3. participant phone-digits match against botPhoneNumber
+        const quotedStanzaId = ext.contextInfo?.stanzaId ?? null;
         const quotedAuthor = ext.contextInfo?.participant ?? null;
-        const isReplyToBot = !!(quotedAuthor && botIds.has(quotedAuthor));
+        let isReplyToBot = !!(quotedStanzaId && sentMessageIds.has(quotedStanzaId));
+        if (!isReplyToBot && quotedAuthor) {
+          isReplyToBot = botIds.has(quotedAuthor);
+        }
+        if (!isReplyToBot && quotedAuthor && botPhoneNumber) {
+          isReplyToBot = quotedAuthor.split("@")[0] === botPhoneNumber;
+        }
 
         if (!isMention && !isReplyToBot) {
-          // Only log if there was a quoted message (potential reply-to-bot
-          // that failed matching) — skip the log for plain group chatter.
-          if (quotedAuthor) {
-            logger.info(
-              { chatJid, quotedAuthor, botIds: Array.from(botIds) },
-              "Group reply ignored — quoted author not in botIds"
-            );
-          }
           continue;
         }
       }
@@ -518,7 +535,8 @@ async function startBot() {
         appendHistory(chatJid, "assistant", response.message);
 
         // Text first, so the agent's narrative arrives before the photos
-        await socket.sendMessage(chatJid, { text: response.message });
+        const sentMsg = await socket.sendMessage(chatJid, { text: response.message });
+        if (sentMsg?.key?.id) sentMessageIds.add(sentMsg.key.id);
         logger.info({ sender, response: response.message }, "Sent response");
 
         // Then any attachments (e.g. photos from send_photos tool)
@@ -536,9 +554,10 @@ async function startBot() {
         }
       } catch (err) {
         logger.error({ err }, "Failed to invoke agent");
-        await socket.sendMessage(chatJid, {
+        const errMsg = await socket.sendMessage(chatJid, {
           text: "Sorry, I couldn't process that right now. Please try again.",
         });
+        if (errMsg?.key?.id) sentMessageIds.add(errMsg.key.id);
       }
     }
   });
