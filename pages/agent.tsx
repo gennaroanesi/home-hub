@@ -7,12 +7,23 @@ import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
-import { Spinner } from "@heroui/react";
-import { FaPaperPlane, FaChevronDown, FaChevronUp, FaPlus, FaEllipsisV } from "react-icons/fa";
+import { Spinner, addToast } from "@heroui/react";
+import { FaPaperPlane, FaChevronDown, FaChevronUp, FaPlus, FaEllipsisV, FaPaperclip, FaTimes } from "react-icons/fa";
 import { Dropdown, DropdownTrigger, DropdownMenu, DropdownItem } from "@heroui/react";
 
 import DefaultLayout from "@/layouts/default";
 import type { Schema } from "@/amplify/data/resource";
+import { originalPhotoUrl } from "@/lib/image-loader";
+
+const MAX_IMAGES_PER_TURN = 5;
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5 MB — Claude's per-image limit
+const ACCEPTED_IMAGE_TYPES = new Set([
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
+const ACCEPT_ATTR = "image/jpeg,image/png,image/gif,image/webp";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -23,8 +34,18 @@ interface ActionTaken {
 
 interface Attachment {
   type: string;
-  url: string;
+  url?: string;
+  s3Key?: string;
   caption?: string | null;
+  // Local-only blob URL for optimistic render of just-uploaded user images.
+  // Not persisted; lost after navigation/reload (we fall back to s3Key + CloudFront).
+  blobUrl?: string;
+}
+
+interface PendingImage {
+  id: string;
+  file: File;
+  blobUrl: string;
 }
 
 interface Message {
@@ -106,7 +127,9 @@ export default function HomeAgent() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Helper: is the viewport currently mobile-sized?
   const isMobile = useCallback(
@@ -123,6 +146,17 @@ export default function HomeAgent() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Revoke any outstanding pending-image blob URLs on unmount to prevent
+  // memory leaks. Sent-message blob URLs are revoked when the message is
+  // dropped from local state (which currently never happens within the
+  // page lifetime), so this catches any still-pending picks at teardown.
+  useEffect(() => {
+    return () => {
+      pendingImages.forEach((p) => URL.revokeObjectURL(p.blobUrl));
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   async function checkAuth() {
     try {
@@ -231,9 +265,96 @@ export default function HomeAgent() {
     });
   }
 
+  function handleFilePick(e: React.ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(e.target.files ?? []);
+    // Reset the input so picking the same file again still fires onChange.
+    e.target.value = "";
+    if (files.length === 0) return;
+
+    const accepted: PendingImage[] = [];
+    const remainingSlots = MAX_IMAGES_PER_TURN - pendingImages.length;
+    if (remainingSlots <= 0) {
+      addToast({
+        title: "Too many images",
+        description: `Max ${MAX_IMAGES_PER_TURN} images per message`,
+      });
+      return;
+    }
+
+    for (const file of files) {
+      if (accepted.length >= remainingSlots) {
+        addToast({
+          title: "Too many images",
+          description: `Max ${MAX_IMAGES_PER_TURN} images per message`,
+        });
+        break;
+      }
+      // HEIC sometimes shows up with empty type or "image/heic"; reject
+      // anything not on the strict allow-list.
+      if (!ACCEPTED_IMAGE_TYPES.has(file.type)) {
+        if (file.type === "image/heic" || file.type === "image/heif" || file.name.toLowerCase().endsWith(".heic")) {
+          addToast({
+            title: "HEIC not supported",
+            description: "Share a screenshot or JPG instead.",
+          });
+        } else {
+          addToast({
+            title: "Unsupported image type",
+            description: `${file.name}: only JPEG, PNG, GIF, or WebP are accepted.`,
+          });
+        }
+        continue;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        addToast({
+          title: "Image too large",
+          description: `${file.name} is over 5 MB. Resize and try again.`,
+        });
+        continue;
+      }
+      accepted.push({
+        id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        file,
+        blobUrl: URL.createObjectURL(file),
+      });
+    }
+
+    if (accepted.length > 0) {
+      setPendingImages((prev) => [...prev, ...accepted]);
+    }
+  }
+
+  function removePendingImage(id: string) {
+    setPendingImages((prev) => {
+      const target = prev.find((p) => p.id === id);
+      if (target) URL.revokeObjectURL(target.blobUrl);
+      return prev.filter((p) => p.id !== id);
+    });
+  }
+
+  async function uploadPendingImage(p: PendingImage): Promise<string> {
+    const urlRes = await fetch("/api/agent/upload-url", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ contentType: p.file.type }),
+    });
+    if (!urlRes.ok) {
+      const body = await urlRes.json().catch(() => ({}));
+      throw new Error(body.error ?? `Upload URL error: ${urlRes.status}`);
+    }
+    const { uploadUrl, s3key } = await urlRes.json();
+    const putRes = await fetch(uploadUrl, {
+      method: "PUT",
+      headers: { "Content-Type": p.file.type },
+      body: p.file,
+    });
+    if (!putRes.ok) throw new Error(`S3 upload failed: ${putRes.status}`);
+    return s3key as string;
+  }
+
   async function sendMessage() {
     const text = input.trim();
-    if (!text || isLoading) return;
+    if ((!text && pendingImages.length === 0) || isLoading) return;
 
     // Auto-create conversation if none selected
     let convoId = activeConvoId;
@@ -249,27 +370,71 @@ export default function HomeAgent() {
       setActiveConvoId(convoId);
     }
 
-    const userMessage: Message = { role: "user", content: text, sender };
+    // Upload any attached images BEFORE we mutate state, so a failure
+    // leaves the input + pending picks intact for the user to retry.
+    setIsLoading(true);
+    let uploadedKeys: string[] = [];
+    const imagesForTurn = pendingImages;
+    if (imagesForTurn.length > 0) {
+      try {
+        uploadedKeys = await Promise.all(imagesForTurn.map(uploadPendingImage));
+      } catch (err: any) {
+        addToast({
+          title: "Image upload failed",
+          description: err?.message ?? String(err),
+        });
+        setIsLoading(false);
+        return;
+      }
+    }
+
+    // Build user-turn attachments. Pair each blob URL with its s3Key so
+    // the bubble renders optimistically (blobUrl) on first paint and
+    // falls back to CloudFront on reload.
+    const userAttachments: Attachment[] = imagesForTurn.map((p, i) => ({
+      type: "image",
+      s3Key: uploadedKeys[i],
+      blobUrl: p.blobUrl,
+    }));
+
+    const userMessage: Message = {
+      role: "user",
+      content: text,
+      sender,
+      attachments: userAttachments.length > 0 ? userAttachments : undefined,
+    };
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
-    setIsLoading(true);
+    // Don't revoke blob URLs here — the message bubble is still using them
+    // for optimistic rendering. They live for the rest of the page session.
+    setPendingImages([]);
 
     // Persist user message
     await persistMessage(convoId, userMessage);
 
     try {
-      // The agent handler expects history as { role, content } where
-      // content is a plain string. Cap to the last 10 messages so we
-      // don't blow the prompt as conversations grow.
+      // The agent handler expects history as { role, content, attachments }.
+      // Forwarding attachments activates the handler's image-rehydration
+      // path so prior-turn images stay in Claude's context. Cap to the
+      // last 10 messages so we don't blow the prompt as conversations grow.
       const history = messages.slice(-10).map((m) => ({
         role: m.role,
         content: m.content,
+        // Strip blobUrl (local-only) — keep type/s3Key/url so the
+        // handler can rehydrate user images and ignore assistant URLs.
+        attachments: m.attachments?.map((a) => ({
+          type: a.type,
+          s3Key: a.s3Key,
+          url: a.url,
+          caption: a.caption,
+        })),
       }));
 
       const { data, errors } = await client.mutations.invokeHomeAgent({
         message: text,
         history: JSON.stringify(history),
         sender,
+        imageS3Keys: uploadedKeys,
       });
 
       if (errors?.length || !data) throw new Error(errors?.[0]?.message ?? "Agent failed");
@@ -434,18 +599,28 @@ export default function HomeAgent() {
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                     {msg.attachments && msg.attachments.length > 0 && (
                       <div className="mt-2 grid grid-cols-2 gap-2">
-                        {msg.attachments.map((att, idx) =>
-                          att.type === "image" ? (
+                        {msg.attachments.map((att, idx) => {
+                          if (att.type !== "image") return null;
+                          // Prefer the optimistic local blob URL (only set
+                          // pre-send for user uploads), then CloudFront via
+                          // s3Key (works for both reload + assistant photos
+                          // when they store keys), then the absolute url
+                          // (assistant send_photos result).
+                          const src =
+                            att.blobUrl ??
+                            (att.s3Key ? originalPhotoUrl(att.s3Key) : att.url);
+                          if (!src) return null;
+                          return (
                             <a
                               key={idx}
-                              href={att.url}
+                              href={src}
                               target="_blank"
                               rel="noopener noreferrer"
                               className="block"
                             >
                               {/* eslint-disable-next-line @next/next/no-img-element */}
                               <img
-                                src={att.url}
+                                src={src}
                                 alt={att.caption ?? "photo"}
                                 loading="lazy"
                                 className="w-full h-auto rounded-sm"
@@ -454,8 +629,8 @@ export default function HomeAgent() {
                                 <p className="text-xs opacity-70 mt-0.5 truncate">{att.caption}</p>
                               )}
                             </a>
-                          ) : null
-                        )}
+                          );
+                        })}
                       </div>
                     )}
                     {msg.actionsTaken && msg.actionsTaken.length > 0 && (
@@ -481,7 +656,46 @@ export default function HomeAgent() {
 
           {/* Input */}
           <div className="border-t border-default-200 pt-4 pb-2">
+            {pendingImages.length > 0 && (
+              <div className="flex gap-2 flex-wrap pb-2">
+                {pendingImages.map((p) => (
+                  <div key={p.id} className="relative">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={p.blobUrl}
+                      alt={p.file.name}
+                      className="w-16 h-16 object-cover rounded border border-default-200"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removePendingImage(p.id)}
+                      className="absolute -top-1 -right-1 bg-default-900 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] hover:bg-danger transition-colors"
+                      aria-label={`Remove ${p.file.name}`}
+                    >
+                      <FaTimes size={8} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept={ACCEPT_ATTR}
+              multiple
+              className="hidden"
+              onChange={handleFilePick}
+            />
             <div className="flex gap-2">
+              <Button
+                isIconOnly
+                variant="flat"
+                onPress={() => fileInputRef.current?.click()}
+                isDisabled={isLoading || pendingImages.length >= MAX_IMAGES_PER_TURN}
+                aria-label="Attach images"
+              >
+                <FaPaperclip />
+              </Button>
               <Input
                 placeholder="Ask me to create a task, add a bill, schedule a reminder..."
                 value={input}
@@ -496,7 +710,7 @@ export default function HomeAgent() {
                 isIconOnly
                 color="primary"
                 onPress={sendMessage}
-                isDisabled={!input.trim() || isLoading}
+                isDisabled={(!input.trim() && pendingImages.length === 0) || isLoading}
               >
                 <FaPaperPlane />
               </Button>
