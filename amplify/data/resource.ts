@@ -356,6 +356,121 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Document ──────────────────────────────────────────────────────────
+    // Household document vault. Identity docs (passport, license, green
+    // card), metadata-only entries (KTN, Global Entry), and insurance docs.
+    // File reads are Duo-Push-gated at the agent tool layer (see wave 2).
+    // The metadata itself (titles, types, expiration dates) is readable
+    // without a challenge — only documentNumber and s3Key require Duo
+    // approval before being surfaced.
+    homeDocument: a
+      .model({
+        title: a.string().required(),
+        type: a.enum([
+          "DRIVERS_LICENSE",
+          "PASSPORT",
+          "GREEN_CARD",
+          "TSA_PRECHECK",
+          "GLOBAL_ENTRY",
+          "INSURANCE",
+          "OTHER",
+        ]),
+        // PERSONAL → ownerPersonId must be set. HOUSEHOLD → shared among all
+        // home-users (e.g., home/auto insurance, marriage certificate).
+        scope: a.enum(["PERSONAL", "HOUSEHOLD"]),
+        ownerPersonId: a.id(),
+        issuer: a.string(),
+        // TOTP/Duo-gated at the agent tool layer. Never returned in
+        // list_documents responses — only by verify_auth_and_get_link.
+        documentNumber: a.string(),
+        issuedDate: a.date(),
+        expiresDate: a.date(),
+        // Null for metadata-only entries (KTN, Global Entry number with no
+        // file to upload).
+        s3Key: a.string(),
+        contentType: a.string(),
+        sizeBytes: a.integer(),
+        originalFilename: a.string(),
+        notes: a.string(),
+        uploadedBy: a.string(),
+      })
+      .secondaryIndexes((index) => [
+        index("ownerPersonId"),
+        index("type"),
+        index("expiresDate"),
+      ])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── PersonAuth ─────────────────────────────────────────────────────────
+    // Links a homePerson to their Duo username for Duo Push-based document
+    // vault access. One row per enrolled person. Wave 2 adds the actual Duo
+    // Auth API integration; wave 1 just stores the mapping so the /security
+    // page can let users link themselves.
+    homePersonAuth: a
+      .model({
+        personId: a.id().required(),
+        // Duo username as configured in the Duo admin dashboard. Used by
+        // the Auth API preauth/auth calls.
+        duoUsername: a.string().required(),
+        enrolledAt: a.datetime(),
+        lastUsedAt: a.datetime(),
+      })
+      .secondaryIndexes((index) => [index("personId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── PendingAuthChallenge ──────────────────────────────────────────────
+    // Short-lived (5 min) row created when a user requests a document via
+    // agent tool. Wave 2 verifies Duo Push approval against this row.
+    homePendingAuthChallenge: a
+      .model({
+        // "wa:<chatJid>" or "web:<convId>" — uniquely identifies the
+        // conversation that started the request so the agent can match
+        // approval to request.
+        conversationKey: a.string().required(),
+        personId: a.id().required(),
+        documentId: a.id().required(),
+        attemptsRemaining: a.integer().default(3),
+        expiresAt: a.datetime().required(),
+      })
+      .secondaryIndexes((index) => [index("conversationKey")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── DocumentAccessLog ─────────────────────────────────────────────────
+    // Append-only audit of every document access attempt, for transparency
+    // and security review. Wave 2 wires up the writes.
+    homeDocumentAccessLog: a
+      .model({
+        documentId: a.id().required(),
+        personId: a.id(),
+        channel: a.enum(["WA", "WEB"]),
+        action: a.enum([
+          "LIST_METADATA",
+          "DOWNLOAD_REQUEST",
+          "AUTH_APPROVED",
+          "AUTH_DENIED",
+          "LINK_ISSUED",
+        ]),
+        result: a.enum(["SUCCESS", "DENIED", "FAILED"]),
+        error: a.string(),
+      })
+      .secondaryIndexes((index) => [
+        index("documentId"),
+        index("personId"),
+      ])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Home Assistant Device Action (audit log) ────────────────────────
     // Scaffold for v2 — the /devices page and agent will write here on
     // every control attempt (success, fail, or denied by policy). Not

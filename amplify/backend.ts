@@ -137,6 +137,31 @@ agentLambda.addToRolePolicy(
   })
 );
 
+// Agent Lambda reads document files from S3 for Duo-verified
+// downloads (wave 2) and signed-URL generation.
+agentLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:GetObject"],
+    resources: ["arn:aws:s3:::cristinegennaro.com/home/documents/*"],
+  })
+);
+
+// Agent Lambda reads the Duo Auth API integration key/secret from
+// Secrets Manager for wave 2's Duo Push flow. The -* suffix matches
+// the 6-char random version suffix Secrets Manager appends to every
+// secret ARN, so the policy keeps working across rotations.
+agentLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["secretsmanager:GetSecretValue"],
+    resources: [
+      "arn:aws:secretsmanager:us-east-1:*:secret:home-hub/duo-auth-api-*",
+    ],
+  })
+);
+agentLambda.addEnvironment("DUO_SECRET_NAME", "home-hub/duo-auth-api");
+
 // ── SNS topic for notifications ─────────────────────────────────────────────
 // Topic lives in the scheduler stack (same as the lambda that publishes to it)
 // to avoid a cross-stack circular dependency with the data stack.
