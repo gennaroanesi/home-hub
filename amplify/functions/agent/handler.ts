@@ -6,6 +6,7 @@ import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtim
 import { RRule } from "rrule";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "$amplify/env/home-agent";
 import type { Schema } from "../../data/resource";
 import {
@@ -13,6 +14,8 @@ import {
   fetchAirportWeather,
   getMorningWeatherBriefing,
 } from "../../../lib/aviation-weather.js";
+import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flags.js";
+import { preauth as duoPreauth, pushAuth as duoPushAuth } from "./duo.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -1025,6 +1028,70 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "list_documents",
+    description:
+      "List household documents with metadata (title, type, owner, issuer, expiration). Returns documentNumber as `<REDACTED>` — never returns actual document numbers or file links. Use this for answering questions like 'what documents do we have' or 'find the passport'. If the user wants the actual file or number, follow up with `request_document_download`.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        ownerName: {
+          type: "string",
+          description: "Filter to documents owned by this person. Case-insensitive name match. Omit to include household-scope and all owners.",
+        },
+        type: {
+          type: "string",
+          enum: [
+            "DRIVERS_LICENSE",
+            "PASSPORT",
+            "GREEN_CARD",
+            "TSA_PRECHECK",
+            "GLOBAL_ENTRY",
+            "INSURANCE",
+            "OTHER",
+          ],
+          description: "Filter to a specific document type.",
+        },
+        expiringWithinDays: {
+          type: "integer",
+          description: "If set, only return documents with expiresDate within the next N days.",
+        },
+      },
+    },
+  },
+  {
+    name: "get_document_expirations",
+    description:
+      "Shortcut for 'what's expiring'. Returns documents expiring within the given window (default 90 days), sorted ascending by expiration. Useful for proactive reminders. Metadata-only — no numbers or file links.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        withinDays: {
+          type: "integer",
+          description: "Lookahead window in days. Default 90.",
+        },
+      },
+    },
+  },
+  {
+    name: "request_document_download",
+    description:
+      "Initiate a Duo-Push-gated document release. Looks up the requester by sender name, verifies they're enrolled in Duo, creates a pending challenge, sends a Duo push to their phone, and — if approved — delivers a 30-minute signed URL (or the raw documentNumber for metadata-only entries like Global Entry) via DM to the requester. BLOCKS for up to 60 seconds while waiting for push approval. The tool NEVER returns the URL or documentNumber directly to the agent — it queues a DM-targeted outbound message and returns only a sanitized {status, deliveredVia} result. The agent MUST NOT try to paste the URL or number in its response text, even if asked. When called from a group chat, acknowledge in-group with 'I'll DM you a Duo push prompt' BEFORE calling this tool (since it blocks for up to a minute). If the user isn't enrolled, the tool returns DENIED with reason not_enrolled — guide them to /security to link their Duo username.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        documentId: {
+          type: "string",
+          description: "The homeDocument.id of the document to release.",
+        },
+        senderName: {
+          type: "string",
+          description: "The name of the requester (must match a homePerson.name case-insensitively). Used to look up their Duo username from homePersonAuth.",
+        },
+      },
+      required: ["documentId", "senderName"],
+    },
+  },
 ];
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -1073,8 +1140,18 @@ interface Attachment {
   caption?: string | null;
 }
 
+// Chat context passed in by invokeHomeAgent's chatContext arg. Lets
+// tools know whether the request originated from a group chat (where
+// sensitive payloads must be redirected to DM) vs. a DM or the web UI.
+export type AgentChannel = "WA_GROUP" | "WA_DM" | "WEB";
+export interface ChatContext {
+  channel: AgentChannel;
+  chatJid: string | null;
+}
+
 interface ToolContext {
   attachments: Attachment[];
+  chatContext: ChatContext;
 }
 
 async function executeTool(
@@ -2009,6 +2086,360 @@ async function executeTool(
       });
     }
 
+    // ── Document vault ───────────────────────────────────────────────
+    case "list_documents": {
+      const people = await getPeople();
+      let ownerFilterIds: Set<string> | null = null;
+      if (input.ownerName) {
+        const q = (input.ownerName as string).toLowerCase();
+        const matches = people.filter((p) => p.name.toLowerCase() === q);
+        if (matches.length === 0) {
+          return JSON.stringify({
+            documents: [],
+            note: `No person named "${input.ownerName}".`,
+          });
+        }
+        ownerFilterIds = new Set(matches.map((p) => p.id));
+      }
+
+      const { data: docs } = await client.models.homeDocument.list({ limit: 500 });
+      const now = Date.now();
+      const cutoff =
+        typeof input.expiringWithinDays === "number"
+          ? now + input.expiringWithinDays * 24 * 60 * 60 * 1000
+          : null;
+
+      const personById = new Map(people.map((p) => [p.id, p.name] as const));
+      const filtered = (docs ?? []).filter((d) => {
+        if (input.type && d.type !== input.type) return false;
+        if (ownerFilterIds && (!d.ownerPersonId || !ownerFilterIds.has(d.ownerPersonId))) {
+          return false;
+        }
+        if (cutoff != null) {
+          if (!d.expiresDate) return false;
+          const exp = Date.parse(d.expiresDate as unknown as string);
+          if (Number.isNaN(exp) || exp > cutoff) return false;
+        }
+        return true;
+      });
+
+      const shaped = filtered.map((d) => ({
+        id: d.id,
+        title: d.title,
+        type: d.type,
+        scope: d.scope,
+        ownerName: d.ownerPersonId ? personById.get(d.ownerPersonId) ?? null : null,
+        issuer: d.issuer ?? null,
+        issuedDate: d.issuedDate ?? null,
+        expiresDate: d.expiresDate ?? null,
+        // Intentionally omit documentNumber, s3Key, contentType.
+        documentNumber: "<REDACTED>",
+        hasFile: !!d.s3Key,
+      }));
+
+      return JSON.stringify({
+        documents: shaped,
+        count: shaped.length,
+        note:
+          "Metadata only. To release a document number or file URL, use request_document_download (it requires Duo Push approval).",
+      });
+    }
+
+    case "get_document_expirations": {
+      const withinDays = typeof input.withinDays === "number" ? input.withinDays : 90;
+      const { data: docs } = await client.models.homeDocument.list({ limit: 500 });
+      const people = await getPeople();
+      const personById = new Map(people.map((p) => [p.id, p.name] as const));
+
+      const now = Date.now();
+      const cutoff = now + withinDays * 24 * 60 * 60 * 1000;
+      const matching: Array<{
+        id: string;
+        title: string;
+        type: string | null;
+        ownerName: string | null;
+        expiresDate: string;
+        daysUntilExpiry: number;
+      }> = [];
+      for (const d of docs ?? []) {
+        if (!d.expiresDate) continue;
+        const exp = Date.parse(d.expiresDate as unknown as string);
+        if (Number.isNaN(exp)) continue;
+        if (exp > cutoff) continue;
+        matching.push({
+          id: d.id,
+          title: d.title,
+          type: (d.type as string | null) ?? null,
+          ownerName: d.ownerPersonId ? personById.get(d.ownerPersonId) ?? null : null,
+          expiresDate: d.expiresDate as unknown as string,
+          daysUntilExpiry: Math.round((exp - now) / (24 * 60 * 60 * 1000)),
+        });
+      }
+      matching.sort((a, b) => a.daysUntilExpiry - b.daysUntilExpiry);
+      return JSON.stringify({ documents: matching, count: matching.length, withinDays });
+    }
+
+    case "request_document_download": {
+      const documentId = input.documentId as string;
+      const senderName = input.senderName as string;
+      const channelForLog: "WA" | "WEB" =
+        ctx.chatContext.channel === "WEB" ? "WEB" : "WA";
+
+      // 1. Fetch the document
+      const { data: doc } = await client.models.homeDocument.get({ id: documentId });
+      if (!doc) {
+        return JSON.stringify({ status: "ERROR", reason: "document_not_found" });
+      }
+
+      // 2. Resolve the requester → homePerson → homePersonAuth
+      const people = await getPeople();
+      const requester = people.find(
+        (p) => p.name.toLowerCase() === senderName.toLowerCase()
+      );
+      if (!requester) {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: `No household member named "${senderName}"`,
+        });
+      }
+      const ownerPerson = doc.ownerPersonId
+        ? people.find((p) => p.id === doc.ownerPersonId) ?? null
+        : null;
+
+      const { data: auths } = await client.models.homePersonAuth.list({
+        filter: { personId: { eq: requester.id } },
+        limit: 10,
+      });
+      const auth = (auths ?? [])[0];
+      if (!auth?.duoUsername) {
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "DOWNLOAD_REQUEST",
+          result: "DENIED",
+          error: "not_enrolled",
+        });
+        return JSON.stringify({
+          status: "DENIED",
+          reason: "not_enrolled",
+          note: `${requester.name} has not linked a Duo account. Have them visit /security.`,
+        });
+      }
+
+      // 3. Preauth
+      let preauthRes;
+      try {
+        preauthRes = await duoPreauth(auth.duoUsername);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "DOWNLOAD_REQUEST",
+          result: "FAILED",
+          error: `preauth: ${msg}`.slice(0, 500),
+        });
+        return JSON.stringify({ status: "ERROR", reason: `preauth_failed: ${msg}` });
+      }
+
+      if (preauthRes.result === "deny") {
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "AUTH_DENIED",
+          result: "DENIED",
+          error: `preauth_deny: ${preauthRes.status_msg ?? ""}`.slice(0, 500),
+        });
+        return JSON.stringify({ status: "DENIED", reason: "locked_out" });
+      }
+      if (preauthRes.result === "enroll") {
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "DOWNLOAD_REQUEST",
+          result: "DENIED",
+          error: "preauth_enroll",
+        });
+        return JSON.stringify({ status: "DENIED", reason: "not_enrolled" });
+      }
+
+      // 4. Write pending challenge row BEFORE the push (audit trail if
+      //    the Lambda dies mid-push).
+      const conversationKey =
+        ctx.chatContext.chatJid != null
+          ? `wa:${ctx.chatContext.chatJid}`
+          : `web:${requester.id}:${Date.now()}`;
+      const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+      const { data: challenge } = await client.models.homePendingAuthChallenge.create({
+        conversationKey,
+        personId: requester.id,
+        documentId,
+        attemptsRemaining: 1,
+        expiresAt: challengeExpiresAt,
+      });
+
+      // 5. Push (skip on "allow" — rare pre-approved mode)
+      let pushResult: "allow" | "deny" = "allow";
+      if (preauthRes.result === "auth") {
+        try {
+          const res = await duoPushAuth({
+            username: auth.duoUsername,
+            pushinfo: {
+              Document: doc.title ?? "(untitled)",
+              "Requested by": requester.name,
+              Channel: channelForLog,
+            },
+            type: "Document vault",
+            displayUsername: auth.duoUsername,
+          });
+          pushResult = res.result;
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (challenge?.id) {
+            await client.models.homePendingAuthChallenge.delete({ id: challenge.id });
+          }
+          await client.models.homeDocumentAccessLog.create({
+            documentId,
+            personId: requester.id,
+            channel: channelForLog,
+            action: "DOWNLOAD_REQUEST",
+            result: "FAILED",
+            error: `push: ${msg}`.slice(0, 500),
+          });
+          return JSON.stringify({
+            status: "ERROR",
+            reason: `push_failed: ${msg}`,
+          });
+        }
+      }
+
+      if (pushResult === "deny") {
+        if (challenge?.id) {
+          await client.models.homePendingAuthChallenge.delete({ id: challenge.id });
+        }
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "AUTH_DENIED",
+          result: "DENIED",
+          error: "user_denied_or_timeout",
+        });
+        return JSON.stringify({ status: "DENIED", reason: "user_denied" });
+      }
+
+      // 6. Push approved — log and generate payload
+      await client.models.homeDocumentAccessLog.create({
+        documentId,
+        personId: requester.id,
+        channel: channelForLog,
+        action: "AUTH_APPROVED",
+        result: "SUCCESS",
+      });
+
+      // 7. Build payload — either a presigned URL (file-backed) or the
+      //    raw documentNumber (metadata-only entries like Global Entry).
+      let dmText = "";
+      let deliveryKind: "file" | "number" = "number";
+      if (doc.s3Key) {
+        const bucket = process.env.PHOTOS_BUCKET;
+        if (!bucket) {
+          return JSON.stringify({
+            status: "ERROR",
+            reason: "PHOTOS_BUCKET env var not set",
+          });
+        }
+        const filename = doc.originalFilename ?? `${doc.title ?? "document"}`;
+        // Quote-escape the filename for the Content-Disposition header.
+        const safeFilename = filename.replace(/"/g, "");
+        const getCmd = new GetObjectCommand({
+          Bucket: bucket,
+          Key: doc.s3Key,
+          ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
+        });
+        const url = await getSignedUrl(s3, getCmd, { expiresIn: 30 * 60 });
+        dmText = `Here's your document: ${doc.title}\n${url}\n(Link expires in 30 minutes.)`;
+        deliveryKind = "file";
+      } else if (doc.documentNumber) {
+        dmText = `${doc.title}: ${doc.documentNumber}`;
+        deliveryKind = "number";
+      } else {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: "Document has no s3Key and no documentNumber to release",
+        });
+      }
+
+      // 8. Deliver via PERSON-target homeOutboundMessage. The WA bot's
+      //    outbound poller resolves personId → phoneNumber and DMs it.
+      //    This is the critical security gate: URLs/numbers NEVER go
+      //    back to Claude in the tool result, only to the WA DM.
+      await client.models.homeOutboundMessage.create({
+        channel: "WHATSAPP",
+        target: "PERSON",
+        personId: requester.id,
+        text: dmText,
+        status: "PENDING",
+        kind: "document_release",
+      });
+
+      // 9. LINK_ISSUED access log + lastUsedAt bump
+      await client.models.homeDocumentAccessLog.create({
+        documentId,
+        personId: requester.id,
+        channel: channelForLog,
+        action: "LINK_ISSUED",
+        result: "SUCCESS",
+      });
+      await client.models.homePersonAuth.update({
+        id: auth.id,
+        lastUsedAt: new Date().toISOString(),
+      });
+
+      // 10. Optional transparency DM to the owner (feature-flag gated).
+      //     Only fires for PERSONAL-scope docs when the requester isn't
+      //     the owner. Disabled by default; flip the flag in lib/feature-flags.ts.
+      if (
+        DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED &&
+        doc.scope === "PERSONAL" &&
+        doc.ownerPersonId &&
+        doc.ownerPersonId !== requester.id &&
+        ownerPerson
+      ) {
+        const docTypeLabel = doc.type
+          ? (doc.type as string).toLowerCase().replace(/_/g, " ")
+          : "document";
+        await client.models.homeOutboundMessage.create({
+          channel: "WHATSAPP",
+          target: "PERSON",
+          personId: doc.ownerPersonId,
+          text: `Heads up: ${requester.name} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let Gennaro know.`,
+          status: "PENDING",
+          kind: "document_access_notification",
+        });
+      }
+
+      // 11. Clean up the challenge row (done)
+      if (challenge?.id) {
+        await client.models.homePendingAuthChallenge.delete({ id: challenge.id });
+      }
+
+      // 12. Sanitized result to the agent. No URL, no number — the DM
+      //     is on its way via the outbound poller. Claude should say
+      //     something like "Sent to your DM".
+      return JSON.stringify({
+        status: "DELIVERED",
+        deliveredVia: "DM",
+        deliveryKind,
+        documentTitle: doc.title,
+        ownerName: ownerPerson?.name ?? null,
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -2075,6 +2506,35 @@ When the user asks to see photos, call send_photos DIRECTLY with whatever album 
 Home devices (thermostat, locks, cameras, etc.) can be read via get_home_devices. Device control is NOT available yet — if the user asks to change something (e.g. "set the thermostat to 72"), tell them to do it in the web app.
 
 For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions, call get_weather_briefing. By default it uses KAUS and auto-selects plain vs aviation mode. Pass mode="aviation" if the user is clearly asking about flying conditions, or pass a different ICAO if they name an airport. The tool returns structured data including the raw METAR and TAF — for a household-level question render a plain line; for a pilot question include the raw strings and the VFR/MVFR/IFR verdict.
+
+## Document vault
+
+The household has a document vault for passports, licenses, insurance, etc.
+Use list_documents or get_document_expirations freely to answer metadata
+questions ("when does my passport expire?", "what's expiring this month?").
+These return redacted metadata only.
+
+When a user asks for the actual file or document number ("send me my
+passport", "what's my Global Entry number?"), call request_document_download.
+It will:
+1. Verify the requester is enrolled in Duo
+2. Send a Duo Push to their phone asking them to approve
+3. Block for up to 60 seconds waiting
+4. On approval, deliver the file/number to the requester's DM only
+
+You MUST NOT paste the downloaded file URL or document number in your text
+response to the user. The tool handles delivery via DM automatically and
+returns only a sanitized {status, deliveredVia} result. Your reply should
+just confirm the delivery ("Sent to your DM — tap the link to open your
+passport. It expires in 30 minutes.") or explain the error.
+
+If the current conversation is a group chat, acknowledge the request in
+group with something like "I'll DM you a Duo push prompt" BEFORE calling
+request_document_download. The tool will block during Duo approval, so the
+group acknowledgment should go out first.
+
+Never include documentNumber from list_documents output in your responses —
+the tool returns "<REDACTED>" and you should not try to work around this.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
@@ -2152,7 +2612,13 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];
-  const toolCtx: ToolContext = { attachments: [] };
+  // Channel defaults to WEB in wave 2a; commit 3 wires the WA bot to
+  // pass an explicit chatContext arg on the mutation so tools can tell
+  // whether the request came from a group vs. DM.
+  const toolCtx: ToolContext = {
+    attachments: [],
+    chatContext: { channel: "WEB", chatJid: null },
+  };
 
   // Agentic loop
   let response = await anthropic.messages.create({
