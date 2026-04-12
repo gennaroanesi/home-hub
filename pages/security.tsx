@@ -74,6 +74,30 @@ export default function SecurityPage() {
     }
     setSavingId(person.id);
     try {
+      // Verify against Duo before saving — catches typos and missing
+      // enrollments immediately.
+      const preauthRes = await fetch("/api/security/duo-preauth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      const preauth = await preauthRes.json();
+      if (!preauthRes.ok) {
+        throw new Error(preauth.error ?? "Duo preauth request failed");
+      }
+      if (!preauth.ok) {
+        addToast({
+          title: "Duo preauth failed",
+          description: preauth.reason ?? "Username not recognized by Duo",
+          color: "danger",
+        });
+        return;
+      }
+      // If user exists but has no push device, warn but still allow linking.
+      if (preauth.note) {
+        addToast({ title: preauth.note, color: "warning" });
+      }
+
       const { errors } = await client.models.homePersonAuth.create({
         personId: person.id,
         duoUsername: username,
