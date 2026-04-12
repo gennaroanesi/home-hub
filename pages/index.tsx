@@ -4,9 +4,117 @@ import React, { useState, useEffect } from "react";
 import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { useRouter } from "next/router";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { FaComments, FaTasks, FaFileInvoiceDollar, FaCalendarAlt, FaShoppingCart, FaImages, FaPlane, FaFolder, FaLightbulb } from "react-icons/fa";
+import {
+  FaComments,
+  FaTasks,
+  FaFileInvoiceDollar,
+  FaCalendarAlt,
+  FaShoppingCart,
+  FaImages,
+  FaPlane,
+  FaFolder,
+  FaLightbulb,
+  FaFileAlt,
+} from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+
+interface DashboardCard {
+  title: string;
+  description: string;
+  icon: React.ReactNode;
+  href: string;
+  coming?: boolean;
+}
+
+interface DashboardGroup {
+  label: string;
+  cards: DashboardCard[];
+}
+
+const GROUPS: DashboardGroup[] = [
+  {
+    label: "Janet",
+    cards: [
+      {
+        title: "Agent Chat",
+        description: "Ask Janet to manage tasks, bills, trips, and more",
+        icon: <FaComments size={22} />,
+        href: "/agent",
+      },
+    ],
+  },
+  {
+    label: "Life",
+    cards: [
+      {
+        title: "Tasks",
+        description: "Household tasks and recurring chores",
+        icon: <FaTasks size={22} />,
+        href: "/tasks",
+      },
+      {
+        title: "Shopping",
+        description: "Shared lists (Supermarket, Home Depot, ...)",
+        icon: <FaShoppingCart size={22} />,
+        href: "/shopping",
+      },
+      {
+        title: "Bills",
+        description: "Track bills and payments",
+        icon: <FaFileInvoiceDollar size={22} />,
+        href: "/bills",
+        coming: true,
+      },
+      {
+        title: "Calendar",
+        description: "Shared calendar and events",
+        icon: <FaCalendarAlt size={22} />,
+        href: "/calendar",
+      },
+      {
+        title: "Trips",
+        description: "Plan trips, legs, reservations, and travel details",
+        icon: <FaPlane size={22} />,
+        href: "/trips",
+      },
+    ],
+  },
+  {
+    label: "Media",
+    cards: [
+      {
+        title: "Photos",
+        description: "Browse and upload all photos",
+        icon: <FaImages size={22} />,
+        href: "/photos",
+      },
+      {
+        title: "Albums",
+        description: "Curated photo collections",
+        icon: <FaFolder size={22} />,
+        href: "/albums",
+      },
+    ],
+  },
+  {
+    label: "Home",
+    cards: [
+      {
+        title: "Devices",
+        description: "Home Assistant devices (thermostat, locks, cameras)",
+        icon: <FaLightbulb size={22} />,
+        href: "/devices",
+      },
+      {
+        title: "Documents",
+        description: "Secure document vault (passports, IDs, insurance)",
+        icon: <FaFileAlt size={22} />,
+        href: "/documents",
+      },
+    ],
+  },
+];
 
 export default function HomeDashboard() {
   const router = useRouter();
@@ -26,73 +134,6 @@ export default function HomeDashboard() {
     }
   }
 
-  const sections = [
-    {
-      title: "Agent Chat",
-      description: "Ask the assistant to manage tasks, bills, and reminders",
-      icon: <FaComments size={24} />,
-      href: "/agent",
-      color: "primary" as const,
-    },
-    {
-      title: "Tasks",
-      description: "View and manage household tasks",
-      icon: <FaTasks size={24} />,
-      href: "/tasks",
-      color: "secondary" as const,
-    },
-    {
-      title: "Shopping",
-      description: "Shared shopping lists (Supermarket, Home Depot, …)",
-      icon: <FaShoppingCart size={24} />,
-      href: "/shopping",
-      color: "success" as const,
-    },
-    {
-      title: "Bills",
-      description: "Track bills and payments",
-      icon: <FaFileInvoiceDollar size={24} />,
-      href: "/bills",
-      color: "warning" as const,
-      coming: true,
-    },
-    {
-      title: "Calendar",
-      description: "Shared calendar and events",
-      icon: <FaCalendarAlt size={24} />,
-      href: "/calendar",
-      color: "success" as const,
-    },
-    {
-      title: "Trips",
-      description: "Plan trips, legs, and travel details",
-      icon: <FaPlane size={24} />,
-      href: "/trips",
-      color: "secondary" as const,
-    },
-    {
-      title: "Albums",
-      description: "Curated photo collections",
-      icon: <FaFolder size={24} />,
-      href: "/albums",
-      color: "warning" as const,
-    },
-    {
-      title: "Photos",
-      description: "Browse and upload all photos",
-      icon: <FaImages size={24} />,
-      href: "/photos",
-      color: "primary" as const,
-    },
-    {
-      title: "Devices",
-      description: "Home Assistant devices (thermostat, locks, cameras)",
-      icon: <FaLightbulb size={24} />,
-      href: "/devices",
-      color: "secondary" as const,
-    },
-  ];
-
   return (
     <DefaultLayout>
       <div className="max-w-2xl mx-auto px-4 py-10">
@@ -101,31 +142,43 @@ export default function HomeDashboard() {
         </h1>
         <p className="text-default-400 mt-1 mb-8">Your household hub</p>
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-          {sections.map((s) => (
-            <Card
-              key={s.title}
-              isPressable={!s.coming}
-              onPress={() => !s.coming && router.push(s.href)}
-              className={s.coming ? "opacity-50" : ""}
-            >
-              <CardHeader className="flex gap-3 items-center">
-                <div className={`text-${s.color}`}>{s.icon}</div>
-                <div>
-                  <p className="text-md font-semibold">{s.title}</p>
-                  {s.coming && (
-                    <span className="text-xs text-default-300">Coming soon</span>
-                  )}
-                </div>
-              </CardHeader>
-              <CardBody>
-                <p className="text-sm text-default-500">{s.description}</p>
-              </CardBody>
-            </Card>
+        <div className="flex flex-col gap-8">
+          {GROUPS.map((group) => (
+            <div key={group.label}>
+              <h2 className="text-xs text-default-400 uppercase tracking-wider mb-3">
+                {group.label}
+              </h2>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                {group.cards.map((card) => (
+                  <Card
+                    key={card.title}
+                    isPressable={!card.coming}
+                    onPress={() => !card.coming && router.push(card.href)}
+                    className={card.coming ? "opacity-50" : ""}
+                  >
+                    <CardHeader className="flex gap-3 items-center pb-0">
+                      <div className="text-default-500">{card.icon}</div>
+                      <div>
+                        <p className="text-md font-semibold">{card.title}</p>
+                        {card.coming && (
+                          <span className="text-xs text-default-300">
+                            Coming soon
+                          </span>
+                        )}
+                      </div>
+                    </CardHeader>
+                    <CardBody className="pt-1">
+                      <p className="text-sm text-default-500">
+                        {card.description}
+                      </p>
+                    </CardBody>
+                  </Card>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       </div>
     </DefaultLayout>
   );
 }
-
