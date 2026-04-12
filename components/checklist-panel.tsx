@@ -462,16 +462,14 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                   onValueChange={(v) => setNewItemText((prev) => ({ ...prev, [cl.id]: v }))}
                   className="flex-1"
                 />
-                {sections.length > 0 && (
-                  <Input
-                    size="sm"
-                    placeholder="Section"
-                    value={newItemSection[cl.id] ?? ""}
-                    onValueChange={(v) => setNewItemSection((prev) => ({ ...prev, [cl.id]: v }))}
-                    className="max-w-[120px]"
-                    list={`sections-${cl.id}`}
-                  />
-                )}
+                <Input
+                  size="sm"
+                  placeholder="Section (optional)"
+                  value={newItemSection[cl.id] ?? ""}
+                  onValueChange={(v) => setNewItemSection((prev) => ({ ...prev, [cl.id]: v }))}
+                  className="max-w-[140px]"
+                  list={`sections-${cl.id}`}
+                />
                 {sections.length > 0 && (
                   <datalist id={`sections-${cl.id}`}>
                     {sections.map((s) => <option key={s} value={s} />)}
@@ -481,11 +479,6 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                   <FaPlus size={10} />
                 </Button>
               </form>
-              {sections.length === 0 && items.length > 0 && (
-                <p className="text-xs text-default-400 mt-1">
-                  Tip: add a section name when adding items to group them (e.g. &quot;Clothes&quot;, &quot;Gear&quot;)
-                </p>
-              )}
             </div>
           );
         })}
