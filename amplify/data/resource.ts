@@ -555,6 +555,7 @@ const schema = a
           "BILL",
           "DOCUMENT",
           "TASK",
+          "TEMPLATE",
           "OTHER",
         ]),
         entityId: a.id().required(),
@@ -574,6 +575,10 @@ const schema = a
         checklistId: a.id().required(),
         checklist: a.belongsTo("homeChecklist", "checklistId"),
         text: a.string().required(),
+        // Optional section grouping within a checklist (e.g. "Clothes",
+        // "Gear", "Documents" within a packing list). Items with the same
+        // section string render under a shared heading. Null = ungrouped.
+        section: a.string(),
         isDone: a.boolean().default(false),
         doneAt: a.datetime(),
         sortOrder: a.integer().default(0),

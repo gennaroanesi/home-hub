@@ -1,13 +1,34 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { generateClient } from "aws-amplify/data";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Checkbox } from "@heroui/checkbox";
-import { Select, SelectItem } from "@heroui/select";
 import { Spinner, addToast } from "@heroui/react";
-import { FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy, FaFileImport } from "react-icons/fa";
+import {
+  FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy,
+  FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight,
+} from "react-icons/fa";
+import {
+  DndContext,
+  closestCenter,
+  PointerSensor,
+  KeyboardSensor,
+  useSensor,
+  useSensors,
+  DragOverlay,
+  type DragStartEvent,
+  type DragEndEvent,
+  type DragOverEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  sortableKeyboardCoordinates,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 
 import type { Schema } from "@/amplify/data/resource";
 
@@ -22,40 +43,340 @@ interface ChecklistPanelProps {
   entityId: string;
 }
 
-// ── Helpers ────────────────────────────────────────────────────────────
+// ── Constants ────────────────────────────────────────────────────────
+const UNGROUPED = "__ungrouped__";
 
-/** Group items by section, preserving sort order within each group. */
-function groupBySection(items: ChecklistItem[]): { section: string | null; items: ChecklistItem[] }[] {
-  const map = new Map<string | null, ChecklistItem[]>();
+// ── Helpers ──────────────────────────────────────────────────────────
+
+interface SectionGroup {
+  sectionId: string;       // UNGROUPED or actual section name
+  sectionName: string;     // display name
+  items: ChecklistItem[];
+  sortOrder: number;       // for ordering sections among each other
+}
+
+/**
+ * Build ordered section groups from a flat list of items.
+ * Sections are ordered by the minimum sortOrder among their items,
+ * with ungrouped first.
+ */
+function buildSectionGroups(items: ChecklistItem[], sectionOrder: string[]): SectionGroup[] {
+  const map = new Map<string, ChecklistItem[]>();
+
   for (const item of items) {
-    const key = (item as any).section || null;
+    const key = (item as any).section || UNGROUPED;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(item);
   }
-  // Ungrouped (null) first, then alphabetical sections
-  const groups: { section: string | null; items: ChecklistItem[] }[] = [];
-  if (map.has(null)) groups.push({ section: null, items: map.get(null)! });
-  const sorted = Array.from(map.entries()).filter(([k]) => k !== null).sort((a, b) => a[0]!.localeCompare(b[0]!));
-  for (const [key, items] of sorted) {
-    groups.push({ section: key, items });
+
+  // Sort items within each group
+  Array.from(map.values()).forEach((groupItems) => {
+    groupItems.sort((a: ChecklistItem, b: ChecklistItem) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  });
+
+  const groups: SectionGroup[] = [];
+
+  // Ungrouped always first
+  if (map.has(UNGROUPED)) {
+    groups.push({
+      sectionId: UNGROUPED,
+      sectionName: "Ungrouped",
+      items: map.get(UNGROUPED)!,
+      sortOrder: -1,
+    });
+    map.delete(UNGROUPED);
   }
+
+  // Remaining sections, ordered by sectionOrder array
+  const remaining = Array.from(map.keys());
+  remaining.sort((a, b) => {
+    const aIdx = sectionOrder.indexOf(a);
+    const bIdx = sectionOrder.indexOf(b);
+    const aOrder = aIdx >= 0 ? aIdx : 9999;
+    const bOrder = bIdx >= 0 ? bIdx : 9999;
+    return aOrder - bOrder || a.localeCompare(b);
+  });
+
+  for (const key of remaining) {
+    const idx = sectionOrder.indexOf(key);
+    groups.push({
+      sectionId: key,
+      sectionName: key,
+      items: map.get(key)!,
+      sortOrder: idx >= 0 ? idx : 9999,
+    });
+  }
+
   return groups;
 }
 
-// ── Component ──────────────────────────────────────────────────────────
+/** Derive ordered section names from items (preserving sortOrder-based ordering). */
+function deriveSectionOrder(items: ChecklistItem[]): string[] {
+  const map = new Map<string, number>();
+  for (const item of items) {
+    const sec = (item as any).section;
+    if (sec) {
+      const existing = map.get(sec);
+      const order = item.sortOrder ?? 0;
+      if (existing === undefined || order < existing) {
+        map.set(sec, order);
+      }
+    }
+  }
+  return Array.from(map.entries())
+    .sort((a, b) => a[1] - b[1])
+    .map(([name]) => name);
+}
+
+// ── Sortable Item ────────────────────────────────────────────────────
+
+interface SortableItemProps {
+  item: ChecklistItem;
+  isEditing: boolean;
+  editingText: string;
+  onToggle: () => void;
+  onStartEdit: () => void;
+  onEditTextChange: (v: string) => void;
+  onSaveEdit: () => void;
+  onCancelEdit: () => void;
+  onDelete: () => void;
+}
+
+function SortableItem({
+  item, isEditing, editingText,
+  onToggle, onStartEdit, onEditTextChange, onSaveEdit, onCancelEdit, onDelete,
+}: SortableItemProps) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: item.id, data: { type: "item", item } });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex items-center gap-2 py-1 border-b border-default-100 last:border-0"
+    >
+      <span
+        className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0"
+        {...attributes}
+        {...listeners}
+      >
+        <FaGripVertical size={10} />
+      </span>
+      <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={onToggle} />
+      {isEditing ? (
+        <form onSubmit={(e) => { e.preventDefault(); onSaveEdit(); }} className="flex gap-1 flex-1">
+          <Input size="sm" value={editingText} onValueChange={onEditTextChange} autoFocus />
+          <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={8} /></Button>
+          <Button size="sm" isIconOnly variant="light" onPress={onCancelEdit}><FaTimes size={8} /></Button>
+        </form>
+      ) : (
+        <>
+          <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>
+            {item.text}
+          </span>
+          <Button size="sm" isIconOnly variant="light" onPress={onStartEdit}>
+            <FaPen size={8} />
+          </Button>
+          <Button size="sm" isIconOnly variant="light" color="danger" onPress={onDelete}>
+            <FaTrash size={8} />
+          </Button>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Sortable Section ─────────────────────────────────────────────────
+
+interface SortableSectionProps {
+  group: SectionGroup;
+  checklistId: string;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
+  // Section management
+  editingSectionName: string | null;
+  editingSectionText: string;
+  onStartRenameSection: () => void;
+  onRenameSectionTextChange: (v: string) => void;
+  onSaveRenameSection: () => void;
+  onCancelRenameSection: () => void;
+  onDeleteSection: () => void;
+  // Item operations
+  editingItemId: string | null;
+  editingItemText: string;
+  onToggleItem: (item: ChecklistItem) => void;
+  onStartEditItem: (id: string, text: string) => void;
+  onEditItemTextChange: (v: string) => void;
+  onSaveEditItem: (id: string) => void;
+  onCancelEditItem: () => void;
+  onDeleteItem: (id: string) => void;
+  // Per-section add item
+  addItemText: string;
+  onAddItemTextChange: (v: string) => void;
+  onAddItem: () => void;
+}
+
+function SortableSection({
+  group, checklistId, isCollapsed, onToggleCollapse,
+  editingSectionName, editingSectionText,
+  onStartRenameSection, onRenameSectionTextChange, onSaveRenameSection, onCancelRenameSection,
+  onDeleteSection,
+  editingItemId, editingItemText,
+  onToggleItem, onStartEditItem, onEditItemTextChange, onSaveEditItem, onCancelEditItem,
+  onDeleteItem,
+  addItemText, onAddItemTextChange, onAddItem,
+}: SortableSectionProps) {
+  const isUngrouped = group.sectionId === UNGROUPED;
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({
+    id: `section:${checklistId}:${group.sectionId}`,
+    data: { type: "section", sectionId: group.sectionId, checklistId },
+    disabled: isUngrouped,
+  });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  };
+
+  const isRenaming = editingSectionName === group.sectionId;
+
+  return (
+    <div ref={setNodeRef} style={style} className="mb-2">
+      {/* Section header */}
+      <div className={`flex items-center gap-1 py-1 px-2 rounded ${isUngrouped ? "" : "bg-default-100"}`}>
+        {!isUngrouped && (
+          <span
+            className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0"
+            {...attributes}
+            {...listeners}
+          >
+            <FaGripVertical size={10} />
+          </span>
+        )}
+        <button
+          type="button"
+          className="flex-shrink-0 text-default-400 hover:text-default-600"
+          onClick={onToggleCollapse}
+        >
+          {isCollapsed ? <FaChevronRight size={10} /> : <FaChevronDown size={10} />}
+        </button>
+        {isRenaming ? (
+          <form onSubmit={(e) => { e.preventDefault(); onSaveRenameSection(); }} className="flex gap-1 flex-1">
+            <Input size="sm" value={editingSectionText} onValueChange={onRenameSectionTextChange} autoFocus />
+            <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={8} /></Button>
+            <Button size="sm" isIconOnly variant="light" onPress={onCancelRenameSection}><FaTimes size={8} /></Button>
+          </form>
+        ) : (
+          <>
+            <span className="text-xs font-semibold text-default-500 uppercase tracking-wider flex-1">
+              {group.sectionName}
+            </span>
+            {!isUngrouped && (
+              <div className="flex gap-0.5">
+                <Button size="sm" isIconOnly variant="light" onPress={onStartRenameSection}>
+                  <FaPen size={8} />
+                </Button>
+                <Button size="sm" isIconOnly variant="light" color="danger" onPress={onDeleteSection}>
+                  <FaTrash size={8} />
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+
+      {/* Items */}
+      {!isCollapsed && (
+        <div className="pl-1">
+          <div className="space-y-0">
+            {group.items.map((item) => (
+              <SortableItem
+                key={item.id}
+                item={item}
+                isEditing={editingItemId === item.id}
+                editingText={editingItemText}
+                onToggle={() => onToggleItem(item)}
+                onStartEdit={() => onStartEditItem(item.id, item.text)}
+                onEditTextChange={onEditItemTextChange}
+                onSaveEdit={() => onSaveEditItem(item.id)}
+                onCancelEdit={onCancelEditItem}
+                onDelete={() => onDeleteItem(item.id)}
+              />
+            ))}
+          </div>
+
+          {/* Per-section add item */}
+          <form
+            onSubmit={(e) => { e.preventDefault(); onAddItem(); }}
+            className="flex gap-2 mt-1"
+          >
+            <Input
+              size="sm"
+              placeholder={`Add item${isUngrouped ? "" : ` to ${group.sectionName}`}...`}
+              value={addItemText}
+              onValueChange={onAddItemTextChange}
+              className="flex-1"
+            />
+            <Button size="sm" type="submit" isIconOnly color="primary" variant="flat">
+              <FaPlus size={10} />
+            </Button>
+          </form>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Drag overlay for items ───────────────────────────────────────────
+
+function DragOverlayItem({ item }: { item: ChecklistItem }) {
+  return (
+    <div className="flex items-center gap-2 py-1 px-2 bg-white dark:bg-default-50 rounded shadow-md border border-default-200">
+      <FaGripVertical size={10} className="text-default-400" />
+      <Checkbox size="sm" isSelected={!!item.isDone} isReadOnly />
+      <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>
+        {item.text}
+      </span>
+    </div>
+  );
+}
+
+// ── Main Component ───────────────────────────────────────────────────
 
 export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [itemsByChecklist, setItemsByChecklist] = useState<Record<string, ChecklistItem[]>>({});
 
+  // Section ordering: maps checklistId -> ordered section names
+  const [sectionOrders, setSectionOrders] = useState<Record<string, string[]>>({});
+
   // New checklist
   const [showNewChecklist, setShowNewChecklist] = useState(false);
   const [newChecklistName, setNewChecklistName] = useState("");
 
-  // Per-checklist new item input
+  // Per-section new item input: key = `${checklistId}:${sectionId}`
   const [newItemText, setNewItemText] = useState<Record<string, string>>({});
-  const [newItemSection, setNewItemSection] = useState<Record<string, string>>({});
 
   // Inline editing
   const [editingChecklistId, setEditingChecklistId] = useState<string | null>(null);
@@ -63,12 +384,27 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingItemText, setEditingItemText] = useState("");
 
-  // Templates (for "from template" picker)
+  // Section editing
+  const [editingSectionKey, setEditingSectionKey] = useState<string | null>(null); // `checklistId:sectionId`
+  const [editingSectionText, setEditingSectionText] = useState("");
+
+  // New section input: which checklist is showing the "add section" input
+  const [addingSectionForChecklist, setAddingSectionForChecklist] = useState<string | null>(null);
+  const [newSectionName, setNewSectionName] = useState("");
+
+  // Collapsed sections: set of `${checklistId}:${sectionId}`
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
+
+  // Templates
   const [templates, setTemplates] = useState<Checklist[]>([]);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
-  // Duplicate modal
-  const [duplicatingChecklist, setDuplicatingChecklist] = useState<Checklist | null>(null);
+  // DnD
+  const [activeItem, setActiveItem] = useState<ChecklistItem | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   const loadData = useCallback(async () => {
     try {
@@ -82,28 +418,29 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       setChecklists(lists);
 
       const grouped: Record<string, ChecklistItem[]> = {};
+      const orders: Record<string, string[]> = {};
       await Promise.all(
         lists.map(async (cl) => {
           const { data: items } = await client.models.homeChecklistItem.list({
             filter: { checklistId: { eq: cl.id } },
             limit: 500,
           });
-          grouped[cl.id] = (items ?? []).sort(
+          const sorted = (items ?? []).sort(
             (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
           );
+          grouped[cl.id] = sorted;
+          orders[cl.id] = deriveSectionOrder(sorted);
         })
       );
       setItemsByChecklist(grouped);
+      setSectionOrders(orders);
     } catch (err) {
-      // Table may not exist yet (sandbox not redeployed after schema
-      // change). Fail gracefully — show empty state instead of spinning.
       console.error("Checklist load failed:", err);
     } finally {
       setLoading(false);
     }
   }, [entityId]);
 
-  // Load templates once (entityType=TEMPLATE)
   const loadTemplates = useCallback(async () => {
     try {
       const { data } = await client.models.homeChecklist.list({
@@ -112,7 +449,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       });
       setTemplates((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     } catch {
-      // Table may not exist yet — templates just won't show.
+      // Table may not exist yet
     }
   }, []);
 
@@ -166,11 +503,6 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     await loadData();
   }
 
-  /**
-   * Duplicate a checklist (with all items, isDone reset to false) and
-   * attach it to the current entity. If sourceChecklist belongs to a
-   * different entity (e.g. a template), this effectively "imports" it.
-   */
   async function duplicateChecklist(source: Checklist, targetEntityType?: EntityType, targetEntityId?: string) {
     const eType = targetEntityType ?? entityType;
     const eId = targetEntityId ?? entityId;
@@ -182,7 +514,6 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     });
     if (!newCl) return;
 
-    // Fetch source items
     const { data: sourceItems } = await client.models.homeChecklistItem.list({
       filter: { checklistId: { eq: source.id } },
       limit: 500,
@@ -202,7 +533,6 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     await loadData();
   }
 
-  /** Save a checklist as a template (duplicate to TEMPLATE entity space). */
   async function saveAsTemplate(source: Checklist) {
     await duplicateChecklist(source, "TEMPLATE" as any, "templates");
     await loadTemplates();
@@ -211,18 +541,25 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
 
   // ── Item CRUD ──────────────────────────────────────────────────────
 
-  async function addItem(checklistId: string) {
-    const text = (newItemText[checklistId] ?? "").trim();
+  async function addItem(checklistId: string, section: string | null) {
+    const key = `${checklistId}:${section ?? UNGROUPED}`;
+    const text = (newItemText[key] ?? "").trim();
     if (!text) return;
-    const section = (newItemSection[checklistId] ?? "").trim() || null;
-    setNewItemText((prev) => ({ ...prev, [checklistId]: "" }));
+    setNewItemText((prev) => ({ ...prev, [key]: "" }));
     const existing = itemsByChecklist[checklistId] ?? [];
+
+    // Compute sortOrder: place after last item in same section
+    const sameSection = existing.filter((i) => ((i as any).section || null) === section);
+    const sortOrder = sameSection.length > 0
+      ? Math.max(...sameSection.map((i) => i.sortOrder ?? 0)) + 1
+      : existing.length;
+
     try {
       const itemPayload: Record<string, any> = {
         checklistId,
         text,
         isDone: false,
-        sortOrder: existing.length,
+        sortOrder,
       };
       if (section) itemPayload.section = section;
       const { errors } = await (client.models.homeChecklistItem as any).create(itemPayload);
@@ -266,13 +603,275 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     await loadData();
   }
 
-  // ── Existing sections for autocomplete ────────────────────────────
+  // ── Section management ─────────────────────────────────────────────
 
-  /** Unique section names across all items in the current checklist. */
-  function sectionsForChecklist(checklistId: string): string[] {
+  async function createSection(checklistId: string) {
+    const name = newSectionName.trim();
+    if (!name) return;
+    setNewSectionName("");
+    setAddingSectionForChecklist(null);
+
+    // Add to local section order
+    setSectionOrders((prev) => ({
+      ...prev,
+      [checklistId]: [...(prev[checklistId] ?? []), name],
+    }));
+
+    // No backend change needed — sections are implicit via item.section.
+    // The section will appear empty until an item is added/moved to it.
+    // But we need at least one placeholder item? No — we'll handle empty sections
+    // via the sectionOrders state. The UI will render the section header even if empty.
+  }
+
+  async function renameSection(checklistId: string, oldName: string) {
+    const newName = editingSectionText.trim();
+    if (!newName || newName === oldName) {
+      setEditingSectionKey(null);
+      return;
+    }
+    setEditingSectionKey(null);
+
     const items = itemsByChecklist[checklistId] ?? [];
-    const set = new Set(items.map((i) => (i as any).section).filter(Boolean) as string[]);
-    return Array.from(set).sort();
+    const sectionItems = items.filter((i) => (i as any).section === oldName);
+
+    // Optimistic update
+    setItemsByChecklist((prev) => ({
+      ...prev,
+      [checklistId]: (prev[checklistId] ?? []).map((i) =>
+        (i as any).section === oldName ? { ...i, section: newName } as any : i
+      ),
+    }));
+    setSectionOrders((prev) => ({
+      ...prev,
+      [checklistId]: (prev[checklistId] ?? []).map((s) => s === oldName ? newName : s),
+    }));
+
+    // Persist
+    for (const item of sectionItems) {
+      await (client.models.homeChecklistItem as any).update({
+        id: item.id,
+        section: newName,
+      });
+    }
+  }
+
+  async function deleteSection(checklistId: string, sectionName: string) {
+    const items = itemsByChecklist[checklistId] ?? [];
+    const sectionItems = items.filter((i) => (i as any).section === sectionName);
+
+    // Move items to ungrouped (null section)
+    setItemsByChecklist((prev) => ({
+      ...prev,
+      [checklistId]: (prev[checklistId] ?? []).map((i) =>
+        (i as any).section === sectionName ? { ...i, section: null } as any : i
+      ),
+    }));
+    setSectionOrders((prev) => ({
+      ...prev,
+      [checklistId]: (prev[checklistId] ?? []).filter((s) => s !== sectionName),
+    }));
+
+    // Persist
+    for (const item of sectionItems) {
+      await (client.models.homeChecklistItem as any).update({
+        id: item.id,
+        section: null,
+      });
+    }
+  }
+
+  // ── Drag and Drop ──────────────────────────────────────────────────
+
+  function findItemById(id: string): { item: ChecklistItem; checklistId: string } | null {
+    for (const [clId, items] of Object.entries(itemsByChecklist)) {
+      const item = items.find((i) => i.id === id);
+      if (item) return { item, checklistId: clId };
+    }
+    return null;
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    const { active } = event;
+    const activeId = String(active.id);
+
+    if (activeId.startsWith("section:")) {
+      // Section drag — no overlay needed
+      setActiveItem(null);
+    } else {
+      const found = findItemById(activeId);
+      setActiveItem(found?.item ?? null);
+    }
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const { active, over } = event;
+    setActiveItem(null);
+
+    if (!over) return;
+
+    const activeId = String(active.id);
+    const overId = String(over.id);
+
+    if (activeId === overId) return;
+
+    // Section reordering
+    if (activeId.startsWith("section:") && overId.startsWith("section:")) {
+      handleSectionReorder(activeId, overId);
+      return;
+    }
+
+    // Item reordering
+    if (!activeId.startsWith("section:")) {
+      handleItemReorder(activeId, overId);
+    }
+  }
+
+  function handleSectionReorder(activeId: string, overId: string) {
+    // Format: section:checklistId:sectionName
+    const activeParts = activeId.split(":");
+    const overParts = overId.split(":");
+    const checklistId = activeParts[1];
+    const activeSectionId = activeParts.slice(2).join(":");
+    const overSectionId = overParts.slice(2).join(":");
+
+    if (activeSectionId === UNGROUPED || overSectionId === UNGROUPED) return;
+    if (activeParts[1] !== overParts[1]) return; // different checklists
+
+    setSectionOrders((prev) => {
+      const order = [...(prev[checklistId] ?? [])];
+      const fromIdx = order.indexOf(activeSectionId);
+      const toIdx = order.indexOf(overSectionId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      order.splice(fromIdx, 1);
+      order.splice(toIdx, 0, activeSectionId);
+
+      // Persist new sortOrder for items in reordered sections
+      persistSectionReorder(checklistId, order);
+
+      return { ...prev, [checklistId]: order };
+    });
+  }
+
+  async function persistSectionReorder(checklistId: string, order: string[]) {
+    const items = itemsByChecklist[checklistId] ?? [];
+    // Assign sortOrder so that sections appear in order:
+    // ungrouped items keep their relative order at the front,
+    // then each section's items in sequence
+    let sortCounter = 0;
+
+    // Ungrouped items first
+    const ungrouped = items.filter((i) => !(i as any).section).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    for (const item of ungrouped) {
+      if (item.sortOrder !== sortCounter) {
+        await (client.models.homeChecklistItem as any).update({ id: item.id, sortOrder: sortCounter });
+      }
+      sortCounter++;
+    }
+
+    // Then each section in order
+    for (const sec of order) {
+      const secItems = items.filter((i) => (i as any).section === sec).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+      for (const item of secItems) {
+        if (item.sortOrder !== sortCounter) {
+          await (client.models.homeChecklistItem as any).update({ id: item.id, sortOrder: sortCounter });
+        }
+        sortCounter++;
+      }
+    }
+  }
+
+  function handleItemReorder(activeId: string, overId: string) {
+    const activeData = findItemById(activeId);
+    if (!activeData) return;
+
+    const checklistId = activeData.checklistId;
+    const items = [...(itemsByChecklist[checklistId] ?? [])];
+
+    // Determine target section
+    let targetSection: string | null = null;
+    let targetIndex = -1;
+
+    if (overId.startsWith("section:")) {
+      // Dropped on a section header — add to end of that section
+      const overParts = overId.split(":");
+      const overSectionId = overParts.slice(2).join(":");
+      targetSection = overSectionId === UNGROUPED ? null : overSectionId;
+      const sameSection = items.filter((i) => ((i as any).section || null) === targetSection);
+      targetIndex = sameSection.length; // end of section
+    } else {
+      // Dropped on an item
+      const overItem = items.find((i) => i.id === overId);
+      if (!overItem) return;
+      targetSection = (overItem as any).section || null;
+      const sameSection = items.filter((i) => ((i as any).section || null) === targetSection);
+      targetIndex = sameSection.findIndex((i) => i.id === overId);
+    }
+
+    const activeItem = items.find((i) => i.id === activeId)!;
+    const oldSection = (activeItem as any).section || null;
+
+    // Remove active item from list
+    const filteredItems = items.filter((i) => i.id !== activeId);
+
+    // Build new item with updated section
+    const updatedItem = { ...activeItem, section: targetSection } as any;
+
+    // Get items in target section (without the active item)
+    const targetItems = filteredItems.filter((i) => ((i as any).section || null) === targetSection);
+
+    // Insert at the right position
+    const insertIdx = Math.min(targetIndex, targetItems.length);
+    targetItems.splice(insertIdx, 0, updatedItem);
+
+    // Rebuild complete items array preserving order
+    const newItems: ChecklistItem[] = [];
+    const otherItems = filteredItems.filter((i) => ((i as any).section || null) !== targetSection);
+
+    // Determine final order: ungrouped, then sections in order
+    const order = sectionOrders[checklistId] ?? [];
+    const allSections = [null, ...order.map((s) => s as string | null)];
+
+    // Also add sections not in order
+    for (const i of [...otherItems, ...targetItems]) {
+      const sec = (i as any).section || null;
+      if (sec && !allSections.includes(sec)) allSections.push(sec);
+    }
+
+    let sortCounter = 0;
+    const updates: { id: string; sortOrder: number; section?: string | null }[] = [];
+
+    for (const sec of allSections) {
+      const secItems = sec === targetSection
+        ? targetItems
+        : filteredItems.filter((i) => ((i as any).section || null) === sec);
+
+      for (const item of secItems) {
+        const newSortOrder = sortCounter++;
+        newItems.push({ ...item, sortOrder: newSortOrder } as any);
+
+        const needsSortUpdate = item.sortOrder !== newSortOrder;
+        const needsSectionUpdate = item.id === activeId && oldSection !== targetSection;
+
+        if (needsSortUpdate || needsSectionUpdate) {
+          const update: any = { id: item.id, sortOrder: newSortOrder };
+          if (needsSectionUpdate) update.section = targetSection;
+          updates.push(update);
+        }
+      }
+    }
+
+    // Optimistic update
+    setItemsByChecklist((prev) => ({
+      ...prev,
+      [checklistId]: newItems,
+    }));
+
+    // Persist in background
+    (async () => {
+      for (const update of updates) {
+        await (client.models.homeChecklistItem as any).update(update);
+      }
+    })();
   }
 
   // ── Render ─────────────────────────────────────────────────────────
@@ -290,7 +889,6 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       <div className="flex items-center justify-between mb-2">
         <p className="text-sm font-medium">Checklists</p>
         <div className="flex gap-1">
-          {/* From template button */}
           {entityType !== "TEMPLATE" && templates.length > 0 && (
             <Button
               size="sm"
@@ -367,10 +965,43 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       <div className="space-y-3">
         {checklists.map((cl) => {
           const items = itemsByChecklist[cl.id] ?? [];
-          const groups = groupBySection(items);
+          const order = sectionOrders[cl.id] ?? [];
+          const groups = buildSectionGroups(items, order);
+
+          // Also add empty sections from sectionOrders that have no items
+          const existingSectionIds = new Set(groups.map((g) => g.sectionId));
+          for (const secName of order) {
+            if (!existingSectionIds.has(secName)) {
+              // Find insertion position based on order
+              const idx = order.indexOf(secName);
+              // Insert after ungrouped + however many ordered sections come before this one
+              const insertAt = (groups[0]?.sectionId === UNGROUPED ? 1 : 0) +
+                order.slice(0, idx).filter((s) => existingSectionIds.has(s)).length;
+              groups.splice(insertAt, 0, {
+                sectionId: secName,
+                sectionName: secName,
+                items: [],
+                sortOrder: idx,
+              });
+              existingSectionIds.add(secName);
+            }
+          }
+
+          // If there are no ungrouped items, still show ungrouped section for adding items
+          if (!existingSectionIds.has(UNGROUPED)) {
+            groups.unshift({
+              sectionId: UNGROUPED,
+              sectionName: "Ungrouped",
+              items: [],
+              sortOrder: -1,
+            });
+          }
+
           const isEditingName = editingChecklistId === cl.id;
           const doneCount = items.filter((i) => i.isDone).length;
-          const sections = sectionsForChecklist(cl.id);
+
+          const sectionIds = groups.map((g) => `section:${cl.id}:${g.sectionId}`);
+          const allItemIds = groups.flatMap((g) => g.items.map((i) => i.id));
 
           return (
             <div key={cl.id} className="border border-default-200 rounded-md p-3 bg-default-50">
@@ -410,75 +1041,96 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                 )}
               </div>
 
-              {/* Items grouped by section */}
-              {groups.map((group) => (
-                <div key={group.section ?? "__none__"} className="mb-2">
-                  {group.section && (
-                    <p className="text-xs font-semibold text-default-500 uppercase tracking-wider mt-2 mb-1">
-                      {group.section}
-                    </p>
-                  )}
-                  <div className="space-y-0.5">
-                    {group.items.map((item) => {
-                      const isEditingItem = editingItemId === item.id;
-                      return (
-                        <div key={item.id} className="flex items-center gap-2 py-1 border-b border-default-100 last:border-0">
-                          <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={() => toggleItem(item)} />
-                          {isEditingItem ? (
-                            <form onSubmit={(e) => { e.preventDefault(); renameItem(item.id); }} className="flex gap-1 flex-1">
-                              <Input size="sm" value={editingItemText} onValueChange={setEditingItemText} autoFocus />
-                              <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={8} /></Button>
-                              <Button size="sm" isIconOnly variant="light" onPress={() => setEditingItemId(null)}><FaTimes size={8} /></Button>
-                            </form>
-                          ) : (
-                            <>
-                              <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>
-                                {item.text}
-                              </span>
-                              <Button size="sm" isIconOnly variant="light" onPress={() => { setEditingItemId(item.id); setEditingItemText(item.text); }}>
-                                <FaPen size={8} />
-                              </Button>
-                              <Button size="sm" isIconOnly variant="light" color="danger" onPress={() => deleteItem(item.id)}>
-                                <FaTrash size={8} />
-                              </Button>
-                            </>
-                          )}
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-
-              {/* Add item input with optional section */}
-              <form
-                onSubmit={(e) => { e.preventDefault(); addItem(cl.id); }}
-                className="flex gap-2 mt-2"
+              {/* Sections with DnD */}
+              <DndContext
+                sensors={sensors}
+                collisionDetection={closestCenter}
+                onDragStart={handleDragStart}
+                onDragEnd={handleDragEnd}
               >
-                <Input
+                <SortableContext items={[...sectionIds, ...allItemIds]} strategy={verticalListSortingStrategy}>
+                  {groups.map((group) => {
+                    const sectionKey = `${cl.id}:${group.sectionId}`;
+                    const isCollapsed = collapsedSections.has(sectionKey);
+                    const addItemKey = `${cl.id}:${group.sectionId}`;
+                    const sectionForItem = group.sectionId === UNGROUPED ? null : group.sectionId;
+
+                    return (
+                      <SortableSection
+                        key={group.sectionId}
+                        group={group}
+                        checklistId={cl.id}
+                        isCollapsed={isCollapsed}
+                        onToggleCollapse={() => {
+                          setCollapsedSections((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(sectionKey)) next.delete(sectionKey);
+                            else next.add(sectionKey);
+                            return next;
+                          });
+                        }}
+                        editingSectionName={editingSectionKey === sectionKey ? group.sectionId : null}
+                        editingSectionText={editingSectionText}
+                        onStartRenameSection={() => {
+                          setEditingSectionKey(sectionKey);
+                          setEditingSectionText(group.sectionName);
+                        }}
+                        onRenameSectionTextChange={setEditingSectionText}
+                        onSaveRenameSection={() => renameSection(cl.id, group.sectionId)}
+                        onCancelRenameSection={() => setEditingSectionKey(null)}
+                        onDeleteSection={() => deleteSection(cl.id, group.sectionId)}
+                        editingItemId={editingItemId}
+                        editingItemText={editingItemText}
+                        onToggleItem={(item) => toggleItem(item)}
+                        onStartEditItem={(id, text) => { setEditingItemId(id); setEditingItemText(text); }}
+                        onEditItemTextChange={setEditingItemText}
+                        onSaveEditItem={(id) => renameItem(id)}
+                        onCancelEditItem={() => setEditingItemId(null)}
+                        onDeleteItem={(id) => deleteItem(id)}
+                        addItemText={newItemText[addItemKey] ?? ""}
+                        onAddItemTextChange={(v) => setNewItemText((prev) => ({ ...prev, [addItemKey]: v }))}
+                        onAddItem={() => addItem(cl.id, sectionForItem)}
+                      />
+                    );
+                  })}
+                </SortableContext>
+
+                <DragOverlay>
+                  {activeItem ? <DragOverlayItem item={activeItem} /> : null}
+                </DragOverlay>
+              </DndContext>
+
+              {/* Add section */}
+              {addingSectionForChecklist === cl.id ? (
+                <form
+                  onSubmit={(e) => { e.preventDefault(); createSection(cl.id); }}
+                  className="flex gap-2 mt-2"
+                >
+                  <Input
+                    size="sm"
+                    placeholder="Section name..."
+                    value={newSectionName}
+                    onValueChange={setNewSectionName}
+                    autoFocus
+                  />
+                  <Button size="sm" type="submit" color="primary" variant="flat" isIconOnly>
+                    <FaCheck size={10} />
+                  </Button>
+                  <Button size="sm" variant="light" isIconOnly onPress={() => { setAddingSectionForChecklist(null); setNewSectionName(""); }}>
+                    <FaTimes size={10} />
+                  </Button>
+                </form>
+              ) : (
+                <Button
                   size="sm"
-                  placeholder="Add item..."
-                  value={newItemText[cl.id] ?? ""}
-                  onValueChange={(v) => setNewItemText((prev) => ({ ...prev, [cl.id]: v }))}
-                  className="flex-1"
-                />
-                <Input
-                  size="sm"
-                  placeholder="Section (optional)"
-                  value={newItemSection[cl.id] ?? ""}
-                  onValueChange={(v) => setNewItemSection((prev) => ({ ...prev, [cl.id]: v }))}
-                  className="max-w-[140px]"
-                  list={`sections-${cl.id}`}
-                />
-                {sections.length > 0 && (
-                  <datalist id={`sections-${cl.id}`}>
-                    {sections.map((s) => <option key={s} value={s} />)}
-                  </datalist>
-                )}
-                <Button size="sm" type="submit" isIconOnly color="primary" variant="flat">
-                  <FaPlus size={10} />
+                  variant="light"
+                  startContent={<FaPlus size={10} />}
+                  className="mt-1"
+                  onPress={() => { setAddingSectionForChecklist(cl.id); setNewSectionName(""); }}
+                >
+                  Add section
                 </Button>
-              </form>
+              )}
             </div>
           );
         })}
