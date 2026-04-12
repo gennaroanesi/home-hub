@@ -2202,7 +2202,7 @@ async function executeTool(
       const documentId = input.documentId as string;
       const senderName = input.senderName as string;
       const channelForLog: "WA" | "WEB" =
-        ctx.chatContext.channel === "WEB" ? "WEB" : "WA";
+        ctx.chatContext?.channel === "WEB" ? "WEB" : "WA";
 
       // 1. Fetch the document
       const { data: doc } = await client.models.homeDocument.get({ id: documentId });
@@ -2289,7 +2289,7 @@ async function executeTool(
       // 4. Write pending challenge row BEFORE the push (audit trail if
       //    the Lambda dies mid-push).
       const conversationKey =
-        ctx.chatContext.chatJid != null
+        ctx.chatContext?.chatJid != null
           ? `wa:${ctx.chatContext.chatJid}`
           : `web:${requester.id}:${Date.now()}`;
       const challengeExpiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
