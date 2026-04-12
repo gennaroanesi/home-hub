@@ -501,6 +501,11 @@ const schema = a
         message: a.string().required(),
         history: a.json(),
         sender: a.string(),
+        // S3 object keys (under home/agent-uploads/) for images the user
+        // attached to this turn. The agent Lambda fetches each one,
+        // base64-encodes it, and sends it as an image content block to
+        // Claude alongside the text message. Optional.
+        imageS3Keys: a.string().array(),
       })
       .returns(a.ref("homeAgentResponse"))
       .handler(a.handler.function(homeAgent)),

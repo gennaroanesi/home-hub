@@ -5,6 +5,7 @@ import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { RRule } from "rrule";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
+import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { env } from "$amplify/env/home-agent";
 import type { Schema } from "../../data/resource";
 import {
@@ -15,6 +16,70 @@ import {
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
+const s3 = new S3Client({});
+
+// ── Image attachment helper ──────────────────────────────────────────────────
+// User-uploaded images live under home/agent-uploads/ in the photos bucket
+// (PHOTOS_BUCKET env var, set in backend.ts). The agent Lambda has
+// s3:GetObject scoped to that prefix only.
+
+type ImagePayload = { mediaType: string; data: string };
+
+function inferImageMediaType(s3Key: string): string {
+  const ext = s3Key.toLowerCase().split(".").pop() ?? "";
+  switch (ext) {
+    case "png":
+      return "image/png";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "jpg":
+    case "jpeg":
+    default:
+      return "image/jpeg";
+  }
+}
+
+async function fetchImageAsBase64(s3Key: string): Promise<ImagePayload> {
+  const bucket = process.env.PHOTOS_BUCKET;
+  if (!bucket) throw new Error("PHOTOS_BUCKET env var not set");
+
+  const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: s3Key }));
+  if (!res.Body) throw new Error(`Empty body for s3://${bucket}/${s3Key}`);
+
+  // Body is a Node Readable in Lambda — collect into a Buffer.
+  const chunks: Uint8Array[] = [];
+  for await (const chunk of res.Body as AsyncIterable<Uint8Array>) {
+    chunks.push(chunk);
+  }
+  const buf = Buffer.concat(chunks);
+
+  return {
+    mediaType: res.ContentType ?? inferImageMediaType(s3Key),
+    data: buf.toString("base64"),
+  };
+}
+
+// Build a Claude user message content array from optional images + text.
+// Returns the plain text string when there are no images, so the existing
+// no-image path stays byte-identical.
+function buildUserContent(
+  images: ImagePayload[],
+  text: string
+): string | Anthropic.ContentBlockParam[] {
+  if (images.length === 0) return text;
+  const blocks: Anthropic.ContentBlockParam[] = images.map((img) => ({
+    type: "image" as const,
+    source: {
+      type: "base64" as const,
+      media_type: img.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+      data: img.data,
+    },
+  }));
+  blocks.push({ type: "text" as const, text });
+  return blocks;
+}
 
 const MODEL_ID = "claude-sonnet-4-20250514";
 
@@ -1955,6 +2020,7 @@ interface AgentArgs {
   message: string;
   history?: any[];
   sender?: string;
+  imageS3Keys?: string[] | null;
 }
 
 interface AgentResponse {
@@ -1964,7 +2030,12 @@ interface AgentResponse {
 }
 
 export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (event) => {
-  const { message: userMessage, history: conversationHistory = [], sender = "unknown" } = event.arguments;
+  const {
+    message: userMessage,
+    history: conversationHistory = [],
+    sender = "unknown",
+    imageS3Keys = [],
+  } = event.arguments;
 
   const now = new Date();
   const people = await getPeople();
@@ -2008,17 +2079,76 @@ For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions,
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
   // Build messages for Anthropic API format
-  // History comes from AppSync as JSON — normalize to valid MessageParam[]
-  const validHistory: Anthropic.MessageParam[] = (conversationHistory ?? [])
-    .filter((m: any) => m && m.role && m.content)
-    .map((m: any) => ({
-      role: m.role as "user" | "assistant",
+  // History comes from AppSync as JSON — normalize to valid MessageParam[].
+  //
+  // Image rehydration: if a *user* history item carries attachments shaped
+  // like { type: "image", s3Key }, refetch the bytes and replay them as
+  // image content blocks so multi-turn image memory works. Assistant
+  // attachments come from send_photos (CloudFront URLs Claude never
+  // actually saw) and are intentionally NOT rehydrated.
+  //
+  // NOTE (phase 1): the agent chat client currently strips attachments
+  // when serializing history into the mutation payload, so this loop is
+  // a no-op until phase 2 wires the client to pass them through. When it
+  // does, rehydration will activate without further handler changes.
+  const rawHistory: any[] = Array.isArray(conversationHistory)
+    ? conversationHistory
+    : typeof conversationHistory === "string"
+      ? (() => {
+          try {
+            return JSON.parse(conversationHistory);
+          } catch {
+            return [];
+          }
+        })()
+      : [];
+
+  const validHistory: Anthropic.MessageParam[] = [];
+  for (const m of rawHistory) {
+    if (!m || !m.role || m.content == null) continue;
+    const role = m.role as "user" | "assistant";
+
+    // Try image rehydration on user turns only.
+    if (role === "user" && Array.isArray(m.attachments) && m.attachments.length > 0) {
+      const imageKeys: string[] = m.attachments
+        .filter((a: any) => a && a.type === "image" && typeof a.s3Key === "string")
+        .map((a: any) => a.s3Key as string);
+
+      if (imageKeys.length > 0) {
+        const fetched: ImagePayload[] = [];
+        for (const key of imageKeys) {
+          try {
+            fetched.push(await fetchImageAsBase64(key));
+          } catch (err) {
+            console.warn(`[agent] Failed to rehydrate history image ${key}:`, err);
+          }
+        }
+        const text = typeof m.content === "string" ? m.content : String(m.content);
+        validHistory.push({ role, content: buildUserContent(fetched, text) });
+        continue;
+      }
+    }
+
+    validHistory.push({
+      role,
       content: typeof m.content === "string" ? m.content : String(m.content),
-    }));
+    });
+  }
+
+  // Fetch any newly-attached images for the current user turn.
+  const currentImages: ImagePayload[] = [];
+  for (const key of imageS3Keys ?? []) {
+    if (!key) continue;
+    try {
+      currentImages.push(await fetchImageAsBase64(key));
+    } catch (err) {
+      console.warn(`[agent] Failed to fetch user-uploaded image ${key}:`, err);
+    }
+  }
 
   const messages: Anthropic.MessageParam[] = [
     ...validHistory,
-    { role: "user" as const, content: userMessage },
+    { role: "user" as const, content: buildUserContent(currentImages, userMessage) },
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];

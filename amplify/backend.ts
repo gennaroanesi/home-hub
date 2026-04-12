@@ -125,6 +125,17 @@ const agentLambda = backend.homeAgent.resources.lambda as LambdaFunction;
 agentLambda.addEnvironment("SCHEDULER_LAMBDA_ARN", backend.homeScheduler.resources.lambda.functionArn);
 agentLambda.addEnvironment("SCHEDULER_ROLE_ARN", schedulerRole.roleArn);
 agentLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+// Bucket holding user-uploaded image attachments under home/agent-uploads/.
+// The agent handler downloads each key passed in via invokeHomeAgent's
+// imageS3Keys argument and forwards it to Claude as an image block.
+agentLambda.addEnvironment("PHOTOS_BUCKET", "cristinegennaro.com");
+agentLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:GetObject"],
+    resources: ["arn:aws:s3:::cristinegennaro.com/home/agent-uploads/*"],
+  })
+);
 
 // ── SNS topic for notifications ─────────────────────────────────────────────
 // Topic lives in the scheduler stack (same as the lambda that publishes to it)
