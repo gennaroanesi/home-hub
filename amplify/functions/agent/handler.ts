@@ -1166,6 +1166,84 @@ const tools: Anthropic.Tool[] = [
       required: ["challengeId", "txid"],
     },
   },
+  {
+    name: "manage_checklist",
+    description:
+      "Create, rename, or delete a checklist for an entity (trip, event, bill, document, task). Use to manage named checklists like 'packing list' or 'pre-departure checklist' on any entity.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["create", "rename", "delete"],
+        },
+        entityType: {
+          type: "string",
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "OTHER"],
+          description: "Required for create. The type of entity this checklist belongs to.",
+        },
+        entityId: {
+          type: "string",
+          description: "Required for create. The ID of the entity this checklist belongs to.",
+        },
+        checklistId: {
+          type: "string",
+          description: "Required for rename/delete. The ID of the checklist.",
+        },
+        name: {
+          type: "string",
+          description: "Required for create/rename. The checklist name.",
+        },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "manage_checklist_items",
+    description:
+      "Add, toggle, rename, or remove items from a checklist. Use after creating a checklist with manage_checklist.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: {
+          type: "string",
+          enum: ["add", "toggle", "rename", "remove"],
+        },
+        checklistId: {
+          type: "string",
+          description: "The checklist to modify.",
+        },
+        itemId: {
+          type: "string",
+          description: "Required for toggle/rename/remove. The item ID.",
+        },
+        text: {
+          type: "string",
+          description: "Required for add/rename. The item text.",
+        },
+      },
+      required: ["action", "checklistId"],
+    },
+  },
+  {
+    name: "list_checklists",
+    description:
+      "List checklists and their items for a given entity (or all entities of a type). Returns checklist names, item texts, and done status.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        entityType: {
+          type: "string",
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "OTHER"],
+          description: "Optional. Filter by entity type.",
+        },
+        entityId: {
+          type: "string",
+          description: "Optional. If provided, returns checklists for this specific entity. If only entityType is given, returns all checklists of that type.",
+        },
+      },
+    },
+  },
 ];
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -3113,6 +3191,161 @@ async function executeTool(
         });
         return JSON.stringify({ status: "ERROR", reason: msg });
       }
+    }
+
+    // ── Checklist tools ─────────────────────────────────────────────────
+
+    case "manage_checklist": {
+      const { action } = input;
+
+      if (action === "create") {
+        if (!input.entityType || !input.entityId || !input.name) {
+          return JSON.stringify({ error: "entityType, entityId, and name are required for create" });
+        }
+        const { data, errors } = await client.models.homeChecklist.create({
+          entityType: input.entityType,
+          entityId: input.entityId,
+          name: input.name,
+          sortOrder: 0,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, checklistId: data?.id, name: input.name });
+      }
+
+      if (action === "rename") {
+        if (!input.checklistId || !input.name) {
+          return JSON.stringify({ error: "checklistId and name are required for rename" });
+        }
+        const { data, errors } = await client.models.homeChecklist.update({
+          id: input.checklistId,
+          name: input.name,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, checklistId: data?.id, name: input.name });
+      }
+
+      if (action === "delete") {
+        if (!input.checklistId) {
+          return JSON.stringify({ error: "checklistId is required for delete" });
+        }
+        // Cascade-delete items first
+        const { data: items } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
+          { checklistId: input.checklistId },
+        );
+        let itemsDeleted = 0;
+        for (const item of items ?? []) {
+          await client.models.homeChecklistItem.delete({ id: item.id });
+          itemsDeleted++;
+        }
+        const { errors } = await client.models.homeChecklist.delete({ id: input.checklistId });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, checklistId: input.checklistId, itemsDeleted });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }
+
+    case "manage_checklist_items": {
+      const { action, checklistId } = input;
+
+      if (action === "add") {
+        if (!input.text) {
+          return JSON.stringify({ error: "text is required for add" });
+        }
+        const { data, errors } = await client.models.homeChecklistItem.create({
+          checklistId,
+          text: input.text,
+          isDone: false,
+          sortOrder: 0,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, itemId: data?.id, text: input.text });
+      }
+
+      if (action === "toggle") {
+        if (!input.itemId) {
+          return JSON.stringify({ error: "itemId is required for toggle" });
+        }
+        const { data: item } = await client.models.homeChecklistItem.get({ id: input.itemId });
+        if (!item) return JSON.stringify({ error: "Item not found" });
+        const nowDone = !item.isDone;
+        const { data, errors } = await client.models.homeChecklistItem.update({
+          id: input.itemId,
+          isDone: nowDone,
+          doneAt: nowDone ? new Date().toISOString() : null,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, itemId: data?.id, isDone: nowDone, text: item.text });
+      }
+
+      if (action === "rename") {
+        if (!input.itemId || !input.text) {
+          return JSON.stringify({ error: "itemId and text are required for rename" });
+        }
+        const { data, errors } = await client.models.homeChecklistItem.update({
+          id: input.itemId,
+          text: input.text,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, itemId: data?.id, text: input.text });
+      }
+
+      if (action === "remove") {
+        if (!input.itemId) {
+          return JSON.stringify({ error: "itemId is required for remove" });
+        }
+        const { errors } = await client.models.homeChecklistItem.delete({ id: input.itemId });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, itemId: input.itemId });
+      }
+
+      return JSON.stringify({ error: `Unknown action: ${action}` });
+    }
+
+    case "list_checklists": {
+      let checklists: Schema["homeChecklist"]["type"][];
+
+      if (input.entityId) {
+        const { data } = await client.models.homeChecklist.listhomeChecklistByEntityId(
+          { entityId: input.entityId },
+        );
+        checklists = data ?? [];
+      } else if (input.entityType) {
+        const { data } = await client.models.homeChecklist.listhomeChecklistByEntityType(
+          { entityType: input.entityType },
+        );
+        checklists = data ?? [];
+      } else {
+        const { data } = await client.models.homeChecklist.list();
+        checklists = data ?? [];
+      }
+
+      // Fetch items for each checklist
+      const results = await Promise.all(
+        checklists.map(async (cl) => {
+          const { data: items } = await client.models.homeChecklistItem.listhomeChecklistItemByChecklistId(
+            { checklistId: cl.id },
+          );
+          const sortedItems = (items ?? []).sort(
+            (a: Schema["homeChecklistItem"]["type"], b: Schema["homeChecklistItem"]["type"]) =>
+              (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+          );
+          return {
+            id: cl.id,
+            entityType: cl.entityType,
+            entityId: cl.entityId,
+            name: cl.name,
+            items: sortedItems.map((i: Schema["homeChecklistItem"]["type"]) => ({
+              id: i.id,
+              text: i.text,
+              isDone: i.isDone,
+              doneAt: i.doneAt,
+            })),
+          };
+        })
+      );
+
+      return JSON.stringify({ checklists: results });
     }
 
     default:

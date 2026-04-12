@@ -543,6 +543,44 @@ const schema = a
       .secondaryIndexes((index) => [index("listId")])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Checklist ──────────────────────────────────────────────────────────
+    // Generic checklist that attaches to any entity via entityType + entityId.
+    // An entity can have multiple checklists (e.g. a trip might have
+    // "packing list" and "pre-departure checklist").
+    homeChecklist: a
+      .model({
+        entityType: a.enum([
+          "TRIP",
+          "EVENT",
+          "BILL",
+          "DOCUMENT",
+          "TASK",
+          "OTHER",
+        ]),
+        entityId: a.id().required(),
+        name: a.string().required(),
+        sortOrder: a.integer().default(0),
+        items: a.hasMany("homeChecklistItem", "checklistId"),
+      })
+      .secondaryIndexes((index) => [
+        index("entityType"),
+        index("entityId"),
+      ])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Checklist Item ─────────────────────────────────────────────────────
+    homeChecklistItem: a
+      .model({
+        checklistId: a.id().required(),
+        checklist: a.belongsTo("homeChecklist", "checklistId"),
+        text: a.string().required(),
+        isDone: a.boolean().default(false),
+        doneAt: a.datetime(),
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("checklistId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
     // ── Outbound Message ─────────────────────────────────────────────────
     // Generic delivery queue. Anything that needs to notify the household
     // (daily summaries, reminders, ad-hoc alerts) writes a row here; the

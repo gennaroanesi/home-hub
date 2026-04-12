@@ -30,6 +30,7 @@ import {
 
 import DefaultLayout from "@/layouts/default";
 import { Markdown } from "@/components/markdown";
+import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -916,6 +917,9 @@ export default function DocumentsPage() {
                         </div>
                       </Tooltip>
                     </div>
+                  )}
+                  {detailDoc.id && (
+                    <ChecklistPanel entityType="DOCUMENT" entityId={detailDoc.id} />
                   )}
                 </ModalBody>
                 <ModalFooter className="justify-between">

@@ -10,6 +10,7 @@ import { addToast } from "@heroui/react";
 import { FaPlus, FaTrash, FaCalendarPlus } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
+import { ChecklistPanel } from "@/components/checklist-panel";
 import { FreeCombobox } from "@/components/free-combobox";
 import { PhotoUploader } from "@/components/photo-uploader";
 import { PhotoGrid } from "@/components/photo-grid";
@@ -674,6 +675,11 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
           onPhotosChanged={onPhotosChanged}
           onUploadingChange={onUploadingChange}
         />
+      )}
+
+      {/* ── Checklists (only available once the trip is saved) ────────── */}
+      {form.id && (
+        <ChecklistPanel entityType="TRIP" entityId={form.id} />
       )}
     </div>
   );
