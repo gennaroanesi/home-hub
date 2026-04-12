@@ -126,7 +126,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     setNewChecklistName("");
     setShowNewChecklist(false);
     await client.models.homeChecklist.create({
-      entityType,
+      entityType: entityType as any,
       entityId,
       name,
       sortOrder: checklists.length,
@@ -162,7 +162,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     const eType = targetEntityType ?? entityType;
     const eId = targetEntityId ?? entityId;
     const { data: newCl } = await client.models.homeChecklist.create({
-      entityType: eType,
+      entityType: eType as any,
       entityId: eId,
       name: source.name,
       sortOrder: checklists.length,
@@ -174,7 +174,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       { checklistId: source.id },
     );
     for (const item of (sourceItems ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
-      await client.models.homeChecklistItem.create({
+      await (client.models.homeChecklistItem as any).create({
         checklistId: newCl.id,
         text: item.text,
         section: (item as any).section,
@@ -201,7 +201,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     const section = (newItemSection[checklistId] ?? "").trim() || null;
     setNewItemText((prev) => ({ ...prev, [checklistId]: "" }));
     const existing = itemsByChecklist[checklistId] ?? [];
-    await client.models.homeChecklistItem.create({
+    await (client.models.homeChecklistItem as any).create({
       checklistId,
       text,
       section,
