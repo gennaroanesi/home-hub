@@ -12,12 +12,7 @@
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { preauth, pushAuth } from "@/lib/duo-server";
-
-const BUCKET = "cristinegennaro.com";
-const s3 = new S3Client({ region: "us-east-1" });
 
 export default async function handler(
   req: NextApiRequest,
@@ -60,29 +55,15 @@ export default async function handler(
     // (it needs cookies() from next/headers which is App Router only),
     // we'll accept the document's s3Key and originalFilename from the
     // client and verify the key prefix for safety.
-    const { s3Key, originalFilename, documentNumber } = req.body;
+    const { s3Key, documentNumber } = req.body;
 
     if (s3Key) {
-      // Validate the key is under our documents prefix
       if (!s3Key.startsWith("home/documents/")) {
         return res.status(400).json({ error: "Invalid document path" });
       }
-
-      const safeFilename = (originalFilename || "document").replace(
-        /[^a-zA-Z0-9._-]/g,
-        "_"
-      );
-      const cmd = new GetObjectCommand({
-        Bucket: BUCKET,
-        Key: s3Key,
-        ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
-      });
-      const url = await getSignedUrl(s3, cmd, { expiresIn: 30 * 60 });
-      const expiresAt = new Date(
-        Date.now() + 30 * 60 * 1000
-      ).toISOString();
-
-      return res.status(200).json({ url, expiresAt });
+      const docFilename = s3Key.replace("home/documents/", "");
+      const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
+      return res.status(200).json({ url });
     }
 
     if (documentNumber) {

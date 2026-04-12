@@ -6,7 +6,10 @@ import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtim
 import { RRule } from "rrule";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+// Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
+// direct S3 public paths (bucket allows public reads on home/*, UUID is
+// the unguessability gate). A future session should restrict home/documents/
+// to private access and add a short-redirect endpoint.
 import { env } from "$amplify/env/home-agent";
 import type { Schema } from "../../data/resource";
 import {
@@ -2420,28 +2423,22 @@ async function executeTool(
         result: "SUCCESS",
       });
 
-      // 7. Build payload — either a presigned URL (file-backed) or the
+      // 7. Build payload — either a CloudFront URL (file-backed) or the
       //    raw documentNumber (metadata-only entries like Global Entry).
+      //    CloudFront serves the entire S3 bucket; the UUID in the key is
+      //    the effective unguessability gate (same security model as photos).
       let dmText = "";
       let deliveryKind: "file" | "number" = "number";
       if (doc.s3Key) {
-        const bucket = process.env.PHOTOS_BUCKET;
-        if (!bucket) {
-          return JSON.stringify({
-            status: "ERROR",
-            reason: "PHOTOS_BUCKET env var not set",
-          });
-        }
-        const filename = doc.originalFilename ?? `${doc.title ?? "document"}`;
-        // Quote-escape the filename for the Content-Disposition header.
-        const safeFilename = filename.replace(/"/g, "");
-        const getCmd = new GetObjectCommand({
-          Bucket: bucket,
-          Key: doc.s3Key,
-          ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
-        });
-        const url = await getSignedUrl(s3, getCmd, { expiresIn: 30 * 60 });
-        dmText = `Here's your document: ${doc.title}\n${url}\n(Link expires in 30 minutes.)`;
+        // Direct S3 URL — the bucket allows public reads on home/* and
+        // the UUID in the key is the unguessability gate (same model as
+        // photos). Presigned URLs failed due to bucket policy conflicts.
+        // Short URL via /api/d/[key] redirector — keeps WA links under
+        // ~80 chars so iOS doesn't truncate them. The redirector maps
+        // the filename back to home/documents/{key} and 302s to S3.
+        const docFilename = doc.s3Key.replace("home/documents/", "");
+        const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
+        dmText = `Here's your document: ${doc.title}\n${url}`;
         deliveryKind = "file";
       } else if (doc.documentNumber) {
         dmText = `${doc.title}: ${doc.documentNumber}`;
@@ -2581,19 +2578,12 @@ async function executeTool(
       let dmText = "";
       let deliveryKind: "file" | "number" = "number";
       if (doc.s3Key) {
-        const bucket = process.env.PHOTOS_BUCKET;
-        if (!bucket) {
-          return JSON.stringify({ status: "ERROR", reason: "PHOTOS_BUCKET env var not set" });
-        }
-        const filename = doc.originalFilename ?? `${doc.title ?? "document"}`;
-        const safeFilename = filename.replace(/"/g, "");
-        const getCmd = new GetObjectCommand({
-          Bucket: bucket,
-          Key: doc.s3Key,
-          ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
-        });
-        const url = await getSignedUrl(s3, getCmd, { expiresIn: 30 * 60 });
-        dmText = `Here's your document: ${doc.title}\n${url}\n(Link expires in 30 minutes.)`;
+        // Short URL via /api/d/[key] redirector — keeps WA links under
+        // ~80 chars so iOS doesn't truncate them. The redirector maps
+        // the filename back to home/documents/{key} and 302s to S3.
+        const docFilename = doc.s3Key.replace("home/documents/", "");
+        const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
+        dmText = `Here's your document: ${doc.title}\n${url}`;
         deliveryKind = "file";
       } else if (doc.documentNumber) {
         dmText = `${doc.title}: ${doc.documentNumber}`;
