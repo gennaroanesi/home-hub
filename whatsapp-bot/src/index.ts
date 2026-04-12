@@ -203,6 +203,18 @@ async function startBot() {
   const { version, isLatest } = await fetchLatestWaWebVersion({});
   logger.info({ version, isLatest }, "Using WA Web version");
 
+  // getMessage is required for Baileys to handle message retries on
+  // linked devices. Without it, DMs (and sometimes group messages) fail
+  // to decrypt on retry and are silently dropped — messages.upsert never
+  // fires. The callback should return the original message content for a
+  // given key; returning undefined is safe (Baileys treats it as "message
+  // not found, skip retry") but providing it enables proper delivery.
+  // For now we return undefined since we don't persist raw WA messages;
+  // this is enough to unblock the retry protocol handshake.
+  const getMessage = async (_key: any): Promise<any> => {
+    return undefined;
+  };
+
   const socket = makeWASocket({
     version,
     auth: {
@@ -211,6 +223,7 @@ async function startBot() {
     },
     logger,
     printQRInTerminal: true,
+    getMessage,
   });
 
   // Bot's own identifiers (set on connection open). WhatsApp groups now use
