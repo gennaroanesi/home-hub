@@ -82,12 +82,14 @@ backend:
             aws s3 cp "/tmp/${TAR_NAME}" "s3://${ARTIFACTS_BUCKET}/${S3_KEY}"
 
             echo "Starting CodeBuild project ${BUILD_PROJECT} for commit ${COMMIT_SHA:0:7}"
+            # Note: --no-cli-pager is a CLI v2 flag; Amplify's build image
+            # ships with CLI v1 which rejects it with "Unknown options". Leave
+            # it out — we capture the output via --query so no pager kicks in.
             aws codebuild start-build \
               --project-name "${BUILD_PROJECT}" \
               --source-location-override "${ARTIFACTS_BUCKET}/${S3_KEY}" \
               --environment-variables-override "name=COMMIT_SHA,value=${COMMIT_SHA},type=PLAINTEXT" \
-              --no-cli-pager \
-              --query 'build.id' --output text || echo "Warning: failed to start CodeBuild — check Amplify build role permissions"
+              --query 'build.id' --output text || echo "Warning: failed to start CodeBuild — check Amplify build log for CLI error"
           ) || true
 frontend:
   phases:
