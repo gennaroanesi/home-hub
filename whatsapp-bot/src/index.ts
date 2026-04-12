@@ -325,6 +325,18 @@ async function startBot() {
       // Plain conversation message (no extended text, no image).
       const plainText = msg.message?.conversation;
 
+      if (isDm) {
+        // Log the message type for DM debugging. This helps diagnose when
+        // a message arrives as an unexpected type and gets dropped.
+        const msgTypes = Object.keys(msg.message ?? {}).filter(
+          (k) => k !== "messageContextInfo" && k !== "senderKeyDistributionMessage"
+        );
+        logger.info(
+          { chatJid, isDm, dmSenderName, msgTypes, hasExtText: !!extText, hasImage: !!imageMsg, hasPlain: !!plainText },
+          "DM message received"
+        );
+      }
+
       // Only one will be set in practice. Prefer imageMessage when both are
       // present (WA uses imageMessage for "photo + caption" messages; the
       // text payload lives on the image block, not on a sibling text block).
@@ -336,20 +348,33 @@ async function startBot() {
             ? { text: plainText, contextInfo: undefined as any }
             : null;
 
-      if (!ext) continue;
+      if (!ext) {
+        if (isDm) {
+          logger.info({ chatJid, msgTypes: Object.keys(msg.message ?? {}) }, "DM message dropped — no extractable text");
+        }
+        continue;
+      }
 
       if (isGroup) {
         // Group messages require @mention OR reply-to-bot.
         const mentionedJid = ext.contextInfo?.mentionedJid ?? [];
         const isMention = mentionedJid.some((j: string) => botIds.has(j));
+        // contextInfo.participant is the JID of the author of the quoted
+        // message. WA may use @s.whatsapp.net or @lid form depending on
+        // the client and group settings. Check both, plus normalize the
+        // @lid form in case it differs from the bot's global LID.
         const quotedAuthor = ext.contextInfo?.participant ?? null;
         const isReplyToBot = !!(quotedAuthor && botIds.has(quotedAuthor));
 
         if (!isMention && !isReplyToBot) {
-          logger.info(
-            { chatJid, mentionedJid, quotedAuthor, botIds: [...botIds] },
-            "Group message ignored (not mentioned and not a reply to bot)"
-          );
+          // Only log if there was a quoted message (potential reply-to-bot
+          // that failed matching) — skip the log for plain group chatter.
+          if (quotedAuthor) {
+            logger.info(
+              { chatJid, quotedAuthor, botIds: Array.from(botIds) },
+              "Group reply ignored — quoted author not in botIds"
+            );
+          }
           continue;
         }
       }
