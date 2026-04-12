@@ -25,6 +25,7 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
+import { ChecklistPanel } from "@/components/checklist-panel";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
@@ -857,6 +858,9 @@ export default function CalendarPage() {
                       )) as any}
                     </>
                   </Select>
+                  {eventForm.id && (
+                    <ChecklistPanel entityType="EVENT" entityId={eventForm.id} />
+                  )}
                 </ModalBody>
                 <ModalFooter>
                   {eventForm.id && (

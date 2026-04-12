@@ -5,7 +5,7 @@ import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Spinner } from "@heroui/react";
-import { Progress } from "@heroui/progress";
+// Progress bar removed — ChecklistPanel handles its own display
 import { Link } from "@heroui/link";
 import NextLink from "next/link";
 import { FaCheckSquare } from "react-icons/fa";
@@ -77,7 +77,7 @@ export default function ChecklistsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
-  const [itemsByChecklist, setItemsByChecklist] = useState<Record<string, ChecklistItem[]>>({});
+  // Items are fetched by each ChecklistPanel instance — no page-level fetch needed.
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
@@ -100,22 +100,6 @@ export default function ChecklistsPage() {
       );
       const nonTemplate = allChecklists.filter((c) => (c.entityType as string) !== "TEMPLATE");
       setChecklists(nonTemplate);
-
-      // Load items for each checklist in parallel
-      const grouped: Record<string, ChecklistItem[]> = {};
-      await Promise.all(
-        nonTemplate.map(async (cl) => {
-          const { data } =
-            await client.models.homeChecklistItem.list({
-              filter: { checklistId: { eq: cl.id } },
-              limit: 500,
-            });
-          grouped[cl.id] = (data ?? []).sort(
-            (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0),
-          );
-        }),
-      );
-      setItemsByChecklist(grouped);
 
       // Resolve entity names
       const names: Record<string, string> = {};
@@ -198,127 +182,55 @@ export default function ChecklistsPage() {
             </p>
           ) : (
             <div className="space-y-8">
-              {grouped.map((group) => (
-                <div key={group.type}>
-                  <h3 className="text-xs text-default-400 uppercase tracking-wider mb-3">
-                    {group.label}
-                  </h3>
-                  <div className="space-y-3">
-                    {group.checklists.map((cl) => {
-                      const items = itemsByChecklist[cl.id] ?? [];
-                      const doneCount = items.filter((i) => i.isDone).length;
-                      const totalCount = items.length;
-                      const pct = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-                      const groups = groupBySection(items);
-                      const href = entityDetailHref(cl.entityType ?? "OTHER", cl.entityId);
-                      const eName = entityNames[cl.entityId] ?? cl.entityId;
+              {grouped.map((group) => {
+                // Deduplicate by entityId — ChecklistPanel renders all
+                // checklists for a given entity, so we only need one
+                // panel per unique entityId.
+                const seen = new Set<string>();
+                const uniqueEntities = group.checklists.filter((cl) => {
+                  if (seen.has(cl.entityId)) return false;
+                  seen.add(cl.entityId);
+                  return true;
+                });
 
-                      // Section summary
-                      const sectionCounts = groups
-                        .filter((g) => g.section)
-                        .map((g) => {
-                          const done = g.items.filter((i) => i.isDone).length;
-                          return `${g.section}: ${done}/${g.items.length}`;
-                        });
+                return (
+                  <div key={group.type}>
+                    <h3 className="text-xs text-default-400 uppercase tracking-wider mb-3">
+                      {group.label}
+                    </h3>
+                    <div className="space-y-4">
+                      {uniqueEntities.map((cl) => {
+                        const href = entityDetailHref(cl.entityType ?? "OTHER", cl.entityId);
+                        const eName = entityNames[cl.entityId] ?? cl.entityId;
 
-                      return (
-                        <div
-                          key={cl.id}
-                          className="border border-default-200 rounded-md p-4 bg-default-50"
-                        >
-                          {/* Header */}
-                          <div className="flex items-start justify-between gap-2 mb-2">
-                            <div className="min-w-0">
+                        return (
+                          <div key={cl.entityId} className="border border-default-200 rounded-md p-4 bg-default-50">
+                            <div className="mb-2">
                               {href ? (
                                 <Link
                                   as={NextLink}
                                   href={href}
-                                  className="text-sm font-medium text-primary truncate block"
+                                  className="text-sm font-medium text-primary"
                                 >
                                   {eName}
                                 </Link>
                               ) : (
-                                <p className="text-sm font-medium text-default-600 truncate">
+                                <p className="text-sm font-medium text-default-600">
                                   {eName}
                                 </p>
                               )}
-                              <p className="text-xs text-default-500">{cl.name}</p>
                             </div>
-                            <div className="text-xs text-default-400 whitespace-nowrap">
-                              {doneCount}/{totalCount} done
-                            </div>
-                          </div>
-
-                          {/* Progress bar */}
-                          {totalCount > 0 && (
-                            <Progress
-                              size="sm"
-                              value={pct}
-                              color={pct === 100 ? "success" : "primary"}
-                              className="mb-2"
-                              aria-label="Checklist progress"
+                            <ChecklistPanel
+                              entityType={cl.entityType as any ?? "OTHER"}
+                              entityId={cl.entityId}
                             />
-                          )}
-
-                          {/* Section summary */}
-                          {sectionCounts.length > 0 && (
-                            <p className="text-xs text-default-400 mb-2">
-                              {sectionCounts.join(" · ")}
-                            </p>
-                          )}
-
-                          {/* Expandable item list */}
-                          {totalCount > 0 && (
-                            <details className="mt-1">
-                              <summary className="text-xs text-default-400 cursor-pointer select-none hover:text-default-600">
-                                Show items ({totalCount})
-                              </summary>
-                              <div className="mt-2 space-y-2">
-                                {groups.map((g) => (
-                                  <div key={g.section ?? "__none__"}>
-                                    {g.section && (
-                                      <p className="text-xs font-semibold text-default-500 uppercase tracking-wider mb-1">
-                                        {g.section}
-                                      </p>
-                                    )}
-                                    <div className="space-y-0.5">
-                                      {g.items.map((item) => (
-                                        <div
-                                          key={item.id}
-                                          className="flex items-center gap-2 text-sm"
-                                        >
-                                          <span
-                                            className={
-                                              item.isDone
-                                                ? "text-success"
-                                                : "text-default-300"
-                                            }
-                                          >
-                                            {item.isDone ? "✓" : "○"}
-                                          </span>
-                                          <span
-                                            className={
-                                              item.isDone
-                                                ? "line-through text-default-400"
-                                                : ""
-                                            }
-                                          >
-                                            {item.text}
-                                          </span>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </details>
-                          )}
-                        </div>
-                      );
-                    })}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
