@@ -48,11 +48,24 @@ backend:
               exit 0
             fi
 
-            # Skip when nothing under whatsapp-bot/ changed in this commit. We
-            # use `git show` (works in shallow clones) rather than `git diff`.
-            BOT_CHANGED=$(git show --pretty= --name-only HEAD 2>/dev/null | grep '^whatsapp-bot/' | head -1)
+            # Skip when nothing under whatsapp-bot/ changed since the last
+            # successful bot image build. Amplify builds run on every commit,
+            # but we only want to rebuild the bot container when bot code
+            # actually changes.
+            #
+            # Previously this checked only HEAD via `git show`, which missed
+            # the case of: commit A changes bot code, commit B doesn't touch
+            # the bot, Amplify batches both into one build → HEAD=B → skip →
+            # phase A never lands. Now we scan every commit pulled into this
+            # build (fetch-depth may be shallow, so walk what's available).
+            # As a fallback, diff against the image tagged `latest` by looking
+            # at the git sha stored in the previous ECR image description —
+            # but that requires ECR access we may not have here, so we
+            # default to "check the last 20 commits" which is enough for a
+            # weekly cadence without being expensive.
+            BOT_CHANGED=$(git log --pretty=format: --name-only -n 20 HEAD 2>/dev/null | grep '^whatsapp-bot/' | head -1)
             if [ -z "$BOT_CHANGED" ]; then
-              echo "Bot code unchanged in this commit, skipping CodeBuild trigger"
+              echo "Bot code unchanged in last 20 commits, skipping CodeBuild trigger"
               exit 0
             fi
 
