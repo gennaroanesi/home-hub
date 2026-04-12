@@ -16,9 +16,11 @@ import {
   useDisclosure,
 } from "@heroui/modal";
 import { FaArrowLeft, FaPlus, FaImages } from "react-icons/fa";
+import { Spinner } from "@heroui/react";
 
 import DefaultLayout from "@/layouts/default";
 import { photoUrl } from "@/lib/image-loader";
+import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -52,18 +54,21 @@ export default function AlbumsPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [albumsRes, joinRes, photosRes] = await Promise.all([
-      client.models.homeAlbum.list({ limit: 500 }),
-      client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      client.models.homePhoto.list({ limit: 1000 }),
+    // Paginate every model — AppSync's 1 MB per-page cap silently truncated
+    // the album-join list for albums with many photos, so the counts shown
+    // here didn't match what the detail page actually rendered.
+    const [allAlbums, allJoins, allPhotos] = await Promise.all([
+      listAllPages<Album>(client.models.homeAlbum, { limit: 500 }),
+      listAllPages<AlbumPhoto>(client.models.homeAlbumPhoto, { limit: 1000 }),
+      listAllPages<Photo>(client.models.homePhoto, { limit: 1000 }),
     ]);
     setAlbums(
-      (albumsRes.data ?? []).sort(
+      allAlbums.sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
       )
     );
-    setAlbumPhotos(joinRes.data ?? []);
-    setPhotos(photosRes.data ?? []);
+    setAlbumPhotos(allJoins);
+    setPhotos(allPhotos);
     setLoading(false);
   }, []);
 
@@ -118,7 +123,10 @@ export default function AlbumsPage() {
             </Button>
             <h1 className="text-xl sm:text-2xl font-bold text-foreground truncate">Albums</h1>
             {loading && (
-              <span className="hidden sm:inline text-xs text-default-400 animate-pulse">Loading…</span>
+              <span className="hidden sm:inline-flex items-center gap-2 text-xs text-default-400">
+                <Spinner size="sm" />
+                <span>Loading albums…</span>
+              </span>
             )}
           </div>
           <Button size="sm" color="primary" startContent={<FaPlus size={12} />} onPress={openCreate}>

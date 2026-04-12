@@ -16,10 +16,12 @@ import {
   useDisclosure,
 } from "@heroui/modal";
 import { FaArrowLeft, FaTrash, FaPen, FaCheckSquare, FaTimes } from "react-icons/fa";
+import { Spinner } from "@heroui/react";
 
 import DefaultLayout from "@/layouts/default";
 import { PhotoGrid } from "@/components/photo-grid";
 import { PhotoUploader } from "@/components/photo-uploader";
+import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -73,27 +75,36 @@ export default function AlbumDetailPage() {
   const loadAll = useCallback(async () => {
     if (typeof id !== "string") return;
     setLoading(true);
+    // Paginate every listing — the album-join fetch was single-page before,
+    // which silently truncated any album large enough for the join rows to
+    // push past AppSync's 1 MB response cap. Symptom: the header said "74
+    // photos" but the grid only rendered 30.
     // Soft-fail homePhotoFace so the album page still loads when the model
     // isn't deployed yet (between schema bump and sandbox redeploy).
-    const [albumRes, joinRes, photosRes, tripsRes, peopleRes, facesRes] = await Promise.all([
+    const [albumRes, allJoins, allPhotos, allTrips, allPeople, allFaces] = await Promise.all([
       client.models.homeAlbum.get({ id }),
-      client.models.homeAlbumPhoto.list({ filter: { albumId: { eq: id } }, limit: 5000 }),
-      client.models.homePhoto.list({ limit: 1000 }),
-      client.models.homeTrip.list({ limit: 500 }),
-      client.models.homePerson.list({ limit: 100 }),
-      client.models.homePhotoFace
-        ?.list({ limit: 5000 })
-        .catch((err: unknown) => {
-          console.warn("homePhotoFace not available yet:", err);
-          return { data: [] as PhotoFace[] };
-        }) ?? Promise.resolve({ data: [] as PhotoFace[] }),
+      listAllPages<AlbumPhoto>(client.models.homeAlbumPhoto, {
+        filter: { albumId: { eq: id } },
+        limit: 1000,
+      }),
+      listAllPages<Photo>(client.models.homePhoto, { limit: 1000 }),
+      listAllPages<Trip>(client.models.homeTrip, { limit: 500 }),
+      listAllPages<Person>(client.models.homePerson, { limit: 100 }),
+      (client.models.homePhotoFace
+        ? listAllPages<PhotoFace>(client.models.homePhotoFace, { limit: 1000 })
+        : Promise.resolve([] as PhotoFace[])
+      ).catch((err: unknown) => {
+        console.warn("homePhotoFace not available yet:", err);
+        return [] as PhotoFace[];
+      }),
     ]);
+
     setAlbum(albumRes.data ?? null);
-    setAlbumPhotos(joinRes.data ?? []);
-    setPhotos(photosRes.data ?? []);
-    setTrips((tripsRes.data ?? []).sort((a, b) => b.startDate.localeCompare(a.startDate)));
-    setPeople((peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
-    setPhotoFaces(facesRes.data ?? []);
+    setAlbumPhotos(allJoins);
+    setPhotos(allPhotos);
+    setTrips(allTrips.sort((a, b) => b.startDate.localeCompare(a.startDate)));
+    setPeople(allPeople.sort((a, b) => a.name.localeCompare(b.name)));
+    setPhotoFaces(allFaces);
     setLoading(false);
   }, [id]);
 
@@ -212,7 +223,10 @@ export default function AlbumDetailPage() {
   if (loading) {
     return (
       <DefaultLayout>
-        <div className="max-w-6xl mx-auto px-4 py-10 text-center text-default-400">Loading…</div>
+        <div className="max-w-6xl mx-auto px-4 py-10 flex flex-col items-center justify-center gap-3 text-default-400">
+          <Spinner size="lg" />
+          <span className="text-sm">Loading album…</span>
+        </div>
       </DefaultLayout>
     );
   }
@@ -342,6 +356,7 @@ export default function AlbumDetailPage() {
 
         <PhotoGrid
           photos={albumPhotosList}
+          people={people}
           onDelete={selectionEnabled ? undefined : deletePhotoFromEverywhere}
           selectionEnabled={selectionEnabled}
           selectedIds={selectedIds}

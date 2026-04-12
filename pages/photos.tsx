@@ -16,10 +16,12 @@ import {
   useDisclosure,
 } from "@heroui/modal";
 import { FaArrowLeft, FaTrash, FaCheckSquare, FaTimes, FaFolderPlus, FaHeart, FaRegHeart } from "react-icons/fa";
+import { Spinner } from "@heroui/react";
 
 import DefaultLayout from "@/layouts/default";
 import { PhotoGrid } from "@/components/photo-grid";
 import { PhotoUploader } from "@/components/photo-uploader";
+import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -32,24 +34,6 @@ type PhotoFace = Schema["homePhotoFace"]["type"];
 
 const ALL = "all";
 const UNFILED = "unfiled";
-
-// Walk `nextToken` until the full model is loaded. Amplify's `.list` caps
-// a single request at 1 MB (AppSync DynamoDB resolver limit) regardless of
-// the `limit` you pass, so anything over a few hundred rows silently
-// truncates unless you paginate. We keep calling the fetcher with the
-// previous page's nextToken until it comes back null.
-async function listAllPages<T>(
-  fetcher: (nextToken: string | null) => Promise<{ data?: T[] | null; nextToken?: string | null }>
-): Promise<T[]> {
-  const collected: T[] = [];
-  let token: string | null = null;
-  do {
-    const res = await fetcher(token);
-    collected.push(...(res.data ?? []));
-    token = res.nextToken ?? null;
-  } while (token);
-  return collected;
-}
 
 // A date filter input that renders truly empty when cleared. HeroUI's
 // Input with type="date" and value="" shows today's date as a ghost
@@ -164,25 +148,16 @@ export default function PhotosPage() {
     // subset of what DynamoDB actually contains. Same story for the
     // join + face tables. The loop below follows nextToken until the
     // full model is loaded.
-    const allPhotos = await listAllPages(
-      (token) => client.models.homePhoto.list({ limit: 1000, nextToken: token })
-    );
-    const allAlbums = await listAllPages(
-      (token) => client.models.homeAlbum.list({ limit: 500, nextToken: token })
-    );
-    const allJoins = await listAllPages(
-      (token) => client.models.homeAlbumPhoto.list({ limit: 1000, nextToken: token })
-    );
-    const allPeople = await listAllPages(
-      (token) => client.models.homePerson.list({ limit: 100, nextToken: token })
-    );
+    const allPhotos = await listAllPages<Photo>(client.models.homePhoto, { limit: 1000 });
+    const allAlbums = await listAllPages<Album>(client.models.homeAlbum, { limit: 500 });
+    const allJoins = await listAllPages<AlbumPhoto>(client.models.homeAlbumPhoto, { limit: 1000 });
+    const allPeople = await listAllPages<Person>(client.models.homePerson, { limit: 100 });
     // homePhotoFace is loaded with a soft failure: when the model isn't
     // deployed yet (e.g. between schema bump and ampx sandbox redeploy),
     // we don't want it to take down the whole photos page.
-    const allFaces = await listAllPages<PhotoFace>(
-      (token) =>
-        (client.models.homePhotoFace?.list({ limit: 1000, nextToken: token }) ??
-          Promise.resolve({ data: [] as PhotoFace[], nextToken: null })) as any
+    const allFaces: PhotoFace[] = await (client.models.homePhotoFace
+      ? listAllPages<PhotoFace>(client.models.homePhotoFace, { limit: 1000 })
+      : Promise.resolve([] as PhotoFace[])
     ).catch((err) => {
       console.warn("homePhotoFace not available yet:", err);
       return [] as PhotoFace[];
@@ -365,7 +340,10 @@ export default function PhotosPage() {
             </Button>
             <h1 className="text-xl sm:text-2xl font-bold text-foreground truncate">Photos</h1>
             {loading && (
-              <span className="hidden sm:inline text-xs text-default-400 animate-pulse">Loading…</span>
+              <span className="hidden sm:inline-flex items-center gap-2 text-xs text-default-400">
+                <Spinner size="sm" />
+                <span>Loading photos…</span>
+              </span>
             )}
           </div>
           <Button
@@ -507,6 +485,7 @@ export default function PhotosPage() {
 
         <PhotoGrid
           photos={filtered}
+          people={people}
           onDelete={selectionEnabled ? undefined : deletePhoto}
           selectionEnabled={selectionEnabled}
           selectedIds={selectedIds}

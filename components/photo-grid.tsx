@@ -3,19 +3,29 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { FaCheck, FaHeart, FaRegHeart } from "react-icons/fa";
+import { Spinner } from "@heroui/react";
 import { photoUrl } from "@/lib/image-loader";
-import { PhotoModal } from "./photo-modal";
+import { PhotoModal, type PhotoModalPerson } from "./photo-modal";
 import type { Schema } from "@/amplify/data/resource";
 
 type Photo = Schema["homePhoto"]["type"];
 
 const Masonry = dynamic(() => import("masonic").then((m) => m.Masonry), {
   ssr: false,
-  loading: () => <p className="text-sm text-default-400">Loading…</p>,
+  loading: () => (
+    <div className="flex items-center justify-center gap-2 text-sm text-default-500 py-4">
+      <Spinner size="sm" />
+      <span>Loading photos…</span>
+    </div>
+  ),
 });
 
 interface PhotoGridProps {
   photos: Photo[];
+  // Passthrough for the photo-modal face-assign UI. The parent already
+  // loads the people list for its own filter, so we route the same array
+  // through here instead of having the modal re-fetch it every open.
+  people?: PhotoModalPerson[];
   onDelete?: (photo: Photo) => void;
   // How many photos to render initially and on each "load more" trigger.
   // Defaults to 24, which is enough for several screens of a 200-px column grid.
@@ -109,6 +119,7 @@ const PhotoCard = React.memo(function PhotoCard({ data, width }: PhotoCardProps)
 
 export function PhotoGrid({
   photos,
+  people,
   onDelete,
   pageSize = 24,
   selectionEnabled = false,
@@ -227,6 +238,7 @@ export function PhotoGrid({
       )}
       <PhotoModal
         photo={selected}
+        people={people}
         isOpen={!!selected}
         onClose={() => setSelected(null)}
         onDelete={
