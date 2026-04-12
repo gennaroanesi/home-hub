@@ -53,8 +53,18 @@ async function callAppSync<T = any>(query: string, variables: Record<string, any
 // ── Agent invocation ─────────────────────────────────────────────────────────
 
 const INVOKE_MUTATION = `
-  mutation InvokeHomeAgent($message: String!, $history: AWSJSON, $sender: String) {
-    invokeHomeAgent(message: $message, history: $history, sender: $sender) {
+  mutation InvokeHomeAgent(
+    $message: String!
+    $history: AWSJSON
+    $sender: String
+    $imageS3Keys: [String]
+  ) {
+    invokeHomeAgent(
+      message: $message
+      history: $history
+      sender: $sender
+      imageS3Keys: $imageS3Keys
+    ) {
       message
       actionsTaken {
         tool
@@ -81,15 +91,25 @@ interface AgentResponse {
   attachments?: AgentAttachment[];
 }
 
+export interface HistoryAttachment {
+  type: "image";
+  s3Key: string;
+}
+
 export interface HistoryMessage {
   role: "user" | "assistant";
   content: string;
+  // Only populated on user turns — image attachments forwarded in the
+  // current or prior turns so the agent handler can rehydrate bytes from
+  // S3 and replay them as image content blocks.
+  attachments?: HistoryAttachment[];
 }
 
 export async function invokeHomeAgent(
   message: string,
   sender: string,
-  history: HistoryMessage[] = []
+  history: HistoryMessage[] = [],
+  imageS3Keys?: string[]
 ): Promise<AgentResponse> {
   const data = await callAppSync<{ invokeHomeAgent: AgentResponse }>(INVOKE_MUTATION, {
     message,
@@ -97,6 +117,9 @@ export async function invokeHomeAgent(
     // The agent's `history` arg is AWSJSON — must be a serialized string,
     // not an object. AppSync rejects raw objects with a 400 otherwise.
     history: history.length ? JSON.stringify(history) : null,
+    // Omit the field entirely (null) when no images — keeps the mutation
+    // equivalent to the pre-phase-3 shape for text-only calls.
+    imageS3Keys: imageS3Keys && imageS3Keys.length > 0 ? imageS3Keys : null,
   });
   return data.invokeHomeAgent;
 }

@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^6.7.16",
-    "@aws-sdk/client-s3": "^3.782.0",
+    "@aws-sdk/client-s3": "^3.1028.0",
     "@aws-sdk/credential-provider-node": "^3.782.0",
     "@smithy/signature-v4": "^5.0.0",
     "@smithy/protocol-http": "^5.0.0",

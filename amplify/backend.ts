@@ -376,6 +376,10 @@ botTaskDef.addContainer("bot", {
     WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "REDACTED@g.us",
     QR_ACCESS_TOKEN: process.env.QR_ACCESS_TOKEN ?? "",
     AWS_REGION: "us-east-1",
+    // Bucket the bot writes agent image uploads to (phase 3). The agent
+    // Lambda reads from the same home/agent-uploads/ prefix on the other
+    // side of the pipeline.
+    PHOTOS_BUCKET: "cristinegennaro.com",
   },
 });
 
@@ -389,6 +393,16 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
   resources: ["arn:aws:s3:::cristinegennaro.com/whatsapp-bot/*"],
+}));
+
+// Phase 3: WA bot forwards user-sent images to the agent by uploading them
+// to the same home/agent-uploads/ prefix the web UI uploader uses. The
+// agent Lambda (read-only on this prefix) picks them up via imageS3Keys.
+// PutObject only — the bot never reads or deletes from this prefix.
+botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
+  effect: Effect.ALLOW,
+  actions: ["s3:PutObject"],
+  resources: ["arn:aws:s3:::cristinegennaro.com/home/agent-uploads/*"],
 }));
 
 // ListBucket is required so GetObject on a missing key returns 404 instead of 403
