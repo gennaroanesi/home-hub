@@ -98,7 +98,7 @@ export default function ChecklistsPage() {
       const allChecklists = await listAllPages<Checklist>(
         client.models.homeChecklist,
       );
-      const nonTemplate = allChecklists.filter((c) => c.entityType !== "TEMPLATE");
+      const nonTemplate = allChecklists.filter((c) => (c.entityType as string) !== "TEMPLATE");
       setChecklists(nonTemplate);
 
       // Load items for each checklist in parallel
