@@ -15,6 +15,7 @@ import {
   FaFolder,
   FaLightbulb,
   FaFileAlt,
+  FaCheckSquare,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
@@ -77,6 +78,12 @@ const GROUPS: DashboardGroup[] = [
         description: "Plan trips, legs, reservations, and travel details",
         icon: <FaPlane size={22} />,
         href: "/trips",
+      },
+      {
+        title: "Checklists",
+        description: "Templates and all checklists in one place",
+        icon: <FaCheckSquare size={22} />,
+        href: "/checklists",
       },
     ],
   },
