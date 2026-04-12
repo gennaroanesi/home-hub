@@ -125,13 +125,23 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     if (!name) return;
     setNewChecklistName("");
     setShowNewChecklist(false);
-    await client.models.homeChecklist.create({
-      entityType: entityType as any,
-      entityId,
-      name,
-      sortOrder: checklists.length,
-    });
-    await loadData();
+    try {
+      const { errors } = await client.models.homeChecklist.create({
+        entityType: entityType as any,
+        entityId,
+        name,
+        sortOrder: checklists.length,
+      });
+      if (errors?.length) {
+        console.error("Create checklist failed:", errors);
+        addToast({ title: "Failed to create checklist", description: errors[0]?.message ?? "Unknown error", color: "danger" });
+        return;
+      }
+      await loadData();
+    } catch (err) {
+      console.error("Create checklist error:", err);
+      addToast({ title: "Failed to create checklist", description: err instanceof Error ? err.message : String(err), color: "danger" });
+    }
   }
 
   async function renameChecklist(id: string) {
