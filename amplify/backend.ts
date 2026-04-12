@@ -500,6 +500,13 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
             'echo "Building bot image for commit ${COMMIT_SHA}"',
             'echo "CODEBUILD_SRC_DIR=${CODEBUILD_SRC_DIR}"',
             'pwd && ls -la',
+            // CodeBuild's S3 source auto-extracts ZIP archives but NOT
+            // tar.gz — the tarball lands in CODEBUILD_SRC_DIR as a raw
+            // file. Extract it in place so `docker build .` finds the
+            // Dockerfile. The Amplify postBuild tars with `-C whatsapp-bot`
+            // so the archive contains Dockerfile/package.json/src at root.
+            'tar -xzf whatsapp-bot-*.tar.gz',
+            'ls -la',
             'aws ecr get-login-password --region "${AWS_DEFAULT_REGION}" | docker login --username AWS --password-stdin "$(echo "${ECR_URI}" | cut -d/ -f1)"',
           ].join("\n"),
         ],
