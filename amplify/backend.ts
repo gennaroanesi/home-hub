@@ -161,6 +161,8 @@ agentLambda.addToRolePolicy(
   })
 );
 agentLambda.addEnvironment("DUO_SECRET_NAME", "home-hub/duo-auth-api");
+// Force CDK to redeploy — TEMPLATE enum stuck after failed builds
+agentLambda.addEnvironment("SCHEMA_VERSION", "2026-04-12");
 
 // v2 device control: the agent calls Home Assistant to execute service
 // actions (lock/unlock, thermostat, covers, etc.). hass-sync uses
