@@ -56,7 +56,7 @@ function entityDetailHref(entityType: string, entityId: string): string | null {
 function groupBySection(items: ChecklistItem[]): { section: string | null; items: ChecklistItem[] }[] {
   const map = new Map<string | null, ChecklistItem[]>();
   for (const item of items) {
-    const key = item.section || null;
+    const key = (item as any).section || null;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(item);
   }

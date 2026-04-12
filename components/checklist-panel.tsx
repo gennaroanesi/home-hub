@@ -28,7 +28,7 @@ interface ChecklistPanelProps {
 function groupBySection(items: ChecklistItem[]): { section: string | null; items: ChecklistItem[] }[] {
   const map = new Map<string | null, ChecklistItem[]>();
   for (const item of items) {
-    const key = item.section || null;
+    const key = (item as any).section || null;
     if (!map.has(key)) map.set(key, []);
     map.get(key)!.push(item);
   }
@@ -177,7 +177,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       await client.models.homeChecklistItem.create({
         checklistId: newCl.id,
         text: item.text,
-        section: item.section,
+        section: (item as any).section,
         isDone: false,
         sortOrder: item.sortOrder ?? 0,
       });
@@ -244,7 +244,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
   /** Unique section names across all items in the current checklist. */
   function sectionsForChecklist(checklistId: string): string[] {
     const items = itemsByChecklist[checklistId] ?? [];
-    const set = new Set(items.map((i) => i.section).filter(Boolean) as string[]);
+    const set = new Set(items.map((i) => (i as any).section).filter(Boolean) as string[]);
     return Array.from(set).sort();
   }
 
