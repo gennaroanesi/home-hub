@@ -287,6 +287,21 @@ async function startBot() {
 
   // Message handler
   socket.ev.on("messages.upsert", async ({ messages, type }) => {
+    // Log ALL upsert events to diagnose DM delivery issues. The type
+    // filter below may drop DMs that arrive as "append" instead of
+    // "notify" — this log line fires before the filter.
+    for (const m of messages) {
+      if (!m.key.fromMe) {
+        const jid = m.key.remoteJid ?? "?";
+        const isDm = jid.endsWith("@s.whatsapp.net");
+        if (isDm) {
+          logger.info(
+            { type, jid, msgKeys: Object.keys(m.message ?? {}), fromMe: m.key.fromMe },
+            "DM upsert event (pre-filter)"
+          );
+        }
+      }
+    }
     if (type !== "notify") return;
     if (botIds.size === 0) return; // Not connected yet
 
