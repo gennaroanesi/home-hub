@@ -184,13 +184,15 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       { checklistId: source.id },
     );
     for (const item of (sourceItems ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
-      await (client.models.homeChecklistItem as any).create({
+      const dupPayload: Record<string, any> = {
         checklistId: newCl.id,
         text: item.text,
-        section: (item as any).section,
         isDone: false,
         sortOrder: item.sortOrder ?? 0,
-      });
+      };
+      const sec = (item as any).section;
+      if (sec) dupPayload.section = sec;
+      await (client.models.homeChecklistItem as any).create(dupPayload);
     }
     addToast({ title: "Checklist duplicated", description: `"${source.name}" added` });
     await loadData();
@@ -211,14 +213,25 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     const section = (newItemSection[checklistId] ?? "").trim() || null;
     setNewItemText((prev) => ({ ...prev, [checklistId]: "" }));
     const existing = itemsByChecklist[checklistId] ?? [];
-    await (client.models.homeChecklistItem as any).create({
-      checklistId,
-      text,
-      section,
-      isDone: false,
-      sortOrder: existing.length,
-    });
-    await loadData();
+    try {
+      const itemPayload: Record<string, any> = {
+        checklistId,
+        text,
+        isDone: false,
+        sortOrder: existing.length,
+      };
+      if (section) itemPayload.section = section;
+      const { errors } = await (client.models.homeChecklistItem as any).create(itemPayload);
+      if (errors?.length) {
+        console.error("Add item failed:", errors);
+        addToast({ title: "Failed to add item", description: errors[0]?.message ?? "Unknown error", color: "danger" });
+        return;
+      }
+      await loadData();
+    } catch (err) {
+      console.error("Add item error:", err);
+      addToast({ title: "Failed to add item", description: err instanceof Error ? err.message : String(err), color: "danger" });
+    }
   }
 
   async function toggleItem(item: ChecklistItem) {
