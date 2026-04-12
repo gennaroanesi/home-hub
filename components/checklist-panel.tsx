@@ -8,7 +8,7 @@ import { Checkbox } from "@heroui/checkbox";
 import { Spinner, addToast } from "@heroui/react";
 import {
   FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy,
-  FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight,
+  FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight, FaLink,
 } from "react-icons/fa";
 import {
   DndContext,
@@ -397,6 +397,13 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
 
   // Templates
   const [templates, setTemplates] = useState<Checklist[]>([]);
+
+  // Move checklist to entity
+  const [movingChecklistId, setMovingChecklistId] = useState<string | null>(null);
+  const [moveEntityType, setMoveEntityType] = useState<string>("TRIP");
+  const [moveEntityId, setMoveEntityId] = useState<string>("");
+  const [moveEntityOptions, setMoveEntityOptions] = useState<{ id: string; label: string }[]>([]);
+  const [loadingMoveEntities, setLoadingMoveEntities] = useState(false);
   const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
   // DnD
@@ -537,6 +544,54 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
     await duplicateChecklist(source, "TEMPLATE" as any, "templates");
     await loadTemplates();
     addToast({ title: "Template saved", description: `"${source.name}" is now a reusable template` });
+  }
+
+  // ── Move checklist to entity ────────────────────────────────────────
+
+  const MOVE_TYPE_LABELS: Record<string, string> = {
+    TRIP: "Trip", EVENT: "Event", TASK: "Task", BILL: "Bill", DOCUMENT: "Document",
+  };
+  const MOVE_TYPES = ["TRIP", "EVENT", "TASK", "BILL", "DOCUMENT"];
+
+  async function loadMoveEntities(type: string) {
+    setLoadingMoveEntities(true);
+    setMoveEntityOptions([]);
+    setMoveEntityId("");
+    const modelMap: Record<string, { model: string; field: string }> = {
+      TRIP: { model: "homeTrip", field: "name" },
+      EVENT: { model: "homeCalendarEvent", field: "title" },
+      TASK: { model: "homeTask", field: "title" },
+      BILL: { model: "homeBill", field: "name" },
+      DOCUMENT: { model: "homeDocument", field: "title" },
+    };
+    const cfg = modelMap[type];
+    if (!cfg) { setLoadingMoveEntities(false); return; }
+    try {
+      const { data } = await (client.models as any)[cfg.model].list({ limit: 500 });
+      setMoveEntityOptions(
+        ((data ?? []) as any[])
+          .map((d: any) => ({ id: d.id, label: d[cfg.field] ?? d.id }))
+          .sort((a: any, b: any) => a.label.localeCompare(b.label))
+      );
+    } catch { /* ignore */ }
+    setLoadingMoveEntities(false);
+  }
+
+  async function moveChecklist(clId: string) {
+    if (!moveEntityId || !moveEntityType) return;
+    try {
+      await client.models.homeChecklist.update({
+        id: clId,
+        entityType: moveEntityType as any,
+        entityId: moveEntityId,
+      });
+      setMovingChecklistId(null);
+      addToast({ title: "Checklist moved" });
+      await loadData();
+    } catch (err) {
+      console.error("Move failed:", err);
+      addToast({ title: "Failed to move checklist", color: "danger" });
+    }
   }
 
   // ── Item CRUD ──────────────────────────────────────────────────────
@@ -1022,6 +1077,9 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                       )}
                     </div>
                     <div className="flex gap-1">
+                      <Button size="sm" isIconOnly variant="light" title="Move to entity" onPress={() => { setMovingChecklistId(cl.id); setMoveEntityType("TRIP"); loadMoveEntities("TRIP"); }}>
+                        <FaLink size={10} />
+                      </Button>
                       <Button size="sm" isIconOnly variant="light" title="Duplicate" onPress={() => duplicateChecklist(cl)}>
                         <FaCopy size={10} />
                       </Button>
@@ -1040,6 +1098,41 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                   </>
                 )}
               </div>
+
+              {/* Move to entity picker */}
+              {movingChecklistId === cl.id && (
+                <div className="mb-3 border border-default-200 rounded-md p-3 bg-default-100 space-y-2">
+                  <p className="text-xs font-medium">Move to:</p>
+                  <div className="flex gap-2">
+                    <select
+                      className="text-sm border border-default-300 rounded px-2 py-1 bg-white"
+                      value={moveEntityType}
+                      onChange={(e) => { setMoveEntityType(e.target.value); loadMoveEntities(e.target.value); }}
+                    >
+                      {MOVE_TYPES.map((t) => (
+                        <option key={t} value={t}>{MOVE_TYPE_LABELS[t]}</option>
+                      ))}
+                    </select>
+                    <select
+                      className="text-sm border border-default-300 rounded px-2 py-1 bg-white flex-1"
+                      value={moveEntityId}
+                      onChange={(e) => setMoveEntityId(e.target.value)}
+                      disabled={loadingMoveEntities || moveEntityOptions.length === 0}
+                    >
+                      <option value="">{loadingMoveEntities ? "Loading..." : "Select..."}</option>
+                      {moveEntityOptions.map((o) => (
+                        <option key={o.id} value={o.id}>{o.label}</option>
+                      ))}
+                    </select>
+                    <Button size="sm" color="primary" variant="flat" isDisabled={!moveEntityId} onPress={() => moveChecklist(cl.id)}>
+                      Move
+                    </Button>
+                    <Button size="sm" variant="light" onPress={() => setMovingChecklistId(null)}>
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              )}
 
               {/* Sections with DnD */}
               <DndContext

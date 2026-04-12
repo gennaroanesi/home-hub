@@ -8,7 +8,10 @@ import { Spinner } from "@heroui/react";
 // Progress bar removed — ChecklistPanel handles its own display
 import { Link } from "@heroui/link";
 import NextLink from "next/link";
-import { FaCheckSquare } from "react-icons/fa";
+import { FaCheckSquare, FaPlus } from "react-icons/fa";
+import { Button } from "@heroui/button";
+import { Input } from "@heroui/input";
+import { Select, SelectItem } from "@heroui/select";
 
 import DefaultLayout from "@/layouts/default";
 import { ChecklistPanel } from "@/components/checklist-panel";
@@ -73,12 +76,21 @@ function groupBySection(items: ChecklistItem[]): { section: string | null; items
 
 // ── Page ─────────────────────────────────────────────────────────────────
 
+type EntityOption = { id: string; label: string; type: string };
+
 export default function ChecklistsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
-  // Items are fetched by each ChecklistPanel instance — no page-level fetch needed.
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
+
+  // Create checklist flow
+  const [showCreate, setShowCreate] = useState(false);
+  const [createEntityType, setCreateEntityType] = useState<string>("TRIP");
+  const [createEntityId, setCreateEntityId] = useState<string>("");
+  const [createName, setCreateName] = useState("");
+  const [entityOptions, setEntityOptions] = useState<EntityOption[]>([]);
+  const [loadingEntities, setLoadingEntities] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -144,6 +156,52 @@ export default function ChecklistsPage() {
     );
   }
 
+  // Load entities for the picker dropdown when entity type changes
+  async function loadEntitiesForType(type: string) {
+    setLoadingEntities(true);
+    setEntityOptions([]);
+    setCreateEntityId("");
+    try {
+      const modelMap: Record<string, { model: string; field: string }> = {
+        TRIP: { model: "homeTrip", field: "name" },
+        EVENT: { model: "homeCalendarEvent", field: "title" },
+        TASK: { model: "homeTask", field: "title" },
+        BILL: { model: "homeBill", field: "name" },
+        DOCUMENT: { model: "homeDocument", field: "title" },
+      };
+      const cfg = modelMap[type];
+      if (!cfg) { setLoadingEntities(false); return; }
+      const { data } = await (client.models as any)[cfg.model].list({ limit: 500 });
+      const opts: EntityOption[] = ((data ?? []) as any[])
+        .map((d: any) => ({ id: d.id, label: d[cfg.field] ?? d.id, type }))
+        .sort((a: EntityOption, b: EntityOption) => a.label.localeCompare(b.label));
+      setEntityOptions(opts);
+    } catch (err) {
+      console.error("Failed to load entities:", err);
+    } finally {
+      setLoadingEntities(false);
+    }
+  }
+
+  async function createChecklistOnEntity() {
+    const name = createName.trim();
+    if (!name || !createEntityId || !createEntityType) return;
+    try {
+      await client.models.homeChecklist.create({
+        entityType: createEntityType as any,
+        entityId: createEntityId,
+        name,
+        sortOrder: 0,
+      });
+      setShowCreate(false);
+      setCreateName("");
+      setCreateEntityId("");
+      await loadAll();
+    } catch (err) {
+      console.error("Failed to create checklist:", err);
+    }
+  }
+
   // Group checklists by entityType
   const grouped = ENTITY_TYPE_ORDER.map((type) => ({
     type,
@@ -165,6 +223,80 @@ export default function ChecklistsPage() {
 
           <h2 className="text-lg font-semibold mb-3">Templates</h2>
           <ChecklistPanel entityType="TEMPLATE" entityId="templates" />
+        </div>
+
+        {/* ── Create checklist on entity ──────────────────────────────── */}
+        <div className="mb-10">
+          {!showCreate ? (
+            <Button
+              variant="flat"
+              startContent={<FaPlus size={12} />}
+              onPress={() => { setShowCreate(true); loadEntitiesForType(createEntityType); }}
+            >
+              Create checklist on entity
+            </Button>
+          ) : (
+            <div className="border border-default-200 rounded-md p-4 bg-default-50 space-y-3">
+              <p className="text-sm font-medium">Create checklist</p>
+              <div className="flex gap-2">
+                <Select
+                  size="sm"
+                  label="Entity type"
+                  selectedKeys={[createEntityType]}
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (v) { setCreateEntityType(v); loadEntitiesForType(v); }
+                  }}
+                  className="max-w-[150px]"
+                >
+                  {ENTITY_TYPE_ORDER.map((t) => (
+                    <SelectItem key={t} textValue={ENTITY_TYPE_LABELS[t]}>
+                      {ENTITY_TYPE_LABELS[t]}
+                    </SelectItem>
+                  ))}
+                </Select>
+                <Select
+                  size="sm"
+                  label={loadingEntities ? "Loading..." : "Entity"}
+                  selectedKeys={createEntityId ? [createEntityId] : []}
+                  onChange={(e) => setCreateEntityId(e.target.value)}
+                  isDisabled={loadingEntities || entityOptions.length === 0}
+                  className="flex-1"
+                >
+                  {entityOptions.map((o) => (
+                    <SelectItem key={o.id} textValue={o.label}>
+                      {o.label}
+                    </SelectItem>
+                  ))}
+                </Select>
+              </div>
+              <div className="flex gap-2">
+                <Input
+                  size="sm"
+                  label="Checklist name"
+                  value={createName}
+                  onValueChange={setCreateName}
+                  className="flex-1"
+                />
+                <Button
+                  size="sm"
+                  color="primary"
+                  variant="flat"
+                  isDisabled={!createName.trim() || !createEntityId}
+                  onPress={createChecklistOnEntity}
+                >
+                  Create
+                </Button>
+                <Button
+                  size="sm"
+                  variant="light"
+                  onPress={() => setShowCreate(false)}
+                >
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* ── All checklists section ─────────────────────────────────── */}
