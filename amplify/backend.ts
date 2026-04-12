@@ -162,6 +162,15 @@ agentLambda.addToRolePolicy(
 );
 agentLambda.addEnvironment("DUO_SECRET_NAME", "home-hub/duo-auth-api");
 
+// v2 device control: the agent calls Home Assistant to execute service
+// actions (lock/unlock, thermostat, covers, etc.). hass-sync uses
+// Amplify `secret()` for these, but the agent Lambda takes them as
+// plain env vars (same pattern as ANTHROPIC_API_KEY) because adding
+// `secret()` to the agent's resource.ts would require a different
+// import path. Values come from .env.local / the Amplify build env.
+agentLambda.addEnvironment("HASS_BASE_URL", process.env.HASS_BASE_URL ?? "");
+agentLambda.addEnvironment("HASS_TOKEN", process.env.HASS_TOKEN ?? "");
+
 // ── SNS topic for notifications ─────────────────────────────────────────────
 // Topic lives in the scheduler stack (same as the lambda that publishes to it)
 // to avoid a cross-stack circular dependency with the data stack.
