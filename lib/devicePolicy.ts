@@ -77,7 +77,7 @@ export interface PolicyDecision {
    * action. "password_reauth" = UI password re-entry. "reply_confirm" = WA
    * reply "yes" within 60s. "ui_confirm" = simple modal confirmation.
    */
-  requires?: "password_reauth" | "reply_confirm" | "ui_confirm";
+  requires?: "password_reauth" | "reply_confirm" | "ui_confirm" | "duo_push";
 }
 
 // ── The matrix ───────────────────────────────────────────────────────────────
@@ -112,13 +112,14 @@ export function canPerform(
 
   // ── HIGH sensitivity: locks, garage, alarm ──
   if (sensitivity === "HIGH") {
-    // Physical access from the agent is refused outright, even on home wifi.
-    // The marginal convenience of unlocking via WA does not outweigh the
-    // blast radius of a compromised WhatsApp account or spoofed wifi presence.
     if (ctx.origin === "AGENT") {
+      // Duo Push adds the missing second factor. The policy now allows HIGH
+      // agent control gated on Duo approval — the same mechanism used for
+      // document vault access.
       return {
-        allowed: false,
-        reason: "HIGH-sensitivity devices cannot be controlled from WhatsApp",
+        allowed: true,
+        reason: "HIGH via agent, requires Duo Push",
+        requires: "duo_push",
       };
     }
     // UI: unsafe directions require a password re-auth (elevated session).

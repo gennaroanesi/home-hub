@@ -16,6 +16,8 @@ import {
 } from "../../../lib/aviation-weather.js";
 import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flags.js";
 import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus } from "./duo.js";
+import { HassClient, entityDomain } from "./hass-client.js";
+import { canPerform, type Sensitivity, type Action, type PolicyContext } from "../../../lib/devicePolicy.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -989,7 +991,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "get_home_devices",
     description:
-      "List Home Assistant devices (thermostats, locks, cameras, sensors, etc.) with their last known state. Read-only in v1 — cannot control devices yet. Filter by domain (climate, lock, cover, camera, sensor, switch, etc.) or area (room name). Without filters, returns all pinned devices. State is cached from the last sync (daily + on-demand).",
+      "List Home Assistant devices (thermostats, locks, cameras, sensors, etc.) with their last known state. Filter by domain (climate, lock, cover, camera, sensor, switch, etc.) or area (room name). Without filters, returns all pinned devices. State is cached from the last sync (daily + on-demand). To control a device, use control_device with the entity_id from here.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1106,6 +1108,56 @@ const tools: Anthropic.Tool[] = [
         txid: {
           type: "string",
           description: "The Duo transaction ID returned by request_document_download.",
+        },
+      },
+      required: ["challengeId", "txid"],
+    },
+  },
+  {
+    name: "control_device",
+    description:
+      "Control a Home Assistant device (lock/unlock, turn on/off, set temperature, open/close cover, etc.). Evaluates the device's sensitivity tier against the household's risk policy. LOW devices execute immediately. MEDIUM devices require the sender to be on home wifi. HIGH devices require Duo Push approval — if HIGH, this tool fires an async push and returns PUSH_SENT with a challengeId + txid. Call check_device_auth to poll for approval. Every attempt is logged to the homeDeviceAction audit table.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        entityId: {
+          type: "string",
+          description:
+            "The Home Assistant entity_id (e.g. 'lock.back_door', 'climate.living_room')",
+        },
+        service: {
+          type: "string",
+          description:
+            "The HA service to call (e.g. 'lock', 'unlock', 'turn_on', 'turn_off', 'set_temperature', 'open_cover', 'close_cover', 'toggle')",
+        },
+        serviceData: {
+          type: "object",
+          description:
+            "Optional service data (e.g. {temperature: 72} for climate). The entity_id is added automatically.",
+        },
+        senderName: {
+          type: "string",
+          description:
+            "Name of the person requesting the action (for Duo lookup and audit logging)",
+        },
+      },
+      required: ["entityId", "service", "senderName"],
+    },
+  },
+  {
+    name: "check_device_auth",
+    description:
+      "Poll the Duo push approval status after control_device returned PUSH_SENT. If approved, executes the HA service call and returns EXECUTED. If still waiting, returns WAITING — call again after a few seconds. If denied, returns DENIED.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        challengeId: {
+          type: "string",
+          description: "The challenge ID returned by control_device.",
+        },
+        txid: {
+          type: "string",
+          description: "The Duo transaction ID returned by control_device.",
         },
       },
       required: ["challengeId", "txid"],
@@ -2046,7 +2098,7 @@ async function executeTool(
         devices: shaped,
         count: shaped.length,
         note:
-          "Read-only in v1. To control devices, ask the user to do it in the web app for now.",
+          "Use control_device to actuate any device with a non-READ_ONLY sensitivity tier.",
       });
     }
 
@@ -2610,6 +2662,469 @@ async function executeTool(
       });
     }
 
+    // ── Device control (v2) ────────────────────────────────────────────
+    case "control_device": {
+      const entityId = input.entityId as string;
+      const service = input.service as string;
+      const serviceData = (input.serviceData as Record<string, any>) ?? {};
+      const senderName = input.senderName as string;
+      const domain = entityDomain(entityId);
+
+      // 1. Look up homeDevice by entityId from DDB cache
+      const { data: deviceRows } = await client.models.homeDevice.list({
+        filter: { entityId: { eq: entityId } },
+        limit: 1,
+      });
+      const device = (deviceRows ?? [])[0];
+      if (!device) {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: `Device ${entityId} not found in cache. Run a device sync first.`,
+        });
+      }
+
+      // 2. Determine sensitivity tier — treat null/undefined as READ_ONLY
+      const sensitivity: Sensitivity =
+        (device.sensitivity as Sensitivity | null) ?? "READ_ONLY";
+
+      // 3. Determine action direction
+      const safeServices = new Set([
+        "lock",
+        "close_cover",
+        "turn_off",
+      ]);
+      const action: Action = safeServices.has(service)
+        ? "control_safe"
+        : "control_unsafe";
+
+      // 4. Resolve sender -> homePerson
+      const people = await getPeople();
+      const requester = people.find(
+        (p) => p.name.toLowerCase() === senderName.toLowerCase()
+      );
+      if (!requester) {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: `No household member named "${senderName}"`,
+        });
+      }
+
+      // 5. Check wifi presence via HA device_tracker entity
+      let senderHomeWifi = false;
+      try {
+        const { data: personRow } = await client.models.homePerson.get({
+          id: requester.id,
+        });
+        const trackerEntity = personRow?.homeDeviceTrackerEntity;
+        if (trackerEntity) {
+          const hassBaseUrl = process.env.HASS_BASE_URL;
+          const hassToken = process.env.HASS_TOKEN;
+          if (hassBaseUrl && hassToken) {
+            const ha = new HassClient(hassBaseUrl, hassToken);
+            const trackerState = await ha.getState(trackerEntity);
+            senderHomeWifi = trackerState.state === "home";
+          }
+        }
+      } catch (err) {
+        // Fail closed — treat as not on wifi
+        console.warn("[control_device] wifi check failed:", err);
+      }
+
+      // 6. Build policy context and evaluate
+      const policyCtx: PolicyContext = {
+        origin: "AGENT",
+        senderHomeWifi,
+        elevatedSession: false,
+      };
+      const decision = canPerform(sensitivity, action, policyCtx);
+
+      // 7. Handle policy decision
+      if (!decision.allowed) {
+        await client.models.homeDeviceAction.create({
+          personId: requester.id,
+          entityId,
+          action: service,
+          params: serviceData,
+          origin: "AGENT",
+          senderHomeWifi,
+          elevatedSession: false,
+          result: "DENIED",
+          error: decision.reason,
+        });
+        return JSON.stringify({
+          status: "DENIED",
+          reason: decision.reason,
+          requires: decision.requires ?? null,
+        });
+      }
+
+      // 7a. Duo Push required (HIGH sensitivity)
+      if (decision.requires === "duo_push") {
+        const { data: auths } = await client.models.homePersonAuth.list({
+          filter: { personId: { eq: requester.id } },
+          limit: 10,
+        });
+        const authRow = (auths ?? [])[0];
+        if (!authRow?.duoUsername) {
+          await client.models.homeDeviceAction.create({
+            personId: requester.id,
+            entityId,
+            action: service,
+            params: serviceData,
+            origin: "AGENT",
+            senderHomeWifi,
+            elevatedSession: false,
+            result: "DENIED",
+            error: "not_enrolled",
+          });
+          return JSON.stringify({
+            status: "DENIED",
+            reason: "not_enrolled",
+            note: `${requester.name} has not linked a Duo account. Have them visit /security.`,
+          });
+        }
+
+        // Preauth
+        let preauthRes;
+        try {
+          preauthRes = await duoPreauth(authRow.duoUsername);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          await client.models.homeDeviceAction.create({
+            personId: requester.id,
+            entityId,
+            action: service,
+            params: serviceData,
+            origin: "AGENT",
+            senderHomeWifi,
+            elevatedSession: false,
+            result: "FAILED",
+            error: `preauth: ${msg}`.slice(0, 500),
+          });
+          return JSON.stringify({ status: "ERROR", reason: `preauth_failed: ${msg}` });
+        }
+
+        if (preauthRes.result === "deny" || preauthRes.result === "enroll") {
+          await client.models.homeDeviceAction.create({
+            personId: requester.id,
+            entityId,
+            action: service,
+            params: serviceData,
+            origin: "AGENT",
+            senderHomeWifi,
+            elevatedSession: false,
+            result: "DENIED",
+            error: preauthRes.result === "deny" ? "locked_out" : "not_enrolled",
+          });
+          return JSON.stringify({
+            status: "DENIED",
+            reason: preauthRes.result === "deny" ? "locked_out" : "not_enrolled",
+          });
+        }
+
+        // Create challenge row — encode action details in conversationKey
+        // so check_device_auth can reconstruct the pending action after a
+        // Lambda cold start (module-level Maps don't survive).
+        const conversationKey =
+          `device:${entityId}:${service}:${JSON.stringify(serviceData)}`;
+        const challengeExpiresAt = new Date(
+          Date.now() + 5 * 60 * 1000
+        ).toISOString();
+        const { data: challenge } =
+          await client.models.homePendingAuthChallenge.create({
+            conversationKey,
+            personId: requester.id,
+            documentId: entityId, // repurposed — stores entityId for device challenges
+            attemptsRemaining: 1,
+            expiresAt: challengeExpiresAt,
+          });
+
+        // Fire async push
+        if (preauthRes.result === "auth") {
+          try {
+            const friendlyName = device.friendlyName ?? entityId;
+            const res = await duoPushAuth({
+              username: authRow.duoUsername,
+              pushinfo: {
+                Device: friendlyName,
+                Action: service,
+                "Requested by": requester.name,
+              },
+              type: "Device control",
+              displayUsername: authRow.duoUsername,
+              async: "1",
+            });
+            // Append txid to conversationKey for retrieval
+            if (challenge?.id && res.txid) {
+              await client.models.homePendingAuthChallenge.update({
+                id: challenge.id,
+                conversationKey: `${conversationKey}:txid:${res.txid}`,
+              });
+            }
+            console.log(
+              "[control_device] push sent, txid:",
+              res.txid,
+              "challengeId:",
+              challenge?.id
+            );
+            return JSON.stringify({
+              status: "PUSH_SENT",
+              challengeId: challenge?.id,
+              txid: res.txid,
+              message:
+                "Duo push sent. Call check_device_auth with the challengeId and txid to poll for approval. Tell the user to approve the push on their phone.",
+            });
+          } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : String(err);
+            if (challenge?.id) {
+              await client.models.homePendingAuthChallenge.delete({
+                id: challenge.id,
+              });
+            }
+            await client.models.homeDeviceAction.create({
+              personId: requester.id,
+              entityId,
+              action: service,
+              params: serviceData,
+              origin: "AGENT",
+              senderHomeWifi,
+              elevatedSession: false,
+              result: "FAILED",
+              error: `push: ${msg}`.slice(0, 500),
+            });
+            return JSON.stringify({
+              status: "ERROR",
+              reason: `push_failed: ${msg}`,
+            });
+          }
+        }
+
+        // Pre-approved (rare "allow" from preauth) — fall through to execute
+      }
+
+      // 7b. Reply confirm required (MEDIUM on wifi, LOW remote)
+      if (decision.requires === "reply_confirm") {
+        return JSON.stringify({
+          status: "CONFIRM_REQUIRED",
+          message: `Please confirm: ${service} on ${device.friendlyName ?? entityId}. Reply "yes" to proceed.`,
+          entityId,
+          service,
+          serviceData,
+        });
+      }
+
+      // 8. Execute immediately (LOW on wifi, or pre-approved HIGH)
+      try {
+        const hassBaseUrl = process.env.HASS_BASE_URL;
+        const hassToken = process.env.HASS_TOKEN;
+        if (!hassBaseUrl || !hassToken) {
+          throw new Error("HASS_BASE_URL or HASS_TOKEN not configured");
+        }
+        const ha = new HassClient(hassBaseUrl, hassToken);
+        await ha.callService(domain, service, {
+          entity_id: entityId,
+          ...serviceData,
+        });
+
+        // Write SUCCESS audit log
+        await client.models.homeDeviceAction.create({
+          personId: requester.id,
+          entityId,
+          action: service,
+          params: serviceData,
+          origin: "AGENT",
+          senderHomeWifi,
+          elevatedSession: false,
+          result: "SUCCESS",
+        });
+
+        // Refresh cached state
+        let newState: unknown = null;
+        try {
+          const refreshed = await ha.getState(entityId);
+          newState = refreshed;
+          await client.models.homeDevice.update({
+            id: device.id,
+            lastState: JSON.stringify(refreshed),
+            lastSyncedAt: new Date().toISOString(),
+          });
+        } catch (err) {
+          console.warn("[control_device] state refresh failed:", err);
+        }
+
+        return JSON.stringify({
+          status: "EXECUTED",
+          entityId,
+          service,
+          newState,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await client.models.homeDeviceAction.create({
+          personId: requester.id,
+          entityId,
+          action: service,
+          params: serviceData,
+          origin: "AGENT",
+          senderHomeWifi,
+          elevatedSession: false,
+          result: "FAILED",
+          error: msg.slice(0, 500),
+        });
+        return JSON.stringify({ status: "ERROR", reason: msg });
+      }
+    }
+
+    case "check_device_auth": {
+      const { challengeId, txid } = input as {
+        challengeId: string;
+        txid: string;
+      };
+      if (!challengeId || !txid) {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: "challengeId and txid are required",
+        });
+      }
+
+      // 1. Poll Duo
+      let pollResult: Awaited<ReturnType<typeof duoAuthStatus>>;
+      try {
+        pollResult = await duoAuthStatus(txid);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({
+          status: "ERROR",
+          reason: `duo_poll_failed: ${msg}`,
+        });
+      }
+
+      if (pollResult.result === "waiting") {
+        return JSON.stringify({
+          status: "WAITING",
+          message:
+            "User hasn't responded to the Duo push yet. Call check_device_auth again in a few seconds.",
+        });
+      }
+
+      // 2. Fetch challenge row
+      const { data: ch } = await client.models.homePendingAuthChallenge.get({
+        id: challengeId,
+      });
+      if (!ch) {
+        return JSON.stringify({
+          status: "ERROR",
+          reason: "Challenge not found or expired",
+        });
+      }
+
+      // Parse action details from conversationKey:
+      // "device:<entityId>:<service>:<jsonServiceData>:txid:<txid>"
+      const convKey = ch.conversationKey;
+      const devicePrefix = "device:";
+      const txidSuffix = `:txid:${txid}`;
+      const actionPart = convKey.startsWith(devicePrefix)
+        ? convKey.slice(devicePrefix.length).replace(txidSuffix, "")
+        : "";
+      // actionPart = "<entityId>:<service>:<jsonServiceData>"
+      const firstColon = actionPart.indexOf(":");
+      const secondColon = actionPart.indexOf(":", firstColon + 1);
+      const pendingEntityId = actionPart.slice(0, firstColon);
+      const pendingService = actionPart.slice(firstColon + 1, secondColon);
+      let pendingServiceData: Record<string, any> = {};
+      try {
+        pendingServiceData = JSON.parse(actionPart.slice(secondColon + 1));
+      } catch {}
+      const pendingDomain = entityDomain(pendingEntityId);
+
+      if (pollResult.result === "deny") {
+        await client.models.homePendingAuthChallenge.delete({
+          id: challengeId,
+        });
+        await client.models.homeDeviceAction.create({
+          personId: ch.personId,
+          entityId: pendingEntityId,
+          action: pendingService,
+          params: pendingServiceData,
+          origin: "AGENT",
+          result: "DENIED",
+          error: "user_denied_or_timeout",
+        });
+        return JSON.stringify({ status: "DENIED", reason: "user_denied" });
+      }
+
+      // 3. Approved — execute the HA service call
+      try {
+        const hassBaseUrl = process.env.HASS_BASE_URL;
+        const hassToken = process.env.HASS_TOKEN;
+        if (!hassBaseUrl || !hassToken) {
+          throw new Error("HASS_BASE_URL or HASS_TOKEN not configured");
+        }
+        const ha = new HassClient(hassBaseUrl, hassToken);
+        await ha.callService(pendingDomain, pendingService, {
+          entity_id: pendingEntityId,
+          ...pendingServiceData,
+        });
+
+        // Audit log
+        await client.models.homeDeviceAction.create({
+          personId: ch.personId,
+          entityId: pendingEntityId,
+          action: pendingService,
+          params: pendingServiceData,
+          origin: "AGENT",
+          result: "SUCCESS",
+        });
+
+        // Refresh cached state
+        let newState: unknown = null;
+        try {
+          const refreshed = await ha.getState(pendingEntityId);
+          newState = refreshed;
+          const { data: devRows } = await client.models.homeDevice.list({
+            filter: { entityId: { eq: pendingEntityId } },
+            limit: 1,
+          });
+          const dev = (devRows ?? [])[0];
+          if (dev) {
+            await client.models.homeDevice.update({
+              id: dev.id,
+              lastState: JSON.stringify(refreshed),
+              lastSyncedAt: new Date().toISOString(),
+            });
+          }
+        } catch (err) {
+          console.warn("[check_device_auth] state refresh failed:", err);
+        }
+
+        await client.models.homePendingAuthChallenge.delete({
+          id: challengeId,
+        });
+
+        return JSON.stringify({
+          status: "EXECUTED",
+          entityId: pendingEntityId,
+          service: pendingService,
+          newState,
+        });
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        await client.models.homeDeviceAction.create({
+          personId: ch.personId,
+          entityId: pendingEntityId,
+          action: pendingService,
+          params: pendingServiceData,
+          origin: "AGENT",
+          result: "FAILED",
+          error: msg.slice(0, 500),
+        });
+        await client.models.homePendingAuthChallenge.delete({
+          id: challengeId,
+        });
+        return JSON.stringify({ status: "ERROR", reason: msg });
+      }
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -2675,7 +3190,28 @@ When assigning tasks/bills/events to people, pass their names in the assignedPeo
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
-Home devices (thermostat, locks, cameras, etc.) can be read via get_home_devices. Device control is NOT available yet — if the user asks to change something (e.g. "set the thermostat to 72"), tell them to do it in the web app.
+## Device control
+
+You can control Home Assistant devices using control_device. The household's
+risk policy gates access by device sensitivity:
+
+- READ_ONLY: no control (sensors, cameras)
+- LOW: execute immediately (lights, plugs) — may ask for "reply yes" confirmation if the sender is not on home wifi
+- MEDIUM: requires sender to be on home wifi (thermostat, covers)
+- HIGH: requires Duo Push approval (locks, garage, alarm) — same async flow as document downloads: call control_device -> tell user to approve push -> call check_device_auth
+
+When a user says "lock the back door" or "set the thermostat to 72", use
+control_device. Check get_home_devices first if you need the entity_id.
+
+Common services by domain:
+- lock: lock, unlock
+- cover: open_cover, close_cover
+- climate: set_temperature (pass {temperature: N} in serviceData)
+- light/switch/fan: turn_on, turn_off, toggle
+
+When control_device returns CONFIRM_REQUIRED (reply confirm), ask the user
+"Are you sure?" and if they confirm, call control_device again — the second
+call will execute because the user's confirmation counts as the reply.
 
 For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions, call get_weather_briefing. By default it uses KAUS and auto-selects plain vs aviation mode. Pass mode="aviation" if the user is clearly asking about flying conditions, or pass a different ICAO if they name an airport. The tool returns structured data including the raw METAR and TAF — for a household-level question render a plain line; for a pilot question include the raw strings and the VFR/MVFR/IFR verdict.
 
