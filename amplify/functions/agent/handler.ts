@@ -2201,6 +2201,7 @@ async function executeTool(
     case "request_document_download": {
       const documentId = input.documentId as string;
       const senderName = input.senderName as string;
+      console.log("[doc-download] start:", { documentId, senderName });
       const channelForLog: "WA" | "WEB" =
         ctx.chatContext?.channel === "WEB" ? "WEB" : "WA";
 
@@ -2260,6 +2261,7 @@ async function executeTool(
           result: "FAILED",
           error: `preauth: ${msg}`.slice(0, 500),
         });
+        console.error("[doc-download] preauth failed:", msg);
         return JSON.stringify({ status: "ERROR", reason: `preauth_failed: ${msg}` });
       }
 
@@ -2272,6 +2274,7 @@ async function executeTool(
           result: "DENIED",
           error: `preauth_deny: ${preauthRes.status_msg ?? ""}`.slice(0, 500),
         });
+        console.error("[doc-download] preauth deny:", preauthRes.status_msg);
         return JSON.stringify({ status: "DENIED", reason: "locked_out" });
       }
       if (preauthRes.result === "enroll") {
@@ -2325,6 +2328,7 @@ async function executeTool(
               conversationKey: `${conversationKey}:txid:${res.txid}`,
             });
           }
+          console.log("[doc-download] push sent, txid:", res.txid, "challengeId:", challenge?.id);
           return JSON.stringify({
             status: "PUSH_SENT",
             challengeId: challenge?.id,
@@ -2344,6 +2348,7 @@ async function executeTool(
             result: "FAILED",
             error: `push: ${msg}`.slice(0, 500),
           });
+          console.error("[doc-download] push failed:", msg);
           return JSON.stringify({
             status: "ERROR",
             reason: `push_failed: ${msg}`,
