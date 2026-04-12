@@ -191,15 +191,20 @@ export async function pushAuth(params: {
   displayUsername?: string; // what the push renders — falls back to username
   async?: "0" | "1"; // "1" = return immediately with txid, poll via authStatus
 }): Promise<AuthResponse & { txid?: string }> {
-  const pushinfoEncoded = Object.entries(params.pushinfo)
-    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+  // Duo's pushinfo param is a URL-encoded key=value string on the wire.
+  // We pass it RAW here (e.g. "Document=FAA Cert&Requested by=Gennaro")
+  // and let canonicalizeParams / duoUrlEncode handle the single encoding
+  // pass for both the signature and the body. Pre-encoding it would cause
+  // double-encoding (= → %3D → %253D) and a 40103 signature mismatch.
+  const pushinfoRaw = Object.entries(params.pushinfo)
+    .map(([k, v]) => `${k}=${v}`)
     .join("&");
   const body: Record<string, string> = {
     username: params.username,
     factor: "push",
     device: params.device ?? "auto",
     async: params.async ?? "0",
-    pushinfo: pushinfoEncoded,
+    pushinfo: pushinfoRaw,
   };
   if (params.type) body.type = params.type;
   if (params.displayUsername) body.display_username = params.displayUsername;
