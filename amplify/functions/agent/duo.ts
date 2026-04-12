@@ -189,7 +189,8 @@ export async function pushAuth(params: {
   pushinfo: Record<string, string>; // shown as "key=value" lines
   type?: string; // label above the pushinfo block, max 20 chars
   displayUsername?: string; // what the push renders — falls back to username
-}): Promise<AuthResponse> {
+  async?: "0" | "1"; // "1" = return immediately with txid, poll via authStatus
+}): Promise<AuthResponse & { txid?: string }> {
   const pushinfoEncoded = Object.entries(params.pushinfo)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join("&");
@@ -197,12 +198,27 @@ export async function pushAuth(params: {
     username: params.username,
     factor: "push",
     device: params.device ?? "auto",
-    async: "0",
+    async: params.async ?? "0",
     pushinfo: pushinfoEncoded,
   };
   if (params.type) body.type = params.type;
   if (params.displayUsername) body.display_username = params.displayUsername;
   return duoRequest<AuthResponse>("POST", "/auth/v2/auth", body);
+}
+
+export interface AuthStatusResponse {
+  result: "allow" | "deny" | "waiting";
+  status: string;
+  status_msg: string;
+}
+
+/**
+ * Poll the status of an async Duo push by txid.
+ * Returns immediately with { result: "waiting" } if the user hasn't
+ * responded yet, "allow" if approved, "deny" if denied/timed out.
+ */
+export async function authStatus(txid: string): Promise<AuthStatusResponse> {
+  return duoRequest<AuthStatusResponse>("GET", "/auth/v2/auth_status", { txid });
 }
 
 /**

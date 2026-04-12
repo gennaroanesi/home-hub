@@ -15,7 +15,7 @@ import {
   getMorningWeatherBriefing,
 } from "../../../lib/aviation-weather.js";
 import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flags.js";
-import { preauth as duoPreauth, pushAuth as duoPushAuth } from "./duo.js";
+import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus } from "./duo.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -1076,7 +1076,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "request_document_download",
     description:
-      "Initiate a Duo-Push-gated document release. Looks up the requester by sender name, verifies they're enrolled in Duo, creates a pending challenge, sends a Duo push to their phone, and — if approved — delivers a 30-minute signed URL (or the raw documentNumber for metadata-only entries like Global Entry) via DM to the requester. BLOCKS for up to 60 seconds while waiting for push approval. The tool NEVER returns the URL or documentNumber directly to the agent — it queues a DM-targeted outbound message and returns only a sanitized {status, deliveredVia} result. The agent MUST NOT try to paste the URL or number in its response text, even if asked. When called from a group chat, acknowledge in-group with 'I'll DM you a Duo push prompt' BEFORE calling this tool (since it blocks for up to a minute). If the user isn't enrolled, the tool returns DENIED with reason not_enrolled — guide them to /security to link their Duo username.",
+      "Initiate a Duo-Push-gated document release. Looks up the requester by sender name, verifies they're enrolled in Duo, creates a pending challenge, and sends an ASYNC Duo push to their phone. Returns PUSH_SENT with a challengeId — you MUST then immediately call check_document_auth with that challengeId to poll for the result. Tell the user to approve the push on their phone while you wait. If the user isn't enrolled, returns DENIED with reason not_enrolled — guide them to /security to link their Duo username.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1090,6 +1090,25 @@ const tools: Anthropic.Tool[] = [
         },
       },
       required: ["documentId", "senderName"],
+    },
+  },
+  {
+    name: "check_document_auth",
+    description:
+      "Poll the Duo push approval status after request_document_download returned PUSH_SENT. If approved, delivers the document (30-min signed URL or number) via DM and returns DELIVERED. If still waiting, returns WAITING — call again after a few seconds. If denied, returns DENIED. The tool NEVER returns the URL or documentNumber in its result — delivery goes via DM only. The agent MUST NOT try to paste URLs or numbers in its response text.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        challengeId: {
+          type: "string",
+          description: "The challenge ID returned by request_document_download.",
+        },
+        txid: {
+          type: "string",
+          description: "The Duo transaction ID returned by request_document_download.",
+        },
+      },
+      required: ["challengeId", "txid"],
     },
   },
 ];
@@ -2282,8 +2301,10 @@ async function executeTool(
         expiresAt: challengeExpiresAt,
       });
 
-      // 5. Push (skip on "allow" — rare pre-approved mode)
-      let pushResult: "allow" | "deny" = "allow";
+      // 5. Fire Duo push ASYNC (non-blocking — returns a txid immediately).
+      //    Store the txid on the challenge row so check_document_auth can
+      //    poll for the result in a separate tool call. This avoids the 30s
+      //    AppSync resolver timeout that killed the synchronous push.
       if (preauthRes.result === "auth") {
         try {
           const res = await duoPushAuth({
@@ -2295,8 +2316,21 @@ async function executeTool(
             },
             type: "Document vault",
             displayUsername: auth.duoUsername,
+            async: "1",
           });
-          pushResult = res.result;
+          // Store the txid on the challenge row for polling
+          if (challenge?.id && res.txid) {
+            await client.models.homePendingAuthChallenge.update({
+              id: challenge.id,
+              conversationKey: `${conversationKey}:txid:${res.txid}`,
+            });
+          }
+          return JSON.stringify({
+            status: "PUSH_SENT",
+            challengeId: challenge?.id,
+            txid: res.txid,
+            message: "Duo push sent to the user's phone. Call check_document_auth with the challengeId to poll for approval. Tell the user to approve the push on their phone.",
+          });
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
           if (challenge?.id) {
@@ -2317,20 +2351,8 @@ async function executeTool(
         }
       }
 
-      if (pushResult === "deny") {
-        if (challenge?.id) {
-          await client.models.homePendingAuthChallenge.delete({ id: challenge.id });
-        }
-        await client.models.homeDocumentAccessLog.create({
-          documentId,
-          personId: requester.id,
-          channel: channelForLog,
-          action: "AUTH_DENIED",
-          result: "DENIED",
-          error: "user_denied_or_timeout",
-        });
-        return JSON.stringify({ status: "DENIED", reason: "user_denied" });
-      }
+      // Pre-approved mode ("allow" result from preauth — rare).
+      // Skip push entirely and fall through to payload generation.
 
       // 6. Push approved — log and generate payload
       await client.models.homeDocumentAccessLog.create({
@@ -2440,6 +2462,149 @@ async function executeTool(
       });
     }
 
+    // ── check_document_auth ──────────────────────────────────────────────
+    case "check_document_auth": {
+      const { challengeId, txid } = input as { challengeId: string; txid: string };
+      if (!challengeId || !txid) {
+        return JSON.stringify({ status: "ERROR", reason: "challengeId and txid are required" });
+      }
+
+      // 1. Poll Duo for the push result (instant — no blocking)
+      let pollResult: Awaited<ReturnType<typeof duoAuthStatus>>;
+      try {
+        pollResult = await duoAuthStatus(txid);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return JSON.stringify({ status: "ERROR", reason: `duo_poll_failed: ${msg}` });
+      }
+
+      if (pollResult.result === "waiting") {
+        return JSON.stringify({
+          status: "WAITING",
+          message: "User hasn't responded to the Duo push yet. Call check_document_auth again in a few seconds.",
+        });
+      }
+
+      // 2. Fetch the challenge row to get document + requester info
+      const { data: ch } = await client.models.homePendingAuthChallenge.get({ id: challengeId });
+      if (!ch) {
+        return JSON.stringify({ status: "ERROR", reason: "Challenge not found or expired" });
+      }
+
+      const channelForLog = ctx.chatContext?.channel === "WA_DM" || ctx.chatContext?.channel === "WA_GROUP" ? "WA" : "WEB";
+
+      if (pollResult.result === "deny") {
+        await client.models.homePendingAuthChallenge.delete({ id: challengeId });
+        await client.models.homeDocumentAccessLog.create({
+          documentId: ch.documentId,
+          personId: ch.personId,
+          channel: channelForLog,
+          action: "AUTH_DENIED",
+          result: "DENIED",
+          error: "user_denied_or_timeout",
+        });
+        return JSON.stringify({ status: "DENIED", reason: "user_denied" });
+      }
+
+      // 3. Approved — fetch document, generate payload, deliver via DM
+      await client.models.homeDocumentAccessLog.create({
+        documentId: ch.documentId,
+        personId: ch.personId,
+        channel: channelForLog,
+        action: "AUTH_APPROVED",
+        result: "SUCCESS",
+      });
+
+      const { data: doc } = await client.models.homeDocument.get({ id: ch.documentId });
+      if (!doc) {
+        await client.models.homePendingAuthChallenge.delete({ id: challengeId });
+        return JSON.stringify({ status: "ERROR", reason: "Document not found" });
+      }
+
+      let dmText = "";
+      let deliveryKind: "file" | "number" = "number";
+      if (doc.s3Key) {
+        const bucket = process.env.PHOTOS_BUCKET;
+        if (!bucket) {
+          return JSON.stringify({ status: "ERROR", reason: "PHOTOS_BUCKET env var not set" });
+        }
+        const filename = doc.originalFilename ?? `${doc.title ?? "document"}`;
+        const safeFilename = filename.replace(/"/g, "");
+        const getCmd = new GetObjectCommand({
+          Bucket: bucket,
+          Key: doc.s3Key,
+          ResponseContentDisposition: `attachment; filename="${safeFilename}"`,
+        });
+        const url = await getSignedUrl(s3, getCmd, { expiresIn: 30 * 60 });
+        dmText = `Here's your document: ${doc.title}\n${url}\n(Link expires in 30 minutes.)`;
+        deliveryKind = "file";
+      } else if (doc.documentNumber) {
+        dmText = `${doc.title}: ${doc.documentNumber}`;
+        deliveryKind = "number";
+      } else {
+        await client.models.homePendingAuthChallenge.delete({ id: challengeId });
+        return JSON.stringify({ status: "ERROR", reason: "Document has no file or number to release" });
+      }
+
+      // Deliver via DM
+      await client.models.homeOutboundMessage.create({
+        channel: "WHATSAPP",
+        target: "PERSON",
+        personId: ch.personId,
+        text: dmText,
+        status: "PENDING",
+        kind: "document_release",
+      });
+
+      await client.models.homeDocumentAccessLog.create({
+        documentId: ch.documentId,
+        personId: ch.personId,
+        channel: channelForLog,
+        action: "LINK_ISSUED",
+        result: "SUCCESS",
+      });
+
+      // Look up requester + owner for transparency DM
+      const { data: reqPerson } = await client.models.homePerson.get({ id: ch.personId });
+      if (
+        DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED &&
+        doc.scope === "PERSONAL" &&
+        doc.ownerPersonId &&
+        doc.ownerPersonId !== ch.personId
+      ) {
+        const docTypeLabel = doc.type
+          ? (doc.type as string).toLowerCase().replace(/_/g, " ")
+          : "document";
+        await client.models.homeOutboundMessage.create({
+          channel: "WHATSAPP",
+          target: "PERSON",
+          personId: doc.ownerPersonId,
+          text: `Heads up: ${reqPerson?.name ?? "someone"} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let Gennaro know.`,
+          status: "PENDING",
+          kind: "document_access_notification",
+        });
+      }
+
+      // Update lastUsedAt on the auth row
+      const allAuths = await client.models.homePersonAuth.list();
+      const authRow = (allAuths.data ?? []).find((a: any) => a.personId === ch.personId);
+      if (authRow) {
+        await client.models.homePersonAuth.update({
+          id: authRow.id,
+          lastUsedAt: new Date().toISOString(),
+        });
+      }
+
+      await client.models.homePendingAuthChallenge.delete({ id: challengeId });
+
+      return JSON.stringify({
+        status: "DELIVERED",
+        deliveredVia: "DM",
+        deliveryKind,
+        documentTitle: doc.title,
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -2517,12 +2682,15 @@ questions ("when does my passport expire?", "what's expiring this month?").
 These return redacted metadata only.
 
 When a user asks for the actual file or document number ("send me my
-passport", "what's my Global Entry number?"), call request_document_download.
-It will:
-1. Verify the requester is enrolled in Duo
-2. Send a Duo Push to their phone asking them to approve
-3. Block for up to 60 seconds waiting
-4. On approval, deliver the file/number to the requester's DM only
+passport", "what's my Global Entry number?"), use the two-step flow:
+
+1. Call request_document_download — it fires an ASYNC Duo push and
+   returns {status: "PUSH_SENT", challengeId, txid}. Tell the user to
+   approve the Duo push on their phone.
+2. Call check_document_auth with the challengeId and txid to poll.
+   - If WAITING: call check_document_auth again (the tool loop iterates).
+   - If DELIVERED: confirm to the user ("Sent to your DM").
+   - If DENIED: tell the user the push was denied or timed out.
 
 You MUST NOT paste the downloaded file URL or document number in your text
 response to the user. The tool handles delivery via DM automatically and
@@ -2531,9 +2699,8 @@ just confirm the delivery ("Sent to your DM — tap the link to open your
 passport. It expires in 30 minutes.") or explain the error.
 
 If the current conversation is a group chat, acknowledge the request in
-group with something like "I'll DM you a Duo push prompt" BEFORE calling
-request_document_download. The tool will block during Duo approval, so the
-group acknowledgment should go out first.
+group with something like "Approve the Duo push on your phone" after
+calling request_document_download.
 
 Never include documentNumber from list_documents output in your responses —
 the tool returns "<REDACTED>" and you should not try to work around this.
