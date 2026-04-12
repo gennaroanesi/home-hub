@@ -58,12 +58,14 @@ const INVOKE_MUTATION = `
     $history: AWSJSON
     $sender: String
     $imageS3Keys: [String]
+    $chatContext: AWSJSON
   ) {
     invokeHomeAgent(
       message: $message
       history: $history
       sender: $sender
       imageS3Keys: $imageS3Keys
+      chatContext: $chatContext
     ) {
       message
       actionsTaken {
@@ -105,11 +107,17 @@ export interface HistoryMessage {
   attachments?: HistoryAttachment[];
 }
 
+export interface ChatContext {
+  channel: "WA_GROUP" | "WA_DM" | "WEB";
+  chatJid: string | null;
+}
+
 export async function invokeHomeAgent(
   message: string,
   sender: string,
   history: HistoryMessage[] = [],
-  imageS3Keys?: string[]
+  imageS3Keys?: string[],
+  chatContext?: ChatContext
 ): Promise<AgentResponse> {
   const data = await callAppSync<{ invokeHomeAgent: AgentResponse }>(INVOKE_MUTATION, {
     message,
@@ -120,6 +128,8 @@ export async function invokeHomeAgent(
     // Omit the field entirely (null) when no images — keeps the mutation
     // equivalent to the pre-phase-3 shape for text-only calls.
     imageS3Keys: imageS3Keys && imageS3Keys.length > 0 ? imageS3Keys : null,
+    // chatContext is AWSJSON — serialize it.
+    chatContext: chatContext ? JSON.stringify(chatContext) : null,
   });
   return data.invokeHomeAgent;
 }
@@ -212,4 +222,26 @@ const GET_PERSON_QUERY = `
 export async function getPerson(id: string): Promise<PersonLite | null> {
   const data = await callAppSync<{ getHomePerson: PersonLite | null }>(GET_PERSON_QUERY, { id });
   return data.getHomePerson;
+}
+
+// ── List all persons (for DM phone-number cache) ────────────────────────────
+
+const LIST_PERSONS_QUERY = `
+  query ListPersons {
+    listHomePeople(limit: 100) {
+      items {
+        id
+        name
+        phoneNumber
+      }
+    }
+  }
+`;
+
+export async function listPersons(): Promise<PersonLite[]> {
+  const data = await callAppSync<{ listHomePeople: { items: PersonLite[] } }>(
+    LIST_PERSONS_QUERY,
+    {}
+  );
+  return data.listHomePeople.items ?? [];
 }

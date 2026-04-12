@@ -2452,6 +2452,7 @@ interface AgentArgs {
   history?: any[];
   sender?: string;
   imageS3Keys?: string[] | null;
+  chatContext?: string | ChatContext | null;
 }
 
 interface AgentResponse {
@@ -2466,6 +2467,7 @@ export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (
     history: conversationHistory = [],
     sender = "unknown",
     imageS3Keys = [],
+    chatContext: rawChatContext,
   } = event.arguments;
 
   const now = new Date();
@@ -2612,12 +2614,28 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];
-  // Channel defaults to WEB in wave 2a; commit 3 wires the WA bot to
-  // pass an explicit chatContext arg on the mutation so tools can tell
-  // whether the request came from a group vs. DM.
+  // Parse the chatContext arg. It arrives as AWSJSON (a string) from the
+  // WA bot, or as an object from the web UI (which doesn't pass it yet).
+  let parsedChatContext: ChatContext = { channel: "WEB", chatJid: null };
+  if (rawChatContext) {
+    try {
+      const cc =
+        typeof rawChatContext === "string"
+          ? JSON.parse(rawChatContext)
+          : rawChatContext;
+      if (cc && cc.channel) {
+        parsedChatContext = {
+          channel: cc.channel as AgentChannel,
+          chatJid: cc.chatJid ?? null,
+        };
+      }
+    } catch {
+      // Malformed — keep default
+    }
+  }
   const toolCtx: ToolContext = {
     attachments: [],
-    chatContext: { channel: "WEB", chatJid: null },
+    chatContext: parsedChatContext,
   };
 
   // Agentic loop

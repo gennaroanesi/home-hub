@@ -15,9 +15,11 @@ import {
   markOutboundMessageSent,
   markOutboundMessageFailed,
   getPerson,
+  listPersons,
   type OutboundMessage,
   type HistoryMessage,
   type HistoryAttachment,
+  type ChatContext,
 } from "./appsync.js";
 import { uploadAgentImage } from "./s3-upload.js";
 import { startServer, updateQR, updateStatus } from "./qr-server.js";
@@ -77,6 +79,39 @@ function isOnCooldown(sender: string): boolean {
   if (Date.now() - last < COOLDOWN_MS) return true;
   cooldowns.set(sender, Date.now());
   return false;
+}
+
+// ── Known household members phone cache ────────────────────────────────────
+// Used to gate DM access: only members whose phoneNumber is in homePerson
+// can interact with the bot via direct message. The cache is loaded once
+// at startup and refreshed every 10 minutes. Phone numbers are stored as
+// E.164 (+12125551234) and compared as the digit-only suffix without the
+// leading "+", since WA JIDs use the raw digits.
+
+const KNOWN_PHONES_REFRESH_MS = 10 * 60 * 1000;
+let knownPhones: Map<string, string> = new Map(); // digits → personName
+
+async function refreshKnownPhones(): Promise<void> {
+  try {
+    const persons = await listPersons();
+    const next = new Map<string, string>();
+    for (const p of persons) {
+      if (p.phoneNumber) {
+        const digits = p.phoneNumber.replace(/[^\d]/g, "");
+        if (digits) next.set(digits, p.name);
+      }
+    }
+    knownPhones = next;
+    logger.info({ count: next.size }, "Refreshed known household phone cache");
+  } catch (err) {
+    logger.error({ err }, "Failed to refresh known phones");
+  }
+}
+
+function isKnownDmSender(jid: string): string | null {
+  // JID for DMs is <digits>@s.whatsapp.net
+  const digits = jid.split("@")[0];
+  return knownPhones.get(digits) ?? null;
 }
 
 // ── Outbound message poller ─────────────────────────────────────────────────
@@ -177,6 +212,7 @@ async function startBot() {
 
   // Outbound message poller handle — reset on each connection cycle
   let outboundPollHandle: NodeJS.Timeout | null = null;
+  let phoneCacheHandle: NodeJS.Timeout | null = null;
 
   // Connection updates — QR code and status
   socket.ev.on("connection.update", (update) => {
@@ -196,6 +232,10 @@ async function startBot() {
       if (outboundPollHandle) {
         clearInterval(outboundPollHandle);
         outboundPollHandle = null;
+      }
+      if (phoneCacheHandle) {
+        clearInterval(phoneCacheHandle);
+        phoneCacheHandle = null;
       }
 
       const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
@@ -231,6 +271,14 @@ async function startBot() {
         outboundPollHandle = setInterval(() => pollOutbound(socket), OUTBOUND_POLL_MS);
         logger.info({ intervalMs: OUTBOUND_POLL_MS }, "Outbound message poller started");
       }
+
+      // Load the known-household-phone cache so DMs from members are
+      // accepted. Refresh on an interval to pick up new members.
+      if (!phoneCacheHandle) {
+        refreshKnownPhones();
+        phoneCacheHandle = setInterval(refreshKnownPhones, KNOWN_PHONES_REFRESH_MS);
+        logger.info({ intervalMs: KNOWN_PHONES_REFRESH_MS }, "Known-phones cache refresh started");
+      }
     }
   });
 
@@ -246,18 +294,36 @@ async function startBot() {
       // Ignore own messages
       if (msg.key.fromMe) continue;
 
-      // Only respond in the target group (if configured)
       const chatJid = msg.key.remoteJid;
-      if (!chatJid?.endsWith("@g.us")) continue;
-      if (GROUP_JID && chatJid !== GROUP_JID) continue;
+      if (!chatJid) continue;
+
+      const isGroup = chatJid.endsWith("@g.us");
+      const isDm = chatJid.endsWith("@s.whatsapp.net");
+
+      // DM gate: only respond to known household members. Unknown DMs
+      // (strangers, spam) are silently ignored.
+      let dmSenderName: string | null = null;
+      if (isDm) {
+        dmSenderName = isKnownDmSender(chatJid);
+        if (!dmSenderName) continue;
+      } else if (isGroup) {
+        // Group gate: only respond in the configured group (if set)
+        if (GROUP_JID && chatJid !== GROUP_JID) continue;
+      } else {
+        // Neither group nor DM — broadcast lists, status, etc. Ignore.
+        continue;
+      }
 
       // Unify text + image messages under one "ext-like" view. Plain
-      // conversation messages can't carry mentions so we ignore them, but
-      // both extendedTextMessage AND imageMessage (with caption) can carry
-      // a contextInfo with mentions / quoted messages — we treat them the
-      // same downstream.
+      // conversation messages can't carry mentions so we ignore them in
+      // groups, but DMs don't need mentions — any text from a known member
+      // is treated as an agent request. Both extendedTextMessage AND
+      // imageMessage (with caption) can carry a contextInfo with mentions /
+      // quoted messages — we treat them the same downstream.
       const extText = msg.message?.extendedTextMessage;
       const imageMsg = msg.message?.imageMessage;
+      // Plain conversation message (no extended text, no image).
+      const plainText = msg.message?.conversation;
 
       // Only one will be set in practice. Prefer imageMessage when both are
       // present (WA uses imageMessage for "photo + caption" messages; the
@@ -266,29 +332,28 @@ async function startBot() {
         ? { text: imageMsg.caption ?? "", contextInfo: imageMsg.contextInfo }
         : extText
           ? { text: extText.text ?? "", contextInfo: extText.contextInfo }
-          : null;
+          : isDm && plainText
+            ? { text: plainText, contextInfo: undefined as any }
+            : null;
 
       if (!ext) continue;
 
-      // Trigger 1: bot is @-mentioned (either @s.whatsapp.net or @lid form).
-      // Trigger 2: user replied to a message Janet sent (contextInfo
-      // participant — the quoted message's author — matches one of our
-      // bot IDs). This lets "reply to Janet's message" work without
-      // requiring a fresh @-mention.
-      const mentionedJid = ext.contextInfo?.mentionedJid ?? [];
-      const isMention = mentionedJid.some((j) => botIds.has(j));
-      const quotedAuthor = ext.contextInfo?.participant ?? null;
-      const isReplyToBot = !!(quotedAuthor && botIds.has(quotedAuthor));
+      if (isGroup) {
+        // Group messages require @mention OR reply-to-bot.
+        const mentionedJid = ext.contextInfo?.mentionedJid ?? [];
+        const isMention = mentionedJid.some((j: string) => botIds.has(j));
+        const quotedAuthor = ext.contextInfo?.participant ?? null;
+        const isReplyToBot = !!(quotedAuthor && botIds.has(quotedAuthor));
 
-      if (!isMention && !isReplyToBot) {
-        // Info-level on purpose so we can debug JID-format mismatches in
-        // production without flipping the global log level.
-        logger.info(
-          { chatJid, mentionedJid, quotedAuthor, botIds: [...botIds] },
-          "Group message ignored (not mentioned and not a reply to bot)"
-        );
-        continue;
+        if (!isMention && !isReplyToBot) {
+          logger.info(
+            { chatJid, mentionedJid, quotedAuthor, botIds: [...botIds] },
+            "Group message ignored (not mentioned and not a reply to bot)"
+          );
+          continue;
+        }
       }
+      // DMs from known members always pass through — no mention needed.
 
       // Collect images attached to this turn. Two shapes:
       //   a) direct image-with-caption → msg.message.imageMessage
@@ -371,13 +436,16 @@ async function startBot() {
         }
       }
 
-      // Get sender name
-      const sender = msg.pushName || msg.key.participant?.split("@")[0] || "unknown";
+      // Get sender name. In DMs use the known-person name from our cache
+      // (more reliable than pushName which can be empty or mismatched).
+      const sender = isDm && dmSenderName
+        ? dmSenderName
+        : msg.pushName || msg.key.participant?.split("@")[0] || "unknown";
 
       if (isOnCooldown(sender)) continue;
 
       logger.info(
-        { sender, text, group: chatJid, images: imageS3Keys.length, isMention, isReplyToBot },
+        { sender, text, chatJid, isDm, images: imageS3Keys.length },
         "Received message"
       );
 
@@ -387,11 +455,16 @@ async function startBot() {
         // distinguish multi-person threads in the same chat (history is
         // shared across senders for this group).
         const messageForAgent = `${sender}: ${text}`;
+        const chatContext: ChatContext = {
+          channel: isDm ? "WA_DM" : "WA_GROUP",
+          chatJid,
+        };
         const response = await invokeHomeAgent(
           messageForAgent,
           sender,
           history,
-          imageS3Keys.length > 0 ? imageS3Keys : undefined
+          imageS3Keys.length > 0 ? imageS3Keys : undefined,
+          chatContext
         );
 
         // Update memory with the turn we just had so the next call sees

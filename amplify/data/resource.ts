@@ -621,6 +621,10 @@ const schema = a
         // base64-encodes it, and sends it as an image content block to
         // Claude alongside the text message. Optional.
         imageS3Keys: a.string().array(),
+        // Chat context from the WA bot: { channel: "WA_GROUP"|"WA_DM"|"WEB",
+        // chatJid: string|null }. Agent tools use this to decide whether to
+        // redirect sensitive payloads to DM (group) or respond inline (DM/web).
+        chatContext: a.json(),
       })
       .returns(a.ref("homeAgentResponse"))
       .handler(a.handler.function(homeAgent)),
