@@ -49,7 +49,9 @@ async function getCredentials(): Promise<DuoCredentials> {
 }
 
 function duoUrlEncode(s: string): string {
-  return encodeURIComponent(s).replace(/%20/g, "+");
+  // Use %20 for spaces, not +. Duo's server-side HMAC uses %20.
+  // See amplify/functions/agent/duo.ts for the full explanation.
+  return encodeURIComponent(s);
 }
 
 function signRequest(

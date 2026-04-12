@@ -55,10 +55,13 @@ async function getCredentials(): Promise<DuoCredentials> {
 }
 
 function duoUrlEncode(s: string): string {
-  // application/x-www-form-urlencoded: space -> "+", everything else
-  // per RFC 3986 unreserved. encodeURIComponent is close enough —
-  // Duo's reference implementation does the same swap.
-  return encodeURIComponent(s).replace(/%20/g, "+");
+  // Use strict RFC 3986 percent-encoding (%20 for spaces, NOT +).
+  // Duo's docs suggest form-urlencoded (+ for spaces), but their
+  // server-side HMAC computation uses %20. Verified empirically:
+  // + causes 40103 signature mismatch on any param containing
+  // spaces (pushinfo values, type field, etc.). %20 works for all
+  // endpoints (preauth, auth, auth_status) with any param values.
+  return encodeURIComponent(s);
 }
 
 function canonicalizeParams(params: Record<string, string>): string {
@@ -191,20 +194,28 @@ export async function pushAuth(params: {
   displayUsername?: string; // what the push renders — falls back to username
   async?: "0" | "1"; // "1" = return immediately with txid, poll via authStatus
 }): Promise<AuthResponse & { txid?: string }> {
-  // Duo's pushinfo param is a URL-encoded key=value string on the wire.
-  // We pass it RAW here (e.g. "Document=FAA Cert&Requested by=Gennaro")
-  // and let canonicalizeParams / duoUrlEncode handle the single encoding
-  // pass for both the signature and the body. Pre-encoding it would cause
-  // double-encoding (= → %3D → %253D) and a 40103 signature mismatch.
-  const pushinfoRaw = Object.entries(params.pushinfo)
-    .map(([k, v]) => `${k}=${v}`)
+  // Duo's pushinfo param is itself a URL-encoded key=value string. The
+  // outer canonicalization (canonicalizeParams) will encode the whole
+  // value once more for the HMAC signature. So pushinfo's inner keys and
+  // values must be pre-encoded BEFORE being passed as a param — otherwise
+  // spaces in values (e.g. "FAA Pilot Certificate") end up as "+" in the
+  // raw string, which canonicalizeParams leaves as-is, but Duo's server
+  // expects the pre-encoded form (%20 or +) to be encoded again (%2520
+  // or %2B). Verified empirically: pre-encoding with encodeURIComponent
+  // + space→+ swap is the pattern that passes Duo's signature check.
+  // pushinfo is itself a URL-encoded key=value string. Pre-encode the
+  // inner keys and values with encodeURIComponent (%20 for spaces).
+  // The outer canonicalizeParams will encode the whole value again for
+  // the HMAC signature — this double-encoding is correct and expected.
+  const pushinfoPreEncoded = Object.entries(params.pushinfo)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join("&");
   const body: Record<string, string> = {
     username: params.username,
     factor: "push",
     device: params.device ?? "auto",
     async: params.async ?? "0",
-    pushinfo: pushinfoRaw,
+    pushinfo: pushinfoPreEncoded,
   };
   if (params.type) body.type = params.type;
   if (params.displayUsername) body.display_username = params.displayUsername;
