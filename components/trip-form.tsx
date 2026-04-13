@@ -7,7 +7,7 @@ import { Input, Textarea } from "@heroui/input";
 import { DateInput } from "./date-input";
 import { Select, SelectItem } from "@heroui/select";
 import { addToast } from "@heroui/react";
-import { FaPlus, FaTrash, FaCalendarPlus } from "react-icons/fa";
+import { FaPlus, FaTrash, FaCalendarPlus, FaSave } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
@@ -382,6 +382,16 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                   <Button
                     size="sm"
                     isIconOnly
+                    variant="flat"
+                    color="primary"
+                    onPress={() => save()}
+                    title="Save trip"
+                  >
+                    <FaSave size={10} />
+                  </Button>
+                  <Button
+                    size="sm"
+                    isIconOnly
                     variant="light"
                     color="danger"
                     onPress={removeLeg}
@@ -558,6 +568,16 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                       </SelectItem>
                     ))}
                   </Select>
+                  <Button
+                    size="sm"
+                    isIconOnly
+                    variant="flat"
+                    color="primary"
+                    onPress={() => save()}
+                    title="Save trip"
+                  >
+                    <FaSave size={10} />
+                  </Button>
                   <Button
                     size="sm"
                     isIconOnly
