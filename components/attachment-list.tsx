@@ -12,7 +12,7 @@ import type { Schema } from "@/amplify/data/resource";
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Attachment = Schema["homeAttachment"]["type"];
-type ParentType = "TRIP" | "TRIP_LEG" | "EVENT" | "TASK" | "BILL";
+type ParentType = "TRIP" | "TRIP_LEG" | "RESERVATION" | "EVENT" | "TASK" | "BILL";
 
 const MAX_SIZE_BYTES = 25 * 1024 * 1024; // 25 MB
 

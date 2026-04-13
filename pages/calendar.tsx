@@ -26,6 +26,7 @@ import { FaPlus, FaTrash, FaArrowLeft, FaList, FaPlane } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
+import { AttachmentSection } from "@/components/attachment-section";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
@@ -860,6 +861,17 @@ export default function CalendarPage() {
                   </Select>
                   {eventForm.id && (
                     <ChecklistPanel entityType="EVENT" entityId={eventForm.id} />
+                  )}
+                  {eventForm.id && (
+                    <div className="mt-2">
+                      <p className="text-xs font-semibold text-default-500 uppercase tracking-wide mb-1.5">
+                        Attachments
+                      </p>
+                      <AttachmentSection
+                        parentType="EVENT"
+                        parentId={eventForm.id}
+                      />
+                    </div>
                   )}
                 </ModalBody>
                 <ModalFooter>

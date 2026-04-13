@@ -23,7 +23,7 @@ const ALLOWED_TYPES: Record<string, string> = {
   "application/pdf": "pdf",
 };
 
-const VALID_PARENT_TYPES = new Set(["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"]);
+const VALID_PARENT_TYPES = new Set(["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"]);
 
 /**
  * POST /api/attachments/upload-url

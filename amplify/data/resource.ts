@@ -521,7 +521,7 @@ const schema = a
     // home/attachments/{parentType}/{parentId}/{uuid}.{ext}.
     homeAttachment: a
       .model({
-        parentType: a.enum(["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"]),
+        parentType: a.enum(["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"]),
         parentId: a.id().required(),
         s3Key: a.string().required(),
         filename: a.string().required(),

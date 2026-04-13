@@ -11,6 +11,7 @@ import { FaPlus, FaTrash, FaCalendarPlus } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
+import { AttachmentSection } from "@/components/attachment-section";
 import { FreeCombobox } from "@/components/free-combobox";
 import { PhotoUploader } from "@/components/photo-uploader";
 import { PhotoGrid } from "@/components/photo-grid";
@@ -643,6 +644,12 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                   onValueChange={(v) => updateRes({ notes: v })}
                   minRows={1}
                 />
+                {res.id && (
+                  <AttachmentSection
+                    parentType="RESERVATION"
+                    parentId={res.id}
+                  />
+                )}
                 <div className="flex justify-end">
                   <Button
                     size="sm"

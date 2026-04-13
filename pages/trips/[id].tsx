@@ -9,7 +9,6 @@ import { FaArrowLeft, FaTrash } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
-import { AttachmentList } from "@/components/attachment-list";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -21,7 +20,6 @@ type Photo = Schema["homePhoto"]["type"];
 type Person = Schema["homePerson"]["type"];
 type Album = Schema["homeAlbum"]["type"];
 type AlbumPhoto = Schema["homeAlbumPhoto"]["type"];
-type Attachment = Schema["homeAttachment"]["type"];
 
 export default function TripDetailPage() {
   const router = useRouter();
@@ -37,7 +35,6 @@ export default function TripDetailPage() {
   const [allPhotos, setAllPhotos] = useState<Photo[]>([]);
   const [albums, setAlbums] = useState<Album[]>([]);
   const [albumPhotos, setAlbumPhotos] = useState<AlbumPhoto[]>([]);
-  const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [loading, setLoading] = useState(true);
   const [photosUploading, setPhotosUploading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -57,7 +54,7 @@ export default function TripDetailPage() {
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [peopleRes, legsRes, reservationsRes, photosRes, albumsRes, albumPhotosRes, attachRes] =
+    const [peopleRes, legsRes, reservationsRes, photosRes, albumsRes, albumPhotosRes] =
       await Promise.all([
         client.models.homePerson.list(),
         client.models.homeTripLeg.list({ limit: 1000 }),
@@ -65,12 +62,6 @@ export default function TripDetailPage() {
         client.models.homePhoto.list({ limit: 1000 }),
         client.models.homeAlbum.list({ limit: 500 }),
         client.models.homeAlbumPhoto.list({ limit: 5000 }),
-        typeof id === "string" && id !== "new"
-          ? client.models.homeAttachment.list({
-              filter: { parentId: { eq: id } },
-              limit: 200,
-            })
-          : Promise.resolve({ data: [] as Attachment[] }),
       ]);
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setAllLegs(legsRes.data ?? []);
@@ -78,11 +69,6 @@ export default function TripDetailPage() {
     setAllPhotos(photosRes.data ?? []);
     setAlbums(albumsRes.data ?? []);
     setAlbumPhotos(albumPhotosRes.data ?? []);
-    setAttachments(
-      (attachRes.data ?? []).sort(
-        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-      )
-    );
 
     if (typeof id === "string" && id !== "new") {
       const { data } = await client.models.homeTrip.get({ id });
@@ -197,20 +183,6 @@ export default function TripDetailPage() {
           onUploadingChange={setPhotosUploading}
         />
 
-        {/* Attachments — below the form, only for existing trips */}
-        {!isNew && trip && (
-          <div className="mt-6">
-            <h2 className="text-sm font-semibold text-default-600 uppercase tracking-wide mb-2">
-              Attachments
-            </h2>
-            <AttachmentList
-              parentType="TRIP"
-              parentId={trip.id}
-              attachments={attachments}
-              onChanged={loadAll}
-            />
-          </div>
-        )}
       </div>
     </DefaultLayout>
   );

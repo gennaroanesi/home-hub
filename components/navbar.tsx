@@ -42,6 +42,7 @@ import {
   FaSignOutAlt,
   FaBars,
   FaCheckSquare,
+  FaPaperclip,
 } from "react-icons/fa";
 
 // ── Nav group definitions ──────────────────────────────────────────────
@@ -81,6 +82,7 @@ const NAV: NavEntry[] = [
       { name: "Calendar", href: "/calendar", icon: <FaCalendarAlt /> },
       { name: "Trips", href: "/trips", icon: <FaPlane /> },
       { name: "Checklists", href: "/checklists", icon: <FaCheckSquare /> },
+      { name: "Attachments", href: "/attachments", icon: <FaPaperclip /> },
     ],
   },
   {

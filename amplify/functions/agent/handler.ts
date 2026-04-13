@@ -1275,7 +1275,7 @@ const tools: Anthropic.Tool[] = [
       properties: {
         parentType: {
           type: "string",
-          enum: ["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"],
+          enum: ["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"],
         },
         parentId: { type: "string" },
         s3Key: { type: "string" },
@@ -1295,7 +1295,7 @@ const tools: Anthropic.Tool[] = [
       properties: {
         parentType: {
           type: "string",
-          enum: ["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"],
+          enum: ["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"],
           description: "Optional filter by parent type.",
         },
         parentId: {
