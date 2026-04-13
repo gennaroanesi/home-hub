@@ -8,6 +8,7 @@ import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
+import { addToast } from "@heroui/react";
 import {
   FaArrowLeft,
   FaSync,
@@ -117,6 +118,30 @@ function renderLock(s: HassState): React.ReactNode {
   );
 }
 
+// Device control actions by domain
+function getDeviceActions(device: Device): { label: string; service: string; icon: React.ReactNode; color: "primary" | "success" | "warning" | "danger" }[] {
+  const s = getState(device);
+  if (!s) return [];
+  switch (device.domain) {
+    case "lock":
+      return s.state === "locked"
+        ? [{ label: "Unlock", service: "unlock", icon: <FaLockOpen size={10} />, color: "warning" }]
+        : [{ label: "Lock", service: "lock", icon: <FaLock size={10} />, color: "success" }];
+    case "cover":
+      return s.state === "closed"
+        ? [{ label: "Open", service: "open_cover", icon: null, color: "warning" }]
+        : [{ label: "Close", service: "close_cover", icon: null, color: "success" }];
+    case "switch":
+    case "light":
+    case "fan":
+      return s.state === "off"
+        ? [{ label: "Turn on", service: "turn_on", icon: null, color: "primary" }]
+        : [{ label: "Turn off", service: "turn_off", icon: null, color: "warning" }];
+    default:
+      return [];
+  }
+}
+
 function renderCover(s: HassState): React.ReactNode {
   // Garage / door: "open" | "closed" | "opening" | "closing"
   const state = s.state ?? "—";
@@ -166,6 +191,9 @@ export default function DevicesPage() {
   // saved to the user's profile because the expected flow is "flip it
   // on, pin the things you care about, flip it off".
   const [showUnpinned, setShowUnpinned] = useState(false);
+  const [controlling, setControlling] = useState<string | null>(null); // entityId being controlled
+  const [changingSensitivity, setChangingSensitivity] = useState<string | null>(null); // device.id
+  const [myDuoUsername, setMyDuoUsername] = useState<string | null>(null);
 
   useEffect(() => {
     checkAuth();
@@ -175,6 +203,12 @@ export default function DevicesPage() {
     try {
       await getCurrentUser();
       await loadDevices();
+      // Load Duo username for HIGH-sensitivity device control
+      try {
+        const { data: auths } = await client.models.homePersonAuth.list({ limit: 10 });
+        const first = (auths ?? [])[0];
+        if (first) setMyDuoUsername((first as any).duoUsername ?? null);
+      } catch { /* homePersonAuth may not exist yet */ }
     } catch {
       router.push("/login");
     }
@@ -218,6 +252,85 @@ export default function DevicesPage() {
     } catch (err) {
       console.error("Failed to toggle pin:", err);
       await loadDevices();
+    }
+  }
+
+  async function controlDevice(device: Device, service: string) {
+    setControlling(device.entityId ?? null);
+    const isHigh = device.sensitivity === "HIGH";
+    if (isHigh) {
+      addToast({ title: "Duo push sent", description: "Approve on your phone…", color: "primary" });
+    }
+    try {
+      const res = await fetch("/api/devices/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entityId: device.entityId,
+          domain: device.domain,
+          service,
+          sensitivity: device.sensitivity,
+          duoUsername: isHigh ? myDuoUsername : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast({ title: "Control failed", description: data.error ?? "Unknown error", color: "danger" });
+        return;
+      }
+      addToast({ title: `${service} sent`, description: device.friendlyName ?? device.entityId });
+      // Refresh device state after a short delay for HA to update
+      setTimeout(() => handleSync(), 3000);
+    } catch (err) {
+      addToast({ title: "Control failed", description: err instanceof Error ? err.message : String(err), color: "danger" });
+    } finally {
+      setControlling(null);
+    }
+  }
+
+  async function changeSensitivity(device: Device, newValue: string) {
+    if (newValue === (device.sensitivity ?? "READ_ONLY")) return;
+
+    // Require Duo approval to change sensitivity — this is a security-critical setting
+    if (!myDuoUsername) {
+      addToast({ title: "Duo required", description: "Link your Duo account at /security first", color: "warning" });
+      return;
+    }
+
+    setChangingSensitivity(device.id);
+    addToast({ title: "Duo push sent", description: "Approve to change sensitivity…", color: "primary" });
+    try {
+      const res = await fetch("/api/devices/control", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          entityId: "__sensitivity_change__",
+          domain: "admin",
+          service: "set_sensitivity",
+          sensitivity: "HIGH", // always require Duo for sensitivity changes
+          duoUsername: myDuoUsername,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast({ title: "Denied", description: data.error ?? "Duo approval failed", color: "danger" });
+        return;
+      }
+
+      // Duo approved — update the device
+      await client.models.homeDevice.update({
+        id: device.id,
+        sensitivity: newValue as any,
+      });
+      setDevices((prev) =>
+        prev.map((d) => (d.id === device.id ? { ...d, sensitivity: newValue } as any : d))
+      );
+      addToast({ title: "Sensitivity updated", description: `${device.friendlyName}: ${newValue}` });
+    } catch (err) {
+      addToast({ title: "Failed", description: err instanceof Error ? err.message : String(err), color: "danger" });
+      await loadDevices(); // revert optimistic state
+    } finally {
+      setChangingSensitivity(null);
     }
   }
 
@@ -388,6 +501,46 @@ export default function DevicesPage() {
                     </CardHeader>
                     <CardBody className="px-4 pt-0 pb-3">
                       <p className="text-sm">{renderDeviceState(device)}</p>
+                      {/* Control buttons */}
+                      {device.sensitivity !== "READ_ONLY" && getDeviceActions(device).length > 0 && (
+                        <div className="flex gap-2 mt-2">
+                          {getDeviceActions(device).map((action) => (
+                            <Button
+                              key={action.service}
+                              size="sm"
+                              variant="flat"
+                              color={action.color}
+                              startContent={action.icon}
+                              isLoading={controlling === device.entityId}
+                              isDisabled={controlling !== null || (device.sensitivity === "HIGH" && !myDuoUsername)}
+                              onPress={() => controlDevice(device, action.service)}
+                            >
+                              {action.label}
+                            </Button>
+                          ))}
+                          {device.sensitivity === "HIGH" && !myDuoUsername && (
+                            <span className="text-xs text-default-400 self-center">Duo required — link at /security</span>
+                          )}
+                        </div>
+                      )}
+                      {/* Sensitivity selector */}
+                      <div className="flex items-center gap-2 mt-2">
+                        <span className="text-xs text-default-400">Sensitivity:</span>
+                        <select
+                          className="text-xs border border-default-200 rounded px-1.5 py-0.5 bg-white"
+                          value={device.sensitivity ?? "READ_ONLY"}
+                          onChange={(e) => changeSensitivity(device, e.target.value)}
+                          disabled={changingSensitivity === device.id}
+                        >
+                          <option value="READ_ONLY">Read-only</option>
+                          <option value="LOW">Low</option>
+                          <option value="MEDIUM">Medium</option>
+                          <option value="HIGH">High</option>
+                        </select>
+                        {changingSensitivity === device.id && (
+                          <span className="text-xs text-default-400">Verifying…</span>
+                        )}
+                      </div>
                       <p className="text-xs text-default-400 mt-1 truncate">
                         {device.entityId}
                       </p>
@@ -399,9 +552,9 @@ export default function DevicesPage() {
           ))}
         </div>
 
-        {/* v1 disclaimer */}
+        {/* Sensitivity note */}
         <p className="text-xs text-default-400 mt-8 text-center">
-          Read-only. Device control coming in v2.
+          Devices set to READ_ONLY have no controls. Change sensitivity in the device settings to enable.
         </p>
       </div>
     </DefaultLayout>
