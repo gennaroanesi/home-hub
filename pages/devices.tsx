@@ -19,6 +19,7 @@ import {
   FaWarehouse,
   FaPlug,
   FaRobot,
+  FaPlay,
   FaQuestion,
   FaStar,
   FaRegStar,
@@ -77,6 +78,10 @@ function domainIcon(domain: string | null | undefined) {
       return <FaPlug />;
     case "vacuum":
       return <FaRobot />;
+    case "scene":
+      return <FaPlay />;
+    case "script":
+      return <FaPlay />;
     default:
       return <FaQuestion />;
   }
@@ -137,6 +142,10 @@ function getDeviceActions(device: Device): { label: string; service: string; ico
       return s.state === "off"
         ? [{ label: "Turn on", service: "turn_on", icon: null, color: "primary" }]
         : [{ label: "Turn off", service: "turn_off", icon: null, color: "warning" }];
+    case "scene":
+      return [{ label: "Activate", service: "turn_on", icon: null, color: "primary" }];
+    case "script":
+      return [{ label: "Run", service: "turn_on", icon: null, color: "primary" }];
     default:
       return [];
   }
