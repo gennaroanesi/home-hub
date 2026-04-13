@@ -515,6 +515,27 @@ const schema = a
       )
       .handler(a.handler.function(hassSync)),
 
+    // ── Attachment ───────────────────────────────────────────────────────
+    // Generic file attachment linked to any parent entity via a polymorphic
+    // parentType + parentId pair. Files live in S3 under
+    // home/attachments/{parentType}/{parentId}/{uuid}.{ext}.
+    homeAttachment: a
+      .model({
+        parentType: a.enum(["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"]),
+        parentId: a.id().required(),
+        s3Key: a.string().required(),
+        filename: a.string().required(),
+        contentType: a.string(), // e.g. "image/jpeg", "application/pdf"
+        sizeBytes: a.integer(),
+        caption: a.string(),
+        uploadedBy: a.string(), // "ui" | "agent" | person name
+      })
+      .secondaryIndexes((index) => [index("parentId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Shopping ────────────────────────────────────────────────────────
     // Multiple named lists (e.g. "Supermarket", "Home Depot"), each with items.
     homeShoppingList: a

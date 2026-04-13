@@ -1266,6 +1266,46 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
+  {
+    name: "attach_file",
+    description:
+      "Create an attachment record linking an already-uploaded S3 object to a parent entity (trip, trip leg, event, task, or bill). Used after the WA bot uploads a file to the inbox, or after a web upload completes. The s3Key should be the full S3 key relative to the bucket root.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        parentType: {
+          type: "string",
+          enum: ["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"],
+        },
+        parentId: { type: "string" },
+        s3Key: { type: "string" },
+        filename: { type: "string" },
+        contentType: { type: "string" },
+        caption: { type: "string", description: "Human-readable label, e.g. 'Hotel Confirmation', 'Boarding Pass'. Inferred from the user's message." },
+      },
+      required: ["parentType", "parentId", "s3Key", "filename"],
+    },
+  },
+  {
+    name: "list_attachments",
+    description:
+      "List file attachments for a parent entity. Returns filename, caption, content type, and size for each. Use when the user asks 'what files are attached to the Chicago trip' or 'show me the boarding pass'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        parentType: {
+          type: "string",
+          enum: ["TRIP", "TRIP_LEG", "EVENT", "TASK", "BILL"],
+          description: "Optional filter by parent type.",
+        },
+        parentId: {
+          type: "string",
+          description: "The ID of the parent entity to list attachments for.",
+        },
+      },
+      required: ["parentId"],
+    },
+  },
 ];
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -3477,6 +3517,51 @@ async function executeTool(
       );
 
       return JSON.stringify({ checklists: results });
+    }
+
+    case "attach_file": {
+      const { data, errors } = await client.models.homeAttachment.create({
+        parentType: input.parentType,
+        parentId: input.parentId,
+        s3Key: input.s3Key,
+        filename: input.filename,
+        contentType: input.contentType ?? null,
+        caption: input.caption ?? null,
+        uploadedBy: "agent",
+      });
+      if (errors?.length) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        attachmentId: data?.id,
+        caption: input.caption ?? input.filename,
+        parentType: input.parentType,
+        parentId: input.parentId,
+      });
+    }
+
+    case "list_attachments": {
+      const { data: attachments } = await client.models.homeAttachment.list({
+        filter: {
+          parentId: { eq: input.parentId },
+          ...(input.parentType ? { parentType: { eq: input.parentType } } : {}),
+        },
+        limit: 100,
+      });
+      const sorted = (attachments ?? []).sort(
+        (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+      );
+      return JSON.stringify({
+        attachments: sorted.map((a) => ({
+          id: a.id,
+          filename: a.filename,
+          caption: a.caption,
+          contentType: a.contentType,
+          sizeBytes: a.sizeBytes,
+          uploadedBy: a.uploadedBy,
+          createdAt: a.createdAt,
+        })),
+        count: sorted.length,
+      });
     }
 
     default:

@@ -21,12 +21,14 @@ import { FaPlus, FaTrash, FaPen, FaSync, FaArrowLeft } from "react-icons/fa";
 import { RRule } from "rrule";
 
 import DefaultLayout from "@/layouts/default";
+import { AttachmentList } from "@/components/attachment-list";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Task = Schema["homeTask"]["type"];
 type Person = Schema["homePerson"]["type"];
+type Attachment = Schema["homeAttachment"]["type"];
 
 type FilterStatus = "open" | "completed" | "all";
 
@@ -46,6 +48,7 @@ export default function TasksPage() {
   const [formDueDate, setFormDueDate] = useState("");
   const [formRecurrence, setFormRecurrence] = useState("");
   const [isCustomRecurrence, setIsCustomRecurrence] = useState(false);
+  const [taskAttachments, setTaskAttachments] = useState<Attachment[]>([]);
 
   useEffect(() => {
     checkAuth();
@@ -96,10 +99,11 @@ export default function TasksPage() {
     setFormDueDate("");
     setFormRecurrence("");
     setIsCustomRecurrence(false);
+    setTaskAttachments([]);
     onOpen();
   }
 
-  function openEditModal(task: Task) {
+  async function openEditModal(task: Task) {
     setEditingTask(task);
     setFormTitle(task.title);
     setFormDescription(task.description ?? "");
@@ -108,6 +112,37 @@ export default function TasksPage() {
     setFormRecurrence(task.recurrence ?? "");
     setIsCustomRecurrence(task.recurrence ? !RECURRENCE_PRESETS.some((p) => p.value === task.recurrence) : false);
     onOpen();
+    // Load attachments for this task (non-blocking — modal opens immediately)
+    try {
+      const { data } = await client.models.homeAttachment.list({
+        filter: { parentId: { eq: task.id } },
+        limit: 100,
+      });
+      setTaskAttachments(
+        (data ?? []).sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        )
+      );
+    } catch {
+      setTaskAttachments([]);
+    }
+  }
+
+  async function reloadTaskAttachments() {
+    if (!editingTask) return;
+    try {
+      const { data } = await client.models.homeAttachment.list({
+        filter: { parentId: { eq: editingTask.id } },
+        limit: 100,
+      });
+      setTaskAttachments(
+        (data ?? []).sort(
+          (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+        )
+      );
+    } catch {
+      setTaskAttachments([]);
+    }
   }
 
   async function saveTask(onClose: () => void) {
@@ -401,6 +436,19 @@ export default function TasksPage() {
                       placeholder="RRULE:FREQ=MONTHLY;BYMONTHDAY=1"
                       description="e.g. BYMONTHDAY=1 for 1st of month, BYDAY=MO for every Monday"
                     />
+                  )}
+                  {editingTask && (
+                    <div className="mt-2">
+                      <p className="text-xs font-semibold text-default-500 uppercase tracking-wide mb-1.5">
+                        Attachments
+                      </p>
+                      <AttachmentList
+                        parentType="TASK"
+                        parentId={editingTask.id}
+                        attachments={taskAttachments}
+                        onChanged={reloadTaskAttachments}
+                      />
+                    </div>
                   )}
                 </ModalBody>
                 <ModalFooter>
