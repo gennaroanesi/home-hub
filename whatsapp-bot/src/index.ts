@@ -117,7 +117,9 @@ async function refreshKnownPhones(): Promise<void> {
 }
 
 function isKnownDmSender(jid: string): string | null {
-  // JID for DMs is <digits>@s.whatsapp.net
+  // JID for DMs is <digits>@s.whatsapp.net or <lid>@lid (v7+ addressing).
+  // For @lid JIDs the digits won't match a phone number, so callers should
+  // also try the remoteJidAlt (phone-based JID) when available.
   const digits = jid.split("@")[0];
   return knownPhones.get(digits) ?? null;
 }
@@ -334,10 +336,10 @@ async function startBot() {
     for (const m of messages) {
       if (!m.key.fromMe) {
         const jid = m.key.remoteJid ?? "?";
-        const isDm = jid.endsWith("@s.whatsapp.net");
+        const isDm = jid.endsWith("@s.whatsapp.net") || jid.endsWith("@lid");
         if (isDm) {
           logger.info(
-            { type, jid, msgKeys: Object.keys(m.message ?? {}), fromMe: m.key.fromMe },
+            { type, jid, altJid: (m.key as any).remoteJidAlt, msgKeys: Object.keys(m.message ?? {}), fromMe: m.key.fromMe },
             "DM upsert event (pre-filter)"
           );
         }
@@ -348,7 +350,10 @@ async function startBot() {
     // out non-notify for group messages — DMs from known members
     // should always be processed regardless of upsert type.
     const hasDm = messages.some(
-      (m) => !m.key.fromMe && m.key.remoteJid?.endsWith("@s.whatsapp.net")
+      (m) => !m.key.fromMe && (
+        m.key.remoteJid?.endsWith("@s.whatsapp.net") ||
+        m.key.remoteJid?.endsWith("@lid")
+      )
     );
     if (type !== "notify" && !hasDm) return;
     if (botIds.size === 0) return; // Not connected yet
@@ -361,13 +366,19 @@ async function startBot() {
       if (!chatJid) continue;
 
       const isGroup = chatJid.endsWith("@g.us");
-      const isDm = chatJid.endsWith("@s.whatsapp.net");
+      const isDm = chatJid.endsWith("@s.whatsapp.net") || chatJid.endsWith("@lid");
 
       // DM gate: only respond to known household members. Unknown DMs
       // (strangers, spam) are silently ignored.
+      // Baileys v7 uses LID addressing — the phone-based JID is in
+      // remoteJidAlt. Try both for the known-sender lookup.
       let dmSenderName: string | null = null;
       if (isDm) {
         dmSenderName = isKnownDmSender(chatJid);
+        const altJid = (msg.key as any).remoteJidAlt as string | undefined;
+        if (!dmSenderName && altJid) {
+          dmSenderName = isKnownDmSender(altJid);
+        }
         if (!dmSenderName) continue;
       } else if (isGroup) {
         // Group gate: only respond in the configured group (if set)
