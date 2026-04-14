@@ -147,6 +147,17 @@ agentLambda.addToRolePolicy(
   })
 );
 
+// Phase 4 (async messaging): agent reads WA-inbound attachments from
+// home/messages/* — images and PDFs the user sent along with the
+// message, stored by the bot before it invokes the Lambda.
+agentLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:GetObject"],
+    resources: ["arn:aws:s3:::cristinegennaro.com/home/messages/*"],
+  })
+);
+
 // Agent Lambda reads the Duo Auth API integration key/secret from
 // Secrets Manager for wave 2's Duo Push flow. The -* suffix matches
 // the 6-char random version suffix Secrets Manager appends to every
@@ -410,6 +421,11 @@ botTaskDef.addContainer("bot", {
     APPSYNC_ENDPOINT: backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl,
     S3_BUCKET: "cristinegennaro.com",
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
+    // Agent Lambda ARN — the bot invokes it asynchronously (InvocationType:
+    // "Event") after writing the inbound message to DynamoDB. Direct invoke
+    // sidesteps AppSync's 30s resolver timeout, which was killing Duo
+    // approval flows and long tool-chain responses.
+    AGENT_LAMBDA_ARN: agentLambda.functionArn,
     // Default to the household group JID. Can be overridden via .env.local /
     // the shell env if you ever need to point the bot at a different group.
     // The bot uses this for both inbound mention filtering (when set, only
@@ -446,6 +462,26 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:PutObject"],
   resources: ["arn:aws:s3:::cristinegennaro.com/home/agent-uploads/*"],
+}));
+
+// Phase 4: async message pipeline. Bot writes inbound messages +
+// attachments to DynamoDB (via AppSync — already permitted above), then
+// invokes the agent Lambda directly with InvocationType="Event". No
+// return value needed; the agent writes its response back to the
+// outbound message queue which the bot's 5s poller consumes.
+botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
+  effect: Effect.ALLOW,
+  actions: ["lambda:InvokeFunction"],
+  resources: [agentLambda.functionArn],
+}));
+
+// Inbound message attachments (images, PDFs, future media) are written
+// by the bot to home/messages/inbound/{uuid}.{ext}. The agent Lambda
+// reads them via the home/* GetObject grant it already has.
+botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
+  effect: Effect.ALLOW,
+  actions: ["s3:PutObject"],
+  resources: ["arn:aws:s3:::cristinegennaro.com/home/messages/*"],
 }));
 
 // ListBucket is required so GetObject on a missing key returns 404 instead of 403

@@ -1,4 +1,3 @@
-import type { AppSyncResolverHandler } from "aws-lambda";
 import Anthropic from "@anthropic-ai/sdk";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
@@ -26,12 +25,17 @@ const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
 const s3 = new S3Client({});
 
-// ── Image attachment helper ──────────────────────────────────────────────────
-// User-uploaded images live under home/agent-uploads/ in the photos bucket
-// (PHOTOS_BUCKET env var, set in backend.ts). The agent Lambda has
-// s3:GetObject scoped to that prefix only.
+// ── Attachment helpers ───────────────────────────────────────────────────────
+// User-uploaded images/PDFs live under home/agent-uploads/ (web UI) or
+// home/messages/inbound/ (WhatsApp bot) in the photos bucket (PHOTOS_BUCKET
+// env var, set in backend.ts). The agent Lambda has s3:GetObject scoped to
+// both prefixes.
 
-type ImagePayload = { mediaType: string; data: string };
+type MediaPayload = {
+  kind: "image" | "pdf";
+  mediaType: string;
+  data: string; // base64
+};
 
 function inferImageMediaType(s3Key: string): string {
   const ext = s3Key.toLowerCase().split(".").pop() ?? "";
@@ -49,7 +53,7 @@ function inferImageMediaType(s3Key: string): string {
   }
 }
 
-async function fetchImageAsBase64(s3Key: string): Promise<ImagePayload> {
+async function fetchS3AsBase64(s3Key: string): Promise<{ contentType: string; data: string }> {
   const bucket = process.env.PHOTOS_BUCKET;
   if (!bucket) throw new Error("PHOTOS_BUCKET env var not set");
 
@@ -64,27 +68,69 @@ async function fetchImageAsBase64(s3Key: string): Promise<ImagePayload> {
   const buf = Buffer.concat(chunks);
 
   return {
-    mediaType: res.ContentType ?? inferImageMediaType(s3Key),
+    contentType: res.ContentType ?? "application/octet-stream",
     data: buf.toString("base64"),
   };
 }
 
-// Build a Claude user message content array from optional images + text.
-// Returns the plain text string when there are no images, so the existing
-// no-image path stays byte-identical.
+// Back-compat: legacy callsites that only care about images.
+async function fetchImageAsBase64(s3Key: string): Promise<MediaPayload> {
+  const { contentType, data } = await fetchS3AsBase64(s3Key);
+  return {
+    kind: "image",
+    mediaType: contentType.startsWith("image/") ? contentType : inferImageMediaType(s3Key),
+    data,
+  };
+}
+
+// Dispatch by content type. Used when loading homeAttachment rows whose
+// contentType is authoritative (WA bot sets it from the actual mimetype).
+async function fetchAttachmentAsMedia(s3Key: string, contentType: string): Promise<MediaPayload | null> {
+  const { data, contentType: s3ContentType } = await fetchS3AsBase64(s3Key);
+  const finalType = contentType || s3ContentType;
+  if (finalType.startsWith("image/")) {
+    return {
+      kind: "image",
+      mediaType: finalType.startsWith("image/") ? finalType : inferImageMediaType(s3Key),
+      data,
+    };
+  }
+  if (finalType === "application/pdf") {
+    return { kind: "pdf", mediaType: "application/pdf", data };
+  }
+  // Unsupported media type — silently drop. The agent won't see it.
+  console.warn(`[agent] Unsupported attachment contentType ${finalType} for ${s3Key}`);
+  return null;
+}
+
+// Build a Claude user message content array from optional media + text.
+// Returns the plain text string when there are no attachments, so the
+// existing no-attachment path stays byte-identical.
 function buildUserContent(
-  images: ImagePayload[],
+  media: MediaPayload[],
   text: string
 ): string | Anthropic.ContentBlockParam[] {
-  if (images.length === 0) return text;
-  const blocks: Anthropic.ContentBlockParam[] = images.map((img) => ({
-    type: "image" as const,
-    source: {
-      type: "base64" as const,
-      media_type: img.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
-      data: img.data,
-    },
-  }));
+  if (media.length === 0) return text;
+  const blocks: Anthropic.ContentBlockParam[] = media.map((m) => {
+    if (m.kind === "pdf") {
+      return {
+        type: "document" as const,
+        source: {
+          type: "base64" as const,
+          media_type: "application/pdf" as const,
+          data: m.data,
+        },
+      };
+    }
+    return {
+      type: "image" as const,
+      source: {
+        type: "base64" as const,
+        media_type: m.mediaType as "image/jpeg" | "image/png" | "image/gif" | "image/webp",
+        data: m.data,
+      },
+    };
+  });
   blocks.push({ type: "text" as const, text });
   return blocks;
 }
@@ -3585,14 +3631,124 @@ interface AgentResponse {
   attachments?: Attachment[];
 }
 
-export const handler: AppSyncResolverHandler<AgentArgs, AgentResponse> = async (event) => {
+// Payload shape for direct Lambda invoke (from the WhatsApp bot). Unlike
+// the AppSync path, the bot persists the inbound message + its attachments
+// in DynamoDB before invoking the Lambda with InvocationType="Event". The
+// Lambda then:
+//   1. Loads the inbound row, enforces idempotency (PENDING → PROCESSING)
+//   2. Fetches its attachments via homeAttachment rows (parentId match)
+//   3. Runs the normal agent loop
+//   4. Writes the response + any tool-generated attachments to
+//      homeOutboundMessage / homeAttachment (parentType=OUTBOUND_MESSAGE)
+//   5. Marks the inbound as RESPONDED
+// The bot's existing outbound poller (5s interval) picks up the response
+// and delivers it via WhatsApp. No AppSync 30s timeout in the critical
+// path — Duo flows and long agent chains have the full 120s Lambda budget.
+interface AsyncInvokePayload {
+  inboundMessageId: string;
+  history?: any[];
+  sender?: string;
+  chatContext?: string | ChatContext | null;
+  replyTarget: {
+    target: "GROUP" | "PERSON";
+    groupJid?: string | null;
+    personId?: string | null;
+  };
+}
+
+function isAsyncInvoke(event: any): event is AsyncInvokePayload {
+  return event && !event.arguments && typeof event.inboundMessageId === "string";
+}
+
+export const handler = async (event: any, context?: any): Promise<AgentResponse | void> => {
+  const isAsync = isAsyncInvoke(event);
+
+  // Normalize args from either invocation mode. In async mode, pull the
+  // user message + attachments from DynamoDB; everything else (history,
+  // sender, chatContext) still rides on the invocation payload since those
+  // are per-call state the bot already knows.
+  let args: AgentArgs;
+  let replyTarget: AsyncInvokePayload["replyTarget"] | null = null;
+  let inboundMessageId: string | null = null;
+  const preloadedMedia: MediaPayload[] = [];
+
+  if (isAsync) {
+    inboundMessageId = event.inboundMessageId;
+    replyTarget = event.replyTarget;
+
+    if (!replyTarget) {
+      console.error(`[agent] async invoke missing replyTarget for inbound ${inboundMessageId}`);
+      return;
+    }
+
+    const client = await getDataClient();
+
+    // Idempotency: only process PENDING. Lambda's async-invoke retry
+    // policy (2 retries by default) would otherwise trigger the agent 3x
+    // on transient failures.
+    const { data: inbound, errors: getErrors } = await client.models.homeInboundMessage.get({
+      id: inboundMessageId!,
+    });
+    if (getErrors?.length) {
+      console.error(`[agent] failed to load inbound ${inboundMessageId}:`, getErrors);
+      return;
+    }
+    if (!inbound) {
+      console.warn(`[agent] inbound ${inboundMessageId} not found, skipping`);
+      return;
+    }
+    if (inbound.status !== "PENDING") {
+      console.log(
+        `[agent] inbound ${inboundMessageId} is ${inbound.status}, skipping (idempotency)`
+      );
+      return;
+    }
+
+    // Lock: mark as PROCESSING. Not a true atomic conditional write (the
+    // Amplify data client doesn't expose DynamoDB ConditionExpression),
+    // but the status check above + the quick update below is good enough
+    // to deflect Lambda's automatic retries — a second invocation will
+    // see PROCESSING and bail.
+    await client.models.homeInboundMessage.update({
+      id: inboundMessageId!,
+      status: "PROCESSING",
+      processingStartedAt: new Date().toISOString(),
+      agentLambdaRequestId: context?.awsRequestId ?? null,
+    });
+
+    // Load attachments (images, PDFs, future media types) attached to the
+    // inbound message.
+    const { data: atts } = await client.models.homeAttachment.list({
+      filter: { parentId: { eq: inboundMessageId! } },
+    });
+    for (const att of atts ?? []) {
+      if (!att.s3Key) continue;
+      try {
+        const m = await fetchAttachmentAsMedia(att.s3Key, att.contentType ?? "");
+        if (m) preloadedMedia.push(m);
+      } catch (err) {
+        console.warn(`[agent] Failed to load attachment ${att.s3Key}:`, err);
+      }
+    }
+
+    args = {
+      message: inbound.text ?? "",
+      history: event.history ?? [],
+      sender: event.sender ?? inbound.senderName ?? "unknown",
+      imageS3Keys: [], // Not used in async mode — attachments came via homeAttachment
+      chatContext: event.chatContext ?? null,
+    };
+  } else {
+    args = event.arguments;
+  }
+
   const {
     message: userMessage,
     history: conversationHistory = [],
     sender = "unknown",
     imageS3Keys = [],
     chatContext: rawChatContext,
-  } = event.arguments;
+  } = args;
 
   const now = new Date();
   const people = await getPeople();
@@ -3724,7 +3880,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
         .map((a: any) => a.s3Key as string);
 
       if (imageKeys.length > 0) {
-        const fetched: ImagePayload[] = [];
+        const fetched: MediaPayload[] = [];
         for (const key of imageKeys) {
           try {
             fetched.push(await fetchImageAsBase64(key));
@@ -3744,20 +3900,24 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     });
   }
 
-  // Fetch any newly-attached images for the current user turn.
-  const currentImages: ImagePayload[] = [];
-  for (const key of imageS3Keys ?? []) {
-    if (!key) continue;
-    try {
-      currentImages.push(await fetchImageAsBase64(key));
-    } catch (err) {
-      console.warn(`[agent] Failed to fetch user-uploaded image ${key}:`, err);
+  // Collect all attachments for the current user turn. Async mode has
+  // already populated preloadedMedia from the homeAttachment table; the
+  // AppSync path still loads images by key from imageS3Keys.
+  const currentMedia: MediaPayload[] = [...preloadedMedia];
+  if (!isAsync) {
+    for (const key of imageS3Keys ?? []) {
+      if (!key) continue;
+      try {
+        currentMedia.push(await fetchImageAsBase64(key));
+      } catch (err) {
+        console.warn(`[agent] Failed to fetch user-uploaded image ${key}:`, err);
+      }
     }
   }
 
   const messages: Anthropic.MessageParam[] = [
     ...validHistory,
-    { role: "user" as const, content: buildUserContent(currentImages, userMessage) },
+    { role: "user" as const, content: buildUserContent(currentMedia, userMessage) },
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];
@@ -3785,51 +3945,141 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     chatContext: parsedChatContext,
   };
 
-  // Agentic loop
-  let response = await anthropic.messages.create({
-    model: MODEL_ID,
-    max_tokens: 1024,
-    system: systemPrompt,
-    messages,
-    tools,
-  });
-
-  while (response.stop_reason === "tool_use") {
-    messages.push({ role: "assistant", content: response.content });
-
-    const toolResults: Anthropic.ToolResultBlockParam[] = [];
-    for (const block of response.content) {
-      if (block.type === "tool_use") {
-        const result = await executeTool(block.name, block.input as Record<string, any>, toolCtx);
-        actionsTaken.push({ tool: block.name, result: JSON.parse(result) });
-        toolResults.push({
-          type: "tool_result",
-          tool_use_id: block.id,
-          content: result,
-        });
-      }
-    }
-
-    messages.push({ role: "user", content: toolResults });
-
-    response = await anthropic.messages.create({
+  try {
+    // Agentic loop
+    let response = await anthropic.messages.create({
       model: MODEL_ID,
       max_tokens: 1024,
       system: systemPrompt,
       messages,
       tools,
     });
+
+    while (response.stop_reason === "tool_use") {
+      messages.push({ role: "assistant", content: response.content });
+
+      const toolResults: Anthropic.ToolResultBlockParam[] = [];
+      for (const block of response.content) {
+        if (block.type === "tool_use") {
+          const result = await executeTool(block.name, block.input as Record<string, any>, toolCtx);
+          actionsTaken.push({ tool: block.name, result: JSON.parse(result) });
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: block.id,
+            content: result,
+          });
+        }
+      }
+
+      messages.push({ role: "user", content: toolResults });
+
+      response = await anthropic.messages.create({
+        model: MODEL_ID,
+        max_tokens: 1024,
+        system: systemPrompt,
+        messages,
+        tools,
+      });
+    }
+
+    // Extract final text response
+    const assistantText = response.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("\n");
+
+    if (isAsync && replyTarget && inboundMessageId) {
+      const client = await getDataClient();
+
+      // Write the main text response to the outbound queue. The bot's
+      // 5s poller picks it up and delivers via WhatsApp.
+      const { data: outbound, errors: outboundErrors } =
+        await client.models.homeOutboundMessage.create({
+          channel: "WHATSAPP",
+          target: replyTarget.target,
+          groupJid: replyTarget.groupJid ?? null,
+          personId: replyTarget.personId ?? null,
+          text: assistantText || "(no response)",
+          status: "PENDING",
+          kind: "agent_reply",
+        });
+      if (outboundErrors?.length) {
+        console.error(`[agent] failed to create outbound for ${inboundMessageId}:`, outboundErrors);
+      }
+
+      // Write each tool-generated attachment (currently all from
+      // send_photos) as a homeAttachment row pointed at the new outbound
+      // message. Using s3Key to store the full CloudFront URL when the
+      // URL isn't a direct S3 path — the bot detects this at delivery
+      // time and passes the URL straight to Baileys. A future session
+      // should add a proper `sourceUrl` field to homeAttachment to avoid
+      // this overload.
+      if (outbound?.id) {
+        for (const att of toolCtx.attachments) {
+          if (!att.url) continue;
+          try {
+            await client.models.homeAttachment.create({
+              parentType: "OUTBOUND_MESSAGE",
+              parentId: outbound.id,
+              s3Key: att.url, // URL or S3 key; bot checks with looksLikeUrl
+              filename: att.caption?.split(" · ")[2] ?? `${att.type}.jpg`,
+              contentType: att.type === "image" ? "image/jpeg" : att.type,
+              caption: att.caption ?? null,
+              uploadedBy: "agent",
+            });
+          } catch (err) {
+            console.warn(`[agent] Failed to write outbound attachment for ${outbound.id}:`, err);
+          }
+        }
+      }
+
+      // Close out the inbound message row.
+      await client.models.homeInboundMessage.update({
+        id: inboundMessageId,
+        status: "RESPONDED",
+        outboundMessageId: outbound?.id ?? null,
+        respondedAt: new Date().toISOString(),
+      });
+
+      return;
+    }
+
+    return {
+      message: assistantText,
+      actionsTaken,
+      attachments: toolCtx.attachments,
+    };
+  } catch (err) {
+    if (isAsync && replyTarget && inboundMessageId) {
+      // Async mode: surface the error to the user via a FAILED outbound
+      // message so the chat doesn't just go silent. Also mark the inbound
+      // as FAILED so Lambda's async retry logic sees a terminal state
+      // and won't re-invoke the agent. (Idempotency check skips anything
+      // that isn't PENDING.)
+      console.error(`[agent] async processing failed for inbound ${inboundMessageId}:`, err);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      try {
+        const client = await getDataClient();
+        const { data: errOutbound } = await client.models.homeOutboundMessage.create({
+          channel: "WHATSAPP",
+          target: replyTarget.target,
+          groupJid: replyTarget.groupJid ?? null,
+          personId: replyTarget.personId ?? null,
+          text: "Sorry, I ran into an error processing your message. Please try again.",
+          status: "PENDING",
+          kind: "agent_error",
+        });
+        await client.models.homeInboundMessage.update({
+          id: inboundMessageId,
+          status: "FAILED",
+          outboundMessageId: errOutbound?.id ?? null,
+          error: errMsg.slice(0, 500),
+        });
+      } catch (persistErr) {
+        console.error(`[agent] failed to persist error state for ${inboundMessageId}:`, persistErr);
+      }
+      return;
+    }
+    throw err;
   }
-
-  // Extract final text response
-  const assistantText = response.content
-    .filter((b): b is Anthropic.TextBlock => b.type === "text")
-    .map((b) => b.text)
-    .join("\n");
-
-  return {
-    message: assistantText,
-    actionsTaken,
-    attachments: toolCtx.attachments,
-  };
 };

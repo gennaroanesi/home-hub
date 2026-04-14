@@ -8,25 +8,38 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import pino from "pino";
 import { Boom } from "@hapi/boom";
+import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { useS3AuthState } from "./s3-auth-state.js";
 import {
-  invokeHomeAgent,
   listPendingOutboundMessages,
   markOutboundMessageSent,
   markOutboundMessageFailed,
   getPerson,
   listPersons,
+  createInboundMessage,
+  createAttachment,
+  listAttachmentsByParent,
   type OutboundMessage,
   type HistoryMessage,
   type HistoryAttachment,
   type ChatContext,
 } from "./appsync.js";
-import { uploadAgentImage } from "./s3-upload.js";
+import { uploadInboundAttachment } from "./s3-upload.js";
 import { startServer, updateQR, updateStatus } from "./qr-server.js";
 
 const logger = pino({ level: "info" });
 const GROUP_JID = process.env.WHATSAPP_GROUP_JID;
-const OUTBOUND_POLL_MS = 30_000;
+// Short interval because agent responses arrive via this queue — user is
+// actively waiting for them. 5s is the minimum that keeps cost trivial
+// (~12 AppSync list calls / min against an indexed status filter).
+const OUTBOUND_POLL_MS = 5_000;
+
+// Agent Lambda ARN (set by backend.ts). The bot invokes the Lambda with
+// InvocationType="Event" (fire-and-forget) to sidestep AppSync's 30s
+// resolver timeout — Duo flows and long tool-chain responses need the
+// full 120s Lambda budget. Responses come back via the outbound queue.
+const AGENT_LAMBDA_ARN = process.env.AGENT_LAMBDA_ARN;
+const lambda = new LambdaClient({});
 
 if (GROUP_JID) {
   logger.info({ group: GROUP_JID }, "Bot will only respond to @-mentions in the configured group");
@@ -58,17 +71,17 @@ const sentMessageIds = new Set<string>();
 const HISTORY_TURNS = 5; // = 10 messages (5 user + 5 assistant)
 const chatHistories = new Map<string, HistoryMessage[]>();
 
-function getHistory(chatJid: string): HistoryMessage[] {
-  return chatHistories.get(chatJid) ?? [];
+function getHistory(key: string): HistoryMessage[] {
+  return chatHistories.get(key) ?? [];
 }
 
 function appendHistory(
-  chatJid: string,
+  key: string,
   role: "user" | "assistant",
   content: string,
   attachments?: HistoryAttachment[]
 ): void {
-  const buf = chatHistories.get(chatJid) ?? [];
+  const buf = chatHistories.get(key) ?? [];
   const entry: HistoryMessage = { role, content };
   // Only user turns carry image attachments — assistant turns never do.
   // The agent handler's rehydration path only reads attachments off user
@@ -79,7 +92,21 @@ function appendHistory(
   buf.push(entry);
   // Trim to the last HISTORY_TURNS * 2 messages
   while (buf.length > HISTORY_TURNS * 2) buf.shift();
-  chatHistories.set(chatJid, buf);
+  chatHistories.set(key, buf);
+}
+
+// History key: groups use chatJid directly (stable across WA protocol
+// versions). DMs use `person:${personId}` because the inbound chatJid is
+// the @lid form (Baileys v7) while the outbound delivery JID is the
+// phone-based @s.whatsapp.net form — keying by personId makes both
+// directions converge on the same conversation history.
+function historyKey(
+  chatJid: string,
+  isDm: boolean,
+  personId?: string | null
+): string {
+  if (isDm && personId) return `person:${personId}`;
+  return chatJid;
 }
 
 function isOnCooldown(sender: string): boolean {
@@ -97,16 +124,23 @@ function isOnCooldown(sender: string): boolean {
 // leading "+", since WA JIDs use the raw digits.
 
 const KNOWN_PHONES_REFRESH_MS = 10 * 60 * 1000;
-let knownPhones: Map<string, string> = new Map(); // digits → personName
+// digits → { name, id }. We store the person id in addition to the name
+// so DM replies can be routed through homeOutboundMessage with
+// target=PERSON without re-querying homePerson every turn.
+interface KnownPerson {
+  name: string;
+  id: string;
+}
+let knownPhones: Map<string, KnownPerson> = new Map();
 
 async function refreshKnownPhones(): Promise<void> {
   try {
     const persons = await listPersons();
-    const next = new Map<string, string>();
+    const next = new Map<string, KnownPerson>();
     for (const p of persons) {
       if (p.phoneNumber) {
         const digits = p.phoneNumber.replace(/[^\d]/g, "");
-        if (digits) next.set(digits, p.name);
+        if (digits) next.set(digits, { name: p.name, id: p.id });
       }
     }
     knownPhones = next;
@@ -116,7 +150,7 @@ async function refreshKnownPhones(): Promise<void> {
   }
 }
 
-function isKnownDmSender(jid: string): string | null {
+function isKnownDmSender(jid: string): KnownPerson | null {
   // JID for DMs is <digits>@s.whatsapp.net or <lid>@lid (v7+ addressing).
   // For @lid JIDs the digits won't match a phone number, so callers should
   // also try the remoteJidAlt (phone-based JID) when available.
@@ -168,10 +202,90 @@ async function deliverOutboundMessage(
     }
   }
 
+  // Send text first so the agent's narrative lands before any attachments.
   const sent = await socket.sendMessage(toJid, { text: msg.text });
   if (sent?.key?.id) sentMessageIds.add(sent.key.id);
+
+  // Pull attachments linked to this outbound message (agent_reply with
+  // photos from send_photos, future scheduler-generated documents, etc.)
+  // and deliver each via the Baileys media message type appropriate to
+  // its contentType. Empty for most outbound messages — one extra AppSync
+  // read per delivery is negligible.
+  try {
+    const atts = await listAttachmentsByParent(msg.id);
+    for (const att of atts) {
+      try {
+        await deliverAttachment(socket, toJid, att);
+      } catch (err) {
+        logger.error(
+          { err, attachmentId: att.id, outboundId: msg.id },
+          "Failed to deliver attachment"
+        );
+      }
+    }
+  } catch (err) {
+    logger.error({ err, outboundId: msg.id }, "Failed to list attachments");
+  }
+
   await markOutboundMessageSent(msg.id);
+
+  // If this is an agent reply, append the assistant turn to in-memory
+  // history so the next user message sees it. See historyKey() for why
+  // DMs key by personId rather than chatJid.
+  if (msg.kind === "agent_reply") {
+    const isDm = msg.target === "PERSON";
+    const keyJid = isDm ? toJid : (msg.groupJid ?? toJid);
+    const hKey = historyKey(keyJid, isDm, msg.personId);
+    appendHistory(hKey, "assistant", msg.text);
+  }
+
   logger.info({ id: msg.id, kind: msg.kind, toJid }, "Outbound message sent");
+}
+
+// Deliver a single homeAttachment row via WhatsApp. Dispatches on
+// contentType so adding a new media type (e.g. video) only requires a new
+// branch here + a new upload helper; the schema is already polymorphic.
+async function deliverAttachment(
+  socket: ReturnType<typeof makeWASocket>,
+  toJid: string,
+  att: { s3Key: string; filename: string | null; contentType: string | null; caption: string | null }
+): Promise<void> {
+  // HACK: the agent handler stores CloudFront URLs (from send_photos) in
+  // the s3Key field for outbound attachments. Detect URL-ness and pass
+  // straight to Baileys. A future session should add a proper `sourceUrl`
+  // field on homeAttachment to avoid this overload.
+  const urlOrKey = att.s3Key;
+  const isUrl = /^https?:\/\//i.test(urlOrKey);
+  if (!isUrl) {
+    // Non-URL s3 keys aren't supported yet — the bot's task role doesn't
+    // have GetObject on arbitrary keys. Log + skip. When needed, add a
+    // presign step here.
+    logger.warn(
+      { s3Key: urlOrKey, outboundAttachment: true },
+      "Skipping non-URL outbound attachment (presign not implemented)"
+    );
+    return;
+  }
+
+  const caption = att.caption ?? undefined;
+  const contentType = att.contentType ?? "";
+  if (contentType.startsWith("image/")) {
+    const sent = await socket.sendMessage(toJid, { image: { url: urlOrKey }, caption });
+    if (sent?.key?.id) sentMessageIds.add(sent.key.id);
+    return;
+  }
+  if (contentType === "application/pdf" || contentType.startsWith("application/")) {
+    const sent = await socket.sendMessage(toJid, {
+      document: { url: urlOrKey },
+      mimetype: contentType || "application/pdf",
+      fileName: att.filename ?? "document.pdf",
+      caption,
+    });
+    if (sent?.key?.id) sentMessageIds.add(sent.key.id);
+    return;
+  }
+
+  logger.warn({ contentType, s3Key: urlOrKey }, "Unsupported outbound attachment contentType");
 }
 
 async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<void> {
@@ -372,14 +486,14 @@ async function startBot() {
       // (strangers, spam) are silently ignored.
       // Baileys v7 uses LID addressing — the phone-based JID is in
       // remoteJidAlt. Try both for the known-sender lookup.
-      let dmSenderName: string | null = null;
+      let dmSender: KnownPerson | null = null;
       if (isDm) {
-        dmSenderName = isKnownDmSender(chatJid);
+        dmSender = isKnownDmSender(chatJid);
         const altJid = (msg.key as any).remoteJidAlt as string | undefined;
-        if (!dmSenderName && altJid) {
-          dmSenderName = isKnownDmSender(altJid);
+        if (!dmSender && altJid) {
+          dmSender = isKnownDmSender(altJid);
         }
-        if (!dmSenderName) continue;
+        if (!dmSender) continue;
       } else if (isGroup) {
         // Group gate: only respond in the configured group (if set)
         if (GROUP_JID && chatJid !== GROUP_JID) continue;
@@ -406,21 +520,30 @@ async function startBot() {
           (k) => k !== "messageContextInfo" && k !== "senderKeyDistributionMessage"
         );
         logger.info(
-          { chatJid, isDm, dmSenderName, msgTypes, hasExtText: !!extText, hasImage: !!imageMsg, hasPlain: !!plainText },
+          { chatJid, isDm, dmSenderName: dmSender?.name, dmSenderId: dmSender?.id, msgTypes, hasExtText: !!extText, hasImage: !!imageMsg, hasPlain: !!plainText },
           "DM message received"
         );
       }
 
-      // Only one will be set in practice. Prefer imageMessage when both are
-      // present (WA uses imageMessage for "photo + caption" messages; the
-      // text payload lives on the image block, not on a sibling text block).
+      // Unified view over the message types that can carry text + a
+      // contextInfo block (mentions, quoted replies). WA puts the caption
+      // on the media block itself for photo/doc messages rather than on a
+      // sibling text block, so we surface all of these uniformly.
+      const docMsg = msg.message?.documentMessage;
+      // PDF-only for now. The agent handler supports Claude's document
+      // content-block which is PDF-only; other doc types would need OCR
+      // or text extraction upstream.
+      const isPdfDoc = !!docMsg && docMsg.mimetype === "application/pdf";
+
       const ext = imageMsg
         ? { text: imageMsg.caption ?? "", contextInfo: imageMsg.contextInfo }
-        : extText
-          ? { text: extText.text ?? "", contextInfo: extText.contextInfo }
-          : isDm && plainText
-            ? { text: plainText, contextInfo: undefined as any }
-            : null;
+        : isPdfDoc
+          ? { text: docMsg?.caption ?? "", contextInfo: docMsg?.contextInfo }
+          : extText
+            ? { text: extText.text ?? "", contextInfo: extText.contextInfo }
+            : isDm && plainText
+              ? { text: plainText, contextInfo: undefined as any }
+              : null;
 
       if (!ext) {
         if (isDm) {
@@ -455,59 +578,103 @@ async function startBot() {
       }
       // DMs from known members always pass through — no mention needed.
 
-      // Collect images attached to this turn. Two shapes:
-      //   a) direct image-with-caption → msg.message.imageMessage
-      //   b) a quoted image on a reply  → contextInfo.quotedMessage.imageMessage
+      // Collect attachments (images + PDFs). Three shapes:
+      //   a) direct image/pdf → msg.message.imageMessage / .documentMessage
+      //   b) quoted media on a reply → contextInfo.quotedMessage.*
       // For (b) we build a synthetic WAMessage so downloadMediaMessage has
       // the right .message shape to operate on.
-      type PendingImage = { buffer: Buffer; mimetype: string };
-      const pendingImages: PendingImage[] = [];
+      type PendingAttachment = {
+        buffer: Buffer;
+        mimetype: string;
+        filename: string;
+      };
+      const pendingAttachments: PendingAttachment[] = [];
 
       if (imageMsg) {
         try {
           const buffer = (await downloadMediaMessage(msg, "buffer", {})) as Buffer;
-          pendingImages.push({
+          const mimetype = imageMsg.mimetype ?? "image/jpeg";
+          pendingAttachments.push({
             buffer,
-            mimetype: imageMsg.mimetype ?? "image/jpeg",
+            mimetype,
+            filename: `image.${mimetype.split("/")[1] ?? "jpg"}`,
           });
         } catch (err) {
           logger.error({ err }, "Failed to download direct image");
         }
       }
 
+      if (isPdfDoc) {
+        try {
+          const buffer = (await downloadMediaMessage(msg, "buffer", {})) as Buffer;
+          pendingAttachments.push({
+            buffer,
+            mimetype: "application/pdf",
+            filename: docMsg?.fileName ?? docMsg?.title ?? "document.pdf",
+          });
+        } catch (err) {
+          logger.error({ err }, "Failed to download direct PDF");
+        }
+      }
+
       const quotedImage = ext.contextInfo?.quotedMessage?.imageMessage;
       if (quotedImage) {
         try {
-          // Baileys' downloadMediaMessage inspects `.message.imageMessage`
-          // (or videoMessage, etc.) on the WAMessage you pass in. We hand
-          // it a synthetic WAMessage whose .message is the quoted content
-          // directly, which is the pattern Baileys' own docs show for
-          // downloading quoted media.
           const syntheticMsg = {
             key: msg.key,
             message: ext.contextInfo?.quotedMessage,
           } as unknown as WAMessage;
           const buffer = (await downloadMediaMessage(syntheticMsg, "buffer", {})) as Buffer;
-          pendingImages.push({
+          const mimetype = quotedImage.mimetype ?? "image/jpeg";
+          pendingAttachments.push({
             buffer,
-            mimetype: quotedImage.mimetype ?? "image/jpeg",
+            mimetype,
+            filename: `image.${mimetype.split("/")[1] ?? "jpg"}`,
           });
         } catch (err) {
           logger.error({ err }, "Failed to download quoted image");
         }
       }
 
-      // Upload any successfully-downloaded buffers to S3. One failure
-      // shouldn't abort the whole reply — log and move on.
-      const imageS3Keys: string[] = [];
-      for (const img of pendingImages) {
+      const quotedDoc = ext.contextInfo?.quotedMessage?.documentMessage;
+      if (quotedDoc && quotedDoc.mimetype === "application/pdf") {
         try {
-          const key = await uploadAgentImage(img.buffer, img.mimetype);
-          imageS3Keys.push(key);
+          const syntheticMsg = {
+            key: msg.key,
+            message: ext.contextInfo?.quotedMessage,
+          } as unknown as WAMessage;
+          const buffer = (await downloadMediaMessage(syntheticMsg, "buffer", {})) as Buffer;
+          pendingAttachments.push({
+            buffer,
+            mimetype: "application/pdf",
+            filename: quotedDoc.fileName ?? quotedDoc.title ?? "document.pdf",
+          });
+        } catch (err) {
+          logger.error({ err }, "Failed to download quoted PDF");
+        }
+      }
+
+      // Upload buffers to S3. One failure shouldn't abort — log and move on.
+      type UploadedAttachment = {
+        s3Key: string;
+        contentType: string;
+        filename: string;
+        sizeBytes: number;
+      };
+      const uploadedAttachments: UploadedAttachment[] = [];
+      for (const att of pendingAttachments) {
+        try {
+          const key = await uploadInboundAttachment(att.buffer, att.mimetype);
+          uploadedAttachments.push({
+            s3Key: key,
+            contentType: att.mimetype,
+            filename: att.filename,
+            sizeBytes: att.buffer.length,
+          });
         } catch (err) {
           logger.error(
-            { err, mimetype: img.mimetype, bytes: img.buffer?.length },
-            "Failed to upload image to S3"
+            { err, mimetype: att.mimetype, bytes: att.buffer?.length },
+            "Failed to upload attachment to S3"
           );
         }
       }
@@ -523,14 +690,14 @@ async function startBot() {
       }
       text = text.trim();
 
-      // If there's no text but we have image(s), use a default prompt so
-      // the agent has something to act on. Mirrors how the web UI lets
-      // users submit an image with an empty textbox.
+      // If there's no text but we have attachment(s), use a default prompt
+      // so the agent has something to act on.
       if (!text) {
-        if (imageS3Keys.length > 0) {
-          text = "What's in this image?";
+        if (uploadedAttachments.length > 0) {
+          const hasPdf = uploadedAttachments.some((a) => a.contentType === "application/pdf");
+          text = hasPdf ? "What's in this document?" : "What's in this image?";
         } else {
-          // No text AND no images — nothing to respond to. This also
+          // No text AND no attachments — nothing to respond to. This also
           // covers reply-to-bot triggers that were just a sticker/react.
           continue;
         }
@@ -538,69 +705,118 @@ async function startBot() {
 
       // Get sender name. In DMs use the known-person name from our cache
       // (more reliable than pushName which can be empty or mismatched).
-      const sender = isDm && dmSenderName
-        ? dmSenderName
+      const sender = isDm && dmSender
+        ? dmSender.name
         : msg.pushName || msg.key.participant?.split("@")[0] || "unknown";
 
       if (isOnCooldown(sender)) continue;
 
       logger.info(
-        { sender, text, chatJid, isDm, images: imageS3Keys.length },
+        { sender, text, chatJid, isDm, attachments: uploadedAttachments.length },
         "Received message"
       );
 
       try {
-        const history = getHistory(chatJid);
+        if (!AGENT_LAMBDA_ARN) {
+          throw new Error("AGENT_LAMBDA_ARN env var not set");
+        }
+
+        const hKey = historyKey(chatJid, isDm, dmSender?.id);
+        const history = getHistory(hKey);
+
         // Prefix the user's name into the message body so the agent can
         // distinguish multi-person threads in the same chat (history is
-        // shared across senders for this group).
+        // shared across senders for this chat).
         const messageForAgent = `${sender}: ${text}`;
         const chatContext: ChatContext = {
           channel: isDm ? "WA_DM" : "WA_GROUP",
           chatJid,
         };
-        const response = await invokeHomeAgent(
-          messageForAgent,
-          sender,
-          history,
-          imageS3Keys.length > 0 ? imageS3Keys : undefined,
-          chatContext
-        );
 
-        // Update memory with the turn we just had so the next call sees
-        // it. Carry the image attachments on the user turn so the agent
-        // handler's rehydration path can replay them on the next call.
-        const userAttachments: HistoryAttachment[] = imageS3Keys.map((k) => ({
-          type: "image",
-          s3Key: k,
-        }));
-        appendHistory(chatJid, "user", messageForAgent, userAttachments);
-        appendHistory(chatJid, "assistant", response.message);
+        // Reply routing: DMs go to the person (resolved via personId);
+        // groups go back to the originating group (via its JID).
+        const replyTarget = isDm && dmSender
+          ? { target: "PERSON" as const, personId: dmSender.id }
+          : { target: "GROUP" as const, groupJid: chatJid };
 
-        // Text first, so the agent's narrative arrives before the photos
-        const sentMsg = await socket.sendMessage(chatJid, { text: response.message });
-        if (sentMsg?.key?.id) sentMessageIds.add(sentMsg.key.id);
-        logger.info({ sender, response: response.message }, "Sent response");
+        // Persist the inbound message BEFORE invoking the Lambda so the
+        // handler has an ID to attach its response to. The ID is also
+        // the idempotency key — retries see PENDING vs PROCESSING /
+        // RESPONDED and no-op.
+        const altJid = (msg.key as any).remoteJidAlt as string | undefined;
+        const senderJid = msg.key.participant ?? msg.key.remoteJid ?? chatJid;
+        const inboundMessageId = await createInboundMessage({
+          waMessageId: msg.key.id ?? "",
+          chatJid,
+          senderJid,
+          senderJidAlt: altJid ?? null,
+          senderName: sender,
+          senderPersonId: dmSender?.id ?? null,
+          channel: isDm ? "WA_DM" : "WA_GROUP",
+          text: messageForAgent,
+        });
 
-        // Then any attachments (e.g. photos from send_photos tool)
-        for (const att of response.attachments ?? []) {
-          if (att.type === "image" && att.url) {
-            try {
-              await socket.sendMessage(chatJid, {
-                image: { url: att.url },
-                caption: att.caption ?? undefined,
-              });
-            } catch (err) {
-              logger.error({ err, url: att.url }, "Failed to send attachment");
-            }
+        // Link each attachment to the inbound message. The handler
+        // queries homeAttachment by parentId to load these back.
+        for (const att of uploadedAttachments) {
+          try {
+            await createAttachment({
+              parentType: "INBOUND_MESSAGE",
+              parentId: inboundMessageId,
+              s3Key: att.s3Key,
+              filename: att.filename,
+              contentType: att.contentType,
+              sizeBytes: att.sizeBytes,
+              uploadedBy: sender,
+            });
+          } catch (err) {
+            logger.error({ err, s3Key: att.s3Key }, "Failed to create attachment row");
           }
         }
+
+        // Append user turn to history immediately so follow-up messages
+        // (while the agent is still working on this one) see the full
+        // context. The assistant turn is appended when the response
+        // arrives via the outbound poller (see deliverOutboundMessage).
+        const userAttachments: HistoryAttachment[] = uploadedAttachments.map((a) => ({
+          type: a.contentType === "application/pdf" ? "pdf" : "image",
+          s3Key: a.s3Key,
+        }));
+        appendHistory(hKey, "user", messageForAgent, userAttachments);
+
+        // Fire-and-forget async invoke. 202 returns immediately; the
+        // Lambda has the full 120s budget (vs AppSync's 30s) to handle
+        // Duo flows, image analysis, long tool chains, etc.
+        await lambda.send(
+          new InvokeCommand({
+            FunctionName: AGENT_LAMBDA_ARN,
+            InvocationType: "Event",
+            Payload: Buffer.from(
+              JSON.stringify({
+                inboundMessageId,
+                history,
+                sender,
+                chatContext,
+                replyTarget,
+              })
+            ),
+          })
+        );
+
+        logger.info(
+          { inboundMessageId, sender, chatJid, attachments: uploadedAttachments.length },
+          "Invoked agent async"
+        );
       } catch (err) {
-        logger.error({ err }, "Failed to invoke agent");
-        const errMsg = await socket.sendMessage(chatJid, {
-          text: "Sorry, I couldn't process that right now. Please try again.",
-        });
-        if (errMsg?.key?.id) sentMessageIds.add(errMsg.key.id);
+        logger.error({ err }, "Failed to queue agent request");
+        try {
+          const errMsg = await socket.sendMessage(chatJid, {
+            text: "Sorry, I couldn't queue that for processing. Please try again.",
+          });
+          if (errMsg?.key?.id) sentMessageIds.add(errMsg.key.id);
+        } catch (sendErr) {
+          logger.error({ sendErr }, "Failed to send error message to user");
+        }
       }
     }
   });

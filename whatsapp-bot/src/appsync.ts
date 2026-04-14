@@ -94,7 +94,13 @@ interface AgentResponse {
 }
 
 export interface HistoryAttachment {
-  type: "image";
+  // PDFs need different Claude content-block handling, but the handler
+  // only rehydrates images from history currently (for multi-turn image
+  // memory). PDFs in history stay as text-only context — user messages
+  // that included a PDF remain in the transcript, but the file bytes
+  // aren't replayed. Extend the handler rehydration loop if that
+  // changes.
+  type: "image" | "pdf";
   s3Key: string;
 }
 
@@ -244,4 +250,98 @@ export async function listPersons(): Promise<PersonLite[]> {
     {}
   );
   return data.listHomePeople.items ?? [];
+}
+
+// ── Inbound message + attachment APIs (async pipeline) ──────────────────────
+// The bot persists every received message to homeInboundMessage before
+// invoking the agent Lambda directly. Attachments are stored in
+// homeAttachment rows (parentType=INBOUND_MESSAGE). The Lambda picks both
+// up by inboundMessageId, processes, and writes responses back to
+// homeOutboundMessage + homeAttachment (parentType=OUTBOUND_MESSAGE).
+
+const CREATE_INBOUND_MUTATION = `
+  mutation CreateInbound($input: CreateHomeInboundMessageInput!) {
+    createHomeInboundMessage(input: $input) {
+      id
+    }
+  }
+`;
+
+export interface InboundMessageInput {
+  waMessageId: string;
+  chatJid: string;
+  senderJid: string;
+  senderJidAlt?: string | null;
+  senderName?: string | null;
+  senderPersonId?: string | null;
+  channel: "WA_GROUP" | "WA_DM";
+  text?: string | null;
+}
+
+export async function createInboundMessage(input: InboundMessageInput): Promise<string> {
+  const data = await callAppSync<{ createHomeInboundMessage: { id: string } }>(
+    CREATE_INBOUND_MUTATION,
+    { input: { ...input, status: "PENDING" } }
+  );
+  return data.createHomeInboundMessage.id;
+}
+
+const CREATE_ATTACHMENT_MUTATION = `
+  mutation CreateAttachment($input: CreateHomeAttachmentInput!) {
+    createHomeAttachment(input: $input) {
+      id
+    }
+  }
+`;
+
+export interface AttachmentInput {
+  parentType: "INBOUND_MESSAGE" | "OUTBOUND_MESSAGE";
+  parentId: string;
+  s3Key: string;
+  filename: string;
+  contentType: string;
+  sizeBytes?: number | null;
+  caption?: string | null;
+  uploadedBy?: string | null;
+}
+
+export async function createAttachment(input: AttachmentInput): Promise<string> {
+  const data = await callAppSync<{ createHomeAttachment: { id: string } }>(
+    CREATE_ATTACHMENT_MUTATION,
+    { input }
+  );
+  return data.createHomeAttachment.id;
+}
+
+// Used by the outbound poller: fetch attachments linked to the outbound
+// message so we can deliver them as Baileys media messages after the
+// main text send.
+const LIST_ATTACHMENTS_BY_PARENT_QUERY = `
+  query ListAttachmentsByParent($parentId: ID!) {
+    listHomeAttachments(filter: { parentId: { eq: $parentId } }, limit: 50) {
+      items {
+        id
+        s3Key
+        filename
+        contentType
+        caption
+      }
+    }
+  }
+`;
+
+export interface AttachmentRow {
+  id: string;
+  s3Key: string;
+  filename: string | null;
+  contentType: string | null;
+  caption: string | null;
+}
+
+export async function listAttachmentsByParent(parentId: string): Promise<AttachmentRow[]> {
+  const data = await callAppSync<{ listHomeAttachments: { items: AttachmentRow[] } }>(
+    LIST_ATTACHMENTS_BY_PARENT_QUERY,
+    { parentId }
+  );
+  return data.listHomeAttachments.items ?? [];
 }

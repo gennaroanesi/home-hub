@@ -521,7 +521,19 @@ const schema = a
     // home/attachments/{parentType}/{parentId}/{uuid}.{ext}.
     homeAttachment: a
       .model({
-        parentType: a.enum(["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"]),
+        // INBOUND_MESSAGE / OUTBOUND_MESSAGE let the bot treat WA
+        // attachments (images, PDFs, future video/audio) polymorphically —
+        // no schema changes needed per new media type.
+        parentType: a.enum([
+          "TRIP",
+          "TRIP_LEG",
+          "RESERVATION",
+          "EVENT",
+          "TASK",
+          "BILL",
+          "INBOUND_MESSAGE",
+          "OUTBOUND_MESSAGE",
+        ]),
         parentId: a.id().required(),
         s3Key: a.string().required(),
         filename: a.string().required(),
@@ -533,6 +545,9 @@ const schema = a
       .secondaryIndexes((index) => [index("parentId")])
       .authorization((allow) => [
         allow.group("home-users"),
+        // WA bot (ECS task role) and agent Lambda both write attachments
+        // linked to inbound/outbound messages. Same IAM pattern as
+        // homeOutboundMessage / homeInboundMessage.
         allow.authenticated("identityPool"),
       ]),
 
@@ -607,12 +622,57 @@ const schema = a
       .secondaryIndexes((index) => [index("checklistId")])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Inbound Message ──────────────────────────────────────────────────
+    // Every WhatsApp message the bot receives is logged here before the
+    // agent Lambda is invoked asynchronously. Provides:
+    //   1. An idempotency key so Lambda async-invoke retries don't
+    //      double-process (conditional write PENDING → PROCESSING).
+    //   2. A structured, queryable audit trail for debugging "why didn't
+    //      the bot respond to X?" — better than grepping CloudWatch.
+    //   3. Correlation: agentLambdaRequestId links back to CloudWatch logs;
+    //      outboundMessageId links to the delivered response.
+    //
+    // Attachments (images, PDFs, future video/audio) are stored as
+    // homeAttachment rows with parentType="INBOUND_MESSAGE" so the bot
+    // doesn't need to care about media type at the schema level.
+    homeInboundMessage: a
+      .model({
+        // Stable WhatsApp message ID (msg.key.id). Used as a soft
+        // idempotency hint in addition to the status lock.
+        waMessageId: a.string().required(),
+        chatJid: a.string().required(),
+        senderJid: a.string().required(), // @lid or @s.whatsapp.net
+        senderJidAlt: a.string(), // phone-based alt JID (for @lid messages)
+        senderName: a.string(),
+        senderPersonId: a.id(),
+        channel: a.enum(["WA_GROUP", "WA_DM"]),
+        text: a.string(),
+        status: a.enum(["PENDING", "PROCESSING", "RESPONDED", "FAILED"]),
+        outboundMessageId: a.id(),
+        agentLambdaRequestId: a.string(),
+        error: a.string(),
+        processingStartedAt: a.datetime(),
+        respondedAt: a.datetime(),
+      })
+      .secondaryIndexes((index) => [index("status"), index("waMessageId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // WA bot (ECS task role) creates rows; agent Lambda (via its exec
+        // role's identityPool auth) reads + updates status.
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Outbound Message ─────────────────────────────────────────────────
     // Generic delivery queue. Anything that needs to notify the household
     // (daily summaries, reminders, ad-hoc alerts) writes a row here; the
     // WhatsApp bot polls for PENDING rows and sends them. Decouples message
     // composition from delivery so the composer can run even if the bot is
     // offline — the message waits in the queue.
+    //
+    // Attachments (images, PDFs) are stored as homeAttachment rows with
+    // parentType="OUTBOUND_MESSAGE"; the bot's outbound poller queries
+    // them after sending the text and delivers each via the appropriate
+    // WA media message type (image / document / future video).
     homeOutboundMessage: a
       .model({
         channel: a.enum(["WHATSAPP"]),
