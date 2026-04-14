@@ -3961,7 +3961,19 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
       for (const block of response.content) {
         if (block.type === "tool_use") {
+          // Log every tool call + its result + duration. Essential for
+          // diagnosing "the agent said it did X but the UI shows nothing"
+          // — without this we're guessing from Claude's narrative which
+          // sometimes hallucinates success on tool errors.
+          const t0 = Date.now();
+          console.log(
+            `[agent-tool] call: ${block.name} input=${JSON.stringify(block.input).slice(0, 500)}`
+          );
           const result = await executeTool(block.name, block.input as Record<string, any>, toolCtx);
+          const ms = Date.now() - t0;
+          console.log(
+            `[agent-tool] done: ${block.name} (${ms}ms) result=${result.slice(0, 500)}`
+          );
           actionsTaken.push({ tool: block.name, result: JSON.parse(result) });
           toolResults.push({
             type: "tool_result",

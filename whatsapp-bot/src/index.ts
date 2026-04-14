@@ -213,13 +213,33 @@ async function deliverOutboundMessage(
   // read per delivery is negligible.
   try {
     const atts = await listAttachmentsByParent(msg.id);
-    for (const att of atts) {
+    // Batch images so they land as a WhatsApp album. WA groups multiple
+    // images into one album-style card when they arrive back-to-back,
+    // and parallel sends achieve that without any album-specific API
+    // (which Baileys 7 doesn't expose directly). Non-image attachments
+    // (PDFs, future docs) stay serialized — WA doesn't album documents.
+    const images = atts.filter((a) => (a.contentType ?? "").startsWith("image/"));
+    const docs = atts.filter((a) => !(a.contentType ?? "").startsWith("image/"));
+
+    if (images.length > 0) {
+      await Promise.all(
+        images.map((att) =>
+          deliverAttachment(socket, toJid!, att).catch((err) => {
+            logger.error(
+              { err, attachmentId: att.id, outboundId: msg.id },
+              "Failed to deliver image"
+            );
+          })
+        )
+      );
+    }
+    for (const doc of docs) {
       try {
-        await deliverAttachment(socket, toJid, att);
+        await deliverAttachment(socket, toJid, doc);
       } catch (err) {
         logger.error(
-          { err, attachmentId: att.id, outboundId: msg.id },
-          "Failed to deliver attachment"
+          { err, attachmentId: doc.id, outboundId: msg.id },
+          "Failed to deliver document"
         );
       }
     }
@@ -288,12 +308,28 @@ async function deliverAttachment(
   logger.warn({ contentType, s3Key: urlOrKey }, "Unsupported outbound attachment contentType");
 }
 
+// Tracks outbound IDs currently being delivered. Needed because marking
+// a row SENT is the last step of deliverOutboundMessage, so a delivery
+// that takes longer than OUTBOUND_POLL_MS (e.g. send_photos with 5
+// images going through Baileys' encrypted upload) would otherwise get
+// re-picked-up on the next poll and double-sent. Not a true lock (single
+// process), but each ECS task runs desiredCount=1 so in-process tracking
+// is sufficient. If we ever scale >1 task we'd need a "DELIVERING"
+// status in the table instead.
+const deliveringIds = new Set<string>();
+
 async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<void> {
   try {
     const pending = await listPendingOutboundMessages();
     if (pending.length === 0) return;
-    logger.info({ count: pending.length }, "Processing pending outbound messages");
-    for (const msg of pending) {
+    const fresh = pending.filter((m) => !deliveringIds.has(m.id));
+    if (fresh.length === 0) return; // all in-flight already
+    logger.info(
+      { count: fresh.length, inFlight: deliveringIds.size },
+      "Processing pending outbound messages"
+    );
+    for (const msg of fresh) {
+      deliveringIds.add(msg.id);
       try {
         await deliverOutboundMessage(socket, msg);
       } catch (err: any) {
@@ -303,6 +339,8 @@ async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<vo
         } catch (markErr) {
           logger.error({ markErr, id: msg.id }, "Failed to mark outbound as failed");
         }
+      } finally {
+        deliveringIds.delete(msg.id);
       }
     }
   } catch (err) {
