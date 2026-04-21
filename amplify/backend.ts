@@ -46,6 +46,7 @@ import { dailySummary } from "./functions/daily-summary/resource";
 import { faceDetector } from "./functions/face-detector/resource";
 import { retroactiveFaceMatch } from "./functions/retroactive-face-match/resource";
 import { hassSync } from "./functions/hass-sync/resource";
+import { reminderSweep } from "./functions/reminder-sweep/resource";
 
 const backend = defineBackend({
   auth,
@@ -57,6 +58,7 @@ const backend = defineBackend({
   faceDetector,
   retroactiveFaceMatch,
   hassSync,
+  reminderSweep,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -70,6 +72,7 @@ const lambdaDescriptions: Record<string, string> = {
   faceDetector: "Home Hub — Rekognition face detection on new photos (DDB stream)",
   retroactiveFaceMatch: "Home Hub — Bulk-assign existing unmatched faces after new enrollment (AppSync mutation)",
   hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
+  reminderSweep: "Home Hub — Every-5-minute reminder sweep (Haiku-composed messages)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -258,6 +261,42 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
   target: {
     arn: dailySummaryLambda.functionArn,
     roleArn: dailySummaryScheduleRole.roleArn,
+  },
+});
+
+// ── Reminder sweep — every 5 min ───────────────────────────────────────────
+// Polls homeReminder for PENDING rows whose scheduledAt has come due,
+// composes messages (via Haiku if useLlm=true, else deterministic),
+// writes to homeOutboundMessage. The WA bot delivers from the queue.
+//
+// 5-min granularity is plenty for medication / supplement reminders —
+// nobody suffers from a 3-minute-late pain med reminder — and keeps
+// invocation count manageable (~288/day).
+
+const reminderSweepLambda = backend.reminderSweep.resources.lambda as LambdaFunction;
+reminderSweepLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+
+const reminderSweepScheduleRole = new iam.Role(recurringStack, "reminderSweepSchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [reminderSweepLambda.functionArn],
+        }),
+      ],
+    }),
+  },
+});
+
+new scheduler.CfnSchedule(recurringStack, "reminderSweepSchedule", {
+  scheduleExpression: "rate(5 minutes)",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: {
+    arn: reminderSweepLambda.functionArn,
+    roleArn: reminderSweepScheduleRole.roleArn,
   },
 });
 

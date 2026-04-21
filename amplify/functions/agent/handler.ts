@@ -1002,21 +1002,133 @@ const tools: Anthropic.Tool[] = [
   },
   {
     name: "schedule_reminder",
-    description: "Schedule a notification reminder via EventBridge. Use for task/bill/event reminders.",
+    description:
+      "Create a persistent reminder that fires on a schedule and delivers to WhatsApp. Use for one-off reminders ('pick up the kids at 3pm') or simple recurring ones ('every morning at 8am'). For multi-item reminders with different schedules per item (e.g. a supplement stack), use schedule_compound_reminder instead. Default target is the household group; pass personName to DM a specific person.",
     input_schema: {
       type: "object" as const,
       properties: {
-        message: { type: "string" },
-        assignedPeople: {
-          type: "array",
-          items: { type: "string" },
-          description: "Array of person names to notify. Use ['both'] for household.",
+        name: {
+          type: "string",
+          description: "Short label for the reminder, e.g. 'Pick up kids', 'Morning vitamins'. Used internally and for listing.",
         },
-        scheduleAt: { type: "string", description: "ISO 8601 datetime for one-time reminder" },
-        recurrence: { type: "string", description: "RRULE or cron expression for recurring" },
-        type: { type: "string", enum: ["task", "bill", "event"] },
+        message: {
+          type: "string",
+          description: "The actual text that will be sent. If the user wants dynamic composition each time, pass a generic placeholder and set useLlm=true; Haiku will rewrite it at send time.",
+        },
+        firesAt: {
+          type: "string",
+          description: "ISO 8601 datetime for a one-shot reminder. Omit if using rrule.",
+        },
+        rrule: {
+          type: "string",
+          description: "RRULE string for a recurring reminder, e.g. 'RRULE:FREQ=DAILY;BYHOUR=8;BYMINUTE=0'. Omit if using firesAt.",
+        },
+        endDate: {
+          type: "string",
+          description: "Optional ISO date when a recurring reminder should stop (e.g. for a 10-day antibiotic course).",
+        },
+        personName: {
+          type: "string",
+          description: "Optional — if set, reminder DMs this person (requires their phoneNumber set). Otherwise delivered to the household group.",
+        },
+        useLlm: {
+          type: "boolean",
+          description: "If true (default false for simple reminders), Haiku composes the message text at send time using recent history to avoid repetition. Only worth it for long-running recurring reminders.",
+        },
+        kind: {
+          type: "string",
+          description: "Optional tag for filtering: 'medication', 'chore', 'adhoc', etc.",
+        },
       },
-      required: ["message"],
+      required: ["name", "message"],
+    },
+  },
+  {
+    name: "schedule_compound_reminder",
+    description:
+      "Create a reminder with MULTIPLE items on different schedules that get bundled into one message when they fire together. Use for supplement stacks, medication regimens, or any 'group of things to remind about' with shared context. Example: 'daily supplements — Vitamin B12 at 8pm, Omega-3 at 9am and 9pm'. The sweep finds items whose schedules land in the same firing window and bundles them. Defaults to useLlm=true since LLM composition shines with multiple items.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        name: {
+          type: "string",
+          description: "Objective label, e.g. 'Daily supplements', 'Cristine post-op meds'.",
+        },
+        items: {
+          type: "array",
+          description: "List of items, each with its own schedule.",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string", description: "Item name, e.g. 'Vitamin B12', 'Oxycodone 5mg'." },
+              notes: { type: "string", description: "Optional hints, e.g. 'take with food'." },
+              firesAt: { type: "string", description: "ISO datetime for one-shot items." },
+              rrule: { type: "string", description: "RRULE for recurring items." },
+              startDate: { type: "string", description: "Optional ISO date — earliest allowed fire." },
+              endDate: { type: "string", description: "Optional ISO date — latest allowed fire." },
+            },
+            required: ["name"],
+          },
+        },
+        personName: {
+          type: "string",
+          description: "Optional — DM this person. Default: household group.",
+        },
+        useLlm: {
+          type: "boolean",
+          description: "Default true. Haiku composes the message from due items + recent history.",
+        },
+        kind: { type: "string" },
+      },
+      required: ["name", "items"],
+    },
+  },
+  {
+    name: "list_reminders",
+    description:
+      "List reminders with their next scheduled fire time. Filter by personName, kind, or status. Useful for answering 'what reminders do I have?' or 'what's Cristine's medication schedule?'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Filter to reminders DMing this person." },
+        kind: { type: "string", description: "Filter by kind label (e.g. 'medication')." },
+        includeExpired: { type: "boolean", description: "Default false — excludes EXPIRED and CANCELLED." },
+      },
+    },
+  },
+  {
+    name: "cancel_reminder",
+    description:
+      "Cancel a reminder. Prefer passing reminderId when known. If only given a description ('cancel my vitamin reminder'), use query to fuzzy-match against reminder names.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reminderId: { type: "string" },
+        query: { type: "string", description: "Fuzzy-match against reminder name." },
+      },
+    },
+  },
+  {
+    name: "pause_reminder",
+    description:
+      "Temporarily pause a reminder (e.g. 'pause my vitamins while I'm traveling'). Resume later with resume_reminder.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reminderId: { type: "string" },
+        query: { type: "string" },
+      },
+    },
+  },
+  {
+    name: "resume_reminder",
+    description: "Resume a paused reminder. Next fire will be on the next schedule occurrence.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        reminderId: { type: "string" },
+        query: { type: "string" },
+      },
     },
   },
   {
@@ -1392,6 +1504,101 @@ function getNextOccurrence(rruleString: string, after: Date): Date | null {
   }
 }
 
+// ── Reminder helpers ────────────────────────────────────────────────────────
+// Shared between the schedule_reminder / schedule_compound_reminder /
+// resume_reminder tool cases. Kept consistent with the sweep Lambda's
+// own occurrence computation — see amplify/functions/reminder-sweep/handler.ts.
+
+/**
+ * Compute the first occurrence for a newly-created reminder item,
+ * strictly in the future (after "now"). Returns null if the item has
+ * no computable occurrence.
+ */
+function computeFirstOccurrence(item: Record<string, any>): Date | null {
+  const now = new Date();
+  if (item.firesAt) {
+    const t = new Date(item.firesAt);
+    if (!Number.isFinite(t.getTime())) return null;
+    if (t <= now) return null;
+    return t;
+  }
+  if (item.rrule) {
+    try {
+      const rule = RRule.fromString(item.rrule);
+      const start = item.startDate ? new Date(item.startDate) : now;
+      const searchFrom = start > now ? start : now;
+      return rule.after(searchFrom, false) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Compute the next occurrence for an item strictly after `after`.
+ * Handles both one-shot (firesAt) and recurring (rrule) items.
+ */
+function computeNextOccurrenceAfter(
+  item: Record<string, any>,
+  after: Date
+): Date | null {
+  if (item.firesAt) {
+    const t = new Date(item.firesAt);
+    if (!Number.isFinite(t.getTime())) return null;
+    if (t <= after) return null;
+    return t;
+  }
+  if (item.rrule) {
+    try {
+      const rule = RRule.fromString(item.rrule);
+      return rule.after(after, false) ?? null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
+}
+
+/**
+ * Resolve a reminder's target. If personName is given AND resolvable to
+ * a known person, return PERSON target. Otherwise fall back to GROUP —
+ * matching the user's directive of "default to group, we're an open page".
+ */
+async function resolveReminderTarget(
+  personName: string | null | undefined
+): Promise<{ targetKind: "PERSON" | "GROUP"; personId: string | null }> {
+  if (!personName) return { targetKind: "GROUP", personId: null };
+  const ids = await resolvePersonIds([personName]);
+  if (ids.length === 1) return { targetKind: "PERSON", personId: ids[0] };
+  return { targetKind: "GROUP", personId: null };
+}
+
+/**
+ * Look up a reminder either by id or by fuzzy-matching its name. Used by
+ * cancel_reminder / pause_reminder / resume_reminder tools.
+ */
+async function findReminder(
+  input: { reminderId?: string; query?: string }
+): Promise<Schema["homeReminder"]["type"] | null> {
+  const c = await getDataClient();
+  if (input.reminderId) {
+    const { data } = await c.models.homeReminder.get({ id: input.reminderId });
+    return data ?? null;
+  }
+  if (!input.query) return null;
+  const { data: all } = await c.models.homeReminder.list({ limit: 200 });
+  const q = input.query.toLowerCase();
+  const active = (all ?? []).filter(
+    (r) => r.status === "PENDING" || r.status === "PAUSED"
+  );
+  // Prefer exact name match, fall back to substring
+  const exact = active.find((r) => r.name.toLowerCase() === q);
+  if (exact) return exact;
+  const partial = active.find((r) => r.name.toLowerCase().includes(q));
+  return partial ?? null;
+}
+
 // Attachments accumulated during a single agent invocation. Tools push
 // to this and the handler returns it on the response.
 interface Attachment {
@@ -1412,6 +1619,7 @@ export interface ChatContext {
 interface ToolContext {
   attachments: Attachment[];
   chatContext: ChatContext;
+  sender: string;
 }
 
 async function executeTool(
@@ -2225,28 +2433,186 @@ async function executeTool(
     }
 
     case "schedule_reminder": {
-      const scheduleName = `home-reminder-${generateId()}`;
-      const scheduleExpression = input.recurrence
-        ? `cron(${input.recurrence})`
-        : `at(${input.scheduleAt})`;
-      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
+      // Single-item reminder. Internally stored as a compound reminder
+      // with one item, to keep one code path in the sweep.
+      const itemId = generateId();
+      const item: Record<string, any> = {
+        id: itemId,
+        name: input.message,
+      };
+      if (input.firesAt) item.firesAt = input.firesAt;
+      if (input.rrule) item.rrule = input.rrule;
+      if (input.endDate) item.endDate = input.endDate;
 
-      await scheduler.send(new CreateScheduleCommand({
-        Name: scheduleName,
-        ScheduleExpression: scheduleExpression,
-        FlexibleTimeWindow: { Mode: "OFF" },
-        Target: {
-          Arn: SCHEDULER_LAMBDA_ARN,
-          RoleArn: SCHEDULER_ROLE_ARN,
-          Input: JSON.stringify({
-            assignedPersonIds,
-            message: input.message,
-            type: input.type ?? "task",
-          }),
-        },
-        ActionAfterCompletion: input.recurrence ? "NONE" : "DELETE",
-      }));
-      return JSON.stringify({ success: true, scheduleName });
+      const firstOccurrence = computeFirstOccurrence(item);
+      if (!firstOccurrence) {
+        return JSON.stringify({
+          error: "Couldn't compute a first occurrence. Check firesAt/rrule/endDate.",
+        });
+      }
+
+      const { personId, targetKind } = await resolveReminderTarget(input.personName);
+
+      const { data, errors } = await client.models.homeReminder.create({
+        name: input.name,
+        items: [item] as any,
+        useLlm: input.useLlm === true,
+        targetKind,
+        personId: personId ?? null,
+        groupJid: null,
+        scheduledAt: firstOccurrence.toISOString(),
+        status: "PENDING",
+        kind: input.kind ?? null,
+        createdBy: ctx.sender,
+      });
+      if (errors?.length) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        reminderId: data?.id,
+        name: input.name,
+        firstFire: firstOccurrence.toISOString(),
+      });
+    }
+
+    case "schedule_compound_reminder": {
+      const inputItems = Array.isArray(input.items) ? input.items : [];
+      if (inputItems.length === 0) {
+        return JSON.stringify({ error: "items array is required and must be non-empty" });
+      }
+
+      const items = inputItems.map((i: any) => {
+        const item: Record<string, any> = {
+          id: generateId(),
+          name: i.name,
+        };
+        if (i.notes) item.notes = i.notes;
+        if (i.firesAt) item.firesAt = i.firesAt;
+        if (i.rrule) item.rrule = i.rrule;
+        if (i.startDate) item.startDate = i.startDate;
+        if (i.endDate) item.endDate = i.endDate;
+        return item;
+      });
+
+      // Compute earliest first occurrence across all items
+      let earliest: Date | null = null;
+      for (const item of items) {
+        const first = computeFirstOccurrence(item);
+        if (first && (!earliest || first < earliest)) earliest = first;
+      }
+      if (!earliest) {
+        return JSON.stringify({
+          error: "No items produced a valid first occurrence. Check schedules.",
+        });
+      }
+
+      const { personId, targetKind } = await resolveReminderTarget(input.personName);
+
+      const { data, errors } = await client.models.homeReminder.create({
+        name: input.name,
+        items: items as any,
+        useLlm: input.useLlm !== false, // default true for compound
+        targetKind,
+        personId: personId ?? null,
+        groupJid: null,
+        scheduledAt: earliest.toISOString(),
+        status: "PENDING",
+        kind: input.kind ?? null,
+        createdBy: ctx.sender,
+      });
+      if (errors?.length) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        reminderId: data?.id,
+        name: input.name,
+        itemCount: items.length,
+        firstFire: earliest.toISOString(),
+      });
+    }
+
+    case "list_reminders": {
+      const { data: all } = await client.models.homeReminder.list({ limit: 200 });
+      let filtered = all ?? [];
+
+      if (!input.includeExpired) {
+        filtered = filtered.filter(
+          (r) => r.status === "PENDING" || r.status === "PAUSED"
+        );
+      }
+      if (input.kind) {
+        filtered = filtered.filter((r) => r.kind === input.kind);
+      }
+      if (input.personName) {
+        const ids = await resolvePersonIds([input.personName]);
+        if (ids.length > 0) {
+          filtered = filtered.filter((r) => ids.includes(r.personId ?? ""));
+        }
+      }
+
+      return JSON.stringify({
+        count: filtered.length,
+        reminders: filtered.map((r) => ({
+          id: r.id,
+          name: r.name,
+          status: r.status,
+          scheduledAt: r.scheduledAt,
+          targetKind: r.targetKind,
+          personId: r.personId,
+          itemCount: Array.isArray(r.items) ? r.items.length : 0,
+          kind: r.kind,
+          useLlm: r.useLlm,
+        })),
+      });
+    }
+
+    case "cancel_reminder": {
+      const reminder = await findReminder(input);
+      if (!reminder) return JSON.stringify({ error: "Reminder not found" });
+      await client.models.homeReminder.update({
+        id: reminder.id,
+        status: "CANCELLED",
+      });
+      return JSON.stringify({ success: true, reminderId: reminder.id, name: reminder.name });
+    }
+
+    case "pause_reminder": {
+      const reminder = await findReminder(input);
+      if (!reminder) return JSON.stringify({ error: "Reminder not found" });
+      await client.models.homeReminder.update({
+        id: reminder.id,
+        status: "PAUSED",
+      });
+      return JSON.stringify({ success: true, reminderId: reminder.id, name: reminder.name });
+    }
+
+    case "resume_reminder": {
+      const reminder = await findReminder(input);
+      if (!reminder) return JSON.stringify({ error: "Reminder not found" });
+
+      // Recompute scheduledAt from items — the pause might've been long
+      // enough that the old scheduledAt is in the past.
+      const items = (reminder.items ?? []) as any[];
+      const now = new Date();
+      let earliest: Date | null = null;
+      for (const item of items) {
+        const next = computeNextOccurrenceAfter(item, now);
+        if (next && (!earliest || next < earliest)) earliest = next;
+      }
+      if (!earliest) {
+        return JSON.stringify({
+          error: "Reminder has no more occurrences — cancel it instead.",
+        });
+      }
+      await client.models.homeReminder.update({
+        id: reminder.id,
+        status: "PENDING",
+        scheduledAt: earliest.toISOString(),
+      });
+      return JSON.stringify({
+        success: true,
+        reminderId: reminder.id,
+        name: reminder.name,
+        nextFire: earliest.toISOString(),
+      });
     }
 
     case "get_home_devices": {
@@ -3810,6 +4176,26 @@ call will execute because the user's confirmation counts as the reply.
 
 For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions, call get_weather_briefing. By default it uses KAUS and auto-selects plain vs aviation mode. Pass mode="aviation" if the user is clearly asking about flying conditions, or pass a different ICAO if they name an airport. The tool returns structured data including the raw METAR and TAF — for a household-level question render a plain line; for a pilot question include the raw strings and the VFR/MVFR/IFR verdict.
 
+## Reminders
+
+Reminders are persistent recurring or one-off notifications delivered via WhatsApp. Two flavors:
+- **Single-item reminder**: "remind me to pick up the kids at 3pm" → call schedule_reminder with firesAt. "Remind us every morning at 8am to take out the trash" → schedule_reminder with an RRULE.
+- **Compound reminder (multiple items with different schedules)**: "remind us to take supplements — B12 at 8pm, Omega-3 at 9am and 9pm" → call schedule_compound_reminder with an items array. The sweep bundles items that come due in the same window into ONE message. Use this for medication regimens, supplement stacks, anything where related items share context.
+
+For medications/supplements specifically, always use schedule_compound_reminder (even if one item) and set kind="medication". Set useLlm=true (default) so the message wording varies across firings.
+
+Default target is the household group. Only pass personName if the user explicitly wants it DM'd to a specific person ("remind Cristine privately that...").
+
+RRULE examples:
+- Every day at 8pm: "RRULE:FREQ=DAILY;BYHOUR=20;BYMINUTE=0"
+- Every 6 hours: "RRULE:FREQ=HOURLY;INTERVAL=6"
+- Twice daily (9am and 9pm): create TWO items, one with BYHOUR=9 one with BYHOUR=21
+- Mondays and Thursdays at 7am: "RRULE:FREQ=WEEKLY;BYDAY=MO,TH;BYHOUR=7;BYMINUTE=0"
+
+For a time-limited prescription ("every 6 hours for 5 days"), set endDate on the item.
+
+Use list_reminders to answer "what reminders do I have". Use cancel_reminder / pause_reminder / resume_reminder for management. Prefer passing a reminderId when you've just looked one up; otherwise use the query field to fuzzy-match by name.
+
 ## Document vault
 
 The household has a document vault for passports, licenses, insurance, etc.
@@ -3943,6 +4329,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   const toolCtx: ToolContext = {
     attachments: [],
     chatContext: parsedChatContext,
+    sender,
   };
 
   try {

@@ -17,6 +17,7 @@ import {
   FaFileAlt,
   FaCheckSquare,
   FaPaperclip,
+  FaBell,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
@@ -91,6 +92,12 @@ const GROUPS: DashboardGroup[] = [
         description: "All uploaded files across trips, tasks, and events",
         icon: <FaPaperclip size={22} />,
         href: "/attachments",
+      },
+      {
+        title: "Reminders",
+        description: "Scheduled WhatsApp reminders — medications, supplements, anything recurring",
+        icon: <FaBell size={22} />,
+        href: "/reminders",
       },
     ],
   },

@@ -3,6 +3,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
+import { RRule } from "rrule";
 import { env } from "$amplify/env/daily-summary";
 import type { Schema } from "../../data/resource";
 import { HassClient } from "../hass-sync/hass-client.js";
@@ -84,6 +85,16 @@ interface SummaryData {
     taf: ParsedTaf | null;
     flyingContext: FlyingDetection;
   };
+  // Active reminders with a scheduled fire in today (local day). Gives
+  // the household a heads-up on everything queued for the day ahead —
+  // medications, supplements, chores, etc.
+  todayReminders: {
+    name: string;
+    kind: string | null;
+    target: string; // "Group" or person name
+    nextFireLabel: string; // localized HH:MM
+    items: { name: string; notes?: string }[];
+  }[];
 }
 
 async function gatherData(): Promise<SummaryData> {
@@ -222,7 +233,115 @@ async function gatherData(): Promise<SummaryData> {
     upcomingMultiPersonEvents,
     home: await gatherHomeState(),
     weather: await gatherWeatherBriefing(allEvents ?? []),
+    todayReminders: await gatherTodayReminders(people ?? [], todayStr),
   };
+}
+
+// ── Today's reminders ────────────────────────────────────────────────────────
+// Gives the morning summary a heads-up on everything scheduled to fire
+// today — lets the household see their medication/supplement schedule and
+// any ad-hoc reminders queued up for the day without having to open the app.
+
+interface PersonLite {
+  id: string;
+  name: string;
+}
+interface ReminderItemLite {
+  id: string;
+  name: string;
+  notes?: string | null;
+  firesAt?: string | null;
+  rrule?: string | null;
+  startDate?: string | null;
+  endDate?: string | null;
+  lastFiredAt?: string | null;
+}
+
+async function gatherTodayReminders(
+  people: PersonLite[],
+  todayStr: string
+): Promise<SummaryData["todayReminders"]> {
+  try {
+    const { data: reminders } = await client.models.homeReminder.list({
+      filter: { status: { eq: "PENDING" } },
+      limit: 200,
+    });
+    const peopleById = new Map(people.map((p) => [p.id, p.name]));
+    const results: SummaryData["todayReminders"] = [];
+
+    for (const r of reminders ?? []) {
+      const items = (r.items ?? []) as ReminderItemLite[];
+      // Does ANY item have a next occurrence today?
+      const now = new Date();
+      let earliestToday: Date | null = null;
+      for (const item of items) {
+        const next = nextOccurrenceForItem(item, now);
+        if (!next) continue;
+        if (isoDate(next) !== todayStr) continue;
+        if (!earliestToday || next < earliestToday) earliestToday = next;
+      }
+      if (!earliestToday) continue;
+
+      const target =
+        r.targetKind === "PERSON"
+          ? peopleById.get(r.personId ?? "") ?? "?"
+          : "Group";
+      const nextFireLabel = earliestToday.toLocaleTimeString("en-US", {
+        timeZone: TZ,
+        hour: "numeric",
+        minute: "2-digit",
+      });
+
+      results.push({
+        name: r.name,
+        kind: r.kind ?? null,
+        target,
+        nextFireLabel,
+        items: items.map((i) => ({
+          name: i.name,
+          ...(i.notes ? { notes: i.notes } : {}),
+        })),
+      });
+    }
+
+    // Sort by earliest fire time (already string-matched to today, so this
+    // sorts by nextFireLabel which is HH:MM-ish. Simple is fine.)
+    results.sort((a, b) => a.nextFireLabel.localeCompare(b.nextFireLabel));
+    return results;
+  } catch (err) {
+    console.warn("Failed to load today's reminders:", err);
+    return [];
+  }
+}
+
+/**
+ * Compute next occurrence for a reminder item, strictly in the future.
+ * Used by the daily-summary to figure out which reminders land on today.
+ * Mirrors the sweep's logic — kept local to avoid a cross-lambda import.
+ */
+function nextOccurrenceForItem(
+  item: ReminderItemLite,
+  after: Date
+): Date | null {
+  if (item.firesAt) {
+    const t = new Date(item.firesAt);
+    if (!Number.isFinite(t.getTime()) || t <= after) return null;
+    return t;
+  }
+  if (item.rrule) {
+    try {
+      const rule = RRule.fromString(item.rrule);
+      const start = item.startDate ? new Date(item.startDate) : after;
+      const searchFrom = start > after ? start : after;
+      const next = rule.after(searchFrom, false);
+      if (!next) return null;
+      if (item.endDate && next > new Date(item.endDate)) return null;
+      return next;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 // ── Weather ──────────────────────────────────────────────────────────────────
@@ -466,7 +585,7 @@ ${JSON.stringify(data, null, 2)}
 Formatting rules:
 - Start with a short greeting line with the day of week and date (e.g. "*Good morning! Thursday, April 9*").
 - Use WhatsApp-flavored markdown: *bold* for headers, no other formatting.
-- Group into up to three sections: "*Today*", "*Coming up*", and "*Home*". Omit a section entirely if it has no content.
+- Group into up to these sections: "*Today*", "*Coming up*", "*Home*", "*Weather*", "*Reminders*". Omit any section entirely if it has no content.
 - Under "*Today*", list tasks, events, and any notable day statuses (WFH, PTO, travel) as short bullet lines starting with "• ".
 - Under "*Coming up*", only show trips, all-day events, and multi-person events within the next 3 days. Include how many days away (e.g. "in 2 days").
 - Under "*Home*", render whatever is in data.home.devices as compact lines. The data is pre-filtered: devices only appear if they're notable (unlocked doors, open garage, running washer, low battery, current indoor temperature). Keep it short — a single line per device or merge into a summary line like "🏠 Inside 68°F heat, all else normal". If data.home.devices is empty but home.available is true, omit the Home section entirely. Drop the section if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
@@ -474,6 +593,7 @@ Formatting rules:
   - If data.weather.mode is "plain": one line with the temp, wind (if notable), conditions, and flight rules. Format like "☀️ 82°F, winds 160@12, VFR". Use the parsed metar fields — don't paste the raw METAR string. Include a brief TAF summary ("clear through afternoon, TSRA expected after 6pm") if the taf has meaningful periods, otherwise just the METAR line.
   - If data.weather.mode is "aviation": the user is flying today or soon, so be more thorough. Include the raw METAR line, raw TAF, a decoded summary of significant weather in the TAF periods, and a one-line "flight conditions" verdict (VFR/MVFR/IFR). Mention the flyingContext.title so they know WHY it's in aviation mode ("For your flight on 4/12..."). Still keep it under ~150 words total.
   - If data.weather.available is false, omit the section entirely.
+- Under "*Reminders*", render data.todayReminders if non-empty. One line per reminder: include the target (👥 for group, 👤 + name for person), the time it fires, the reminder name, and item names (especially useful for medications/supplements). Example: "💊 8am — Daily supplements: Vitamin B12, Omega-3 (Cristine)". If more than 4 reminders today, render the 4 earliest and add "…and N more" on a final line. Omit the section entirely if data.todayReminders is empty.
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.

@@ -5,6 +5,7 @@ import { dailySummary } from "../functions/daily-summary/resource";
 import { faceDetector } from "../functions/face-detector/resource";
 import { retroactiveFaceMatch } from "../functions/retroactive-face-match/resource";
 import { hassSync } from "../functions/hass-sync/resource";
+import { reminderSweep } from "../functions/reminder-sweep/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -688,12 +689,72 @@ const schema = a
         kind: a.string(),
         sentAt: a.datetime(),
         error: a.string(),
+        // Set when this message originated from a reminder sweep. Indexed
+        // so the sweep can efficiently query "last N messages for this
+        // reminder" to inject into the Haiku composition context.
+        sourceReminderId: a.id(),
+        // Which items within the reminder were bundled into this message.
+        // Enables per-item acknowledgement in v2 ("I took the B12 but not
+        // the Omega-3"). Array of item ids from reminder.items.
+        sourceReminderItemIds: a.string().array(),
       })
-      .secondaryIndexes((index) => [index("status")])
+      .secondaryIndexes((index) => [index("status"), index("sourceReminderId")])
       .authorization((allow) => [
         allow.group("home-users"),
         // WhatsApp bot (ECS task role) accesses this model directly via
         // IAM-signed GraphQL — same pattern as invokeHomeAgent.
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Reminder ──────────────────────────────────────────────────────────
+    // Generic persistent reminder. Fires on a schedule, delivers to a
+    // person or group via the outbound message queue. Replaces the old
+    // EventBridge-per-schedule + SNS approach with a single reminder-sweep
+    // Lambda that runs every 5 min and handles all reminders uniformly.
+    //
+    // Items model: a reminder is ALWAYS a collection of items, even for
+    // simple single-item reminders. Each item has its own schedule (RRULE
+    // or one-shot datetime). The sweep bundles items that are due in the
+    // same firing window into one message. When useLlm=true, Haiku
+    // composes the message text from the due items + recent message
+    // history; when false, items are deterministically concatenated.
+    //
+    // Shape of each item in the `items` array:
+    //   {
+    //     id: string           — uuid, stable across edits
+    //     name: string         — "Vitamin B12", "Take out the trash"
+    //     notes?: string       — "take with food"
+    //     firesAt?: string     — ISO datetime, for one-shot items
+    //     rrule?: string       — RRULE string, for recurring items
+    //     startDate?: string   — ISO date, earliest allowed fire
+    //     endDate?: string     — ISO date, latest allowed fire
+    //     lastFiredAt?: string — ISO datetime, set by sweep after each fire
+    //   }
+    // Exactly one of firesAt or rrule should be set per item.
+    homeReminder: a
+      .model({
+        name: a.string().required(),
+        items: a.json().required(),
+        // When true, sweep calls Haiku to compose the message text from
+        // the due items + recent history. When false, items are
+        // concatenated deterministically ("Take your supplements:\n• …").
+        useLlm: a.boolean().default(true),
+        targetKind: a.enum(["PERSON", "GROUP"]),
+        personId: a.id(),
+        groupJid: a.string(),
+        // Next time the sweep should check this reminder. Updated after
+        // each firing to the earliest next-occurrence across all items
+        // (minus the early-bias window).
+        scheduledAt: a.datetime().required(),
+        status: a.enum(["PENDING", "PAUSED", "EXPIRED", "CANCELLED"]),
+        // Free-form label for filtering / display ("medication", "chore",
+        // "adhoc", etc.). Not enforced.
+        kind: a.string(),
+        createdBy: a.string(),
+      })
+      .secondaryIndexes((index) => [index("status"), index("scheduledAt")])
+      .authorization((allow) => [
+        allow.group("home-users"),
         allow.authenticated("identityPool"),
       ]),
 
@@ -785,6 +846,7 @@ const schema = a
     allow.resource(faceDetector),
     allow.resource(retroactiveFaceMatch),
     allow.resource(hassSync),
+    allow.resource(reminderSweep),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;
