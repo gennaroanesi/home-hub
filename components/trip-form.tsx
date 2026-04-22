@@ -11,6 +11,7 @@ import { FaPlus, FaTrash, FaCalendarPlus, FaSave } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
+import { tzAbbreviation } from "@/lib/timezone";
 import { AttachmentSection } from "@/components/attachment-section";
 import { FreeCombobox } from "@/components/free-combobox";
 import { PhotoUploader } from "@/components/photo-uploader";
@@ -400,19 +401,33 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                   </Button>
                 </div>
                 <div className="flex gap-2">
-                  <Input
-                    size="sm"
+                  <CityAutocomplete
                     label="From"
                     placeholder="City"
                     value={leg.fromCity}
                     onValueChange={(v) => updateLeg({ fromCity: v })}
+                    onSelect={(r) =>
+                      updateLeg({
+                        fromCity: r.country ? `${r.city}, ${r.country}` : r.city,
+                        fromLatitude: r.latitude,
+                        fromLongitude: r.longitude,
+                        fromTimezone: r.timezone,
+                      })
+                    }
                   />
-                  <Input
-                    size="sm"
+                  <CityAutocomplete
                     label="To"
                     placeholder="City"
                     value={leg.toCity}
                     onValueChange={(v) => updateLeg({ toCity: v })}
+                    onSelect={(r) =>
+                      updateLeg({
+                        toCity: r.country ? `${r.city}, ${r.country}` : r.city,
+                        toLatitude: r.latitude,
+                        toLongitude: r.longitude,
+                        toTimezone: r.timezone,
+                      })
+                    }
                   />
                 </div>
                 {(leg.mode === "COMMERCIAL_FLIGHT" || leg.mode === "PERSONAL_FLIGHT") && (
@@ -440,14 +455,31 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                 <div className="flex gap-2">
                   <Input
                     size="sm"
-                    label="Depart"
+                    // Show the local TZ abbreviation next to the label when
+                    // it's known. Pass the actual depart datetime so DST is
+                    // resolved correctly (CST vs CDT, EST vs EDT, etc).
+                    label={`Depart${
+                      leg.fromTimezone
+                        ? ` (${tzAbbreviation(
+                            leg.fromTimezone,
+                            leg.departAt ? new Date(leg.departAt) : undefined
+                          )})`
+                        : ""
+                    }`}
                     type="datetime-local"
                     value={leg.departAt}
                     onValueChange={(v) => updateLeg({ departAt: v })}
                   />
                   <Input
                     size="sm"
-                    label="Arrive"
+                    label={`Arrive${
+                      leg.toTimezone
+                        ? ` (${tzAbbreviation(
+                            leg.toTimezone,
+                            leg.arriveAt ? new Date(leg.arriveAt) : undefined
+                          )})`
+                        : ""
+                    }`}
                     type="datetime-local"
                     value={leg.arriveAt}
                     onValueChange={(v) => updateLeg({ arriveAt: v })}
@@ -599,25 +631,50 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
                 <div className="flex gap-2">
                   <Input
                     size="sm"
-                    label="Start"
+                    // TZ abbrev appears in the label when the reservation's
+                    // location has a resolved timezone. Uses the actual
+                    // datetime so DST is handled correctly.
+                    label={`Start${
+                      res.timezone
+                        ? ` (${tzAbbreviation(
+                            res.timezone,
+                            res.startAt ? new Date(res.startAt) : undefined
+                          )})`
+                        : ""
+                    }`}
                     type="datetime-local"
                     value={res.startAt}
                     onValueChange={(v) => updateRes({ startAt: v })}
                   />
                   <Input
                     size="sm"
-                    label="End"
+                    label={`End${
+                      res.timezone
+                        ? ` (${tzAbbreviation(
+                            res.timezone,
+                            res.endAt ? new Date(res.endAt) : undefined
+                          )})`
+                        : ""
+                    }`}
                     type="datetime-local"
                     value={res.endAt}
                     onValueChange={(v) => updateRes({ endAt: v })}
                   />
                 </div>
                 <div className="flex gap-2">
-                  <Input
-                    size="sm"
+                  <CityAutocomplete
                     label="City"
                     value={res.city}
                     onValueChange={(v) => updateRes({ city: v })}
+                    onSelect={(r) =>
+                      updateRes({
+                        city: r.city,
+                        country: r.country,
+                        latitude: r.latitude,
+                        longitude: r.longitude,
+                        timezone: r.timezone,
+                      })
+                    }
                   />
                   <Input
                     size="sm"
@@ -848,6 +905,9 @@ async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: Tri
         ? {
             city: leg.fromCity || null,
             airportCode: leg.fromAirport || null,
+            latitude: leg.fromLatitude ?? null,
+            longitude: leg.fromLongitude ?? null,
+            timezone: leg.fromTimezone ?? null,
           }
         : null;
     const toLocation =
@@ -855,6 +915,9 @@ async function syncLegs(tripId: string, formLegs: LegFormRow[], existingAll: Tri
         ? {
             city: leg.toCity || null,
             airportCode: leg.toAirport || null,
+            latitude: leg.toLatitude ?? null,
+            longitude: leg.toLongitude ?? null,
+            timezone: leg.toTimezone ?? null,
           }
         : null;
     const payload = {
@@ -905,7 +968,13 @@ async function syncReservations(
     const r = formRes[i];
     const location =
       r.city || r.country
-        ? { city: r.city || null, country: r.country || null }
+        ? {
+            city: r.city || null,
+            country: r.country || null,
+            latitude: r.latitude ?? null,
+            longitude: r.longitude ?? null,
+            timezone: r.timezone ?? null,
+          }
         : null;
     const cost = r.cost.trim() === "" ? null : Number(r.cost);
     const payload = {

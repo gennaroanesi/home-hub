@@ -3,12 +3,15 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Input } from "@heroui/input";
 
+import { guessTimezone } from "@/lib/timezone";
+
 export interface CityResult {
   city: string;
   country: string;
   latitude: number;
   longitude: number;
-  // OSM doesn't return timezone — caller can resolve via tz lookup if needed
+  /** IANA timezone, resolved from lat/lon via tz-lookup. Null if lookup failed. */
+  timezone: string | null;
 }
 
 interface NominatimResult {
@@ -117,11 +120,14 @@ export function CityAutocomplete({
     userTypingRef.current = false;
     onValueChange(display);
     setShowResults(false);
+    const latitude = parseFloat(r.lat);
+    const longitude = parseFloat(r.lon);
     onSelect?.({
       city,
       country,
-      latitude: parseFloat(r.lat),
-      longitude: parseFloat(r.lon),
+      latitude,
+      longitude,
+      timezone: guessTimezone(latitude, longitude),
     });
   }
 

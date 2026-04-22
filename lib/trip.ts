@@ -58,6 +58,17 @@ export interface LegFormRow {
   // but the field lives on the leg's from/to location regardless.
   fromAirport: string;
   toAirport: string;
+  // IANA timezones for the endpoints, populated automatically when the
+  // user picks a city via CityAutocomplete (lat/lon → tz-lookup). Used
+  // for labeling depart/arrive inputs and, in the future, for any
+  // computation that needs the local TZ. Null when no city was ever
+  // picked (e.g. a leg imported without location data).
+  fromLatitude?: number | null;
+  fromLongitude?: number | null;
+  fromTimezone?: string | null;
+  toLatitude?: number | null;
+  toLongitude?: number | null;
+  toTimezone?: string | null;
   airline: string;
   flightNumber: string;
   aircraft: string;
@@ -106,6 +117,12 @@ export interface ReservationFormRow {
   endAt: string;
   city: string;
   country: string;
+  // IANA timezone for the reservation's location, populated from
+  // CityAutocomplete the same way legs' fromTimezone/toTimezone are.
+  // Null when no city was picked.
+  latitude?: number | null;
+  longitude?: number | null;
+  timezone?: string | null;
   confirmationCode: string;
   url: string;
   cost: string; // kept as string in the form, parsed on save
@@ -144,6 +161,9 @@ export function reservationToFormRow(r: TripReservation): ReservationFormRow {
     endAt: r.endAt ? r.endAt.slice(0, 16) : "",
     city: loc.city ?? "",
     country: loc.country ?? "",
+    latitude: loc.latitude ?? null,
+    longitude: loc.longitude ?? null,
+    timezone: loc.timezone ?? null,
     confirmationCode: r.confirmationCode ?? "",
     url: r.url ?? "",
     cost: r.cost != null ? String(r.cost) : "",
@@ -205,6 +225,12 @@ export function legToFormRow(leg: TripLeg): LegFormRow {
     toCity: to.city ?? "",
     fromAirport: from.airportCode ?? "",
     toAirport: to.airportCode ?? "",
+    fromLatitude: from.latitude ?? null,
+    fromLongitude: from.longitude ?? null,
+    fromTimezone: from.timezone ?? null,
+    toLatitude: to.latitude ?? null,
+    toLongitude: to.longitude ?? null,
+    toTimezone: to.timezone ?? null,
     airline: leg.airline ?? "",
     flightNumber: leg.flightNumber ?? "",
     aircraft: leg.aircraft ?? "",
