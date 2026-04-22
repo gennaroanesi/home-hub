@@ -5,31 +5,21 @@
 
 import { DEFAULT_HOUSEHOLD_TZ } from "./reminder-schedule";
 
-// Narrow type for what we need from the data client — lets this module
-// stay compatible with both userPool-auth (UI) and IAM-auth (Lambda)
-// generateClient instances without pulling in Schema types.
-interface MinimalDataClient {
-  models: {
-    homeSettings: {
-      list: (args?: unknown) => Promise<{ data: HomeSettingsRow[] | undefined }>;
-    };
-  };
-}
-interface HomeSettingsRow {
-  householdTimezone: string | null | undefined;
-}
-
 /**
  * Read the household timezone from settings. Returns DEFAULT_HOUSEHOLD_TZ
  * if no settings row exists or the row has no TZ set. Never throws — a
  * missing settings row shouldn't break anything.
+ *
+ * The client parameter is typed `any` so this helper stays compatible
+ * with both the userPool-auth UI client and the IAM-auth Lambda client,
+ * which have subtly different generated method signatures that don't
+ * reduce to a common narrower interface without variance conflicts.
  */
-export async function getHouseholdTimezone(
-  client: MinimalDataClient
-): Promise<string> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export async function getHouseholdTimezone(client: any): Promise<string> {
   try {
     const { data } = await client.models.homeSettings.list({ limit: 1 });
-    const tz = data?.[0]?.householdTimezone;
+    const tz = data?.[0]?.householdTimezone as string | null | undefined;
     return tz ?? DEFAULT_HOUSEHOLD_TZ;
   } catch {
     return DEFAULT_HOUSEHOLD_TZ;
