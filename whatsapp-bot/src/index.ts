@@ -385,6 +385,10 @@ async function startBot() {
     // messages only, not the full archive).
     shouldSyncHistoryMessage: () => true,
     syncFullHistory: false,
+    // fetchProps (inside executeInitQueries) throws bad-request on every
+    // boot — a known Baileys issue. Disable init queries to stop the
+    // error from potentially interfering with the history sync handshake.
+    fireInitQueries: false,
   });
 
   // Bot's own identifiers (set on connection open). WhatsApp groups now use
