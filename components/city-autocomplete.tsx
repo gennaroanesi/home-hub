@@ -132,7 +132,7 @@ export function CityAutocomplete({
   }
 
   return (
-    <div className="relative" ref={containerRef}>
+    <div className="relative flex-1" ref={containerRef}>
       <Input
         label={label}
         placeholder={placeholder}
