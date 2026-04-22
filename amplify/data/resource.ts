@@ -771,9 +771,21 @@ const schema = a
         // Free-form label for filtering / display ("medication", "chore",
         // "adhoc", etc.). Not enforced.
         kind: a.string(),
+        // Polymorphic link back to whatever entity spawned this reminder
+        // (a task, calendar event, or trip). Null for ad-hoc reminders
+        // created directly from the reminders page. Same pattern as
+        // homeAttachment.parentType / parentId. When the parent is
+        // deleted the UI cascades the delete; when a task is marked
+        // complete the UI flips status to PAUSED.
+        parentType: a.enum(["TASK", "EVENT", "TRIP"]),
+        parentId: a.id(),
         createdBy: a.string(),
       })
-      .secondaryIndexes((index) => [index("status"), index("scheduledAt")])
+      .secondaryIndexes((index) => [
+        index("status"),
+        index("scheduledAt"),
+        index("parentId"),
+      ])
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),
