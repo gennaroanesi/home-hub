@@ -31,6 +31,7 @@ import {
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { SchedulePicker, formatScheduleLabel } from "@/components/schedule-picker";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -335,11 +336,10 @@ export default function RemindersPage() {
                         )}
                         <span className="text-default-400">
                           {" "}
-                          {item.firesAt
-                            ? `@ ${new Date(item.firesAt).toLocaleString()}`
-                            : item.rrule
-                              ? `(${item.rrule.replace(/^RRULE:/, "")})`
-                              : ""}
+                          {formatScheduleLabel({
+                            firesAt: item.firesAt,
+                            rrule: item.rrule,
+                          })}
                         </span>
                       </div>
                     ))}
@@ -454,34 +454,21 @@ export default function RemindersPage() {
                             value={item.notes ?? ""}
                             onValueChange={(v) => update({ notes: v || null })}
                           />
-                          <div className="flex gap-2">
-                            <Input
-                              size="sm"
-                              label="One-shot datetime"
-                              type="datetime-local"
-                              value={item.firesAt ? item.firesAt.slice(0, 16) : ""}
-                              onValueChange={(v) =>
-                                update({ firesAt: v || null, rrule: v ? null : item.rrule })
-                              }
-                              className="flex-1"
-                            />
-                            <span className="text-xs text-default-400 self-center">or</span>
-                            <Input
-                              size="sm"
-                              label="RRULE (recurring)"
-                              placeholder="RRULE:FREQ=DAILY;BYHOUR=8;BYMINUTE=0"
-                              value={item.rrule ?? ""}
-                              onValueChange={(v) =>
-                                update({ rrule: v || null, firesAt: v ? null : item.firesAt })
-                              }
-                              className="flex-1"
-                            />
-                          </div>
+                          <SchedulePicker
+                            value={{ firesAt: item.firesAt, rrule: item.rrule }}
+                            onChange={(next) =>
+                              update({
+                                firesAt: next.firesAt ?? null,
+                                rrule: next.rrule ?? null,
+                              })
+                            }
+                          />
                           <div className="flex gap-2">
                             <Input
                               size="sm"
                               label="Start date (optional)"
                               type="date"
+                              placeholder=" "
                               value={item.startDate ?? ""}
                               onValueChange={(v) => update({ startDate: v || null })}
                             />
@@ -489,6 +476,7 @@ export default function RemindersPage() {
                               size="sm"
                               label="End date (optional)"
                               type="date"
+                              placeholder=" "
                               value={item.endDate ?? ""}
                               onValueChange={(v) => update({ endDate: v || null })}
                               description="Used for time-limited Rx"
