@@ -1539,6 +1539,26 @@ function computeFirstOccurrence(item: Record<string, any>): Date | null {
  * Compute the next occurrence for an item strictly after `after`.
  * Handles both one-shot (firesAt) and recurring (rrule) items.
  */
+/**
+ * Normalize a homeReminder.items blob — may arrive as an array (if the
+ * data client deserialized the AWSJSON) or as a raw JSON string. Tolerate
+ * both. Same helper exists in the sweep lambda; duplicated here because
+ * we don't cross-import between function bundles.
+ */
+function parseReminderItems(raw: unknown): Record<string, any>[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw as Record<string, any>[];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 function computeNextOccurrenceAfter(
   item: Record<string, any>,
   after: Date
@@ -2455,7 +2475,8 @@ async function executeTool(
 
       const { data, errors } = await client.models.homeReminder.create({
         name: input.name,
-        items: [item] as any,
+        // a.json() must be pre-stringified at the AppSync wire level.
+        items: JSON.stringify([item]) as any,
         useLlm: input.useLlm === true,
         targetKind,
         personId: personId ?? null,
@@ -2509,7 +2530,7 @@ async function executeTool(
 
       const { data, errors } = await client.models.homeReminder.create({
         name: input.name,
-        items: items as any,
+        items: JSON.stringify(items) as any,
         useLlm: input.useLlm !== false, // default true for compound
         targetKind,
         personId: personId ?? null,
@@ -2557,7 +2578,7 @@ async function executeTool(
           scheduledAt: r.scheduledAt,
           targetKind: r.targetKind,
           personId: r.personId,
-          itemCount: Array.isArray(r.items) ? r.items.length : 0,
+          itemCount: parseReminderItems(r.items).length,
           kind: r.kind,
           useLlm: r.useLlm,
         })),
@@ -2590,7 +2611,7 @@ async function executeTool(
 
       // Recompute scheduledAt from items — the pause might've been long
       // enough that the old scheduledAt is in the past.
-      const items = (reminder.items ?? []) as any[];
+      const items = parseReminderItems(reminder.items);
       const now = new Date();
       let earliest: Date | null = null;
       for (const item of items) {

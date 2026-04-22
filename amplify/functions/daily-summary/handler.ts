@@ -270,7 +270,18 @@ async function gatherTodayReminders(
     const results: SummaryData["todayReminders"] = [];
 
     for (const r of reminders ?? []) {
-      const items = (r.items ?? []) as ReminderItemLite[];
+      // items is an AWSJSON field — may come back as string or array
+      // depending on client deserialization behavior. Tolerate both.
+      let items: ReminderItemLite[] = [];
+      if (Array.isArray(r.items)) items = r.items as ReminderItemLite[];
+      else if (typeof r.items === "string") {
+        try {
+          const parsed = JSON.parse(r.items);
+          if (Array.isArray(parsed)) items = parsed as ReminderItemLite[];
+        } catch {
+          items = [];
+        }
+      }
       // Does ANY item have a next occurrence today?
       const now = new Date();
       let earliestToday: Date | null = null;

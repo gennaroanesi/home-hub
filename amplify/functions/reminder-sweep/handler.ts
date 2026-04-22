@@ -42,6 +42,26 @@ interface ReminderItem {
   lastFiredAt?: string | null; // ISO datetime, set by sweep
 }
 
+/**
+ * Normalize the items field from a homeReminder row. We write it as a
+ * JSON string (AWSJSON scalar requirement) and Amplify SHOULD deserialize
+ * on read, but behavior varies across client contexts (Lambda vs web).
+ * Tolerate both string and array forms.
+ */
+function parseItems(raw: unknown): ReminderItem[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw as ReminderItem[];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as ReminderItem[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 // ── Item scheduling ─────────────────────────────────────────────────────────
 
 /**
@@ -182,7 +202,7 @@ async function processReminder(
   reminder: Schema["homeReminder"]["type"],
   now: Date
 ): Promise<{ fired: boolean; nextScheduledAt: string | null }> {
-  const items = (reminder.items ?? []) as ReminderItem[];
+  const items = parseItems(reminder.items);
   if (items.length === 0) {
     return { fired: false, nextScheduledAt: null };
   }
@@ -314,7 +334,7 @@ export const handler: Handler = async () => {
   for (const reminder of candidates) {
     try {
       const result = await processReminder(reminder, now);
-      const items = (reminder.items ?? []) as ReminderItem[];
+      const items = parseItems(reminder.items);
 
       if (result.fired) {
         fired++;
@@ -337,14 +357,16 @@ export const handler: Handler = async () => {
         if (result.nextScheduledAt === null) {
           await client.models.homeReminder.update({
             id: reminder.id,
-            items: updatedItems as any,
+            // a.json() fields must be pre-stringified at the wire level.
+            items: JSON.stringify(updatedItems) as any,
             status: "EXPIRED",
           });
           expired++;
         } else {
           await client.models.homeReminder.update({
             id: reminder.id,
-            items: updatedItems as any,
+            // a.json() fields must be pre-stringified at the wire level.
+            items: JSON.stringify(updatedItems) as any,
             scheduledAt: result.nextScheduledAt,
           });
         }

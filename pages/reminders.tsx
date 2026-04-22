@@ -62,6 +62,26 @@ function emptyItem(): ReminderItem {
   return { id: genId(), name: "", rrule: "" };
 }
 
+/**
+ * Normalize a homeReminder.items blob. The field is a.json() which we
+ * write as a JSON string (required by the AWSJSON scalar at the wire
+ * level). On read, Amplify may or may not deserialize depending on the
+ * client context — accept both forms.
+ */
+function parseItems(raw: unknown): ReminderItem[] {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw as ReminderItem[];
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? (parsed as ReminderItem[]) : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+}
+
 const STATUS_COLORS: Record<string, string> = {
   PENDING: "success",
   PAUSED: "warning",
@@ -132,7 +152,7 @@ export default function RemindersPage() {
     setFormUseLlm(r.useLlm !== false);
     setFormTargetKind((r.targetKind as "GROUP" | "PERSON") ?? "GROUP");
     setFormPersonId(r.personId ?? "");
-    const items = Array.isArray(r.items) ? (r.items as ReminderItem[]) : [];
+    const items = parseItems(r.items);
     setFormItems(items.length > 0 ? items : [emptyItem()]);
     modal.onOpen();
   }
@@ -191,7 +211,11 @@ export default function RemindersPage() {
 
     const payload = {
       name: formName.trim(),
-      items: cleanItems as any,
+      // a.json() fields require a pre-stringified value — passing a plain
+      // array yields "Variable 'items' has an invalid value" at the AppSync
+      // wire level. Same gotcha as homeDevice.lastState and
+      // homePhotoFace.boundingBox. See sanitizeForAWSJSON in the sweep.
+      items: JSON.stringify(cleanItems) as any,
       useLlm: formUseLlm,
       targetKind: formTargetKind,
       personId: formTargetKind === "PERSON" ? formPersonId || null : null,
@@ -301,7 +325,7 @@ export default function RemindersPage() {
 
         <div className="space-y-2">
           {visibleReminders.map((r) => {
-            const items = Array.isArray(r.items) ? (r.items as ReminderItem[]) : [];
+            const items = parseItems(r.items);
             const personName = r.personId
               ? people.find((p) => p.id === r.personId)?.name ?? "?"
               : null;
