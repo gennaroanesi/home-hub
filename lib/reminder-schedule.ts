@@ -15,6 +15,62 @@
 
 import { RRule } from "rrule";
 
+// ── Timezone handling ──────────────────────────────────────────────────────
+// The picker stores user-entered times as bare BYHOUR/BYMINUTE values with
+// no DTSTART or TZID. rrule.js interprets these as UTC by default, which
+// means a user typing "9 AM" gets a reminder at 9 AM UTC — 4 AM Central
+// during CDT. To respect household-local time without plumbing DTSTART
+// through the picker + lambdas, we shift iteration into a "naive UTC"
+// frame (UTC fields = local wall-clock values), let rrule iterate there,
+// and shift the result back to real UTC. Single-household app, single
+// timezone — no config surface needed.
+//
+// If an RRULE already has `DTSTART;TZID=...` we trust it and skip the
+// shim (future-proofing for manual advanced rules).
+
+/** Household timezone. All picker-entered BYHOUR values are interpreted here. */
+const HOUSEHOLD_TZ = "America/Chicago";
+
+/**
+ * Convert a real UTC Date to a "naive" Date whose UTC fields represent
+ * the corresponding wall-clock time in the given TZ.
+ *
+ *   toNaive(2026-04-22T08:00Z, "America/Chicago") → 2026-04-22T03:00Z
+ *   (3 AM CDT, encoded as if UTC)
+ */
+function toNaive(utc: Date, tz: string): Date {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: tz,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(utc);
+  const pick = (t: string) => parts.find((p) => p.type === t)!.value;
+  const y = parseInt(pick("year"), 10);
+  const mo = parseInt(pick("month"), 10);
+  const d = parseInt(pick("day"), 10);
+  let h = parseInt(pick("hour"), 10);
+  if (h === 24) h = 0; // some locales return 24 for midnight
+  const mi = parseInt(pick("minute"), 10);
+  const s = parseInt(pick("second"), 10);
+  return new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+}
+
+/**
+ * Inverse of toNaive: given a Date whose UTC fields represent local wall-
+ * clock time, return the real UTC Date that corresponds to that moment.
+ * Uses a self-referential approximation for the offset — accurate except
+ * during the two DST transition hours per year, which we accept.
+ */
+function fromNaive(naive: Date, tz: string): Date {
+  const offsetMs = naive.getTime() - toNaive(naive, tz).getTime();
+  return new Date(naive.getTime() + offsetMs);
+}
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 /**
@@ -138,8 +194,32 @@ export function nextOccurrence(item: ReminderItem, after: Date): Date | null {
       // search date. If startDate is set and later than `after`, use
       // it as the search floor so we don't return pre-start times.
       const searchFrom = startDate && startDate > after ? startDate : after;
-      const next = rule.after(searchFrom, false);
-      if (!next) return null;
+
+      // If the RRULE includes its own DTSTART;TZID= we trust it and pass
+      // the real UTC search time through unmodified. Otherwise interpret
+      // BYHOUR/BYMINUTE as household-local time via the naive-UTC shift.
+      const hasOwnTZ = /DTSTART[^\n]*TZID=/i.test(item.rrule);
+      if (hasOwnTZ) {
+        const next = rule.after(searchFrom, false);
+        if (!next) return null;
+        if (endDate && next > endDate) return null;
+        return next;
+      }
+
+      const naiveSearchFrom = toNaive(searchFrom, HOUSEHOLD_TZ);
+      // Important: rrule.after() falls back to system time as DTSTART when
+      // none is provided. System time (Lambda) is real UTC, which is AHEAD
+      // of our naive-shifted search floor — rrule would then skip our
+      // window and return the next day's occurrence. Fix: clone the rule
+      // with dtstart set explicitly to the naive search floor so iteration
+      // starts from where we want.
+      const ruleWithNaiveStart = new RRule({
+        ...rule.origOptions,
+        dtstart: naiveSearchFrom,
+      });
+      const nextNaive = ruleWithNaiveStart.after(naiveSearchFrom, false);
+      if (!nextNaive) return null;
+      const next = fromNaive(nextNaive, HOUSEHOLD_TZ);
       if (endDate && next > endDate) return null;
       return next;
     } catch {

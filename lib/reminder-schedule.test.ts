@@ -152,8 +152,10 @@ describe("nextOccurrence", () => {
     ).toBeNull();
   });
 
-  it("computes next daily RRULE occurrence", () => {
-    // Daily at 20:00 UTC. From noon UTC the next one is 8pm today.
+  it("computes next daily RRULE occurrence in household-local time", () => {
+    // NOW = 2026-01-15T12:00Z = 6 AM Central (CST, UTC-6). Rule says
+    // BYHOUR=20 meaning 8 PM Central. Next fire = 8 PM CST today =
+    // 2026-01-16T02:00Z.
     const next = nextOccurrence(
       {
         id: "x",
@@ -162,7 +164,46 @@ describe("nextOccurrence", () => {
       },
       NOW
     );
-    expect(next?.toISOString()).toBe("2026-01-15T20:00:00.000Z");
+    expect(next?.toISOString()).toBe("2026-01-16T02:00:00.000Z");
+  });
+
+  it("respects CDT summer offset when computing occurrence", () => {
+    // Regression test for the 3:49 AM Aspirin reminder bug: BYHOUR=9
+    // was being interpreted as 9 UTC (= 4 AM CDT) instead of 9 AM CDT
+    // (= 14 UTC). After the fix, the picker's "9:00am" should mean
+    // 9 AM household-local regardless of season.
+    const aprNow = new Date("2026-04-22T08:00:00.000Z"); // 3 AM CDT
+    vi.setSystemTime(aprNow);
+    const next = nextOccurrence(
+      {
+        id: "x",
+        name: "x",
+        rrule: "RRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0",
+      },
+      aprNow
+    );
+    expect(next?.toISOString()).toBe("2026-04-22T14:00:00.000Z");
+    vi.setSystemTime(NOW); // restore
+  });
+
+  it("skips the TZ shim when RRULE already has a DTSTART with TZID", () => {
+    // We don't assert the exact output (rrule.js requires luxon as a
+    // peer dep for reliable TZID interpretation, and we don't use it).
+    // What we assert is that our naive-UTC shim does NOT get applied
+    // when the rule declares its own TZID — the code path is different.
+    // Concretely: the output must differ from what our Central shim
+    // would produce for the same BYHOUR on the same NOW.
+    const ruleWithTz =
+      "DTSTART;TZID=America/New_York:20260101T090000\nRRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0";
+    const ruleWithoutTz = "RRULE:FREQ=DAILY;BYHOUR=9;BYMINUTE=0";
+    const withTz = nextOccurrence({ id: "x", name: "x", rrule: ruleWithTz }, NOW);
+    const withoutTz = nextOccurrence({ id: "x", name: "x", rrule: ruleWithoutTz }, NOW);
+    expect(withTz).not.toBeNull();
+    expect(withoutTz).not.toBeNull();
+    // Central shim output (withoutTz): 9 AM CST = 15 UTC on Jan 15.
+    expect(withoutTz?.toISOString()).toBe("2026-01-15T15:00:00.000Z");
+    // TZID branch takes a different path; assert it's at least different.
+    expect(withTz?.toISOString()).not.toBe(withoutTz?.toISOString());
   });
 
   it("respects startDate — no fire before it", () => {
