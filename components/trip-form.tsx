@@ -11,6 +11,9 @@ import { FaPlus, FaTrash, FaCalendarPlus, FaSave } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
+import { RemindersSection } from "@/components/reminders-section";
+import { buildReminderDefaultsForTrip } from "@/lib/reminder-defaults";
+import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { tzAbbreviation } from "@/lib/timezone";
 import { AttachmentSection } from "@/components/attachment-section";
 import { FreeCombobox } from "@/components/free-combobox";
@@ -173,6 +176,7 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
     for (const r of tripReservations) {
       await client.models.homeTripReservation.delete({ id: r.id });
     }
+    await cascadeDeleteRemindersFor(client, form.id);
     await client.models.homeTrip.delete({ id: form.id });
     onDeleted?.();
     return true;
@@ -320,6 +324,21 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         onValueChange={(v) => setForm((f) => ({ ...f, notes: v }))}
         minRows={2}
       />
+
+      {form.id && (
+        <div className="border-t border-default-200 pt-4">
+          <RemindersSection
+            parentType="TRIP"
+            parentId={form.id}
+            people={people}
+            defaults={buildReminderDefaultsForTrip({
+              name: form.name,
+              startDate: form.startDate,
+              participantIds: form.participantIds,
+            })}
+          />
+        </div>
+      )}
 
       {/* ── Legs editor ────────────────────────────────────────────────── */}
       <div className="border-t border-default-200 pt-4">

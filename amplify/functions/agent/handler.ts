@@ -16,6 +16,10 @@ import {
   nextOccurrence as reminderNextOccurrence,
 } from "../../../lib/reminder-schedule.js";
 import {
+  cascadeDeleteRemindersFor,
+  pauseRemindersFor,
+} from "../../../lib/reminder-parent.js";
+import {
   DEFAULT_ICAO,
   fetchAirportWeather,
   getMorningWeatherBriefing,
@@ -1625,6 +1629,7 @@ async function executeTool(
         isCompleted: true,
         completedAt: new Date().toISOString(),
       });
+      await pauseRemindersFor(client, input.taskId);
 
       // If recurring, create the next occurrence
       let nextTaskId: string | null = null;
@@ -1817,6 +1822,7 @@ async function executeTool(
     }
 
     case "delete_event": {
+      await cascadeDeleteRemindersFor(client, input.eventId);
       const { errors } = await client.models.homeCalendarEvent.delete({ id: input.eventId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, eventId: input.eventId });
@@ -1872,6 +1878,7 @@ async function executeTool(
         await client.models.homeTripReservation.delete({ id: r.id });
         reservationsDeleted++;
       }
+      await cascadeDeleteRemindersFor(client, input.tripId);
       const { errors } = await client.models.homeTrip.delete({ id: input.tripId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({
@@ -2079,6 +2086,7 @@ async function executeTool(
     }
 
     case "delete_task": {
+      await cascadeDeleteRemindersFor(client, input.taskId);
       const { errors } = await client.models.homeTask.delete({ id: input.taskId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, taskId: input.taskId });

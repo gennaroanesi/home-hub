@@ -27,6 +27,9 @@ import DefaultLayout from "@/layouts/default";
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { AttachmentSection } from "@/components/attachment-section";
+import { RemindersSection } from "@/components/reminders-section";
+import { buildReminderDefaultsForEvent } from "@/lib/reminder-defaults";
+import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
@@ -564,6 +567,7 @@ export default function CalendarPage() {
 
   async function deleteEventById(id: string) {
     if (!confirm("Delete this event?")) return;
+    await cascadeDeleteRemindersFor(client, id);
     await client.models.homeCalendarEvent.delete({ id });
     eventModalDisclosure.onClose();
     await loadAll();
@@ -870,6 +874,20 @@ export default function CalendarPage() {
                       <AttachmentSection
                         parentType="EVENT"
                         parentId={eventForm.id}
+                      />
+                    </div>
+                  )}
+                  {eventForm.id && (
+                    <div className="mt-2">
+                      <RemindersSection
+                        parentType="EVENT"
+                        parentId={eventForm.id}
+                        people={people}
+                        defaults={buildReminderDefaultsForEvent({
+                          title: eventForm.title,
+                          startAt: eventForm.startAt,
+                          assignedPersonIds: eventForm.assignedPersonIds,
+                        })}
                       />
                     </div>
                   )}

@@ -22,6 +22,13 @@ import { RRule } from "rrule";
 
 import DefaultLayout from "@/layouts/default";
 import { AttachmentSection } from "@/components/attachment-section";
+import { RemindersSection } from "@/components/reminders-section";
+import { buildReminderDefaultsForTask } from "@/lib/reminder-defaults";
+import {
+  cascadeDeleteRemindersFor,
+  pauseRemindersFor,
+  resumeRemindersFor,
+} from "@/lib/reminder-parent";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -141,14 +148,16 @@ export default function TasksPage() {
 
   async function toggleComplete(task: Task) {
     if (task.isCompleted) {
-      // Uncomplete
+      // Uncomplete — resume any linked reminders that were auto-paused.
       await client.models.homeTask.update({
         id: task.id,
         isCompleted: false,
         completedAt: null,
       });
+      await resumeRemindersFor(client, task.id);
     } else if (task.recurrence) {
-      // Recurring task: advance due date to next occurrence instead of completing
+      // Recurring task: advance due date to next occurrence instead of
+      // completing. Reminders stay PENDING for the next cycle.
       const nextDate = getNextOccurrenceDate(task.recurrence, task.dueDate);
       if (nextDate) {
         await client.models.homeTask.update({
@@ -157,18 +166,20 @@ export default function TasksPage() {
         });
       }
     } else {
-      // One-time task: mark as completed
+      // One-time task: mark as completed and pause its reminders.
       await client.models.homeTask.update({
         id: task.id,
         isCompleted: true,
         completedAt: new Date().toISOString(),
       });
+      await pauseRemindersFor(client, task.id);
     }
     await loadTasks();
   }
 
   async function deleteTask(id: string) {
     if (!confirm("Delete this task?")) return;
+    await cascadeDeleteRemindersFor(client, id);
     await client.models.homeTask.delete({ id });
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }
@@ -411,6 +422,20 @@ export default function TasksPage() {
                       <AttachmentSection
                         parentType="TASK"
                         parentId={editingTask.id}
+                      />
+                    </div>
+                  )}
+                  {editingTask && (
+                    <div className="mt-2">
+                      <RemindersSection
+                        parentType="TASK"
+                        parentId={editingTask.id}
+                        people={people}
+                        defaults={buildReminderDefaultsForTask({
+                          title: formTitle || editingTask.title,
+                          dueDate: formDueDate || editingTask.dueDate,
+                          assignedPersonIds: formAssignedIds,
+                        })}
                       />
                     </div>
                   )}
