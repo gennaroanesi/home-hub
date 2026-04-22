@@ -30,6 +30,9 @@ import {
   FaUser,
 } from "react-icons/fa";
 
+import { addToast } from "@heroui/react";
+import { RRule } from "rrule";
+
 import DefaultLayout from "@/layouts/default";
 import { SchedulePicker, formatScheduleLabel } from "@/components/schedule-picker";
 import type { Schema } from "@/amplify/data/resource";
@@ -135,8 +138,18 @@ export default function RemindersPage() {
   }
 
   async function save(onClose: () => void) {
-    if (!formName.trim() || formItems.length === 0) return;
-    // Filter out empty items
+    // Validate up front with visible feedback so nothing fails silently.
+    if (!formName.trim()) {
+      addToast({ title: "Name is required", color: "warning" });
+      return;
+    }
+    if (formItems.length === 0) {
+      addToast({ title: "Add at least one item", color: "warning" });
+      return;
+    }
+
+    // Filter out empty items (no name). Each remaining item must also have
+    // a schedule set — either firesAt or rrule.
     const cleanItems = formItems
       .filter((i) => i.name.trim())
       .map((i) => ({
@@ -150,7 +163,31 @@ export default function RemindersPage() {
         ...(i.lastFiredAt ? { lastFiredAt: i.lastFiredAt } : {}),
       }));
 
-    if (cleanItems.length === 0) return;
+    if (cleanItems.length === 0) {
+      addToast({ title: "Each item needs a name", color: "warning" });
+      return;
+    }
+
+    const missingSchedule = cleanItems.find(
+      (i) => !(i as any).firesAt && !(i as any).rrule
+    );
+    if (missingSchedule) {
+      addToast({
+        title: `Item "${missingSchedule.name}" is missing a schedule`,
+        description: "Pick a schedule (Once, Daily, Weekly, etc.) for each item",
+        color: "warning",
+      });
+      return;
+    }
+
+    if (formTargetKind === "PERSON" && !formPersonId) {
+      addToast({
+        title: "Pick a person",
+        description: 'Target is set to "Person" but no person is selected',
+        color: "warning",
+      });
+      return;
+    }
 
     const payload = {
       name: formName.trim(),
@@ -162,26 +199,47 @@ export default function RemindersPage() {
       kind: formKind.trim() || null,
     };
 
-    if (editing) {
-      await client.models.homeReminder.update({
-        id: editing.id,
-        ...payload,
-      });
-    } else {
-      // Compute initial scheduledAt from items
-      const now = new Date();
-      const earliest = earliestNextFire(cleanItems, now);
-      if (!earliest) {
-        alert("Couldn't compute a valid schedule from the items. Check your RRULE / firesAt values.");
-        return;
+    try {
+      if (editing) {
+        const { errors } = await client.models.homeReminder.update({
+          id: editing.id,
+          ...payload,
+        });
+        if (errors?.length) throw new Error(errors[0].message);
+      } else {
+        const now = new Date();
+        const earliest = earliestNextFire(cleanItems, now);
+        if (!earliest) {
+          addToast({
+            title: "Couldn't compute a valid schedule",
+            description:
+              "All items have a schedule set, but none produced a future fire time. Check start/end dates and RRULE.",
+            color: "danger",
+          });
+          return;
+        }
+        const { errors } = await client.models.homeReminder.create({
+          ...payload,
+          scheduledAt: earliest.toISOString(),
+          status: "PENDING",
+          createdBy: "ui",
+        });
+        if (errors?.length) throw new Error(errors[0].message);
       }
-      await client.models.homeReminder.create({
-        ...payload,
-        scheduledAt: earliest.toISOString(),
-        status: "PENDING",
-        createdBy: "ui",
+    } catch (err: any) {
+      console.error("Failed to save reminder:", err);
+      addToast({
+        title: "Save failed",
+        description: err?.message ?? String(err),
+        color: "danger",
       });
+      return;
     }
+
+    addToast({
+      title: editing ? "Reminder updated" : "Reminder created",
+      color: "success",
+    });
     onClose();
     await loadAll();
   }
@@ -524,19 +582,13 @@ function nextFire(item: ReminderItem, after: Date): Date | null {
     return t;
   }
   if (item.rrule) {
-    // Minimal RRULE parsing for UI — just peek at the first few occurrences.
-    // For creation we only need ~one valid future date. If it's malformed,
-    // return null and the UI will error.
     try {
-      // Lazy-import rrule only if needed. Next.js client bundle is fine with
-      // direct import but this keeps the function tree-shakeable.
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { RRule } = require("rrule");
       const rule = RRule.fromString(item.rrule);
       const start = item.startDate ? new Date(item.startDate) : after;
       const searchFrom = start > after ? start : after;
       return rule.after(searchFrom, false) ?? null;
-    } catch {
+    } catch (err) {
+      console.error("Invalid RRULE:", item.rrule, err);
       return null;
     }
   }
