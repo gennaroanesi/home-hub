@@ -409,13 +409,18 @@ retroFaceLambda.addEnvironment("REKOGNITION_COLLECTION_ID", REKOGNITION_COLLECTI
 
 // ── WhatsApp bot — ECS Fargate + Baileys ────────────────────────────────────
 
-// In sandbox deploys the ECR repo has no image, so setting desiredCount=1
-// makes CloudFormation wait ~30 min for a task that can never start, then
-// time out. Detect sandbox via the CDK context that Amplify Gen 2 passes
-// and force desiredCount=0.
+// Detect sandbox via the CDK context that Amplify Gen 2 passes. The entire
+// bot stack (VPC, ECS, ECR, CodeBuild) is skipped in sandbox because:
+//   1. AWS accounts default to 5 VPCs per region — each sandbox iteration
+//      creates a new one, quickly hitting the ceiling with CREATE_FAILED
+//      "maximum number of VPCs has been reached".
+//   2. The sandbox is a dev environment for iterating on the frontend and
+//      data layer; there's no value in running a WhatsApp bot there.
+//   3. The bot is strictly a prod-branch concern.
 const isSandbox =
   backend.stack.node.tryGetContext("amplify-backend-type") === "sandbox";
 
+if (!isSandbox) {
 const botStack = backend.createStack("whatsappBot");
 
 const botVpc = new ec2.Vpc(botStack, "whatsappBotVpc", {
@@ -543,7 +548,7 @@ const botService = new ecs.FargateService(botStack, "whatsappBotService", {
   // this at 0 silently reconciles the service back to zero on every
   // Amplify deploy, which is how we discovered that phase 3 wasn't live —
   // the service had no running tasks at all, not a wedged container.
-  desiredCount: isSandbox ? 0 : 1,
+  desiredCount: 1,
   assignPublicIp: true,
   securityGroups: [botSg],
   vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
@@ -749,3 +754,5 @@ new CfnOutput(backend.stack, "whatsappBotBuildProjectName", {
 new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
   value: `s3://cristinegennaro.com/${BUILD_ARTIFACTS_PREFIX}`,
 });
+
+} // end if (!isSandbox)
