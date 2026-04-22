@@ -3,9 +3,14 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
-import { RRule } from "rrule";
 import { env } from "$amplify/env/reminder-sweep";
 import type { Schema } from "../../data/resource";
+import {
+  type ReminderItem,
+  parseItems,
+  nextOccurrence,
+  earliestNextOccurrence,
+} from "../../../lib/reminder-schedule.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -28,89 +33,6 @@ const LOOKBACK_MIN = 5;
 // How many recent sent messages to load for LLM composition context.
 // Helps Haiku vary wording and not repeat itself.
 const LLM_HISTORY_LIMIT = 5;
-
-// ── Types ───────────────────────────────────────────────────────────────────
-
-interface ReminderItem {
-  id: string;
-  name: string;
-  notes?: string | null;
-  firesAt?: string | null; // ISO datetime, one-shot
-  rrule?: string | null; // RRULE string, recurring
-  startDate?: string | null; // ISO date
-  endDate?: string | null; // ISO date
-  lastFiredAt?: string | null; // ISO datetime, set by sweep
-}
-
-/**
- * Normalize the items field from a homeReminder row. We write it as a
- * JSON string (AWSJSON scalar requirement) and Amplify SHOULD deserialize
- * on read, but behavior varies across client contexts (Lambda vs web).
- * Tolerate both string and array forms.
- */
-function parseItems(raw: unknown): ReminderItem[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as ReminderItem[];
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as ReminderItem[]) : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
-}
-
-// ── Item scheduling ─────────────────────────────────────────────────────────
-
-/**
- * Compute the next occurrence for an item, strictly after `after`.
- * Returns null if the item has no more occurrences (past endDate, or
- * one-shot already fired).
- */
-function nextOccurrence(item: ReminderItem, after: Date): Date | null {
-  const endDate = item.endDate ? new Date(item.endDate) : null;
-
-  if (item.firesAt) {
-    const fires = new Date(item.firesAt);
-    if (item.lastFiredAt) return null; // one-shot already fired
-    if (fires <= after) return null; // one-shot in the past
-    if (endDate && fires > endDate) return null;
-    return fires;
-  }
-
-  if (item.rrule) {
-    try {
-      const rule = RRule.fromString(item.rrule);
-      const startDate = item.startDate ? new Date(item.startDate) : null;
-      // rule.after() returns the first occurrence strictly after the given
-      // date. If startDate is set and later than `after`, use it.
-      const searchFrom = startDate && startDate > after ? startDate : after;
-      const next = rule.after(searchFrom, false);
-      if (!next) return null;
-      if (endDate && next > endDate) return null;
-      return next;
-    } catch {
-      return null;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Earliest next occurrence across all items in a reminder, past a given
- * time. Used to compute the next scheduledAt after a firing.
- */
-function earliestNextOccurrence(items: ReminderItem[], after: Date): Date | null {
-  let earliest: Date | null = null;
-  for (const item of items) {
-    const next = nextOccurrence(item, after);
-    if (next && (!earliest || next < earliest)) earliest = next;
-  }
-  return earliest;
-}
 
 // ── Composition ─────────────────────────────────────────────────────────────
 

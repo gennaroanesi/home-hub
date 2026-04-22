@@ -7,6 +7,17 @@ import { Checkbox } from "@heroui/checkbox";
 import { Button } from "@heroui/button";
 import { FaPlus, FaTrash } from "react-icons/fa";
 
+import {
+  parseRRULE,
+  formatScheduleLabel as sharedFormatScheduleLabel,
+} from "@/lib/reminder-schedule";
+
+// Re-export so existing import sites (pages/reminders.tsx) that grab
+// formatScheduleLabel from "@/components/schedule-picker" keep working.
+// This also lets future consumers pick whichever module feels more
+// natural — the picker for UI, the lib for pure logic.
+export const formatScheduleLabel = sharedFormatScheduleLabel;
+
 // ── Types ───────────────────────────────────────────────────────────────────
 
 /**
@@ -47,39 +58,11 @@ const DAYS_OF_WEEK: { key: string; label: string }[] = [
   { key: "SA", label: "Sat" },
 ];
 
-// ── Parsing: rrule string → picker state ────────────────────────────────────
-//
-// We parse common patterns we emit ourselves. For exotic RRULEs the parse
-// falls through to "custom" mode with the raw string preserved. Parsing is
-// deliberately forgiving — if BYHOUR/BYMINUTE are missing we default to
-// 08:00, the "default reminder time" of most household use cases.
-
-interface ParsedRRULE {
-  freq?: string;
-  byhour?: number[];
-  byminute?: number[];
-  byday?: string[];
-  bymonthday?: number[];
-  interval?: number;
-}
-
-function parseRRULE(rrule: string): ParsedRRULE {
-  const result: ParsedRRULE = {};
-  // Strip leading "RRULE:" if present
-  const body = rrule.replace(/^RRULE:/i, "");
-  for (const part of body.split(";")) {
-    const [k, v] = part.split("=");
-    if (!k || !v) continue;
-    const key = k.toUpperCase();
-    if (key === "FREQ") result.freq = v.toUpperCase();
-    else if (key === "BYHOUR") result.byhour = v.split(",").map((x) => parseInt(x, 10));
-    else if (key === "BYMINUTE") result.byminute = v.split(",").map((x) => parseInt(x, 10));
-    else if (key === "BYDAY") result.byday = v.split(",").map((x) => x.toUpperCase());
-    else if (key === "BYMONTHDAY") result.bymonthday = v.split(",").map((x) => parseInt(x, 10));
-    else if (key === "INTERVAL") result.interval = parseInt(v, 10);
-  }
-  return result;
-}
+// ── Mode detection + local time helpers ────────────────────────────────────
+// parseRRULE lives in lib/reminder-schedule and handles the wire parse.
+// detectMode is UI-specific (deciding which picker to show) so it stays
+// here. Same for the HH:MM <-> hour/minute conversions — used only by
+// the picker's time inputs.
 
 function detectMode(value: ScheduleValue): ScheduleMode {
   if (value.firesAt) return "once";
@@ -94,11 +77,6 @@ function detectMode(value: ScheduleValue): ScheduleMode {
   return "custom";
 }
 
-// ── Time helpers ────────────────────────────────────────────────────────────
-//
-// Our picker edits times as "HH:MM" strings. RRULE encodes them as
-// BYHOUR (0-23) and BYMINUTE (0-59). Keep the conversion in one place.
-
 function timeStringToHourMinute(t: string): { hour: number; minute: number } {
   const [h, m] = t.split(":").map((x) => parseInt(x, 10));
   return { hour: h || 0, minute: m || 0 };
@@ -108,67 +86,6 @@ function hourMinuteToTimeString(hour: number, minute: number): string {
   const h = String(hour).padStart(2, "0");
   const m = String(minute).padStart(2, "0");
   return `${h}:${m}`;
-}
-
-/** Render hour/minute as a 12-hour label with AM/PM. */
-function prettyTime(hour: number, minute: number): string {
-  const m = String(minute).padStart(2, "0");
-  if (hour === 0) return `12:${m}am`;
-  if (hour < 12) return `${hour}:${m}am`;
-  if (hour === 12) return `12:${m}pm`;
-  return `${hour - 12}:${m}pm`;
-}
-
-// ── Public helper: rrule → human-readable label ─────────────────────────────
-//
-// Formats RRULEs emitted by SchedulePicker back into a compact plain-English
-// label. Falls back to the raw rrule for patterns we don't recognize. Used
-// by consumers (reminders page, etc) to render schedules in list views
-// without duplicating the parsing logic.
-
-const DAY_LABELS: Record<string, string> = {
-  SU: "Sun",
-  MO: "Mon",
-  TU: "Tue",
-  WE: "Wed",
-  TH: "Thu",
-  FR: "Fri",
-  SA: "Sat",
-};
-
-export function formatScheduleLabel(schedule: ScheduleValue): string {
-  if (schedule.firesAt) {
-    return `once @ ${new Date(schedule.firesAt).toLocaleString()}`;
-  }
-  if (!schedule.rrule) return "";
-  const p = parseRRULE(schedule.rrule);
-  const minute = p.byminute?.[0] ?? 0;
-
-  if (p.freq === "DAILY") {
-    const hours = p.byhour ?? [];
-    if (hours.length === 0) return "daily";
-    if (hours.length === 1) return `daily @ ${prettyTime(hours[0], minute)}`;
-    return `daily @ ${hours.map((h) => prettyTime(h, minute)).join(", ")}`;
-  }
-  if (p.freq === "WEEKLY") {
-    const days = (p.byday ?? []).map((d) => DAY_LABELS[d] ?? d).join(", ");
-    const hour = p.byhour?.[0] ?? 8;
-    return days ? `${days} @ ${prettyTime(hour, minute)}` : `weekly @ ${prettyTime(hour, minute)}`;
-  }
-  if (p.freq === "MONTHLY") {
-    const day = p.bymonthday?.[0];
-    const hour = p.byhour?.[0] ?? 8;
-    const nth = day ? ordinal(day) : "";
-    return `${nth} of each month @ ${prettyTime(hour, minute)}`;
-  }
-  // Unrecognized — show the raw rule minus the "RRULE:" prefix
-  return schedule.rrule.replace(/^RRULE:/i, "");
-}
-
-function ordinal(n: number): string {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return n + (s[(v - 20) % 10] ?? s[v] ?? s[0]);
 }
 
 // ── Component ───────────────────────────────────────────────────────────────

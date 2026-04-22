@@ -12,6 +12,10 @@ import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 import { env } from "$amplify/env/home-agent";
 import type { Schema } from "../../data/resource";
 import {
+  parseItems as parseReminderItems,
+  nextOccurrence as reminderNextOccurrence,
+} from "../../../lib/reminder-schedule.js";
+import {
   DEFAULT_ICAO,
   fetchAirportWeather,
   getMorningWeatherBriefing,
@@ -1510,74 +1514,20 @@ function getNextOccurrence(rruleString: string, after: Date): Date | null {
 // own occurrence computation — see amplify/functions/reminder-sweep/handler.ts.
 
 /**
- * Compute the first occurrence for a newly-created reminder item,
- * strictly in the future (after "now"). Returns null if the item has
- * no computable occurrence.
+ * Schedule helpers are in lib/reminder-schedule. Thin wrappers here map
+ * the lib's `nextOccurrence(item, after)` to the two call shapes the
+ * agent uses (first-occurrence from now; next-occurrence after a given
+ * time) so the call sites stay readable.
  */
 function computeFirstOccurrence(item: Record<string, any>): Date | null {
-  const now = new Date();
-  if (item.firesAt) {
-    const t = new Date(item.firesAt);
-    if (!Number.isFinite(t.getTime())) return null;
-    if (t <= now) return null;
-    return t;
-  }
-  if (item.rrule) {
-    try {
-      const rule = RRule.fromString(item.rrule);
-      const start = item.startDate ? new Date(item.startDate) : now;
-      const searchFrom = start > now ? start : now;
-      return rule.after(searchFrom, false) ?? null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
-}
-
-/**
- * Compute the next occurrence for an item strictly after `after`.
- * Handles both one-shot (firesAt) and recurring (rrule) items.
- */
-/**
- * Normalize a homeReminder.items blob — may arrive as an array (if the
- * data client deserialized the AWSJSON) or as a raw JSON string. Tolerate
- * both. Same helper exists in the sweep lambda; duplicated here because
- * we don't cross-import between function bundles.
- */
-function parseReminderItems(raw: unknown): Record<string, any>[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as Record<string, any>[];
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
+  return reminderNextOccurrence(item as any, new Date());
 }
 
 function computeNextOccurrenceAfter(
   item: Record<string, any>,
   after: Date
 ): Date | null {
-  if (item.firesAt) {
-    const t = new Date(item.firesAt);
-    if (!Number.isFinite(t.getTime())) return null;
-    if (t <= after) return null;
-    return t;
-  }
-  if (item.rrule) {
-    try {
-      const rule = RRule.fromString(item.rrule);
-      return rule.after(after, false) ?? null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return reminderNextOccurrence(item as any, after);
 }
 
 /**

@@ -3,10 +3,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
-import { RRule } from "rrule";
 import { env } from "$amplify/env/daily-summary";
 import type { Schema } from "../../data/resource";
 import { HassClient } from "../hass-sync/hass-client.js";
+import {
+  parseItems as parseReminderItems,
+  nextOccurrence as nextReminderOccurrence,
+} from "../../../lib/reminder-schedule.js";
 import {
   DEFAULT_ICAO,
   getMorningWeatherBriefing,
@@ -246,16 +249,6 @@ interface PersonLite {
   id: string;
   name: string;
 }
-interface ReminderItemLite {
-  id: string;
-  name: string;
-  notes?: string | null;
-  firesAt?: string | null;
-  rrule?: string | null;
-  startDate?: string | null;
-  endDate?: string | null;
-  lastFiredAt?: string | null;
-}
 
 async function gatherTodayReminders(
   people: PersonLite[],
@@ -270,23 +263,12 @@ async function gatherTodayReminders(
     const results: SummaryData["todayReminders"] = [];
 
     for (const r of reminders ?? []) {
-      // items is an AWSJSON field — may come back as string or array
-      // depending on client deserialization behavior. Tolerate both.
-      let items: ReminderItemLite[] = [];
-      if (Array.isArray(r.items)) items = r.items as ReminderItemLite[];
-      else if (typeof r.items === "string") {
-        try {
-          const parsed = JSON.parse(r.items);
-          if (Array.isArray(parsed)) items = parsed as ReminderItemLite[];
-        } catch {
-          items = [];
-        }
-      }
+      const items = parseReminderItems(r.items);
       // Does ANY item have a next occurrence today?
       const now = new Date();
       let earliestToday: Date | null = null;
       for (const item of items) {
-        const next = nextOccurrenceForItem(item, now);
+        const next = nextReminderOccurrence(item, now);
         if (!next) continue;
         if (isoDate(next) !== todayStr) continue;
         if (!earliestToday || next < earliestToday) earliestToday = next;
@@ -323,36 +305,6 @@ async function gatherTodayReminders(
     console.warn("Failed to load today's reminders:", err);
     return [];
   }
-}
-
-/**
- * Compute next occurrence for a reminder item, strictly in the future.
- * Used by the daily-summary to figure out which reminders land on today.
- * Mirrors the sweep's logic — kept local to avoid a cross-lambda import.
- */
-function nextOccurrenceForItem(
-  item: ReminderItemLite,
-  after: Date
-): Date | null {
-  if (item.firesAt) {
-    const t = new Date(item.firesAt);
-    if (!Number.isFinite(t.getTime()) || t <= after) return null;
-    return t;
-  }
-  if (item.rrule) {
-    try {
-      const rule = RRule.fromString(item.rrule);
-      const start = item.startDate ? new Date(item.startDate) : after;
-      const searchFrom = start > after ? start : after;
-      const next = rule.after(searchFrom, false);
-      if (!next) return null;
-      if (item.endDate && next > new Date(item.endDate)) return null;
-      return next;
-    } catch {
-      return null;
-    }
-  }
-  return null;
 }
 
 // ── Weather ──────────────────────────────────────────────────────────────────

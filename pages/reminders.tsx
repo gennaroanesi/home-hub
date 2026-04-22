@@ -31,27 +31,22 @@ import {
 } from "react-icons/fa";
 
 import { addToast } from "@heroui/react";
-import { RRule } from "rrule";
 
 import DefaultLayout from "@/layouts/default";
-import { SchedulePicker, formatScheduleLabel } from "@/components/schedule-picker";
+import { SchedulePicker } from "@/components/schedule-picker";
+import {
+  type ReminderItem as SharedReminderItem,
+  parseItems as parseReminderItems,
+  earliestNextOccurrence,
+  formatScheduleLabel,
+} from "@/lib/reminder-schedule";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Reminder = Schema["homeReminder"]["type"];
 type Person = Schema["homePerson"]["type"];
-
-interface ReminderItem {
-  id: string;
-  name: string;
-  notes?: string | null;
-  firesAt?: string | null;
-  rrule?: string | null;
-  startDate?: string | null;
-  endDate?: string | null;
-  lastFiredAt?: string | null;
-}
+type ReminderItem = SharedReminderItem;
 
 /** Generate a stable-ish id client-side. Mirrors what the agent handler does. */
 function genId(): string {
@@ -60,26 +55,6 @@ function genId(): string {
 
 function emptyItem(): ReminderItem {
   return { id: genId(), name: "", rrule: "" };
-}
-
-/**
- * Normalize a homeReminder.items blob. The field is a.json() which we
- * write as a JSON string (required by the AWSJSON scalar at the wire
- * level). On read, Amplify may or may not deserialize depending on the
- * client context — accept both forms.
- */
-function parseItems(raw: unknown): ReminderItem[] {
-  if (!raw) return [];
-  if (Array.isArray(raw)) return raw as ReminderItem[];
-  if (typeof raw === "string") {
-    try {
-      const parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? (parsed as ReminderItem[]) : [];
-    } catch {
-      return [];
-    }
-  }
-  return [];
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -152,7 +127,7 @@ export default function RemindersPage() {
     setFormUseLlm(r.useLlm !== false);
     setFormTargetKind((r.targetKind as "GROUP" | "PERSON") ?? "GROUP");
     setFormPersonId(r.personId ?? "");
-    const items = parseItems(r.items);
+    const items = parseReminderItems(r.items);
     setFormItems(items.length > 0 ? items : [emptyItem()]);
     modal.onOpen();
   }
@@ -232,7 +207,7 @@ export default function RemindersPage() {
         if (errors?.length) throw new Error(errors[0].message);
       } else {
         const now = new Date();
-        const earliest = earliestNextFire(cleanItems, now);
+        const earliest = earliestNextOccurrence(cleanItems, now);
         if (!earliest) {
           addToast({
             title: "Couldn't compute a valid schedule",
@@ -325,7 +300,7 @@ export default function RemindersPage() {
 
         <div className="space-y-2">
           {visibleReminders.map((r) => {
-            const items = parseItems(r.items);
+            const items = parseReminderItems(r.items);
             const personName = r.personId
               ? people.find((p) => p.id === r.personId)?.name ?? "?"
               : null;
@@ -586,35 +561,3 @@ export default function RemindersPage() {
   );
 }
 
-// ── Helper: compute earliest next fire time across items ────────────────────
-// Used to set the initial scheduledAt when creating a new reminder. Mirrors
-// the sweep Lambda's own computation. Not exported — this page is the only
-// caller that needs it.
-function earliestNextFire(items: ReminderItem[], after: Date): Date | null {
-  let earliest: Date | null = null;
-  for (const item of items) {
-    const next = nextFire(item, after);
-    if (next && (!earliest || next < earliest)) earliest = next;
-  }
-  return earliest;
-}
-
-function nextFire(item: ReminderItem, after: Date): Date | null {
-  if (item.firesAt) {
-    const t = new Date(item.firesAt);
-    if (!Number.isFinite(t.getTime()) || t <= after) return null;
-    return t;
-  }
-  if (item.rrule) {
-    try {
-      const rule = RRule.fromString(item.rrule);
-      const start = item.startDate ? new Date(item.startDate) : after;
-      const searchFrom = start > after ? start : after;
-      return rule.after(searchFrom, false) ?? null;
-    } catch (err) {
-      console.error("Invalid RRULE:", item.rrule, err);
-      return null;
-    }
-  }
-  return null;
-}
