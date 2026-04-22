@@ -160,11 +160,39 @@ function awsCognito(subcmd, poolId, args, profile) {
     .join(" ");
   try {
     const out = execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] });
-    return out ? JSON.parse(out) : null;
+    return { ok: true, data: out ? JSON.parse(out) : null };
   } catch (err) {
     const stderr = err.stderr?.toString() ?? "";
-    throw new Error(`aws cognito-idp ${subcmd} failed:\n${stderr}`);
+    return { ok: false, stderr };
   }
+}
+
+function awsCognitoOrThrow(subcmd, poolId, args, profile) {
+  const res = awsCognito(subcmd, poolId, args, profile);
+  if (!res.ok) {
+    throw new Error(`aws cognito-idp ${subcmd} failed:\n${res.stderr}`);
+  }
+  return res.data;
+}
+
+/**
+ * Check if a user exists in the pool. Uses admin-get-user which returns
+ * 200 + user details if present, or UserNotFoundException if not. We
+ * prefer this over catching UsernameExistsException from admin-create-user
+ * because it gives us the detailed error once and is explicit.
+ */
+function userExists(email, poolId, profile) {
+  const res = awsCognito(
+    "admin-get-user",
+    poolId,
+    ["--username", email],
+    profile
+  );
+  if (res.ok) return true;
+  if (res.stderr.includes("UserNotFoundException")) return false;
+  // Any other error should bubble — likely a permissions or config issue
+  // that we don't want to swallow.
+  throw new Error(`admin-get-user failed:\n${res.stderr}`);
 }
 
 // ── Password prompt ──────────────────────────────────────────────────────────
@@ -218,29 +246,38 @@ async function main() {
     process.exit(1);
   }
 
-  // 1. Create the user (email-verified, SUPPRESS so Cognito doesn't send
-  //    a welcome email with a throwaway temp password — we're setting a
-  //    permanent one in step 2).
-  console.log("Creating user…");
-  awsCognito(
-    "admin-create-user",
-    poolId,
-    [
-      "--username",
-      args.email,
-      "--user-attributes",
-      `Name=email,Value=${args.email}`,
-      `Name=email_verified,Value=true`,
-      `Name=custom:full_name,Value=${args.name}`,
-      "--message-action",
-      "SUPPRESS",
-    ],
-    profile
-  );
+  // 1. Create the user if missing, otherwise update password in place.
+  //    Idempotent: rerunning the script with the same email is safe and
+  //    useful for password resets. Group memberships are always
+  //    re-asserted since admin-add-user-to-group is idempotent per AWS docs.
+  const existing = userExists(args.email, poolId, profile);
+  if (existing) {
+    console.log(
+      `User ${args.email} already exists — updating password and group memberships.`
+    );
+  } else {
+    console.log("Creating user…");
+    awsCognitoOrThrow(
+      "admin-create-user",
+      poolId,
+      [
+        "--username",
+        args.email,
+        "--user-attributes",
+        `Name=email,Value=${args.email}`,
+        `Name=email_verified,Value=true`,
+        `Name=custom:full_name,Value=${args.name}`,
+        "--message-action",
+        "SUPPRESS",
+      ],
+      profile
+    );
+  }
 
   // 2. Set the password as permanent so the user can log in directly.
+  //    Works the same for new and existing users.
   console.log("Setting permanent password…");
-  awsCognito(
+  awsCognitoOrThrow(
     "admin-set-user-password",
     poolId,
     ["--username", args.email, "--password", password, "--permanent"],
@@ -248,8 +285,10 @@ async function main() {
   );
 
   // 3. Add to home-users (always) and admins (if flagged).
+  //    admin-add-user-to-group is idempotent per AWS docs — safe to
+  //    call on every run.
   console.log("Adding to home-users group…");
-  awsCognito(
+  awsCognitoOrThrow(
     "admin-add-user-to-group",
     poolId,
     ["--username", args.email, "--group-name", "home-users"],
@@ -257,7 +296,7 @@ async function main() {
   );
   if (args.admin) {
     console.log("Adding to admins group…");
-    awsCognito(
+    awsCognitoOrThrow(
       "admin-add-user-to-group",
       poolId,
       ["--username", args.email, "--group-name", "admins"],
@@ -266,7 +305,9 @@ async function main() {
   }
 
   console.log();
-  console.log(`✓ User ${args.email} created successfully in ${env}`);
+  console.log(
+    `✓ User ${args.email} ${existing ? "updated" : "created"} successfully in ${env}`
+  );
   console.log(`  Login at ${env === "prod" ? "https://home.cristinegennaro.com" : "http://localhost:3001"}`);
 }
 
