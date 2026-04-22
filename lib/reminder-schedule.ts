@@ -28,8 +28,14 @@ import { RRule } from "rrule";
 // If an RRULE already has `DTSTART;TZID=...` we trust it and skip the
 // shim (future-proofing for manual advanced rules).
 
-/** Household timezone. All picker-entered BYHOUR values are interpreted here. */
-const HOUSEHOLD_TZ = "America/Chicago";
+/**
+ * Default household timezone — used as a fallback when callers don't pass
+ * one explicitly. At runtime, callers should resolve the actual TZ from
+ * homeSettings (or person.defaultTimezone for person-targeted reminders)
+ * and pass it to nextOccurrence / earliestNextOccurrence. The constant
+ * here is only the "no context, guess sensibly" default.
+ */
+export const DEFAULT_HOUSEHOLD_TZ = "America/Chicago";
 
 /**
  * Convert a real UTC Date to a "naive" Date whose UTC fields represent
@@ -169,7 +175,11 @@ export function parseRRULE(rrule: string): ParsedRRULE {
  *     endDate (don't fire after it).
  *   - Neither: returns null.
  */
-export function nextOccurrence(item: ReminderItem, after: Date): Date | null {
+export function nextOccurrence(
+  item: ReminderItem,
+  after: Date,
+  tz: string = DEFAULT_HOUSEHOLD_TZ
+): Date | null {
   const endDate = item.endDate ? new Date(item.endDate) : null;
   if (endDate && !Number.isFinite(endDate.getTime())) {
     return null;
@@ -206,7 +216,7 @@ export function nextOccurrence(item: ReminderItem, after: Date): Date | null {
         return next;
       }
 
-      const naiveSearchFrom = toNaive(searchFrom, HOUSEHOLD_TZ);
+      const naiveSearchFrom = toNaive(searchFrom, tz);
       // Important: rrule.after() falls back to system time as DTSTART when
       // none is provided. System time (Lambda) is real UTC, which is AHEAD
       // of our naive-shifted search floor — rrule would then skip our
@@ -219,7 +229,7 @@ export function nextOccurrence(item: ReminderItem, after: Date): Date | null {
       });
       const nextNaive = ruleWithNaiveStart.after(naiveSearchFrom, false);
       if (!nextNaive) return null;
-      const next = fromNaive(nextNaive, HOUSEHOLD_TZ);
+      const next = fromNaive(nextNaive, tz);
       if (endDate && next > endDate) return null;
       return next;
     } catch {
@@ -236,11 +246,12 @@ export function nextOccurrence(item: ReminderItem, after: Date): Date | null {
  */
 export function earliestNextOccurrence(
   items: ReminderItem[],
-  after: Date
+  after: Date,
+  tz: string = DEFAULT_HOUSEHOLD_TZ
 ): Date | null {
   let earliest: Date | null = null;
   for (const item of items) {
-    const next = nextOccurrence(item, after);
+    const next = nextOccurrence(item, after, tz);
     if (next && (!earliest || next < earliest)) earliest = next;
   }
   return earliest;

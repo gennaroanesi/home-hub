@@ -731,6 +731,27 @@ const schema = a
     //     lastFiredAt?: string — ISO datetime, set by sweep after each fire
     //   }
     // Exactly one of firesAt or rrule should be set per item.
+
+    // ── Settings (singleton) ─────────────────────────────────────────────
+    // Household-level configuration. By convention we only ever keep ONE
+    // row here — the UI fetches the first row and treats it as the
+    // global config. Lambdas do the same.
+    //
+    // Currently just the household timezone; designed to grow (default
+    // airport ICAO, daily summary hour, etc).
+    homeSettings: a
+      .model({
+        // IANA timezone name, e.g. "America/Chicago". Used by the reminder
+        // sweep + daily summary to interpret picker-entered BYHOUR values
+        // as household-local time. Falls back to "America/Chicago" if no
+        // settings row exists.
+        householdTimezone: a.string().required(),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     homeReminder: a
       .model({
         name: a.string().required(),

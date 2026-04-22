@@ -44,6 +44,7 @@ import {
   FaCheckSquare,
   FaPaperclip,
   FaBell,
+  FaCog,
 } from "react-icons/fa";
 
 // ── Nav group definitions ──────────────────────────────────────────────
@@ -248,6 +249,13 @@ export const Navbar = () => {
                 Manage people
               </DropdownItem>
               <DropdownItem
+                key="settings"
+                startContent={<FaCog size={14} />}
+                onPress={() => router.push("/admin/settings")}
+              >
+                Settings
+              </DropdownItem>
+              <DropdownItem
                 key="security"
                 startContent={<FaLock size={14} />}
                 onPress={() => router.push("/security")}
@@ -344,6 +352,11 @@ export const Navbar = () => {
         <NavbarMenuItem>
           <Link as={NextLink} href="/admin/people" className="w-full flex items-center gap-2 py-2 pl-4 text-foreground" onPress={() => setMenuOpen(false)}>
             <FaUsers size={14} /> Manage people
+          </Link>
+        </NavbarMenuItem>
+        <NavbarMenuItem>
+          <Link as={NextLink} href="/admin/settings" className="w-full flex items-center gap-2 py-2 pl-4 text-foreground" onPress={() => setMenuOpen(false)}>
+            <FaCog size={14} /> Settings
           </Link>
         </NavbarMenuItem>
         <NavbarMenuItem>

@@ -11,6 +11,10 @@ import {
   nextOccurrence,
   earliestNextOccurrence,
 } from "../../../lib/reminder-schedule.js";
+import {
+  getHouseholdTimezone,
+  resolveReminderTimezone,
+} from "../../../lib/household-settings.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -122,12 +126,36 @@ function composeDeterministic(
 
 async function processReminder(
   reminder: Schema["homeReminder"]["type"],
-  now: Date
-): Promise<{ fired: boolean; nextScheduledAt: string | null }> {
+  now: Date,
+  householdTz: string
+): Promise<{
+  fired: boolean;
+  nextScheduledAt: string | null;
+  updatedItems: ReminderItem[];
+}> {
   const items = parseItems(reminder.items);
   if (items.length === 0) {
-    return { fired: false, nextScheduledAt: null };
+    return { fired: false, nextScheduledAt: null, updatedItems: [] };
   }
+
+  // Resolve effective TZ: person's TZ if the reminder is PERSON-targeted
+  // and that person has a defaultTimezone set; else household TZ.
+  let targetPersonTz: string | null = null;
+  if (reminder.targetKind === "PERSON" && reminder.personId) {
+    try {
+      const { data: person } = await client.models.homePerson.get({
+        id: reminder.personId,
+      });
+      targetPersonTz = person?.defaultTimezone ?? null;
+    } catch {
+      // fall through to household TZ
+    }
+  }
+  const tz = resolveReminderTimezone({
+    targetKind: reminder.targetKind,
+    targetPersonTz,
+    householdTz,
+  });
 
   // Window: items whose next occurrence falls in (now - lookback, now + earlyBias]
   const windowStart = new Date(now.getTime() - LOOKBACK_MIN * 60_000);
@@ -139,7 +167,7 @@ async function processReminder(
   for (const item of items) {
     const lastSeen = item.lastFiredAt ? new Date(item.lastFiredAt) : windowStart;
     const searchFrom = lastSeen > windowStart ? lastSeen : windowStart;
-    const next = nextOccurrence(item, searchFrom);
+    const next = nextOccurrence(item, searchFrom, tz);
     if (next && next >= windowStart && next <= windowEnd) {
       dueItems.push(item);
       updatedItems.push({ ...item, lastFiredAt: next.toISOString() });
@@ -150,12 +178,13 @@ async function processReminder(
 
   if (dueItems.length === 0) {
     // Nothing due yet — recompute scheduledAt and move on.
-    const nextAcross = earliestNextOccurrence(items, now);
+    const nextAcross = earliestNextOccurrence(items, now, tz);
     return {
       fired: false,
       nextScheduledAt: nextAcross
         ? new Date(nextAcross.getTime() - EARLY_BIAS_MIN * 60_000).toISOString()
         : null,
+      updatedItems: items,
     };
   }
 
@@ -210,13 +239,14 @@ async function processReminder(
   }
 
   // Compute next scheduledAt across items after this firing
-  const nextAcross = earliestNextOccurrence(updatedItems, now);
+  const nextAcross = earliestNextOccurrence(updatedItems, now, tz);
 
   return {
     fired: true,
     nextScheduledAt: nextAcross
       ? new Date(nextAcross.getTime() - EARLY_BIAS_MIN * 60_000).toISOString()
       : null,
+    updatedItems,
   };
 }
 
@@ -225,6 +255,11 @@ async function processReminder(
 export const handler: Handler = async () => {
   const now = new Date();
   console.log(`reminder-sweep: starting at ${now.toISOString()}`);
+
+  // Household TZ is read once per sweep. Per-person overrides are
+  // resolved inside processReminder when the reminder is PERSON-targeted.
+  const householdTz = await getHouseholdTimezone(client);
+  console.log(`reminder-sweep: household TZ = ${householdTz}`);
 
   // Find reminders whose scheduledAt has come due. Filter on PENDING
   // status to skip paused/cancelled/expired reminders.
@@ -255,32 +290,21 @@ export const handler: Handler = async () => {
 
   for (const reminder of candidates) {
     try {
-      const result = await processReminder(reminder, now);
-      const items = parseItems(reminder.items);
+      const result = await processReminder(reminder, now, householdTz);
 
       if (result.fired) {
         fired++;
-        // Update items (with new lastFiredAt) and scheduledAt
-        const windowStart = new Date(now.getTime() - LOOKBACK_MIN * 60_000);
-        const windowEnd = new Date(now.getTime() + EARLY_BIAS_MIN * 60_000);
-        const updatedItems = items.map((item) => {
-          const lastSeen = item.lastFiredAt
-            ? new Date(item.lastFiredAt)
-            : windowStart;
-          const searchFrom = lastSeen > windowStart ? lastSeen : windowStart;
-          const next = nextOccurrence(item, searchFrom);
-          if (next && next >= windowStart && next <= windowEnd) {
-            return { ...item, lastFiredAt: next.toISOString() };
-          }
-          return item;
-        });
+        // Use the updatedItems (with new lastFiredAt) returned by
+        // processReminder. Avoids duplicating the window + occurrence
+        // math here — and ensures the per-reminder TZ resolution is
+        // consistent between the fire decision and the DB update.
 
         // If no more occurrences across any item, mark EXPIRED
         if (result.nextScheduledAt === null) {
           await client.models.homeReminder.update({
             id: reminder.id,
             // a.json() fields must be pre-stringified at the wire level.
-            items: JSON.stringify(updatedItems) as any,
+            items: JSON.stringify(result.updatedItems) as any,
             status: "EXPIRED",
           });
           expired++;
@@ -288,7 +312,7 @@ export const handler: Handler = async () => {
           await client.models.homeReminder.update({
             id: reminder.id,
             // a.json() fields must be pre-stringified at the wire level.
-            items: JSON.stringify(updatedItems) as any,
+            items: JSON.stringify(result.updatedItems) as any,
             scheduledAt: result.nextScheduledAt,
           });
         }

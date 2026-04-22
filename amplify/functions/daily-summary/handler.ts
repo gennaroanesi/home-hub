@@ -17,6 +17,10 @@ import {
   type ParsedTaf,
   type FlyingDetection,
 } from "../../../lib/aviation-weather.js";
+import {
+  getHouseholdTimezone,
+  resolveReminderTimezone,
+} from "../../../lib/household-settings.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -248,6 +252,7 @@ async function gatherData(): Promise<SummaryData> {
 interface PersonLite {
   id: string;
   name: string;
+  defaultTimezone?: string | null;
 }
 
 async function gatherTodayReminders(
@@ -259,16 +264,28 @@ async function gatherTodayReminders(
       filter: { status: { eq: "PENDING" } },
       limit: 200,
     });
+    // Resolve TZs up front. For person-targeted reminders, use that
+    // person's defaultTimezone; otherwise household TZ.
+    const householdTz = await getHouseholdTimezone(client);
+    const peopleTzById = new Map(
+      people.map((p) => [p.id, { name: p.name, tz: p.defaultTimezone ?? null }])
+    );
     const peopleById = new Map(people.map((p) => [p.id, p.name]));
     const results: SummaryData["todayReminders"] = [];
 
     for (const r of reminders ?? []) {
       const items = parseReminderItems(r.items);
+      const targetPerson = r.personId ? peopleTzById.get(r.personId) : null;
+      const tz = resolveReminderTimezone({
+        targetKind: r.targetKind,
+        targetPersonTz: targetPerson?.tz ?? null,
+        householdTz,
+      });
       // Does ANY item have a next occurrence today?
       const now = new Date();
       let earliestToday: Date | null = null;
       for (const item of items) {
-        const next = nextReminderOccurrence(item, now);
+        const next = nextReminderOccurrence(item, now, tz);
         if (!next) continue;
         if (isoDate(next) !== todayStr) continue;
         if (!earliestToday || next < earliestToday) earliestToday = next;
