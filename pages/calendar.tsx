@@ -504,27 +504,30 @@ export default function CalendarPage() {
     eventModalDisclosure.onOpen();
   }
 
-  async function saveEvent(onClose: () => void) {
+  // Core save — creates or updates the event and returns its id.
+  // Used both by the Save/Create button (saveEvent) and by the
+  // RemindersSection's onBeforeAdd, which wants the id without
+  // closing the modal.
+  async function saveEventDraft(): Promise<string | null> {
     if (!eventForm.title.trim() || !eventForm.startAt) {
       alert("Title and start date are required.");
-      return;
+      return null;
     }
-    // Validate dates
     const startDate = new Date(eventForm.startAt);
     if (isNaN(startDate.getTime())) {
       alert("Start date is invalid.");
-      return;
+      return null;
     }
     let endDate: Date | null = null;
     if (eventForm.endAt) {
       endDate = new Date(eventForm.endAt);
       if (isNaN(endDate.getTime())) {
         alert("End date is invalid.");
-        return;
+        return null;
       }
       if (endDate.getTime() < startDate.getTime()) {
         alert("End must be after start.");
-        return;
+        return null;
       }
     }
     const location =
@@ -554,13 +557,25 @@ export default function CalendarPage() {
       if (result.errors && result.errors.length > 0) {
         console.error("Save event errors:", result.errors);
         alert(`Failed to save: ${result.errors.map((e) => e.message).join(", ")}`);
-        return;
+        return null;
       }
+      const savedId = result.data?.id ?? null;
+      if (savedId && !eventForm.id) {
+        // Promote the form from create to edit mode so the reminders
+        // section (and any follow-up saves) operate on the new row.
+        setEventForm((f) => ({ ...f, id: savedId }));
+      }
+      return savedId;
     } catch (err) {
       console.error("Save event threw:", err);
       alert(`Failed to save event: ${err instanceof Error ? err.message : String(err)}`);
-      return;
+      return null;
     }
+  }
+
+  async function saveEvent(onClose: () => void) {
+    const id = await saveEventDraft();
+    if (!id) return;
     onClose();
     await loadAll();
   }
@@ -877,20 +892,19 @@ export default function CalendarPage() {
                       />
                     </div>
                   )}
-                  {eventForm.id && (
-                    <div className="mt-2">
-                      <RemindersSection
-                        parentType="EVENT"
-                        parentId={eventForm.id}
-                        people={people}
-                        defaults={buildReminderDefaultsForEvent({
-                          title: eventForm.title,
-                          startAt: eventForm.startAt,
-                          assignedPersonIds: eventForm.assignedPersonIds,
-                        })}
-                      />
-                    </div>
-                  )}
+                  <div className="mt-2">
+                    <RemindersSection
+                      parentType="EVENT"
+                      parentId={eventForm.id}
+                      people={people}
+                      defaults={buildReminderDefaultsForEvent({
+                        title: eventForm.title,
+                        startAt: eventForm.startAt,
+                        assignedPersonIds: eventForm.assignedPersonIds,
+                      })}
+                      onBeforeAdd={eventForm.id ? undefined : saveEventDraft}
+                    />
+                  </div>
                 </ModalBody>
                 <ModalFooter>
                   {eventForm.id && (

@@ -48,6 +48,15 @@ interface RemindersSectionProps {
   defaults?: ReminderModalInitialValues;
   /** Optional heading override. Defaults to "Reminders". */
   title?: string;
+  /**
+   * If provided and `parentId` is falsy when the user clicks
+   * "Add reminder", this is called first to create the parent on the
+   * fly. Return the newly-minted parentId (or null to abort). Lets
+   * the section appear on create forms — user fills task/event/trip
+   * fields, clicks "Add reminder", the parent is saved automatically,
+   * and the reminder modal opens pre-linked.
+   */
+  onBeforeAdd?: () => Promise<string | null>;
 }
 
 export function RemindersSection({
@@ -56,10 +65,16 @@ export function RemindersSection({
   people,
   defaults,
   title = "Reminders",
+  onBeforeAdd,
 }: RemindersSectionProps) {
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<Reminder | null>(null);
+  // After onBeforeAdd creates the parent, the prop hasn't re-rendered
+  // yet. Stash the new id here so the reminder modal we're opening
+  // RIGHT NOW has something to link against.
+  const [pendingParentId, setPendingParentId] = useState<string | null>(null);
+  const effectiveParentId = parentId || pendingParentId;
   const modal = useDisclosure();
 
   const load = useCallback(async () => {
@@ -85,7 +100,16 @@ export function RemindersSection({
     load();
   }, [load]);
 
-  function openCreate() {
+  async function openCreate() {
+    // If there's no parent yet, run onBeforeAdd to mint one (e.g.
+    // save the draft task / event / trip). A null return aborts.
+    if (!parentId && onBeforeAdd) {
+      const created = await onBeforeAdd();
+      if (!created) return;
+      setPendingParentId(created);
+    } else if (!parentId) {
+      return;
+    }
     setEditing(null);
     modal.onOpen();
   }
@@ -108,10 +132,10 @@ export function RemindersSection({
     setReminders((prev) => prev.filter((x) => x.id !== r.id));
   }
 
-  // Without a parentId there's nothing to list against (e.g. new task
-  // form before first save). Show a disabled-ish hint instead of the
-  // add button so the user knows to save the parent first.
-  if (!parentId) {
+  // Without a parentId AND no way to mint one, show a hint only.
+  // When onBeforeAdd is supplied, we can still render the full
+  // section — clicking "+ Add" will save the draft parent first.
+  if (!parentId && !onBeforeAdd) {
     return (
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -130,7 +154,7 @@ export function RemindersSection({
   const createInitialValues: ReminderModalInitialValues = {
     ...defaults,
     parentType,
-    parentId,
+    parentId: effectiveParentId ?? null,
   };
 
   return (

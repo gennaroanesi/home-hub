@@ -157,6 +157,10 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
     if (saved?.id) {
       await syncLegs(saved.id, form.legs, allLegs);
       await syncReservations(saved.id, form.reservations, allReservations);
+      // Promote create → edit locally so subsequent actions in the
+      // same modal (e.g. adding a reminder after saving) see the
+      // trip's id without waiting for the parent to re-pass `trip`.
+      if (!form.id) setForm((f) => ({ ...f, id: saved!.id }));
     }
 
     if (saved) onSaved?.(saved);
@@ -325,20 +329,28 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
         minRows={2}
       />
 
-      {form.id && (
-        <div className="border-t border-default-200 pt-4">
-          <RemindersSection
-            parentType="TRIP"
-            parentId={form.id}
-            people={people}
-            defaults={buildReminderDefaultsForTrip({
-              name: form.name,
-              startDate: form.startDate,
-              participantIds: form.participantIds,
-            })}
-          />
-        </div>
-      )}
+      <div className="border-t border-default-200 pt-4">
+        <RemindersSection
+          parentType="TRIP"
+          parentId={form.id || undefined}
+          people={people}
+          defaults={buildReminderDefaultsForTrip({
+            name: form.name,
+            startDate: form.startDate,
+            participantIds: form.participantIds,
+          })}
+          onBeforeAdd={
+            form.id
+              ? undefined
+              : async () => {
+                  // Reuse the full trip save (header + legs + reservations)
+                  // so the draft is complete before the user adds a reminder.
+                  const saved = await save();
+                  return saved?.id ?? null;
+                }
+          }
+        />
+      </div>
 
       {/* ── Legs editor ────────────────────────────────────────────────── */}
       <div className="border-t border-default-200 pt-4">

@@ -118,8 +118,13 @@ export default function TasksPage() {
     onOpen();
   }
 
-  async function saveTask(onClose: () => void) {
-    if (!formTitle.trim()) return;
+  // Save the current form state as a task, promoting the modal from
+  // create-mode to edit-mode if it wasn't already. Returns the saved
+  // task's id. Used by saveTask (the main Save/Create button) and by
+  // RemindersSection's onBeforeAdd so the user can add a reminder
+  // without first saving manually.
+  async function saveTaskDraft(): Promise<string | null> {
+    if (!formTitle.trim()) return null;
 
     if (editingTask) {
       await client.models.homeTask.update({
@@ -130,18 +135,24 @@ export default function TasksPage() {
         dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
         recurrence: formRecurrence || null,
       });
-    } else {
-      await client.models.homeTask.create({
-        title: formTitle,
-        description: formDescription || null,
-        assignedPersonIds: formAssignedIds,
-        dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
-        recurrence: formRecurrence || null,
-        isCompleted: false,
-        createdBy: "ui",
-      });
+      return editingTask.id;
     }
+    const { data } = await client.models.homeTask.create({
+      title: formTitle,
+      description: formDescription || null,
+      assignedPersonIds: formAssignedIds,
+      dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
+      recurrence: formRecurrence || null,
+      isCompleted: false,
+      createdBy: "ui",
+    });
+    if (data) setEditingTask(data);
+    return data?.id ?? null;
+  }
 
+  async function saveTask(onClose: () => void) {
+    const id = await saveTaskDraft();
+    if (!id) return;
     onClose();
     await loadTasks();
   }
@@ -425,20 +436,19 @@ export default function TasksPage() {
                       />
                     </div>
                   )}
-                  {editingTask && (
-                    <div className="mt-2">
-                      <RemindersSection
-                        parentType="TASK"
-                        parentId={editingTask.id}
-                        people={people}
-                        defaults={buildReminderDefaultsForTask({
-                          title: formTitle || editingTask.title,
-                          dueDate: formDueDate || editingTask.dueDate,
-                          assignedPersonIds: formAssignedIds,
-                        })}
-                      />
-                    </div>
-                  )}
+                  <div className="mt-2">
+                    <RemindersSection
+                      parentType="TASK"
+                      parentId={editingTask?.id}
+                      people={people}
+                      defaults={buildReminderDefaultsForTask({
+                        title: formTitle || editingTask?.title || "",
+                        dueDate: formDueDate || editingTask?.dueDate,
+                        assignedPersonIds: formAssignedIds,
+                      })}
+                      onBeforeAdd={editingTask ? undefined : saveTaskDraft}
+                    />
+                  </div>
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>Cancel</Button>
