@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
+import { resolveCurrentPerson } from "@/lib/current-person";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
@@ -212,11 +213,20 @@ export default function DevicesPage() {
     try {
       await getCurrentUser();
       await loadDevices();
-      // Load Duo username for HIGH-sensitivity device control
+      // Load the CURRENT user's Duo username — filtering by their
+      // homePerson id so a multi-person household doesn't push Duo
+      // to the wrong person. Falls through quietly on any lookup
+      // failure (unlinked person, homePersonAuth missing, etc.).
       try {
-        const { data: auths } = await client.models.homePersonAuth.list({ limit: 10 });
-        const first = (auths ?? [])[0];
-        if (first) setMyDuoUsername((first as any).duoUsername ?? null);
+        const me = await resolveCurrentPerson(client);
+        if (me) {
+          const { data: auths } = await client.models.homePersonAuth.list({
+            filter: { personId: { eq: me.id } },
+            limit: 1,
+          });
+          const auth = (auths ?? [])[0];
+          if (auth) setMyDuoUsername((auth as any).duoUsername ?? null);
+        }
       } catch { /* homePersonAuth may not exist yet */ }
     } catch {
       router.push("/login");
