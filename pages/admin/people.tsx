@@ -47,6 +47,7 @@ export default function PeoplePage() {
   const [color, setColor] = useState("#3a5068");
   const [emoji, setEmoji] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [cognitoUsername, setCognitoUsername] = useState("");
   const [timezone, setTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"
   );
@@ -75,6 +76,7 @@ export default function PeoplePage() {
     setColor("#3a5068");
     setEmoji("");
     setPhoneNumber("");
+    setCognitoUsername("");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
     onOpen();
   }
@@ -85,6 +87,7 @@ export default function PeoplePage() {
     setColor(p.color ?? "#3a5068");
     setEmoji(p.emoji ?? "");
     setPhoneNumber(p.phoneNumber ?? "");
+    setCognitoUsername(p.cognitoUsername ?? "");
     setTimezone(p.defaultTimezone ?? "America/New_York");
     onOpen();
   }
@@ -98,6 +101,7 @@ export default function PeoplePage() {
         color,
         emoji: emoji || null,
         phoneNumber: phoneNumber.trim() || null,
+        cognitoUsername: cognitoUsername.trim() || null,
         defaultTimezone: timezone,
       });
     } else {
@@ -106,6 +110,7 @@ export default function PeoplePage() {
         color,
         emoji: emoji || null,
         phoneNumber: phoneNumber.trim() || null,
+        cognitoUsername: cognitoUsername.trim() || null,
         defaultTimezone: timezone,
         active: true,
       });
@@ -192,6 +197,13 @@ export default function PeoplePage() {
                     onValueChange={setPhoneNumber}
                     placeholder="+12125551234"
                     description="E.164 format. Used by the WhatsApp bot to DM this person."
+                  />
+                  <Input
+                    label="Cognito username (optional)"
+                    value={cognitoUsername}
+                    onValueChange={setCognitoUsername}
+                    placeholder="gennaro"
+                    description="Fill in for household members who log in. Drives calendar visibility and is the join key for per-user features."
                   />
                   <Input
                     label="Default timezone"

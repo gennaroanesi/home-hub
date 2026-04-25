@@ -344,10 +344,19 @@ export default function CalendarPage() {
     return null;
   }
 
-  // Custom day cell wrapper: renders one stripe per person at the top
+  // Calendar stripes + day-status editor only show household members
+  // (people with a linked Cognito login). Non-household people —
+  // kids, extended family, pets, etc. — stay available for task and
+  // event assignment but don't get their own row on the calendar.
+  const householdPeople = useMemo(
+    () => people.filter((p) => !!p.cognitoUsername),
+    [people]
+  );
+
+  // Custom day cell wrapper: renders one stripe per household member at the top
   const DateCellWrapper: React.ComponentType<any> = useCallback(
     ({ children, value }) => {
-      const stripes = people.map((person) => {
+      const stripes = householdPeople.map((person) => {
         const status = statusFor(value, person.id);
         const color = status ? STATUS_CONFIG[status].color : "transparent";
         return (
@@ -372,7 +381,7 @@ export default function CalendarPage() {
         </div>
       );
     },
-    [people, days]
+    [householdPeople, days]
   );
 
   // ── Event styling ─────────────────────────────────────────────────────────
@@ -1068,7 +1077,7 @@ export default function CalendarPage() {
                   {dayEditorDate ? dayjs(dayEditorDate).format("dddd, MMM D, YYYY") : ""}
                 </ModalHeader>
                 <ModalBody>
-                  {people.map((person) => {
+                  {householdPeople.map((person) => {
                     const existing = (days.get(dayEditorDate) ?? []).find((d) => d.personId === person.id);
                     const current = existing?.status as StatusKey | undefined;
                     return (

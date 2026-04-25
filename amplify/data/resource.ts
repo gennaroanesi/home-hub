@@ -31,6 +31,14 @@ const schema = a
         defaultTimezone: a.string(),
         emoji: a.string(),
         active: a.boolean().default(true),
+        // Cognito username for the household member this row
+        // represents. Null for people we track but who don't log in
+        // (kids, extended family, pets). Having a value is what makes
+        // a person a "household member" for calendar display — and
+        // the key we use to resolve the current UI user back to their
+        // homePerson row (see lib/current-person.ts). Also sets up
+        // per-user API scoping later without a schema migration.
+        cognitoUsername: a.string(),
         // E.164 phone number (e.g. +12125551234) used to DM this person via
         // the WhatsApp bot. Null = person only receives household/group messages.
         phoneNumber: a.string(),
