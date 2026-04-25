@@ -47,6 +47,7 @@ import { faceDetector } from "./functions/face-detector/resource";
 import { retroactiveFaceMatch } from "./functions/retroactive-face-match/resource";
 import { hassSync } from "./functions/hass-sync/resource";
 import { reminderSweep } from "./functions/reminder-sweep/resource";
+import { icsSync } from "./functions/ics-sync/resource";
 
 const backend = defineBackend({
   auth,
@@ -59,6 +60,7 @@ const backend = defineBackend({
   retroactiveFaceMatch,
   hassSync,
   reminderSweep,
+  icsSync,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -73,6 +75,7 @@ const lambdaDescriptions: Record<string, string> = {
   retroactiveFaceMatch: "Home Hub — Bulk-assign existing unmatched faces after new enrollment (AppSync mutation)",
   hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
   reminderSweep: "Home Hub — Every-5-minute reminder sweep (Haiku-composed messages)",
+  icsSync: "Home Hub — Every-15-minute ICS feed sync (external calendar subscriptions)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -297,6 +300,39 @@ new scheduler.CfnSchedule(recurringStack, "reminderSweepSchedule", {
   target: {
     arn: reminderSweepLambda.functionArn,
     roleArn: reminderSweepScheduleRole.roleArn,
+  },
+});
+
+// ── ICS feed sync — every 15 min ───────────────────────────────────────────
+// Pulls each active homeCalendarFeed (currently just a published iCloud
+// shared calendar), parses VEVENTs, and upserts into homeCalendarEvent
+// keyed on (feedId, externalUid). One-way: source → app. Events that
+// disappear from the feed are removed here too, cascading any linked
+// reminders so we don't page for cancelled meetings.
+
+const icsSyncLambda = backend.icsSync.resources.lambda as LambdaFunction;
+
+const icsSyncScheduleRole = new iam.Role(recurringStack, "icsSyncSchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [icsSyncLambda.functionArn],
+        }),
+      ],
+    }),
+  },
+});
+
+new scheduler.CfnSchedule(recurringStack, "icsSyncSchedule", {
+  scheduleExpression: "rate(15 minutes)",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: {
+    arn: icsSyncLambda.functionArn,
+    roleArn: icsSyncScheduleRole.roleArn,
   },
 });
 

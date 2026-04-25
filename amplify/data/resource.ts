@@ -6,6 +6,7 @@ import { faceDetector } from "../functions/face-detector/resource";
 import { retroactiveFaceMatch } from "../functions/retroactive-face-match/resource";
 import { hassSync } from "../functions/hass-sync/resource";
 import { reminderSweep } from "../functions/reminder-sweep/resource";
+import { icsSync } from "../functions/ics-sync/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -208,8 +209,48 @@ const schema = a
         url: a.url(),
         reminderMinutes: a.integer(),
         tripId: a.id(),
+        // Non-null = imported from an external ICS feed (see
+        // homeCalendarFeed); null = native event created in this app.
+        // Imported events are read-only in the UI — any edits would
+        // be overwritten on the next sync.
+        feedId: a.id(),
+        // ICS UID, used as the dedupe key within a feed so re-syncs
+        // update rather than duplicate.
+        externalUid: a.string(),
       })
-      .authorization((allow) => [allow.group("home-users")]),
+      .secondaryIndexes((index) => [index("feedId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Calendar Feeds ────────────────────────────────────────────────────
+    // External ICS subscription sources (e.g. a shared iCloud calendar
+    // published as webcal). Synced every 15 minutes by the ics-sync
+    // Lambda, which parses the feed and upserts homeCalendarEvent rows
+    // keyed on (feedId, externalUid). One-way: changes made in the
+    // source propagate in; edits in this app are blocked.
+    homeCalendarFeed: a
+      .model({
+        name: a.string().required(),
+        // webcal:// is rewritten to https:// by the sync handler.
+        url: a.string().required(),
+        // Hex colour used for rendering imported events on the
+        // calendar so they're visually distinct from native ones.
+        color: a.string(),
+        active: a.boolean().default(true),
+        lastSyncedAt: a.datetime(),
+        // Populated with the error message on a failed sync; cleared
+        // on the next successful run.
+        lastSyncError: a.string(),
+        // How many events are currently imported from this feed.
+        // Maintained by the sync for the admin UI.
+        eventCount: a.integer(),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── Photo ──────────────────────────────────────────────────────────
     // Photos uploaded to the cristinegennaro.com bucket under
@@ -888,6 +929,7 @@ const schema = a
     allow.resource(retroactiveFaceMatch),
     allow.resource(hassSync),
     allow.resource(reminderSweep),
+    allow.resource(icsSync),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;
