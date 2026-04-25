@@ -13,6 +13,7 @@ import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Checkbox } from "@heroui/checkbox";
+import { Chip } from "@heroui/chip";
 import {
   Modal,
   ModalContent,
@@ -123,6 +124,7 @@ export default function CalendarPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [trips, setTrips] = useState<Trip[]>([]);
   const [events, setEvents] = useState<Event[]>([]);
+  const [feeds, setFeeds] = useState<Schema["homeCalendarFeed"]["type"][]>([]);
   const [days, setDays] = useState<Map<string, Day[]>>(new Map()); // dateStr → Day[] (one per person)
   const [currentDate, setCurrentDate] = useState(new Date());
   const [currentView, setCurrentView] = useState<View>(Views.WEEK);
@@ -160,6 +162,7 @@ export default function CalendarPage() {
     assignedPersonIds: [] as string[],
     tripId: "",
     recurrence: "",
+    feedId: "" as string, // non-empty = imported; form is read-only
   });
 
   // The trip currently being edited in the modal (null = creating a new trip)
@@ -200,6 +203,7 @@ export default function CalendarPage() {
       photosRes,
       albumsRes,
       albumPhotosRes,
+      feedsRes,
     ] = await Promise.all([
       client.models.homePerson.list(),
       client.models.homeTrip.list(),
@@ -210,11 +214,13 @@ export default function CalendarPage() {
       client.models.homePhoto.list({ limit: 1000 }),
       client.models.homeAlbum.list({ limit: 500 }),
       client.models.homeAlbumPhoto.list({ limit: 5000 }),
+      client.models.homeCalendarFeed.list({ limit: 50 }),
     ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsRes.data ?? []);
+    setFeeds(feedsRes.data ?? []);
     setAllLegs(legsRes.data ?? []);
     setAllReservations(reservationsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);
@@ -418,8 +424,28 @@ export default function CalendarPage() {
         },
       };
     }
+    // Imported events (from an external calendar feed) get their
+    // feed's colour instead of person colouring — nobody here is
+    // "assigned" to a shared iCloud event, so the per-person
+    // gradient wouldn't mean anything useful.
+    const ev = event.resource.event;
+    if (ev.feedId) {
+      const feed = feeds.find((f) => f.id === ev.feedId);
+      const color = feed?.color ?? "#8B5CF6";
+      return {
+        style: {
+          backgroundColor: color,
+          color: contrastText(color),
+          border: "none",
+          borderRadius: "3px",
+          fontSize: "0.75rem",
+          fontStyle: "italic",
+        },
+      };
+    }
+
     // Calendar event — color by assigned person(s)
-    const assigned = (event.resource.event.assignedPersonIds ?? []).filter(
+    const assigned = (ev.assignedPersonIds ?? []).filter(
       (id): id is string => !!id,
     );
     const assignedPeople = assigned
@@ -451,7 +477,7 @@ export default function CalendarPage() {
         fontSize: "0.75rem",
       },
     };
-  }, [people]);
+  }, [people, feeds]);
 
   // ── Handlers ──────────────────────────────────────────────────────────────
 
@@ -489,6 +515,7 @@ export default function CalendarPage() {
       assignedPersonIds: [],
       tripId: "",
       recurrence: "",
+      feedId: "",
     });
     eventModalDisclosure.onOpen();
   }
@@ -509,6 +536,7 @@ export default function CalendarPage() {
       assignedPersonIds: (event.assignedPersonIds ?? []).filter((id): id is string => !!id),
       tripId: event.tripId ?? "",
       recurrence: event.recurrence ?? "",
+      feedId: event.feedId ?? "",
     });
     eventModalDisclosure.onOpen();
   }
@@ -789,27 +817,65 @@ export default function CalendarPage() {
         {/* ── Event Modal (create + edit) ──────────────────────────────── */}
         <Modal isOpen={eventModalDisclosure.isOpen} onOpenChange={eventModalDisclosure.onOpenChange} size="lg">
           <ModalContent>
-            {(onClose) => (
+            {(onClose) => {
+              // Imported (feed-sourced) events render read-only: edits
+              // would just be overwritten on the next ICS sync, so we
+              // disable inputs and hide Save/Delete entirely. Reminders
+              // panel stays available since reminders are a local-only
+              // concern and can legitimately be attached to an imported
+              // event ("remind me 1h before the shared Zoom call").
+              const isImported = !!eventForm.feedId;
+              const importedFeed = isImported
+                ? feeds.find((f) => f.id === eventForm.feedId)
+                : null;
+              return (
               <>
-                <ModalHeader>{eventForm.id ? "Edit Event" : "New Event"}</ModalHeader>
+                <ModalHeader className="flex items-center gap-2">
+                  <span>{eventForm.id ? "Edit Event" : "New Event"}</span>
+                  {importedFeed && (
+                    <Chip
+                      size="sm"
+                      variant="flat"
+                      startContent={
+                        <span
+                          className="inline-block w-2 h-2 rounded-sm ml-1"
+                          style={{ backgroundColor: importedFeed.color ?? "#8B5CF6" }}
+                        />
+                      }
+                    >
+                      {importedFeed.name}
+                    </Chip>
+                  )}
+                </ModalHeader>
                 <ModalBody>
+                  {isImported && (
+                    <div className="text-xs text-default-500 bg-default-50 border border-default-200 rounded-md px-3 py-2">
+                      This event comes from an external calendar feed.
+                      Edits made here would be overwritten on the next
+                      sync, so the fields are read-only. You can still
+                      attach reminders below.
+                    </div>
+                  )}
                   <Input
                     label="Title"
                     value={eventForm.title}
                     onValueChange={(v) => setEventForm((f) => ({ ...f, title: v }))}
                     isRequired
+                    isReadOnly={isImported}
                   />
                   <Textarea
                     label="Description"
                     value={eventForm.description}
                     onValueChange={(v) => setEventForm((f) => ({ ...f, description: v }))}
                     minRows={2}
+                    isReadOnly={isImported}
                   />
                   <div className="flex gap-2">
                     <Input
                       label="Start"
                       type={eventForm.isAllDay ? "date" : "datetime-local"}
                       value={eventForm.isAllDay ? eventForm.startAt.slice(0, 10) : eventForm.startAt}
+                      isReadOnly={isImported}
                       onValueChange={(v) =>
                         setEventForm((f) => {
                           if (!v) return { ...f, startAt: v };
@@ -841,27 +907,37 @@ export default function CalendarPage() {
                       type={eventForm.isAllDay ? "date" : "datetime-local"}
                       value={eventForm.isAllDay ? eventForm.endAt.slice(0, 10) : eventForm.endAt}
                       onValueChange={(v) => setEventForm((f) => ({ ...f, endAt: v }))}
+                      isReadOnly={isImported}
                     />
                   </div>
                   <Checkbox
                     isSelected={eventForm.isAllDay}
                     onValueChange={(v) => setEventForm((f) => ({ ...f, isAllDay: v }))}
+                    isDisabled={isImported}
                   >
                     All day
                   </Checkbox>
-                  <CityAutocomplete
-                    label="Location"
-                    value={eventForm.location}
-                    onValueChange={(v) => setEventForm((f) => ({ ...f, location: v }))}
-                    onSelect={(r) =>
-                      setEventForm((f) => ({
-                        ...f,
-                        locationLat: r.latitude,
-                        locationLon: r.longitude,
-                        locationCountry: r.country,
-                      }))
-                    }
-                  />
+                  {isImported ? (
+                    <Input
+                      label="Location"
+                      value={eventForm.location}
+                      isReadOnly
+                    />
+                  ) : (
+                    <CityAutocomplete
+                      label="Location"
+                      value={eventForm.location}
+                      onValueChange={(v) => setEventForm((f) => ({ ...f, location: v }))}
+                      onSelect={(r) =>
+                        setEventForm((f) => ({
+                          ...f,
+                          locationLat: r.latitude,
+                          locationLon: r.longitude,
+                          locationCountry: r.country,
+                        }))
+                      }
+                    />
+                  )}
                   <Select
                     label="Assigned to"
                     selectionMode="multiple"
@@ -870,6 +946,7 @@ export default function CalendarPage() {
                       setEventForm((f) => ({ ...f, assignedPersonIds: Array.from(keys as Set<string>) }))
                     }
                     description="Leave empty for household"
+                    isDisabled={isImported}
                   >
                     {people.map((p) => (
                       <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
@@ -879,6 +956,7 @@ export default function CalendarPage() {
                     label="Linked trip (optional)"
                     selectedKeys={eventForm.tripId ? [eventForm.tripId] : []}
                     onChange={(e) => setEventForm((f) => ({ ...f, tripId: e.target.value }))}
+                    isDisabled={isImported}
                   >
                     <>
                       <SelectItem key="" textValue="None">None</SelectItem>
@@ -916,7 +994,7 @@ export default function CalendarPage() {
                   </div>
                 </ModalBody>
                 <ModalFooter>
-                  {eventForm.id && (
+                  {eventForm.id && !isImported && (
                     <Button
                       color="danger"
                       variant="light"
@@ -926,13 +1004,18 @@ export default function CalendarPage() {
                       Delete
                     </Button>
                   )}
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => saveEvent(onClose)}>
-                    {eventForm.id ? "Save" : "Create"}
+                  <Button variant="light" onPress={onClose}>
+                    {isImported ? "Close" : "Cancel"}
                   </Button>
+                  {!isImported && (
+                    <Button color="primary" onPress={() => saveEvent(onClose)}>
+                      {eventForm.id ? "Save" : "Create"}
+                    </Button>
+                  )}
                 </ModalFooter>
               </>
-            )}
+              );
+            }}
           </ModalContent>
         </Modal>
 
