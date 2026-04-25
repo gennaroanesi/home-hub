@@ -18,7 +18,10 @@ import { DEFAULT_HOUSEHOLD_TZ } from "./reminder-schedule";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export async function getHouseholdTimezone(client: any): Promise<string> {
   try {
-    const { data } = await client.models.homeSettings.list({ limit: 1 });
+    // No limit:1 — that's the DDB scan-page size, and if the table
+    // ever has >1 row we'd return whichever one happened to be at
+    // the head of the scan. Default page size is fine.
+    const { data } = await client.models.homeSettings.list();
     const tz = data?.[0]?.householdTimezone as string | null | undefined;
     return tz ?? DEFAULT_HOUSEHOLD_TZ;
   } catch {

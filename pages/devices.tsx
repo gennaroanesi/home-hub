@@ -220,17 +220,19 @@ export default function DevicesPage() {
       try {
         const me = await resolveCurrentPerson(client);
         if (me) {
-          // Generic list with filter — uses ModelHomePersonAuthFilterInput
-          // (capital H) which matches what the Amplify client emits.
-          // The auto-generated index-backed query
-          // `listHomePersonAuthByPersonId` would seem like a better fit
-          // here but it references the lowercased filter type
-          // `ModelhomePersonAuthFilterInput` server-side, and the client
-          // sends the capital one — silent variable-type-mismatch and
-          // zero rows. Sticking to list+filter avoids the bug.
+          // Two intersecting Amplify quirks here:
+          //   1. listByField (`listHomePersonAuthByPersonId`) silently
+          //      fails on lowercase-named models because the schema
+          //      generates two filter input types with mismatched
+          //      casing — see feedback_amplify_listbyfield_lowercase_…
+          //      memory.
+          //   2. `limit` is the DDB scan-page size, not the result
+          //      count. limit:1 means "evaluate exactly one row,
+          //      apply filter post-scan" — matching rows farther in
+          //      the table get dropped silently.
+          // Default page size (100) reliably covers homePersonAuth.
           const { data: auths } = await client.models.homePersonAuth.list({
             filter: { personId: { eq: me.id } },
-            limit: 1,
           });
           const auth = auths?.[0];
           if (auth) setMyDuoUsername(auth.duoUsername ?? null);

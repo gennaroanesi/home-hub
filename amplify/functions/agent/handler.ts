@@ -3191,10 +3191,12 @@ async function executeTool(
       const senderName = input.senderName as string;
       const domain = entityDomain(entityId);
 
-      // 1. Look up homeDevice by entityId from DDB cache
+      // 1. Look up homeDevice by entityId from DDB cache.
+      // No limit:1 — that's the DDB scan-page size, not the result
+      // count, so a matching row beyond the first scanned page would
+      // be silently dropped.
       const { data: deviceRows } = await client.models.homeDevice.list({
         filter: { entityId: { eq: entityId } },
-        limit: 1,
       });
       const device = (deviceRows ?? [])[0];
       if (!device) {
@@ -3604,7 +3606,6 @@ async function executeTool(
           newState = refreshed;
           const { data: devRows } = await client.models.homeDevice.list({
             filter: { entityId: { eq: pendingEntityId } },
-            limit: 1,
           });
           const dev = (devRows ?? [])[0];
           if (dev) {

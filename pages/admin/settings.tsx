@@ -65,7 +65,7 @@ export default function SettingsPage() {
   const loadSettings = useCallback(async () => {
     setLoading(true);
     try {
-      const { data } = await client.models.homeSettings.list({ limit: 1 });
+      const { data } = await client.models.homeSettings.list();
       const row = data?.[0] ?? null;
       setSettings(row);
       if (row?.householdTimezone) {

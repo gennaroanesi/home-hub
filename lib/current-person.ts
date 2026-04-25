@@ -69,9 +69,13 @@ export async function resolveCurrentPerson<P extends PersonLike = PersonLike>(
     // skip the fallback.
     if (username) {
       try {
+        // Don't pass limit:1 here — `limit` is the DDB scan-page
+        // size, not the result count, so limit:1 means "evaluate
+        // exactly one row and apply the filter post-scan." Matches
+        // farther in the table get silently dropped. Default page
+        // size (100) covers any realistic homePerson table.
         const { data } = await client.models.homePerson.list({
           filter: { cognitoUsername: { eq: username } },
-          limit: 1,
         });
         const hit = (data ?? [])[0] as P | undefined;
         if (hit) return hit;
