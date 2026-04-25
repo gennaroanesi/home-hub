@@ -757,7 +757,7 @@ export default function CalendarPage() {
               </button>
               {legendOpen && (
                 <div className="flex flex-wrap items-center gap-2 mt-2 text-xs text-default-500">
-                  {people.map((p) => (
+                  {householdPeople.map((p) => (
                     <div key={p.id} className="flex items-center gap-1">
                       <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color ?? "#999" }} />
                       <span>{p.name}</span>
@@ -776,7 +776,7 @@ export default function CalendarPage() {
 
             {/* Desktop: inline */}
             <div className="hidden sm:flex flex-wrap items-center gap-4 mb-3 text-xs text-default-500">
-              {people.map((p) => (
+              {householdPeople.map((p) => (
                 <div key={p.id} className="flex items-center gap-1.5">
                   <div className="w-3 h-3 rounded-sm" style={{ backgroundColor: p.color ?? "#999" }} />
                   <span>{p.name}</span>
