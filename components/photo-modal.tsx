@@ -72,8 +72,14 @@ export function PhotoModal({
   // unmatched to matched without a full modal reload.
   const loadFaces = useCallback(async (photoId: string) => {
     try {
-      const res = await client.models.homePhotoFace.listhomePhotoFaceByPhotoId({
-        photoId,
+      // Generic list+filter rather than the auto-generated
+      // listHomePhotoFaceByPhotoId index query — the latter silently
+      // fails on lowercase-named models due to a filter type casing
+      // mismatch between client and server (see
+      // feedback_amplify_listbyfield_lowercase_bug memory).
+      const res = await client.models.homePhotoFace.list({
+        filter: { photoId: { eq: photoId } },
+        limit: 100,
       });
       const rows = res.data ?? [];
       setFaces(rows);
