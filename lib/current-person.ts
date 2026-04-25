@@ -82,7 +82,7 @@ export async function resolveCurrentPerson<P extends PersonLike = PersonLike>(
 
     // Fallback: fuzzy match against Cognito identifiers.
     const attrs = await fetchUserAttributes();
-    const { data } = await client.models.homePerson.list({ limit: 100 });
+    const { data } = await client.models.homePerson.list();
     const people = (data ?? []) as P[];
 
     const candidates: string[] = [];

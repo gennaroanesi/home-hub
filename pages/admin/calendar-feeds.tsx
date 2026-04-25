@@ -54,7 +54,7 @@ export default function CalendarFeedsPage() {
 
   const loadFeeds = useCallback(async () => {
     setLoading(true);
-    const { data } = await client.models.homeCalendarFeed.list({ limit: 50 });
+    const { data } = await client.models.homeCalendarFeed.list();
     setFeeds((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
     setLoading(false);
   }, []);

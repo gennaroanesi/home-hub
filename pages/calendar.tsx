@@ -214,7 +214,7 @@ export default function CalendarPage() {
       client.models.homePhoto.list({ limit: 1000 }),
       client.models.homeAlbum.list({ limit: 500 }),
       client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      client.models.homeCalendarFeed.list({ limit: 50 }),
+      client.models.homeCalendarFeed.list(),
     ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));

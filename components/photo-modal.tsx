@@ -79,7 +79,6 @@ export function PhotoModal({
       // feedback_amplify_listbyfield_lowercase_bug memory).
       const res = await client.models.homePhotoFace.list({
         filter: { photoId: { eq: photoId } },
-        limit: 100,
       });
       const rows = res.data ?? [];
       setFaces(rows);
