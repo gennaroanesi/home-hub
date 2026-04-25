@@ -180,11 +180,18 @@ async function syncFeed(feed: Feed): Promise<FeedResult> {
   };
 }
 
-export const handler: Handler = async () => {
+interface SyncSummary {
+  feedCount: number;
+  totalEvents: number;
+  created: number;
+  updated: number;
+  deleted: number;
+  errors: string[];
+}
+
+export const handler: Handler<unknown, SyncSummary> = async () => {
   console.log("ics-sync: starting at", new Date().toISOString());
-  const { data: feeds, errors } = await client.models.homeCalendarFeed.list({
-    limit: 50,
-  });
+  const { data: feeds, errors } = await client.models.homeCalendarFeed.list();
   if (errors?.length) {
     console.error("ics-sync: failed to list feeds", errors);
     throw new Error(errors[0].message);
@@ -192,12 +199,22 @@ export const handler: Handler = async () => {
   const active = (feeds ?? []).filter((f) => f.active !== false);
   console.log(`ics-sync: ${active.length} active feed(s)`);
 
-  const summary: Array<{ id: string; name: string; result?: FeedResult; error?: string }> = [];
+  const aggregate: SyncSummary = {
+    feedCount: active.length,
+    totalEvents: 0,
+    created: 0,
+    updated: 0,
+    deleted: 0,
+    errors: [],
+  };
 
   for (const feed of active) {
     try {
       const result = await syncFeed(feed);
-      summary.push({ id: feed.id, name: feed.name, result });
+      aggregate.totalEvents += result.total;
+      aggregate.created += result.created;
+      aggregate.updated += result.updated;
+      aggregate.deleted += result.deleted;
       await client.models.homeCalendarFeed.update({
         id: feed.id,
         lastSyncedAt: new Date().toISOString(),
@@ -207,7 +224,7 @@ export const handler: Handler = async () => {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`ics-sync: ${feed.name} failed:`, msg);
-      summary.push({ id: feed.id, name: feed.name, error: msg });
+      aggregate.errors.push(`${feed.name}: ${msg}`);
       // Record but don't throw — other feeds should still sync.
       await client.models.homeCalendarFeed.update({
         id: feed.id,
@@ -216,6 +233,6 @@ export const handler: Handler = async () => {
     }
   }
 
-  console.log("ics-sync: summary", JSON.stringify(summary));
-  return summary;
+  console.log("ics-sync: summary", JSON.stringify(aggregate));
+  return aggregate;
 };

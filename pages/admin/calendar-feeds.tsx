@@ -122,6 +122,39 @@ export default function CalendarFeedsPage() {
     await loadFeeds();
   }
 
+  const [syncing, setSyncing] = useState(false);
+
+  async function handleSyncNow() {
+    setSyncing(true);
+    try {
+      const { data, errors } = await client.mutations.syncCalendarFeeds({});
+      if (errors?.length) throw new Error(errors[0].message);
+      const feedErrs = data?.errors?.filter((e): e is string => !!e) ?? [];
+      if (feedErrs.length > 0) {
+        addToast({
+          title: "Sync finished with errors",
+          description: feedErrs.join("; ").slice(0, 200),
+          color: "warning",
+        });
+      } else {
+        addToast({
+          title: "Sync complete",
+          description: `${data?.feedCount ?? 0} feed(s); ${data?.created ?? 0} new, ${data?.updated ?? 0} updated, ${data?.deleted ?? 0} removed`,
+          color: "success",
+        });
+      }
+      await loadFeeds();
+    } catch (err: any) {
+      addToast({
+        title: "Sync failed",
+        description: err?.message ?? String(err),
+        color: "danger",
+      });
+    } finally {
+      setSyncing(false);
+    }
+  }
+
   async function handleDelete(feed: Feed) {
     // Deleting a feed orphans its imported events — we leave them in place
     // to avoid surprising the user. If they want events gone too, they can
@@ -169,14 +202,27 @@ export default function CalendarFeedsPage() {
               </p>
             </div>
           </div>
-          <Button
-            color="primary"
-            size="sm"
-            startContent={<FaPlus size={12} />}
-            onPress={openCreate}
-          >
-            Add feed
-          </Button>
+          <div className="flex gap-2">
+            {feeds.length > 0 && (
+              <Button
+                size="sm"
+                variant="flat"
+                startContent={<FaSyncAlt size={12} />}
+                isLoading={syncing}
+                onPress={handleSyncNow}
+              >
+                Sync now
+              </Button>
+            )}
+            <Button
+              color="primary"
+              size="sm"
+              startContent={<FaPlus size={12} />}
+              onPress={openCreate}
+            >
+              Add feed
+            </Button>
+          </div>
         </div>
 
         {loading && <p className="text-center text-default-400 py-6">Loading…</p>}

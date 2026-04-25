@@ -565,6 +565,29 @@ const schema = a
       )
       .handler(a.handler.function(hassSync)),
 
+    // Manual trigger for the ICS feed sync, on top of the every-15-min
+    // EventBridge schedule. Wired to the same icsSync Lambda — when the
+    // user adds or edits a feed and doesn't want to wait, the admin
+    // page can fire this.
+    syncCalendarFeeds: a
+      .mutation()
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ])
+      .arguments({})
+      .returns(
+        a.customType({
+          feedCount: a.integer().required(),
+          totalEvents: a.integer().required(),
+          created: a.integer().required(),
+          updated: a.integer().required(),
+          deleted: a.integer().required(),
+          errors: a.string().array(),
+        })
+      )
+      .handler(a.handler.function(icsSync)),
+
     // ── Attachment ───────────────────────────────────────────────────────
     // Generic file attachment linked to any parent entity via a polymorphic
     // parentType + parentId pair. Files live in S3 under
