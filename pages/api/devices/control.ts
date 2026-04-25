@@ -17,7 +17,7 @@
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { preauth, pushAuth } from "@/lib/duo-server";
+import { preauth, pushAndWait } from "@/lib/duo-server";
 
 const HASS_BASE_URL = process.env.HASS_BASE_URL ?? "";
 const HASS_TOKEN = process.env.HASS_TOKEN ?? "";
@@ -73,12 +73,12 @@ export default async function handler(
         return res.status(403).json({ error: `Duo preauth: ${pre.status_msg ?? pre.result}` });
       }
       if (pre.result === "auth") {
-        const pushResult = await pushAuth({
+        const pushResult = await pushAndWait({
           username: duoUsername,
           pushinfo: { Action: `${service} ${entityId}`, Source: "Home Hub web" },
         });
         if (pushResult.result !== "allow") {
-          return res.status(403).json({ error: "Duo push denied or timed out" });
+          return res.status(403).json({ error: `Duo push ${pushResult.result}: ${pushResult.status_msg}` });
         }
       }
     }

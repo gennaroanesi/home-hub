@@ -12,7 +12,7 @@
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
-import { preauth, pushAuth } from "@/lib/duo-server";
+import { preauth, pushAndWait } from "@/lib/duo-server";
 
 export default async function handler(
   req: NextApiRequest,
@@ -37,14 +37,14 @@ export default async function handler(
       return res.status(403).json({ error: "Duo account is not fully enrolled — complete enrollment in Duo Mobile first" });
     }
 
-    // 2. Send Duo push (blocks up to ~60s)
-    const authResult = await pushAuth({
+    // 2. Fire Duo push async + poll so we don't race Amplify's 30s SSR cap.
+    const authResult = await pushAndWait({
       username: duoUsername,
       pushinfo: { Action: "Document download", Source: "Home Hub web" },
     });
 
     if (authResult.result !== "allow") {
-      return res.status(403).json({ error: "Duo push denied or timed out" });
+      return res.status(403).json({ error: `Duo push ${authResult.result}: ${authResult.status_msg}` });
     }
 
     // 3. Fetch document metadata — use a direct import approach since

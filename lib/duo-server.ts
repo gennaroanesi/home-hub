@@ -155,23 +155,92 @@ export interface AuthResponse {
   status_msg: string;
 }
 
+export interface AuthStatusResponse {
+  result: "allow" | "deny" | "waiting";
+  status: string;
+  status_msg: string;
+}
+
 /**
- * Send a Duo Push to the user's device and block until they respond
- * or the push times out (~60s). Used by /api/documents/download to
- * gate file retrieval behind a Duo push approval.
+ * Send a Duo Push and return the raw Duo response. With `async: "1"`
+ * (the default here) Duo returns immediately with a txid that callers
+ * poll via `authStatus`. With `async: "0"` Duo blocks up to ~60s for
+ * the user to respond — risky from Amplify SSR which caps at 30s, so
+ * most callers should prefer `pushAndWait` below.
  */
 export async function pushAuth(params: {
   username: string;
   pushinfo: Record<string, string>;
-}): Promise<AuthResponse> {
+  async?: "0" | "1";
+}): Promise<AuthResponse & { txid?: string }> {
   const pushinfoEncoded = Object.entries(params.pushinfo)
     .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
     .join("&");
-  return duoRequest<AuthResponse>("POST", "/auth/v2/auth", {
+  return duoRequest<AuthResponse & { txid?: string }>("POST", "/auth/v2/auth", {
     username: params.username,
     factor: "push",
     device: "auto",
-    async: "0",
+    async: params.async ?? "1",
     pushinfo: pushinfoEncoded,
   });
+}
+
+/**
+ * Poll the status of an async Duo push by txid. Returns immediately
+ * with `waiting` if the user hasn't responded yet.
+ */
+export async function authStatus(txid: string): Promise<AuthStatusResponse> {
+  return duoRequest<AuthStatusResponse>("GET", "/auth/v2/auth_status", { txid });
+}
+
+/**
+ * Fire a Duo push asynchronously and poll until the user responds or
+ * we hit our local timeout budget. This is the right helper for
+ * Amplify SSR API routes — doing a sync `pushAuth` with async: "0"
+ * makes Duo block up to 60s, which exceeds Amplify's 30s SSR cap and
+ * leaves the user's approval stranded.
+ *
+ * `maxWaitMs` is our local deadline (independent of Duo's own push
+ * expiration). Default 25s leaves ~5s of headroom inside the 30s
+ * Amplify budget for response serialization.
+ */
+export async function pushAndWait(params: {
+  username: string;
+  pushinfo: Record<string, string>;
+  maxWaitMs?: number;
+  pollIntervalMs?: number;
+}): Promise<AuthStatusResponse> {
+  const maxWaitMs = params.maxWaitMs ?? 25_000;
+  const pollIntervalMs = params.pollIntervalMs ?? 2_000;
+
+  const pushed = await pushAuth({
+    username: params.username,
+    pushinfo: params.pushinfo,
+    async: "1",
+  });
+  if (!pushed.txid) {
+    // Shouldn't happen — async:"1" always returns a txid. If it
+    // doesn't, Duo ran the auth synchronously and gave us a final
+    // result; surface it as-is.
+    return {
+      result: (pushed.result as "allow" | "deny") ?? "deny",
+      status: pushed.status ?? "",
+      status_msg: pushed.status_msg ?? "",
+    };
+  }
+
+  const deadline = Date.now() + maxWaitMs;
+  let last: AuthStatusResponse | null = null;
+  while (Date.now() < deadline) {
+    last = await authStatus(pushed.txid);
+    if (last.result !== "waiting") return last;
+    await new Promise((r) => setTimeout(r, pollIntervalMs));
+  }
+  return (
+    last ?? {
+      result: "deny",
+      status: "timeout",
+      status_msg: "Duo push timed out",
+    }
+  );
 }
