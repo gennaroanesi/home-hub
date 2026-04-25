@@ -19,6 +19,7 @@ import {
   cascadeDeleteRemindersFor,
   pauseRemindersFor,
 } from "../../../lib/reminder-parent.js";
+import { cascadeDeleteNotesFor } from "../../../lib/note-parent.js";
 import {
   DEFAULT_ICAO,
   fetchAirportWeather,
@@ -1823,6 +1824,7 @@ async function executeTool(
 
     case "delete_event": {
       await cascadeDeleteRemindersFor(client, input.eventId);
+      await cascadeDeleteNotesFor(client, input.eventId);
       const { errors } = await client.models.homeCalendarEvent.delete({ id: input.eventId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, eventId: input.eventId });
@@ -1879,6 +1881,7 @@ async function executeTool(
         reservationsDeleted++;
       }
       await cascadeDeleteRemindersFor(client, input.tripId);
+      await cascadeDeleteNotesFor(client, input.tripId);
       const { errors } = await client.models.homeTrip.delete({ id: input.tripId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({
@@ -2087,6 +2090,7 @@ async function executeTool(
 
     case "delete_task": {
       await cascadeDeleteRemindersFor(client, input.taskId);
+      await cascadeDeleteNotesFor(client, input.taskId);
       const { errors } = await client.models.homeTask.delete({ id: input.taskId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, taskId: input.taskId });

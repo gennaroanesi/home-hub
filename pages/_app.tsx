@@ -6,6 +6,8 @@ import { ToastProvider } from "@heroui/toast";
 import { useRouter } from "next/router";
 
 import "@/styles/globals.css";
+import "@uiw/react-md-editor/markdown-editor.css";
+import "@uiw/react-markdown-preview/markdown.css";
 
 import { Amplify } from "aws-amplify";
 import outputs from "@/amplify_outputs.json";

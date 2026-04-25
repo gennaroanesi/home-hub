@@ -224,6 +224,25 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Note ─────────────────────────────────────────────────────────────
+    // Markdown note attached to a parent entity (task / event / trip).
+    // Same polymorphic shape as homeAttachment / homeChecklist /
+    // homeReminder. Multi-note per parent — pin as many as needed.
+    // Cascade-deleted with the parent.
+    homeNote: a
+      .model({
+        parentType: a.enum(["TASK", "EVENT", "TRIP"]),
+        parentId: a.id().required(),
+        title: a.string(), // optional headline; rest of the note is markdown
+        content: a.string().required(),
+        createdBy: a.string(),
+      })
+      .secondaryIndexes((index) => [index("parentId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Calendar Feeds ────────────────────────────────────────────────────
     // External ICS subscription sources (e.g. a shared iCloud calendar
     // published as webcal). Synced every 15 minutes by the ics-sync

@@ -29,8 +29,10 @@ import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { AttachmentSection } from "@/components/attachment-section";
 import { RemindersSection } from "@/components/reminders-section";
+import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForEvent } from "@/lib/reminder-defaults";
 import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
+import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
@@ -620,6 +622,7 @@ export default function CalendarPage() {
   async function deleteEventById(id: string) {
     if (!confirm("Delete this event?")) return;
     await cascadeDeleteRemindersFor(client, id);
+    await cascadeDeleteNotesFor(client, id);
     await client.models.homeCalendarEvent.delete({ id });
     eventModalDisclosure.onClose();
     await loadAll();
@@ -989,6 +992,13 @@ export default function CalendarPage() {
                         startAt: eventForm.startAt,
                         assignedPersonIds: eventForm.assignedPersonIds,
                       })}
+                      onBeforeAdd={eventForm.id ? undefined : saveEventDraft}
+                    />
+                  </div>
+                  <div className="mt-2">
+                    <NotesSection
+                      parentType="EVENT"
+                      parentId={eventForm.id}
                       onBeforeAdd={eventForm.id ? undefined : saveEventDraft}
                     />
                   </div>

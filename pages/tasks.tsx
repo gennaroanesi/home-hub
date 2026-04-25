@@ -23,12 +23,14 @@ import { RRule } from "rrule";
 import DefaultLayout from "@/layouts/default";
 import { AttachmentSection } from "@/components/attachment-section";
 import { RemindersSection } from "@/components/reminders-section";
+import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForTask } from "@/lib/reminder-defaults";
 import {
   cascadeDeleteRemindersFor,
   pauseRemindersFor,
   resumeRemindersFor,
 } from "@/lib/reminder-parent";
+import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -191,6 +193,7 @@ export default function TasksPage() {
   async function deleteTask(id: string) {
     if (!confirm("Delete this task?")) return;
     await cascadeDeleteRemindersFor(client, id);
+    await cascadeDeleteNotesFor(client, id);
     await client.models.homeTask.delete({ id });
     setTasks((prev) => prev.filter((t) => t.id !== id));
   }
@@ -446,6 +449,13 @@ export default function TasksPage() {
                         dueDate: formDueDate || editingTask?.dueDate,
                         assignedPersonIds: formAssignedIds,
                       })}
+                      onBeforeAdd={editingTask ? undefined : saveTaskDraft}
+                    />
+                  </div>
+                  <div className="mt-2">
+                    <NotesSection
+                      parentType="TASK"
+                      parentId={editingTask?.id}
                       onBeforeAdd={editingTask ? undefined : saveTaskDraft}
                     />
                   </div>

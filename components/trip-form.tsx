@@ -12,8 +12,10 @@ import { FaPlus, FaTrash, FaCalendarPlus, FaSave } from "react-icons/fa";
 import { CityAutocomplete } from "@/components/city-autocomplete";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { RemindersSection } from "@/components/reminders-section";
+import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForTrip } from "@/lib/reminder-defaults";
 import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
+import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import { tzAbbreviation } from "@/lib/timezone";
 import { AttachmentSection } from "@/components/attachment-section";
 import { FreeCombobox } from "@/components/free-combobox";
@@ -181,6 +183,7 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
       await client.models.homeTripReservation.delete({ id: r.id });
     }
     await cascadeDeleteRemindersFor(client, form.id);
+    await cascadeDeleteNotesFor(client, form.id);
     await client.models.homeTrip.delete({ id: form.id });
     onDeleted?.();
     return true;
@@ -345,6 +348,21 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
               : async () => {
                   // Reuse the full trip save (header + legs + reservations)
                   // so the draft is complete before the user adds a reminder.
+                  const saved = await save();
+                  return saved?.id ?? null;
+                }
+          }
+        />
+      </div>
+
+      <div className="border-t border-default-200 pt-4">
+        <NotesSection
+          parentType="TRIP"
+          parentId={form.id || undefined}
+          onBeforeAdd={
+            form.id
+              ? undefined
+              : async () => {
                   const saved = await save();
                   return saved?.id ?? null;
                 }

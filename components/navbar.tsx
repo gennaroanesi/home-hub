@@ -44,6 +44,7 @@ import {
   FaCheckSquare,
   FaPaperclip,
   FaBell,
+  FaStickyNote,
   FaCog,
 } from "react-icons/fa";
 
@@ -85,6 +86,7 @@ const NAV: NavEntry[] = [
       { name: "Trips", href: "/trips", icon: <FaPlane /> },
       { name: "Checklists", href: "/checklists", icon: <FaCheckSquare /> },
       { name: "Attachments", href: "/attachments", icon: <FaPaperclip /> },
+      { name: "Notes", href: "/notes", icon: <FaStickyNote /> },
       { name: "Reminders", href: "/reminders", icon: <FaBell /> },
     ],
   },
