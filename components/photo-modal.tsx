@@ -72,15 +72,41 @@ export function PhotoModal({
   // unmatched to matched without a full modal reload.
   const loadFaces = useCallback(async (photoId: string) => {
     try {
-      // Generic list+filter rather than the auto-generated
-      // listHomePhotoFaceByPhotoId index query — the latter silently
-      // fails on lowercase-named models due to a filter type casing
-      // mismatch between client and server (see
-      // feedback_amplify_listbyfield_lowercase_bug memory).
-      const res = await client.models.homePhotoFace.list({
-        filter: { photoId: { eq: photoId } },
-      });
-      const rows = res.data ?? [];
+      // Hit the GSI directly via raw GraphQL. The auto-generated
+      // helper `listHomePhotoFaceByPhotoId` is broken (filter-input
+      // type casing mismatch — see feedback_amplify_listbyfield_…
+      // memory), and `list({ filter })` is a paginated scan that
+      // silently drops matches beyond the first page once the table
+      // outgrows ~100 faces. Hand-rolling the query without the
+      // optional `$filter` variable sidesteps the codegen bug while
+      // still using the index. Paginate via nextToken.
+      const rows: PhotoFace[] = [];
+      let nextToken: string | null = null;
+      do {
+        const res: any = await client.graphql({
+          query: /* GraphQL */ `
+            query ListPhotoFacesByPhotoId($photoId: ID!, $nextToken: String) {
+              listHomePhotoFaceByPhotoId(photoId: $photoId, nextToken: $nextToken) {
+                items {
+                  id
+                  photoId
+                  personId
+                  rekognitionFaceId
+                  similarity
+                  boundingBox
+                  createdAt
+                  updatedAt
+                }
+                nextToken
+              }
+            }
+          `,
+          variables: { photoId, nextToken },
+        });
+        const conn = res?.data?.listHomePhotoFaceByPhotoId;
+        rows.push(...((conn?.items ?? []) as PhotoFace[]));
+        nextToken = conn?.nextToken ?? null;
+      } while (nextToken);
       setFaces(rows);
 
       // Fetch the people referenced by matched faces (deduped)
