@@ -96,6 +96,16 @@ frontend:
     preBuild:
       commands:
         - npm install --cache .npm --prefer-offline
+        # Forward Amplify Hosting app/branch env vars into .env.production
+        # so the Next.js SSR runtime (where /api/* routes execute) can
+        # read them. Amplify exposes these at BUILD time by default; they
+        # don't reach the runtime Lambda unless we bake them into the
+        # build output. /api/devices/control needs HASS_BASE_URL +
+        # HASS_TOKEN to call Home Assistant.
+        - |
+          [ -n "$HASS_BASE_URL" ] && echo "HASS_BASE_URL=$HASS_BASE_URL" >> .env.production
+          [ -n "$HASS_TOKEN" ] && echo "HASS_TOKEN=$HASS_TOKEN" >> .env.production
+          true
     build:
       commands:
         - npm run build
