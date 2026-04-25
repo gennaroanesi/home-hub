@@ -220,14 +220,24 @@ export default function DevicesPage() {
       try {
         const me = await resolveCurrentPerson(client);
         if (me) {
+          // Generic list with filter — uses ModelHomePersonAuthFilterInput
+          // (capital H) which matches what the Amplify client emits.
+          // The auto-generated index-backed query
+          // `listHomePersonAuthByPersonId` would seem like a better fit
+          // here but it references the lowercased filter type
+          // `ModelhomePersonAuthFilterInput` server-side, and the client
+          // sends the capital one — silent variable-type-mismatch and
+          // zero rows. Sticking to list+filter avoids the bug.
           const { data: auths } = await client.models.homePersonAuth.list({
             filter: { personId: { eq: me.id } },
             limit: 1,
           });
-          const auth = (auths ?? [])[0];
-          if (auth) setMyDuoUsername((auth as any).duoUsername ?? null);
+          const auth = auths?.[0];
+          if (auth) setMyDuoUsername(auth.duoUsername ?? null);
         }
-      } catch { /* homePersonAuth may not exist yet */ }
+      } catch {
+        /* homePersonAuth may not exist yet for this user */
+      }
     } catch {
       router.push("/login");
     }

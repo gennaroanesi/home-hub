@@ -64,14 +64,20 @@ export async function resolveCurrentPerson<P extends PersonLike = PersonLike>(
   try {
     const { username } = await getCurrentUser();
 
-    // Primary path: explicit join on cognitoUsername.
+    // Primary path: explicit join on cognitoUsername. Kept in its
+    // own try/catch so a transient schema/network error doesn't
+    // skip the fallback.
     if (username) {
-      const { data } = await client.models.homePerson.list({
-        filter: { cognitoUsername: { eq: username } },
-        limit: 1,
-      });
-      const hit = (data ?? [])[0] as P | undefined;
-      if (hit) return hit;
+      try {
+        const { data } = await client.models.homePerson.list({
+          filter: { cognitoUsername: { eq: username } },
+          limit: 1,
+        });
+        const hit = (data ?? [])[0] as P | undefined;
+        if (hit) return hit;
+      } catch {
+        /* fall through to fuzzy fallback */
+      }
     }
 
     // Fallback: fuzzy match against Cognito identifiers.
