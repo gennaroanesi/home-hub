@@ -231,8 +231,11 @@ const schema = a
     // Cascade-deleted with the parent.
     homeNote: a
       .model({
+        // Both parentType and parentId are optional so notes can be
+        // standalone (no linked entity). When set, parentId points at a
+        // task / event / trip row.
         parentType: a.enum(["TASK", "EVENT", "TRIP"]),
-        parentId: a.id().required(),
+        parentId: a.id(),
         title: a.string(), // optional headline; rest of the note is markdown
         content: a.string().required(),
         createdBy: a.string(),

@@ -13,9 +13,17 @@ import { generateClient } from "aws-amplify/data";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
+import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { useDisclosure } from "@heroui/modal";
-import { FaArrowLeft, FaPen, FaStickyNote, FaTrash } from "react-icons/fa";
+import {
+  FaArrowLeft,
+  FaPen,
+  FaPlus,
+  FaSearch,
+  FaStickyNote,
+  FaTrash,
+} from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { NoteModal, type NoteParentType } from "@/components/note-modal";
@@ -59,7 +67,10 @@ export default function NotesPage() {
     trip: new Map(),
   });
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<"ALL" | NoteParentType>("ALL");
+  const [filter, setFilter] = useState<"ALL" | NoteParentType | "STANDALONE">(
+    "ALL"
+  );
+  const [search, setSearch] = useState("");
   const [editing, setEditing] = useState<Note | null>(null);
   const modal = useDisclosure();
 
@@ -100,9 +111,27 @@ export default function NotesPage() {
   }, []);
 
   const filtered = useMemo(() => {
-    if (filter === "ALL") return notes;
-    return notes.filter((n) => n.parentType === filter);
-  }, [notes, filter]);
+    let result = notes;
+    if (filter === "STANDALONE") {
+      result = result.filter((n) => !n.parentType || !n.parentId);
+    } else if (filter !== "ALL") {
+      result = result.filter((n) => n.parentType === filter);
+    }
+    const q = search.trim().toLowerCase();
+    if (q) {
+      result = result.filter((n) => {
+        const ptype = n.parentType as NoteParentType | null;
+        const parentName = ptype && n.parentId ? parentLabel(n) : "";
+        const haystack = [n.title, n.content, parentName]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(q);
+      });
+    }
+    return result;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notes, filter, search, parents]);
 
   function parentLabel(n: Note): string {
     if (!n.parentType || !n.parentId) return "—";
@@ -121,10 +150,15 @@ export default function NotesPage() {
     modal.onOpen();
   }
 
+  function openCreate() {
+    setEditing(null);
+    modal.onOpen();
+  }
+
   return (
     <DefaultLayout>
       <div className="max-w-3xl mx-auto px-4 py-6">
-        <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center justify-between mb-4 gap-2">
           <div className="flex items-center gap-3">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
               <FaArrowLeft />
@@ -135,18 +169,44 @@ export default function NotesPage() {
                 Notes
               </h1>
               <p className="text-xs text-default-500">
-                Markdown notes attached to tasks, events, and trips.
+                {filtered.length} of {notes.length} notes
               </p>
             </div>
           </div>
+          <Button
+            size="sm"
+            color="primary"
+            startContent={<FaPlus size={10} />}
+            onPress={openCreate}
+          >
+            Add note
+          </Button>
+        </div>
+
+        <div className="flex gap-2 mb-4 flex-wrap">
+          <Input
+            size="sm"
+            placeholder="Search by title, content, or parent…"
+            value={search}
+            onValueChange={setSearch}
+            startContent={<FaSearch size={12} className="text-default-400" />}
+            className="flex-1 min-w-[200px]"
+            isClearable
+            onClear={() => setSearch("")}
+          />
           <Select
             label="Filter"
             size="sm"
             selectedKeys={[filter]}
-            onChange={(e) => setFilter(e.target.value as "ALL" | NoteParentType)}
-            className="max-w-[140px]"
+            onChange={(e) =>
+              setFilter(
+                (e.target.value || "ALL") as "ALL" | NoteParentType | "STANDALONE"
+              )
+            }
+            className="max-w-[160px]"
           >
             <SelectItem key="ALL">All</SelectItem>
+            <SelectItem key="STANDALONE">Standalone</SelectItem>
             <SelectItem key="TASK">Tasks</SelectItem>
             <SelectItem key="EVENT">Events</SelectItem>
             <SelectItem key="TRIP">Trips</SelectItem>
@@ -158,10 +218,15 @@ export default function NotesPage() {
         {!loading && filtered.length === 0 && (
           <Card>
             <CardBody className="text-center py-10 text-default-500">
-              <p className="text-sm">No notes yet.</p>
-              <p className="text-xs text-default-400 mt-1">
-                Open a task, event, or trip and tap "Add note" to start.
+              <p className="text-sm">
+                {notes.length === 0 ? "No notes yet." : "No notes match your search."}
               </p>
+              {notes.length === 0 && (
+                <p className="text-xs text-default-400 mt-1">
+                  Tap "Add note" above, or open a task / event / trip and add one
+                  there.
+                </p>
+              )}
             </CardBody>
           </Card>
         )}

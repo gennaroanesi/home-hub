@@ -8,6 +8,8 @@
 // Same prop shape as ReminderModal: takes `parentType` + `parentId`
 // for create mode, or `editing` for edit mode. Multi-note per parent
 // is the default — caller renders one modal and reopens it as needed.
+// When both parentType and parentId are omitted in create mode the
+// note is saved standalone (used by the /notes page).
 
 import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
@@ -89,12 +91,14 @@ export function NoteModal({
         onClose();
         onSaved?.(editing.id);
       } else {
-        if (!parentType || !parentId) {
-          throw new Error("parentType and parentId are required for new notes");
+        // Standalone notes (no parent) are allowed — both fields stay null.
+        // When linking, both parentType and parentId must come together.
+        if ((parentType && !parentId) || (!parentType && parentId)) {
+          throw new Error("parentType and parentId must be provided together");
         }
         const { data, errors } = await client.models.homeNote.create({
-          parentType,
-          parentId,
+          parentType: parentType ?? null,
+          parentId: parentId ?? null,
           title: title.trim() || null,
           content,
           createdBy: "ui",
