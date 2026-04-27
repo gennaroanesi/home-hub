@@ -14,20 +14,39 @@ types from the repo root, so the data layer is in lockstep.
 
 ## Run locally
 
+There are two paths — pick based on what you're testing.
+
+### Simulator (fastest, no push)
+
 ```bash
 cd mobile
+# 1. build a sim-only dev client once (cached after first run)
+npx eas-cli build --profile development-simulator --platform ios
+# 2. start Metro
 npx expo start
-# press i to open the iOS simulator
+# 3. press `i` to open the simulator + load the bundle
 ```
 
-The simulator can sign in but cannot register an Expo push token —
-push only works on a physical device. To exercise the full pipeline,
-build a development client with EAS and install on a real iPhone:
+`expo-notifications` refuses to mint Expo push tokens on simulators,
+so the dashboard will show "Push not registered" — everything else
+(sign-in, data, agent) works.
+
+### Physical iPhone (required for push pipeline)
+
+One-time, register the device with EAS:
 
 ```bash
-npx eas-cli login                         # one-time
-npx eas-cli build:configure              # one-time, links Expo project
+npx eas-cli device:create
+# follow the link / QR on the iPhone, install the provisioning profile
+```
+
+Then build and install:
+
+```bash
 npx eas-cli build --profile development --platform ios
+# scan the QR with the iPhone's camera or open the link to install
+npx expo start
+# the dev client picks up Metro automatically over the local network
 ```
 
 ## Test the push pipeline
