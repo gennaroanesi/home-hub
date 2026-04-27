@@ -7,6 +7,9 @@ import { retroactiveFaceMatch } from "../functions/retroactive-face-match/resour
 import { hassSync } from "../functions/hass-sync/resource";
 import { reminderSweep } from "../functions/reminder-sweep/resource";
 import { icsSync } from "../functions/ics-sync/resource";
+import { postConfirmUser } from "../auth/post-confirmation/resource";
+import { setPersonGroups } from "../functions/set-person-groups/resource";
+import { mergePeople } from "../functions/merge-people/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -32,14 +35,28 @@ const schema = a
         defaultTimezone: a.string(),
         emoji: a.string(),
         active: a.boolean().default(true),
-        // Cognito username for the household member this row
-        // represents. Null for people we track but who don't log in
-        // (kids, extended family, pets). Having a value is what makes
-        // a person a "household member" for calendar display — and
-        // the key we use to resolve the current UI user back to their
-        // homePerson row (see lib/current-person.ts). Also sets up
-        // per-user API scoping later without a schema migration.
+        // Cognito username (= sub UUID for our pool) for the user
+        // this row represents. Null for people we track but who don't
+        // log in (kids, extended family, pets). Set automatically by
+        // the post-confirm-user Lambda when a new Cognito user signs
+        // up, or by the admin "Link" action when joining a fresh
+        // sign-up to a pre-existing face-tag row.
+        //
+        // Important: presence of this field no longer implies
+        // "household member". That's now driven by `groups` —
+        // someone we invited as a friend will have a cognitoUsername
+        // but won't be in the home-users group.
         cognitoUsername: a.string(),
+        // Cognito groups the user belongs to ("home-users", "admins",
+        // future "friends", etc.). Cached from Cognito for fast UI
+        // filtering — the source of truth is still the Cognito user
+        // pool. Kept in sync by the setPersonGroups admin mutation,
+        // which writes to Cognito IDP and mirrors the result here.
+        groups: a.string().array(),
+        // Email attribute mirrored from Cognito. Lets the post-confirm
+        // Lambda match a fresh sign-up to a pre-existing face-tag row
+        // by exact email before falling back to fuzzy name match.
+        email: a.email(),
         // E.164 phone number (e.g. +12125551234) used to DM this person via
         // the WhatsApp bot. Null = person only receives household/group messages.
         phoneNumber: a.string(),
@@ -56,7 +73,14 @@ const schema = a
         // action is being requested from home wifi.
         homeDeviceTrackerEntity: a.string(),
       })
-      .authorization((allow) => [allow.group("home-users")]),
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // Post-confirmation Lambda + future setPersonGroups /
+        // mergePeople admin lambdas reach this model via IAM. The
+        // schema-level allow.resource grants aren't enough on their
+        // own (see the comment on homePersonFace).
+        allow.authenticated("identityPool"),
+      ]),
 
     // ── Trip ────────────────────────────────────────────────────────────
     // Multi-day trip; days and events reference trips via tripId.
@@ -985,6 +1009,41 @@ const schema = a
       candidateCount: a.integer().required(),
       updatedCount: a.integer().required(),
     }),
+    // ── setPersonGroups (admin) ─────────────────────────────────────────
+    // Replace a homePerson's Cognito group membership with `groups`.
+    // The Lambda diffs against live Cognito state, sends the necessary
+    // AdminAddUserToGroup / AdminRemoveUserFromGroup calls, then
+    // mirrors the result into homePerson.groups.
+    setPersonGroups: a
+      .mutation()
+      .authorization((allow) => [allow.group("admins")])
+      .arguments({
+        personId: a.id().required(),
+        groups: a.string().required().array().required(),
+      })
+      .returns(a.ref("homePerson"))
+      .handler(a.handler.function(setPersonGroups)),
+
+    // ── mergePeople (admin) ─────────────────────────────────────────────
+    // Rewrite every personId reference from sourceId → targetId, then
+    // delete the source row. See merge-people/handler.ts for the model
+    // walk and rewrite semantics.
+    mergePeopleResponse: a.customType({
+      ok: a.boolean().required(),
+      targetId: a.id().required(),
+      // Map of "model.field" → number of rows rewritten.
+      rewrites: a.json(),
+    }),
+    mergePeople: a
+      .mutation()
+      .authorization((allow) => [allow.group("admins")])
+      .arguments({
+        sourceId: a.id().required(),
+        targetId: a.id().required(),
+      })
+      .returns(a.ref("mergePeopleResponse"))
+      .handler(a.handler.function(mergePeople)),
+
     retroactiveFaceMatch: a
       .mutation()
       .authorization((allow) => [
@@ -1006,6 +1065,9 @@ const schema = a
     allow.resource(hassSync),
     allow.resource(reminderSweep),
     allow.resource(icsSync),
+    allow.resource(postConfirmUser),
+    allow.resource(setPersonGroups),
+    allow.resource(mergePeople),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

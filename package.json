@@ -16,6 +16,7 @@
     "@anthropic-ai/sdk": "^0.52.0",
     "@aws-amplify/adapter-nextjs": "^1.5.8",
     "@aws-amplify/ui-react": "^6.11.0",
+    "@aws-sdk/client-cognito-identity-provider": "^3.1038.0",
     "@aws-sdk/client-dynamodb": "^3.782.0",
     "@aws-sdk/client-ecs": "^3.1028.0",
     "@aws-sdk/client-rekognition": "^3.1029.0",
@@ -40,6 +41,7 @@
     "@tailwindcss/typography": "^0.5.19",
     "@types/react-big-calendar": "^1.16.3",
     "@types/uuid": "^10.0.0",
+    "@uiw/react-md-editor": "^4.0.0",
     "aws-amplify": "^6.14.1",
     "aws-cdk-lib": "^2.188.0",
     "clsx": "2.1.1",
@@ -55,7 +57,6 @@
     "react-dom": "18.3.1",
     "react-icons": "^5.5.0",
     "react-markdown": "^10.1.0",
-    "@uiw/react-md-editor": "^4.0.0",
     "rrule": "^2.8.1",
     "tz-lookup": "^6.1.25",
     "uuid": "^13.0.0"

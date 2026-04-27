@@ -48,6 +48,8 @@ import { retroactiveFaceMatch } from "./functions/retroactive-face-match/resourc
 import { hassSync } from "./functions/hass-sync/resource";
 import { reminderSweep } from "./functions/reminder-sweep/resource";
 import { icsSync } from "./functions/ics-sync/resource";
+import { setPersonGroups } from "./functions/set-person-groups/resource";
+import { mergePeople } from "./functions/merge-people/resource";
 
 const backend = defineBackend({
   auth,
@@ -61,6 +63,8 @@ const backend = defineBackend({
   hassSync,
   reminderSweep,
   icsSync,
+  setPersonGroups,
+  mergePeople,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -76,6 +80,8 @@ const lambdaDescriptions: Record<string, string> = {
   hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
   reminderSweep: "Home Hub — Every-5-minute reminder sweep (Haiku-composed messages)",
   icsSync: "Home Hub — Every-15-minute ICS feed sync (external calendar subscriptions)",
+  setPersonGroups: "Home Hub — Admin mutation: sync homePerson.groups + Cognito groups",
+  mergePeople: "Home Hub — Admin mutation: rewrite personId references and delete source",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -335,6 +341,29 @@ new scheduler.CfnSchedule(recurringStack, "icsSyncSchedule", {
     roleArn: icsSyncScheduleRole.roleArn,
   },
 });
+
+// ── setPersonGroups — admin mutation, Cognito IDP access ──────────────────
+// Receives { personId, groups: string[] } from /admin/people, diffs
+// against live Cognito state, and adds/removes groups via the
+// AdminAddUserToGroup / AdminRemoveUserFromGroup APIs. The user pool
+// id is plumbed through as an env var so the handler doesn't have to
+// hard-code or look it up.
+
+const userPool = backend.auth.resources.userPool;
+const setPersonGroupsLambda =
+  backend.setPersonGroups.resources.lambda as LambdaFunction;
+setPersonGroupsLambda.addEnvironment("USER_POOL_ID", userPool.userPoolId);
+setPersonGroupsLambda.addToRolePolicy(
+  new iam.PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: [
+      "cognito-idp:AdminAddUserToGroup",
+      "cognito-idp:AdminRemoveUserFromGroup",
+      "cognito-idp:AdminListGroupsForUser",
+    ],
+    resources: [userPool.userPoolArn],
+  })
+);
 
 // ── Face detection — Rekognition + DDB stream ───────────────────────────────
 // New homePhoto rows trigger the face-detector lambda, which calls

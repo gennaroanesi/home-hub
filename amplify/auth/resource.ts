@@ -1,4 +1,5 @@
 import { defineAuth } from "@aws-amplify/backend";
+import { postConfirmUser } from "./post-confirmation/resource";
 
 export const auth = defineAuth({
   loginWith: {
@@ -22,5 +23,10 @@ export const auth = defineAuth({
       mutable: true,
       minLen: 1,
     },
+  },
+  triggers: {
+    // Fires after a user verifies their email; auto-creates or
+    // links the matching homePerson row. See handler.ts.
+    postConfirmation: postConfirmUser,
   },
 });

@@ -66,12 +66,16 @@ async function collectRecipients(
   }
 
   // GROUP / household: WA goes to the configured group; push fans
-  // out to every household member (cognitoUsername set) who has
-  // notifyPush enabled.
+  // out to every household member (Cognito group "home-users") who
+  // has notifyPush enabled. We key off the cached groups field on
+  // homePerson rather than cognitoUsername — invited guests will
+  // have a username but shouldn't receive household reminders.
   const { data: people } = await client.models.homePerson.list();
-  const household = (people ?? []).filter(
-    (p) => p.active !== false && !!p.cognitoUsername
-  );
+  const household = (people ?? []).filter((p) => {
+    if (p.active === false) return false;
+    const groups = (p.groups ?? []).filter((g): g is string => !!g);
+    return groups.includes("home-users");
+  });
   const wantWhatsApp = household.some((p) => p.notifyWhatsApp !== false);
   const pushable = household.filter((p) => p.notifyPush !== false);
   const tokenLists = await Promise.all(

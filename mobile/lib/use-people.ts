@@ -26,12 +26,16 @@ Hub.listen("auth", (data) => {
 async function fetchPeople(): Promise<Person[]> {
   const client = getClient();
   const { data } = await client.models.homePerson.list();
-  // Household members only. People added purely for photo face-tagging
-  // (extended family, friends) have no cognitoUsername — drop them
-  // here so assignee/filter pills don't fill up with non-residents.
-  return (data ?? []).filter(
-    (p) => p.active !== false && !!p.cognitoUsername
-  );
+  // Household members only. We key off the home-users Cognito group
+  // (cached in homePerson.groups by setPersonGroups) rather than the
+  // mere presence of cognitoUsername — invited guests will have a
+  // cognitoUsername too but won't be in home-users, and they
+  // shouldn't show up as assignee / filter options for chores.
+  return (data ?? []).filter((p) => {
+    if (p.active === false) return false;
+    const groups = (p.groups ?? []).filter((g): g is string => !!g);
+    return groups.includes("home-users");
+  });
 }
 
 export function usePeople(): { people: Person[]; loading: boolean } {
