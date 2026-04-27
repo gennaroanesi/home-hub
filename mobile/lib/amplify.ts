@@ -18,7 +18,13 @@ import { cognitoUserPoolsTokenProvider } from "aws-amplify/auth/cognito";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { generateClient } from "aws-amplify/data";
 
-import outputs from "../../amplify_outputs.json";
+// Mobile pulls config from its own amplify_outputs.json (generated
+// against prod) — the root copy is the user's sandbox config used by
+// `npx ampx sandbox` + the web dev server. Different AppSync APIs,
+// different Cognito user pools.
+import outputs from "../amplify_outputs.json";
+// Schema is a type-only import, erased at compile time, so Metro
+// doesn't need to resolve `../../amplify/data/resource` at runtime.
 import type { Schema } from "../../amplify/data/resource";
 
 let configured = false;

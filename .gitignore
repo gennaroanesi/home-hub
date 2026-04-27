@@ -11,6 +11,10 @@ node_modules
 .amplify
 amplify_outputs*
 amplifyconfiguration*
+# Exception: mobile ships its prod amplify_outputs.json so EAS builds
+# don't need AWS creds at build time. The file contains only public
+# IDs (AppSync URL, Cognito pool IDs); no secrets.
+!mobile/amplify_outputs.json
 
 # next
 .next

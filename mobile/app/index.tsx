@@ -16,7 +16,10 @@ import {
 } from "react-native";
 
 import { useAuthSession, signIn, signOut } from "../lib/auth";
-import { resolveCurrentPerson, type CurrentPerson } from "../lib/current-person";
+import {
+  resolveCurrentPerson,
+  type CurrentPerson,
+} from "../lib/current-person";
 import { registerForPushNotifications, type PushRegistration } from "../lib/push";
 
 export default function Index() {
@@ -89,21 +92,31 @@ function SignInForm() {
 
 // ── Dashboard ──────────────────────────────────────────────────────────────
 
+type PersonState =
+  | { status: "loading" }
+  | { status: "found"; person: CurrentPerson }
+  | { status: "missing"; tried: string[]; errors: string[] };
+
 function Dashboard() {
-  const [person, setPerson] = useState<CurrentPerson | null | "loading" | "missing">(
-    "loading"
-  );
+  const [person, setPerson] = useState<PersonState>({ status: "loading" });
   const [push, setPush] = useState<PushRegistration | null | "pending">("pending");
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const p = await resolveCurrentPerson();
+        const result = await resolveCurrentPerson();
         if (cancelled) return;
-        setPerson(p ?? "missing");
-        if (!p) return;
-        const reg = await registerForPushNotifications(p.id);
+        if (!result.person) {
+          setPerson({
+            status: "missing",
+            tried: result.triedCandidates,
+            errors: result.errors,
+          });
+          return;
+        }
+        setPerson({ status: "found", person: result.person });
+        const reg = await registerForPushNotifications(result.person.id);
         if (cancelled) return;
         setPush(reg);
       } catch (err: any) {
@@ -120,17 +133,31 @@ function Dashboard() {
     <SafeAreaView style={styles.dashboardScreen}>
       <View style={styles.dashboardBody}>
         <Text style={styles.heading}>
-          {person === "loading" || person === "missing" || person === null
-            ? "Home Hub"
-            : `Hi, ${person.name}`}
+          {person.status === "found" ? `Hi, ${person.person.name}` : "Home Hub"}
         </Text>
-        {person === "missing" && (
-          <Text style={styles.warn}>
-            No homePerson row is linked to your Cognito user. Open the admin people
-            page on the web and set cognitoUsername on your row.
-          </Text>
+        {person.status === "missing" && (
+          <View style={{ gap: 6 }}>
+            <Text style={styles.warn}>
+              No homePerson row is linked to your Cognito user. Tried:
+            </Text>
+            {person.tried.map((c) => (
+              <Text key={c} style={styles.pushToken} selectable>
+                • {c}
+              </Text>
+            ))}
+            {person.errors.length > 0 && (
+              <>
+                <Text style={[styles.warn, { marginTop: 8 }]}>AppSync errors:</Text>
+                {person.errors.map((e, i) => (
+                  <Text key={i} style={styles.pushToken} selectable>
+                    {e}
+                  </Text>
+                ))}
+              </>
+            )}
+          </View>
         )}
-        <PushStatus reg={push} />
+        {person.status === "found" && <PushStatus reg={push} />}
       </View>
       <Pressable onPress={signOut} style={styles.signOut}>
         <Text style={styles.signOutText}>Sign out</Text>
