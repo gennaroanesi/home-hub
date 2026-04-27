@@ -26,7 +26,12 @@ Hub.listen("auth", (data) => {
 async function fetchPeople(): Promise<Person[]> {
   const client = getClient();
   const { data } = await client.models.homePerson.list();
-  return (data ?? []).filter((p) => p.active !== false);
+  // Household members only. People added purely for photo face-tagging
+  // (extended family, friends) have no cognitoUsername — drop them
+  // here so assignee/filter pills don't fill up with non-residents.
+  return (data ?? []).filter(
+    (p) => p.active !== false && !!p.cognitoUsername
+  );
 }
 
 export function usePeople(): { people: Person[]; loading: boolean } {
