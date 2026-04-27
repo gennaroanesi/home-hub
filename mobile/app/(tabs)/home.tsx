@@ -12,15 +12,17 @@
 // agent path and we haven't ported it to mobile yet. The user is
 // nudged toward Janet for those actions.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  AppState,
   Pressable,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
@@ -30,12 +32,15 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { getClient } from "../../lib/amplify";
 import {
   callService,
+  fetchAllStates,
   fetchState,
   invalidateLocalProbe,
   loadActiveHaConfig,
   type ActiveHaConfig,
 } from "../../lib/ha";
 import type { Schema } from "../../../amplify/data/resource";
+
+const POLL_INTERVAL_MS = 10_000;
 
 type Device = Schema["homeDevice"]["type"];
 type HaState = { state: string; attributes?: Record<string, unknown> };
@@ -119,19 +124,23 @@ export default function Home() {
   const [haConfig, setHaConfig] = useState<ActiveHaConfig | null | "loading">(
     "loading"
   );
-  const [devices, setDevices] = useState<Device[]>([]);
+  const [allDevices, setAllDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   // Per-device live HA state, keyed on entityId. Overrides the cached
   // lastState from the DB once we have a fresher read.
   const [liveState, setLiveState] = useState<Record<string, HaState>>({});
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [scope, setScope] = useState<"pinned" | "all">("pinned");
+  const [search, setSearch] = useState("");
+  // Track whether the screen is currently focused. We only poll
+  // when focused so a backgrounded tab doesn't keep banging on HA.
+  const focusedRef = useRef(false);
 
   const loadDevices = useCallback(async () => {
     const client = getClient();
     const { data } = await client.models.homeDevice.list();
-    const pinned = (data ?? []).filter((d) => d.isPinned);
-    setDevices(pinned);
+    setAllDevices(data ?? []);
     setLoading(false);
   }, []);
 
@@ -141,6 +150,7 @@ export default function Home() {
   // every action wait on a 1.5s probe.
   useFocusEffect(
     useCallback(() => {
+      focusedRef.current = true;
       let cancelled = false;
       (async () => {
         invalidateLocalProbe();
@@ -150,10 +160,66 @@ export default function Home() {
       })();
       void loadDevices();
       return () => {
+        focusedRef.current = false;
         cancelled = true;
       };
     }, [loadDevices])
   );
+
+  // Poll HA for fresh state every POLL_INTERVAL_MS while the tab is
+  // focused AND the app is foregrounded. One /api/states call per
+  // tick — cheaper than per-entity round trips for ~dozens of pinned
+  // devices and lets unfocused devices (when scope === "all") catch
+  // up too.
+  useEffect(() => {
+    if (!haConfig || haConfig === "loading") return;
+    const cfg = haConfig;
+    let cancelled = false;
+    let appActive = AppState.currentState === "active";
+    const sub = AppState.addEventListener("change", (state) => {
+      appActive = state === "active";
+    });
+
+    async function poll() {
+      if (cancelled || !focusedRef.current || !appActive) return;
+      try {
+        const states = await fetchAllStates(cfg);
+        if (cancelled) return;
+        const next: Record<string, HaState> = {};
+        for (const s of states) {
+          next[s.entity_id] = { state: s.state, attributes: s.attributes };
+        }
+        setLiveState(next);
+      } catch {
+        /* swallow — next tick retries; UI keeps showing stale state */
+      }
+    }
+    // First tick fires immediately so the user doesn't sit on stale
+    // data for 10 seconds after the screen loads.
+    void poll();
+    const id = setInterval(poll, POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      sub.remove();
+    };
+  }, [haConfig]);
+
+  // Devices for the current scope + search filter.
+  const filteredDevices = useMemo(() => {
+    let list = scope === "pinned" ? allDevices.filter((d) => d.isPinned) : allDevices;
+    const q = search.trim().toLowerCase();
+    if (q) {
+      list = list.filter((d) => {
+        const name = (d.friendlyName ?? "").toLowerCase();
+        const eid = (d.entityId ?? "").toLowerCase();
+        const area = (d.area ?? "").toLowerCase();
+        return name.includes(q) || eid.includes(q) || area.includes(q);
+      });
+    }
+    return list;
+  }, [allDevices, scope, search]);
+  const devices = filteredDevices;
 
   async function refreshAll() {
     setRefreshing(true);
@@ -164,22 +230,18 @@ export default function Home() {
       setHaConfig(cfg);
       if (!cfg) return;
       await loadDevices();
-      const updates: Record<string, HaState> = {};
-      // Sequential rather than parallel — small homes have a few
-      // dozen pinned devices; HA REST handles bursts but a single
-      // request stream is gentler on a residential router.
-      for (const d of devices) {
-        try {
-          const live = await fetchState(cfg, d.entityId);
-          updates[d.entityId] = {
-            state: live.state,
-            attributes: live.attributes,
-          };
-        } catch {
-          /* leave previous value */
+      // One bulk fetch beats N per-entity calls. The polling loop uses
+      // the same approach.
+      try {
+        const states = await fetchAllStates(cfg);
+        const next: Record<string, HaState> = {};
+        for (const s of states) {
+          next[s.entity_id] = { state: s.state, attributes: s.attributes };
         }
+        setLiveState(next);
+      } catch {
+        /* leave previous value */
       }
-      setLiveState((prev) => ({ ...prev, ...updates }));
     } finally {
       setRefreshing(false);
     }
@@ -296,36 +358,78 @@ export default function Home() {
         </View>
       ) : haConfig === null ? (
         <NotConfigured />
-      ) : devices.length === 0 ? (
-        <Text style={styles.empty}>
-          No pinned devices. Pin some on the web /devices page (or ask Janet).
-        </Text>
       ) : (
-        <ScrollView
-          contentContainerStyle={styles.body}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={refreshAll} />
-          }
-        >
-          {grouped.map(([area, areaDevices]) => (
-            <View key={area} style={styles.areaBlock}>
-              <Text style={styles.areaLabel}>{area}</Text>
-              <View style={styles.card}>
-                {areaDevices.map((d, i) => (
-                  <DeviceRow
-                    key={d.id}
-                    device={d}
-                    state={liveState[d.entityId] ?? readState(d)}
-                    busy={busyId === d.id}
-                    divider={i < areaDevices.length - 1}
-                    isLocal={haConfig.isLocal}
-                    onAction={(service) => runAction(d, service)}
-                  />
-                ))}
-              </View>
+        <>
+          <View style={styles.controls}>
+            <View style={styles.scopeRow}>
+              {(["pinned", "all"] as const).map((s) => {
+                const on = scope === s;
+                return (
+                  <Pressable
+                    key={s}
+                    onPress={() => setScope(s)}
+                    style={[styles.scopePill, on && styles.scopePillOn]}
+                  >
+                    <Text style={[styles.scopeText, on && styles.scopeTextOn]}>
+                      {s === "pinned" ? "Pinned" : "All"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
             </View>
-          ))}
-        </ScrollView>
+            <View style={styles.searchRow}>
+              <Ionicons name="search" size={14} color="#888" />
+              <TextInput
+                style={styles.searchInput}
+                value={search}
+                onChangeText={setSearch}
+                placeholder={
+                  scope === "all" ? "Search all devices" : "Search pinned"
+                }
+                placeholderTextColor="#888"
+                autoCapitalize="none"
+                autoCorrect={false}
+                clearButtonMode="while-editing"
+              />
+            </View>
+          </View>
+
+          {devices.length === 0 ? (
+            <Text style={styles.empty}>
+              {search.trim()
+                ? "No devices match."
+                : scope === "pinned"
+                  ? "No pinned devices. Pin some on the web /devices page (or ask Janet)."
+                  : "No devices synced yet."}
+            </Text>
+          ) : (
+            <ScrollView
+              contentContainerStyle={styles.body}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} onRefresh={refreshAll} />
+              }
+            >
+              {grouped.map(([area, areaDevices]) => (
+                <View key={area} style={styles.areaBlock}>
+                  <Text style={styles.areaLabel}>{area}</Text>
+                  <View style={styles.card}>
+                    {areaDevices.map((d, i) => (
+                      <DeviceRow
+                        key={d.id}
+                        device={d}
+                        state={liveState[d.entityId] ?? readState(d)}
+                        busy={busyId === d.id}
+                        divider={i < areaDevices.length - 1}
+                        isLocal={haConfig.isLocal}
+                        onAction={(service) => runAction(d, service)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ))}
+            </ScrollView>
+          )}
+        </>
       )}
     </SafeAreaView>
   );
@@ -455,6 +559,36 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   connectBtnText: { color: "#fff", fontWeight: "600" },
+
+  controls: {
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    gap: 8,
+  },
+  scopeRow: { flexDirection: "row", gap: 6 },
+  scopePill: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 14,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ccc",
+    backgroundColor: "#fff",
+  },
+  scopePillOn: { backgroundColor: "#735f55", borderColor: "#735f55" },
+  scopeText: { color: "#444", fontSize: 13 },
+  scopeTextOn: { color: "#fff" },
+  searchRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+  },
+  searchInput: { flex: 1, fontSize: 14, paddingVertical: 4 },
 
   body: { paddingHorizontal: 20, paddingBottom: 40 },
   areaBlock: { marginBottom: 16 },

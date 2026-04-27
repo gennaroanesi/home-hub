@@ -165,6 +165,18 @@ async function runSync(): Promise<SyncResult> {
     };
   }
 
+  // entity_id → area_name. We render this via the template API (the
+  // area registry isn't on the REST surface) so a single round-trip
+  // gives us areas for every entity at once. Failure here is
+  // non-fatal — devices fall back to area=null and group under
+  // "Other" in the UI, same as before this fix landed.
+  let areaMap: Record<string, string> = {};
+  try {
+    areaMap = await hass.getAreaMap();
+  } catch (err) {
+    console.warn("hass-sync: getAreaMap failed; areas will be null", err);
+  }
+
   // Pull the existing homeDevice cache once so we can diff (update if
   // present, create if new). Secondary-indexed on entityId for quick lookup.
   const { data: existing } = await client.models.homeDevice.list({ limit: 1000 });
@@ -183,7 +195,7 @@ async function runSync(): Promise<SyncResult> {
 
   const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
-    const area = (entity.attributes as any).area ?? null;
+    const area = areaMap[entity.entity_id] ?? null;
     const lastState = sanitizeForAWSJSON({
       state: entity.state,
       attributes: entity.attributes,

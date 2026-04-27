@@ -92,6 +92,51 @@ export class HassClient {
     }
     return (await res.json()) as HassEntity;
   }
+
+  /**
+   * Map of entity_id → area_name for every entity that has an area
+   * assigned. Areas live in HA's area_registry, which is only
+   * exposed via the WebSocket API in REST-land. We work around it
+   * by asking /api/template to render Jinja that walks every state
+   * and emits a JSON object via `area_name(entity_id)` — one
+   * REST call gets us the whole map.
+   */
+  async getAreaMap(timeoutMs = 15000): Promise<Record<string, string>> {
+    const template = [
+      "{% set ns = namespace(items={}) %}",
+      "{% for s in states %}",
+      "{% set a = area_name(s.entity_id) %}",
+      "{% if a %}",
+      "{% set ns.items = dict(ns.items, **{s.entity_id: a}) %}",
+      "{% endif %}",
+      "{% endfor %}",
+      "{{ ns.items | tojson }}",
+    ].join("");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(`${this.baseUrl}/api/template`, {
+        method: "POST",
+        headers: this.headers(),
+        body: JSON.stringify({ template }),
+        signal: controller.signal,
+      });
+      if (!res.ok) {
+        throw new Error(`HA getAreaMap failed: ${res.status} ${await res.text()}`);
+      }
+      const body = await res.text();
+      try {
+        return JSON.parse(body) as Record<string, string>;
+      } catch {
+        // Older HA might return non-JSON if the template errors. Treat
+        // as "no areas known" — caller falls back to null and the UI
+        // still groups under "Other".
+        return {};
+      }
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 }
 
 /**

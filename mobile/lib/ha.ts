@@ -179,6 +179,19 @@ export async function fetchState(
 }
 
 /**
+ * One round-trip dump of every entity HA knows about. Cheaper for
+ * polling than N individual /api/states/{id} calls when we want
+ * fresh state for a dozen+ devices at once.
+ */
+export async function fetchAllStates(cfg: HaConfig): Promise<HaEntityState[]> {
+  const res = await fetch(`${cfg.baseUrl}/api/states`, {
+    headers: { Authorization: `Bearer ${cfg.token}` },
+  });
+  if (!res.ok) throw new Error(`fetchAllStates: HTTP ${res.status}`);
+  return res.json();
+}
+
+/**
  * Call a Home Assistant service. Mirrors pages/api/devices/control.ts
  * on the web side. HIGH-sensitivity gating is left to the caller —
  * Home tab allows HIGH only when the active config reports isLocal
