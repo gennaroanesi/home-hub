@@ -1,22 +1,21 @@
-// "More" tab. Today it's a settings / sign-out screen plus a pointer
-// at features that don't have their own tab yet (trips, devices,
-// photos, agent, …). Each non-shipped row is a stub for now.
+// "More" tab. Settings, sign-out, and a launcher for features that
+// don't earn their own bottom-tab slot (yet). Reminders is the first
+// real entry; others stay as "coming soon" until their phase lands.
 
+import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { signOut } from "../../lib/auth";
-import { usePerson } from "../../lib/use-person";
+import { signOut } from "../../../lib/auth";
+import { usePerson } from "../../../lib/use-person";
 
-interface Row {
+interface ComingRow {
   label: string;
-  detail?: string;
-  comingPhase?: string;
+  comingPhase: string;
 }
 
-const FEATURE_ROWS: Row[] = [
-  { label: "Agent", comingPhase: "Phase 2" },
-  { label: "Reminders", comingPhase: "Phase 2" },
+const COMING_ROWS: ComingRow[] = [
   { label: "Devices", comingPhase: "Phase 3" },
   { label: "Photos", comingPhase: "Phase 4" },
   { label: "Trips", comingPhase: "Phase 5" },
@@ -37,9 +36,37 @@ export default function More() {
       <ScrollView contentContainerStyle={styles.scroll}>
         <Text style={styles.heading}>More</Text>
 
+        <Text style={styles.sectionTitle}>Features</Text>
+        <View style={styles.card}>
+          <Pressable
+            onPress={() => router.push("/more/shopping")}
+            style={({ pressed }) => [
+              styles.row,
+              styles.rowDivider,
+              pressed && styles.rowPressed,
+            ]}
+          >
+            <View style={styles.rowLeft}>
+              <Ionicons name="cart-outline" size={20} color="#735f55" />
+              <Text style={styles.rowLabel}>Shopping</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#bbb" />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push("/more/reminders")}
+            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
+          >
+            <View style={styles.rowLeft}>
+              <Ionicons name="alarm-outline" size={20} color="#735f55" />
+              <Text style={styles.rowLabel}>Reminders</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#bbb" />
+          </Pressable>
+        </View>
+
         <Text style={styles.sectionTitle}>Account</Text>
         <View style={styles.card}>
-          <View style={styles.row}>
+          <View style={[styles.row, styles.rowDivider]}>
             <Text style={styles.rowLabel}>Signed in as</Text>
             <Text style={styles.rowValue}>{personLabel}</Text>
           </View>
@@ -53,10 +80,10 @@ export default function More() {
 
         <Text style={styles.sectionTitle}>Coming soon</Text>
         <View style={styles.card}>
-          {FEATURE_ROWS.map((r, i) => (
+          {COMING_ROWS.map((r, i) => (
             <View
               key={r.label}
-              style={[styles.row, i < FEATURE_ROWS.length - 1 && styles.rowDivider]}
+              style={[styles.row, i < COMING_ROWS.length - 1 && styles.rowDivider]}
             >
               <Text style={styles.rowLabel}>{r.label}</Text>
               <Text style={styles.rowMuted}>{r.comingPhase}</Text>
@@ -95,6 +122,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "space-between",
   },
+  rowLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   rowDivider: {
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "#eee",

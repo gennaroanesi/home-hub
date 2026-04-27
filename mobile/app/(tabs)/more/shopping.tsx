@@ -1,4 +1,5 @@
-// Shopping tab. The schema separates lists ("Supermarket", "Home
+// Shopping screen. Lives under the More tab so the bottom tab bar
+// stays visible. The schema separates lists ("Supermarket", "Home
 // Depot", …) and items inside each list. We render a horizontal list
 // picker at the top + the selected list's items underneath, with an
 // inline "Add item" row at the bottom — the most common action is
@@ -25,11 +26,12 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getClient } from "../../lib/amplify";
-import { ShoppingItemModal } from "../../components/ShoppingItemModal";
-import type { Schema } from "../../../amplify/data/resource";
+import { getClient } from "../../../lib/amplify";
+import { ShoppingItemModal } from "../../../components/ShoppingItemModal";
+import type { Schema } from "../../../../amplify/data/resource";
 
 type List = Schema["homeShoppingList"]["type"];
 type Item = Schema["homeShoppingItem"]["type"];
@@ -324,7 +326,12 @@ export default function Shopping() {
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
-        <Text style={styles.heading}>Shopping</Text>
+        <View style={styles.headerLeft}>
+          <Pressable onPress={() => router.back()} hitSlop={12} style={styles.addBtn}>
+            <Ionicons name="chevron-back" size={28} color="#735f55" />
+          </Pressable>
+          <Text style={styles.heading}>Shopping</Text>
+        </View>
         <View style={styles.headerActions}>
           {selectedList && (
             <Pressable onPress={manageList} hitSlop={12} style={styles.addBtn}>
@@ -477,12 +484,13 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
+    paddingHorizontal: 12,
     paddingTop: 8,
     paddingBottom: 12,
   },
+  headerLeft: { flexDirection: "row", alignItems: "center", gap: 4 },
   heading: { fontSize: 28, fontWeight: "600" },
-  headerActions: { flexDirection: "row", alignItems: "center", gap: 8 },
+  headerActions: { flexDirection: "row", alignItems: "center", gap: 8, paddingRight: 8 },
   addBtn: { padding: 4 },
 
   listsScroll: { flexGrow: 0 },

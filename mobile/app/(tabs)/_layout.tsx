@@ -1,11 +1,15 @@
-// Bottom tab bar. Five top-level tabs:
+// Bottom tab bar.
 //   - Today    snapshot of today's events + tasks
+//   - Janet    agent chat (Phase 2A)
 //   - Tasks    full task CRUD (Phase 1B)
-//   - Shopping shopping lists (Phase 1C)
 //   - Calendar agenda + create (Phase 1D)
-//   - More     launcher for trips, photos, devices, agent, etc.
-// Other features (notes, documents, security, admin) live under More
-// rather than getting their own tab.
+//   - More     launcher for everything else (shopping, reminders,
+//              devices, photos, trips, notes, documents, security)
+//
+// Shopping moved into More to keep the bar at five tabs and reserve
+// the fifth slot for a household-control surface (Devices / Home)
+// once Phase 3 ships. Five tabs fits an iOS bottom bar comfortably;
+// six was crowded.
 
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
@@ -28,20 +32,20 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
+        name="agent"
+        options={{
+          title: "Janet",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="chatbubbles-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="tasks"
         options={{
           title: "Tasks",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="checkmark-circle-outline" color={color} size={size} />
-          ),
-        }}
-      />
-      <Tabs.Screen
-        name="shopping"
-        options={{
-          title: "Shopping",
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="cart-outline" color={color} size={size} />
           ),
         }}
       />
