@@ -12,7 +12,19 @@
       "supportsTablet": false,
       "bundleIdentifier": "com.cristinegennaro.homehub",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSLocalNetworkUsageDescription": "Home Hub uses your home network to find and control Home Assistant directly when you're home.",
+        "NSBonjourServices": ["_home-assistant._tcp"],
+        "NSAppTransportSecurity": {
+          "NSExceptionDomains": {
+            "homeassistant.local": {
+              "NSExceptionAllowsInsecureHTTPLoads": true,
+              "NSIncludesSubdomains": true
+            }
+          }
+        },
+        "NSPhotoLibraryUsageDescription": "Home Hub uses your photo library to attach images to messages with Janet.",
+        "NSCameraUsageDescription": "Home Hub uses your camera to take photos to attach to messages with Janet."
       }
     },
     "plugins": [

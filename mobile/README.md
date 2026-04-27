@@ -6,11 +6,34 @@ types from the repo root, so the data layer is in lockstep.
 
 ## Phase status
 
-- **Phase 0** *(current)* — auth, push token registration, EAS config.
+- Phase 0 — auth, push token registration, EAS config.
 - Phase 1 — tasks, shopping, calendar.
-- Phase 2 — agent chat, reminders.
-- Phase 3 — devices + local Home Assistant discovery.
-- Phase 4+ — photos, trips, notes, documents, checklists, security, admin.
+- Phase 2 — Janet agent chat, reminders.
+- **Phase 3** *(current)* — Home tab + local-network HA discovery.
+- Phase 4 — photos.
+- Phase 5+ — trips, notes, documents, checklists, security, admin.
+
+## Home Assistant credentials
+
+The Home tab calls HA directly. Set the URL + long-lived token via
+build-time env vars rather than typing them in the app:
+
+```bash
+# Local dev — copy and fill in:
+cp mobile/.env.example mobile/.env.local
+# edit values; .env.local is gitignored
+```
+
+For EAS builds:
+
+```bash
+npx eas-cli secret:create --scope project --name EXPO_PUBLIC_HA_BASE_URL --value "https://..."
+npx eas-cli secret:create --scope project --name EXPO_PUBLIC_HA_TOKEN --value "eyJ..."
+```
+
+The settings screen (More → Home Assistant) auto-detects env-managed
+mode and shows a read-only state in that case. Without env vars it
+falls back to a manual input form storing values in `expo-secure-store`.
 
 ## Run locally
 

@@ -2,14 +2,10 @@
 //   - Today    snapshot of today's events + tasks
 //   - Janet    agent chat (Phase 2A)
 //   - Tasks    full task CRUD (Phase 1B)
+//   - Home     Home Assistant device control (Phase 3)
 //   - Calendar agenda + create (Phase 1D)
 //   - More     launcher for everything else (shopping, reminders,
-//              devices, photos, trips, notes, documents, security)
-//
-// Shopping moved into More to keep the bar at five tabs and reserve
-// the fifth slot for a household-control surface (Devices / Home)
-// once Phase 3 ships. Five tabs fits an iOS bottom bar comfortably;
-// six was crowded.
+//              ha-settings, photos, trips, notes, documents, security)
 
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
@@ -46,6 +42,15 @@ export default function TabsLayout() {
           title: "Tasks",
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="checkmark-circle-outline" color={color} size={size} />
+          ),
+        }}
+      />
+      <Tabs.Screen
+        name="home"
+        options={{
+          title: "Home",
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="home-outline" color={color} size={size} />
           ),
         }}
       />
