@@ -129,6 +129,26 @@
   }
 }
 
+/* ── Markdown preview list markers ────────────────────────────────────── */
+/* Tailwind's preflight zeroes list-style on every ol/ul, which clobbers
+   the bullets/numbers in @uiw/react-markdown-preview output. Restore
+   them, scoped to the .wmde-markdown wrapper the preview renders. */
+.wmde-markdown ul,
+.wmde-markdown ol {
+  list-style: revert;
+  padding-left: 2em;
+  margin: 0.5em 0;
+}
+.wmde-markdown ul {
+  list-style-type: disc;
+}
+.wmde-markdown ol {
+  list-style-type: decimal;
+}
+.wmde-markdown li + li {
+  margin-top: 0.25em;
+}
+
 /* ── react-big-calendar mobile tweaks ─────────────────────────────────── */
 @media (max-width: 640px) {
   .calendar-container .rbc-toolbar {
