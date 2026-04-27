@@ -15,6 +15,7 @@ import {
   getHouseholdTimezone,
   resolveReminderTimezone,
 } from "../../../lib/household-settings.js";
+import { sendExpoPush, type ExpoPushMessage } from "./expo-push.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -37,6 +38,57 @@ const LOOKBACK_MIN = 5;
 // How many recent sent messages to load for LLM composition context.
 // Helps Haiku vary wording and not repeat itself.
 const LLM_HISTORY_LIMIT = 5;
+
+// ── Recipient resolution ─────────────────────────────────────────────────
+// One stop for "who wants WA, who wants push" given a reminder. The
+// dispatcher uses `wantWhatsApp` to decide whether to write the
+// homeOutboundMessage row at all, and `pushTokens` for the direct
+// Expo push fan-out.
+
+interface Recipients {
+  wantWhatsApp: boolean;
+  pushTokens: string[];
+}
+
+async function collectRecipients(
+  reminder: Schema["homeReminder"]["type"]
+): Promise<Recipients> {
+  if (reminder.targetKind === "PERSON" && reminder.personId) {
+    const { data: person } = await client.models.homePerson.get({
+      id: reminder.personId,
+    });
+    if (!person) return { wantWhatsApp: false, pushTokens: [] };
+    const wantWhatsApp = person.notifyWhatsApp !== false;
+    const pushTokens = person.notifyPush !== false
+      ? await tokensForPerson(person.id)
+      : [];
+    return { wantWhatsApp, pushTokens };
+  }
+
+  // GROUP / household: WA goes to the configured group; push fans
+  // out to every household member (cognitoUsername set) who has
+  // notifyPush enabled.
+  const { data: people } = await client.models.homePerson.list();
+  const household = (people ?? []).filter(
+    (p) => p.active !== false && !!p.cognitoUsername
+  );
+  const wantWhatsApp = household.some((p) => p.notifyWhatsApp !== false);
+  const pushable = household.filter((p) => p.notifyPush !== false);
+  const tokenLists = await Promise.all(
+    pushable.map((p) => tokensForPerson(p.id))
+  );
+  return {
+    wantWhatsApp,
+    pushTokens: tokenLists.flat(),
+  };
+}
+
+async function tokensForPerson(personId: string): Promise<string[]> {
+  const { data } = await client.models.homePushSubscription.list({
+    filter: { personId: { eq: personId } },
+  });
+  return (data ?? []).map((s) => s.expoPushToken).filter(Boolean);
+}
 
 // ── Composition ─────────────────────────────────────────────────────────────
 
@@ -216,26 +268,64 @@ async function processReminder(
       )
     : composeDeterministic({ name: reminder.name }, dueItems);
 
-  // Write outbound message
+  // ── Dispatch ───────────────────────────────────────────────────────────
+  // Look up the recipients' notification preferences. PERSON-targeted
+  // reminders consult only that person's flags. GROUP-targeted ones
+  // fan push out to every household member with notifyPush enabled
+  // (the WhatsApp side stays a single group message).
+  const recipients = await collectRecipients(reminder);
+
+  // WhatsApp: write the outbound row only when at least one
+  // recipient wants WA (PERSON: that person; GROUP: at least one
+  // household member). Skip the WA write entirely if everyone has
+  // notifyWhatsApp=false so the WA bot doesn't deliver a message
+  // nobody wants.
   const firedItemIds = dueItems.map((i) => i.id);
-  const outboundPayload = {
-    channel: "WHATSAPP" as const,
-    target: reminder.targetKind ?? "GROUP",
-    personId: reminder.personId ?? null,
-    groupJid: reminder.groupJid ?? null,
-    text,
-    status: "PENDING" as const,
-    kind: reminder.kind ?? "reminder",
-    sourceReminderId: reminder.id,
-    sourceReminderItemIds: firedItemIds,
-  };
-  const { errors: outErrors } = await client.models.homeOutboundMessage.create(
-    outboundPayload
-  );
-  if (outErrors?.length) {
-    throw new Error(
-      `Failed to write outbound message for reminder ${reminder.id}: ${JSON.stringify(outErrors)}`
+  if (recipients.wantWhatsApp) {
+    const outboundPayload = {
+      channel: "WHATSAPP" as const,
+      target: reminder.targetKind ?? "GROUP",
+      personId: reminder.personId ?? null,
+      groupJid: reminder.groupJid ?? null,
+      text,
+      status: "PENDING" as const,
+      kind: reminder.kind ?? "reminder",
+      sourceReminderId: reminder.id,
+      sourceReminderItemIds: firedItemIds,
+    };
+    const { errors: outErrors } = await client.models.homeOutboundMessage.create(
+      outboundPayload
     );
+    if (outErrors?.length) {
+      throw new Error(
+        `Failed to write outbound message for reminder ${reminder.id}: ${JSON.stringify(outErrors)}`
+      );
+    }
+  }
+
+  // Expo push: send directly. We don't go through homeOutboundMessage
+  // for push because there's no WA-bot-equivalent consumer — this
+  // lambda just hits the Expo push API itself.
+  if (recipients.pushTokens.length > 0) {
+    const messages: ExpoPushMessage[] = recipients.pushTokens.map((token) => ({
+      to: token,
+      title: reminder.name,
+      body: text,
+      data: { kind: reminder.kind ?? "reminder", reminderId: reminder.id },
+    }));
+    try {
+      const tickets = await sendExpoPush(messages);
+      const errCount = tickets.filter((t) => t.status === "error").length;
+      if (errCount > 0) {
+        console.warn(
+          `Reminder ${reminder.id}: ${errCount}/${tickets.length} push tickets returned error`
+        );
+      }
+    } catch (err) {
+      // Push failure is non-fatal — the WA path (if enabled) still
+      // delivers, and the reminder is marked fired.
+      console.warn(`Reminder ${reminder.id} push failed:`, err);
+    }
   }
 
   // Compute next scheduledAt across items after this firing

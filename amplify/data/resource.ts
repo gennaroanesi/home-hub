@@ -43,6 +43,13 @@ const schema = a
         // E.164 phone number (e.g. +12125551234) used to DM this person via
         // the WhatsApp bot. Null = person only receives household/group messages.
         phoneNumber: a.string(),
+        // Per-person notification channel preferences. Both default
+        // to true; flip to false to mute that channel for personal
+        // messages. Group/household messages still fan out to
+        // anyone with the channel enabled — opting out of push
+        // means push notifications skip you even on group sends.
+        notifyWhatsApp: a.boolean().default(true),
+        notifyPush: a.boolean().default(true),
         // Home Assistant device_tracker entity for this person's phone
         // (e.g. "device_tracker.gennaro_iphone"). Populated by Unifi
         // integration. Used by the v2 risk matrix to detect whether an

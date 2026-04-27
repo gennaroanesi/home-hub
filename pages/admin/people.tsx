@@ -7,6 +7,7 @@ import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
+import { Switch } from "@heroui/switch";
 import {
   Modal,
   ModalContent,
@@ -37,6 +38,48 @@ const COMMON_TIMEZONES = [
   "UTC",
 ];
 
+function PersonCard({
+  person,
+  onEdit,
+  onRemove,
+}: {
+  person: Person;
+  onEdit: () => void;
+  onRemove: () => void;
+}) {
+  const isHousehold = !!person.cognitoUsername;
+  const muted: string[] = [];
+  if (isHousehold && person.notifyWhatsApp === false) muted.push("WA off");
+  if (isHousehold && person.notifyPush === false) muted.push("Push off");
+  return (
+    <Card>
+      <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
+        <div
+          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium"
+          style={{ backgroundColor: person.color ?? "#3a5068" }}
+        >
+          {person.emoji || person.name[0]}
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-medium">{person.name}</p>
+          <p className="text-xs text-default-400">
+            {person.defaultTimezone}
+            {muted.length > 0 ? ` · ${muted.join(", ")}` : ""}
+          </p>
+        </div>
+        <div className="flex gap-1">
+          <Button size="sm" isIconOnly variant="light" onPress={onEdit}>
+            <FaPen size={12} />
+          </Button>
+          <Button size="sm" isIconOnly variant="light" color="danger" onPress={onRemove}>
+            <FaTrash size={12} />
+          </Button>
+        </div>
+      </CardBody>
+    </Card>
+  );
+}
+
 export default function PeoplePage() {
   const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
@@ -51,6 +94,8 @@ export default function PeoplePage() {
   const [timezone, setTimezone] = useState(
     Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"
   );
+  const [notifyWhatsApp, setNotifyWhatsApp] = useState(true);
+  const [notifyPush, setNotifyPush] = useState(true);
 
   useEffect(() => {
     checkAuth();
@@ -78,6 +123,8 @@ export default function PeoplePage() {
     setPhoneNumber("");
     setCognitoUsername("");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
+    setNotifyWhatsApp(true);
+    setNotifyPush(true);
     onOpen();
   }
 
@@ -89,6 +136,8 @@ export default function PeoplePage() {
     setPhoneNumber(p.phoneNumber ?? "");
     setCognitoUsername(p.cognitoUsername ?? "");
     setTimezone(p.defaultTimezone ?? "America/New_York");
+    setNotifyWhatsApp(p.notifyWhatsApp !== false);
+    setNotifyPush(p.notifyPush !== false);
     onOpen();
   }
 
@@ -103,6 +152,8 @@ export default function PeoplePage() {
         phoneNumber: phoneNumber.trim() || null,
         cognitoUsername: cognitoUsername.trim() || null,
         defaultTimezone: timezone,
+        notifyWhatsApp,
+        notifyPush,
       });
     } else {
       await client.models.homePerson.create({
@@ -113,6 +164,8 @@ export default function PeoplePage() {
         cognitoUsername: cognitoUsername.trim() || null,
         defaultTimezone: timezone,
         active: true,
+        notifyWhatsApp,
+        notifyPush,
       });
     }
     onClose();
@@ -140,37 +193,56 @@ export default function PeoplePage() {
           </Button>
         </div>
 
-        <div className="space-y-2">
-          {people.length === 0 && (
-            <p className="text-center text-default-300 py-10">
-              No people yet. Add Gennaro and Cristine to get started.
-            </p>
-          )}
-          {people.map((p) => (
-            <Card key={p.id}>
-              <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
-                <div
-                  className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium"
-                  style={{ backgroundColor: p.color ?? "#3a5068" }}
-                >
-                  {p.emoji || p.name[0]}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium">{p.name}</p>
-                  <p className="text-xs text-default-400">{p.defaultTimezone}</p>
-                </div>
-                <div className="flex gap-1">
-                  <Button size="sm" isIconOnly variant="light" onPress={() => openEdit(p)}>
-                    <FaPen size={12} />
-                  </Button>
-                  <Button size="sm" isIconOnly variant="light" color="danger" onPress={() => remove(p.id)}>
-                    <FaTrash size={12} />
-                  </Button>
-                </div>
-              </CardBody>
-            </Card>
-          ))}
-        </div>
+        {people.length === 0 && (
+          <p className="text-center text-default-300 py-10">
+            No people yet. Add Gennaro and Cristine to get started.
+          </p>
+        )}
+
+        {/* Household members — anyone with a Cognito link. They sign
+            in, get reminders/notifications, appear in calendar legends. */}
+        {people.some((p) => p.cognitoUsername) && (
+          <>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-default-500 mt-2 mb-2">
+              Household
+            </h2>
+            <div className="space-y-2 mb-6">
+              {people
+                .filter((p) => p.cognitoUsername)
+                .map((p) => (
+                  <PersonCard
+                    key={p.id}
+                    person={p}
+                    onEdit={() => openEdit(p)}
+                    onRemove={() => remove(p.id)}
+                  />
+                ))}
+            </div>
+          </>
+        )}
+
+        {/* Others — face-tag-only rows for extended family / friends.
+            No notification flags are surfaced here since they don't
+            log in. */}
+        {people.some((p) => !p.cognitoUsername) && (
+          <>
+            <h2 className="text-xs font-semibold uppercase tracking-wide text-default-500 mt-2 mb-2">
+              Others (face tagging)
+            </h2>
+            <div className="space-y-2">
+              {people
+                .filter((p) => !p.cognitoUsername)
+                .map((p) => (
+                  <PersonCard
+                    key={p.id}
+                    person={p}
+                    onEdit={() => openEdit(p)}
+                    onRemove={() => remove(p.id)}
+                  />
+                ))}
+            </div>
+          </>
+        )}
 
         <Modal isOpen={isOpen} onOpenChange={onOpenChange}>
           <ModalContent>
@@ -211,6 +283,36 @@ export default function PeoplePage() {
                     onValueChange={setTimezone}
                     description={`Common: ${COMMON_TIMEZONES.join(", ")}`}
                   />
+
+                  {/* Notification preferences only render for household
+                      members — face-tag-only rows don't have anyone to
+                      notify. */}
+                  {cognitoUsername.trim() && (
+                    <div className="flex flex-col gap-2 pt-2 border-t border-default-100">
+                      <p className="text-xs font-medium text-default-500 uppercase tracking-wide">
+                        Notifications
+                      </p>
+                      <Switch
+                        size="sm"
+                        isSelected={notifyWhatsApp}
+                        onValueChange={setNotifyWhatsApp}
+                      >
+                        <span className="text-sm">WhatsApp messages</span>
+                      </Switch>
+                      <Switch
+                        size="sm"
+                        isSelected={notifyPush}
+                        onValueChange={setNotifyPush}
+                      >
+                        <span className="text-sm">App push notifications</span>
+                      </Switch>
+                      <p className="text-xs text-default-400">
+                        Reminders and personal messages respect these per-person
+                        flags. Group/household sends still go through whichever
+                        channel each member has on.
+                      </p>
+                    </div>
+                  )}
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>Cancel</Button>
