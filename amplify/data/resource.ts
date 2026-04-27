@@ -800,6 +800,30 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Push subscription ────────────────────────────────────────────────
+    // One row per device that wants Expo Push notifications. Created /
+    // refreshed by the mobile app on launch; consumed by the future
+    // expo-push-deliver Lambda which fans homeOutboundMessage rows out
+    // to native push in addition to (or instead of) WhatsApp.
+    //
+    // expoPushToken can change when a device reinstalls / restores
+    // backups, so the upsert key is (personId, deviceLabel). The GSI on
+    // personId lets the deliverer fan messages out to all of a person's
+    // devices in one query.
+    homePushSubscription: a
+      .model({
+        personId: a.id().required(),
+        expoPushToken: a.string().required(),
+        deviceLabel: a.string(), // e.g. "Gennaro's iPhone"
+        platform: a.enum(["IOS", "ANDROID"]),
+        lastSeenAt: a.datetime(),
+      })
+      .secondaryIndexes((index) => [index("personId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Reminder ──────────────────────────────────────────────────────────
     // Generic persistent reminder. Fires on a schedule, delivers to a
     // person or group via the outbound message queue. Replaces the old
