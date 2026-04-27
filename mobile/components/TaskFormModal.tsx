@@ -218,6 +218,7 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
             value={title}
             onChangeText={setTitle}
             placeholder="Water plants"
+            placeholderTextColor="#888"
             editable={!busy}
             autoFocus={!task}
           />
@@ -228,6 +229,7 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
             value={description}
             onChangeText={setDescription}
             placeholder="Optional"
+            placeholderTextColor="#888"
             multiline
             editable={!busy}
           />
@@ -278,6 +280,7 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
               value={custom}
               onChangeText={setCustom}
               placeholder="YYYY-MM-DD"
+              placeholderTextColor="#888"
               autoCapitalize="none"
               autoCorrect={false}
               editable={!busy}

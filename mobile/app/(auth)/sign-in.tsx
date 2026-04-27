@@ -37,6 +37,7 @@ export default function SignIn() {
         <TextInput
           style={styles.input}
           placeholder="Email"
+          placeholderTextColor="#888"
           autoCapitalize="none"
           autoCorrect={false}
           keyboardType="email-address"
@@ -48,6 +49,7 @@ export default function SignIn() {
         <TextInput
           style={styles.input}
           placeholder="Password"
+          placeholderTextColor="#888"
           secureTextEntry
           textContentType="password"
           value={password}
