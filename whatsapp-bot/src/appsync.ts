@@ -151,11 +151,20 @@ export interface OutboundMessage {
   text: string;
   status: "PENDING" | "SENT" | "FAILED";
   kind: string | null;
+  createdAt: string;
 }
 
+// Index-backed query against the homeOutboundMessage GSI on `status`.
+// The previous incarnation used `listHomeOutboundMessages(filter: { status: { eq: PENDING } }, limit: 50)`,
+// which does a Scan + post-filter. Once the table grew past ~50 SENT
+// rows the PENDING needle could land outside the scan window and the
+// poller silently returned empty (root cause of "Janet didn't send").
+// We use the auto-generated GSI query directly and paginate to be
+// robust to backlogs. Filter argument is omitted so we don't trip the
+// lowercase-model casing bug (auto-memory: feedback_amplify_listbyfield_lowercase_bug).
 const LIST_PENDING_QUERY = `
-  query ListPending {
-    listHomeOutboundMessages(filter: { status: { eq: PENDING } }, limit: 50) {
+  query ListPending($nextToken: String) {
+    listHomeOutboundMessageByStatus(status: PENDING, limit: 100, nextToken: $nextToken) {
       items {
         id
         channel
@@ -165,17 +174,32 @@ const LIST_PENDING_QUERY = `
         text
         status
         kind
+        createdAt
       }
+      nextToken
     }
   }
 `;
 
 export async function listPendingOutboundMessages(): Promise<OutboundMessage[]> {
-  const data = await callAppSync<{ listHomeOutboundMessages: { items: OutboundMessage[] } }>(
-    LIST_PENDING_QUERY,
-    {}
-  );
-  return data.listHomeOutboundMessages.items ?? [];
+  const all: OutboundMessage[] = [];
+  let nextToken: string | null = null;
+  // Hard cap on pages just so a runaway backlog or a stuck nextToken
+  // can't pin the poller. 10 × 100 = 1000 PENDING rows is way more
+  // than we'd ever realistically queue in a 5s window.
+  for (let page = 0; page < 10; page++) {
+    const data: {
+      listHomeOutboundMessageByStatus: {
+        items: OutboundMessage[];
+        nextToken: string | null;
+      };
+    } = await callAppSync(LIST_PENDING_QUERY, { nextToken });
+    const conn = data.listHomeOutboundMessageByStatus;
+    if (conn?.items?.length) all.push(...conn.items);
+    if (!conn?.nextToken) break;
+    nextToken = conn.nextToken;
+  }
+  return all;
 }
 
 const UPDATE_OUTBOUND_MUTATION = `

@@ -318,14 +318,49 @@ async function deliverAttachment(
 // status in the table instead.
 const deliveringIds = new Set<string>();
 
+// PENDING messages older than this are considered stale and dropped
+// rather than delivered. Daily summaries, reminders, and agent replies
+// all lose value after several hours; firing them ~12h late spams the
+// group with confusing context. The poll-and-Scan bug we hit on
+// 2026-04-27 also accumulated ~10 stale rows over a week, so this acts
+// as a safety net if the bot poller ever silently misses rows again.
+const STALE_PENDING_MS = 12 * 60 * 60 * 1000;
+
 async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<void> {
   try {
     const pending = await listPendingOutboundMessages();
     if (pending.length === 0) return;
-    const fresh = pending.filter((m) => !deliveringIds.has(m.id));
-    if (fresh.length === 0) return; // all in-flight already
+
+    const now = Date.now();
+    const fresh: typeof pending = [];
+    const stale: typeof pending = [];
+    for (const m of pending) {
+      if (deliveringIds.has(m.id)) continue;
+      const ageMs = now - new Date(m.createdAt).getTime();
+      if (ageMs > STALE_PENDING_MS) stale.push(m);
+      else fresh.push(m);
+    }
+
+    // Auto-FAIL stale rows in-band so they stop showing up in queries
+    // and the operator gets a clean picture of "what's actually queued".
+    for (const m of stale) {
+      logger.warn(
+        { id: m.id, kind: m.kind, createdAt: m.createdAt },
+        "Auto-FAILing stale PENDING (>12h)"
+      );
+      try {
+        await markOutboundMessageFailed(
+          m.id,
+          `Stale: PENDING for >12h (created ${m.createdAt})`
+        );
+      } catch (markErr) {
+        logger.error({ markErr, id: m.id }, "Failed to mark stale outbound as failed");
+      }
+    }
+
+    if (fresh.length === 0) return;
     logger.info(
-      { count: fresh.length, inFlight: deliveringIds.size },
+      { count: fresh.length, inFlight: deliveringIds.size, staled: stale.length },
       "Processing pending outbound messages"
     );
     for (const msg of fresh) {
