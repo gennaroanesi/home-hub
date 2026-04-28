@@ -6,16 +6,19 @@
 // truthy. Delete is also blocked since the next sync would just
 // recreate the row.
 //
-// Native date pickers are deliberately deferred (would force a
-// dev-client rebuild). For Phase 1D the form uses quick-pick chips
-// for the date plus a YYYY-MM-DD input for arbitrary dates, and a
-// plain HH:MM TextInput for the start time.
+// Start / end use the native iOS datetime picker (date+time) to
+// match the web's <input type="datetime-local">. When "All day"
+// is on, the picker switches to date-only mode and we normalize
+// to midnight / 23:59 on save. Moving the start by N preserves
+// duration by shifting end by the same delta.
 
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -24,9 +27,10 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
-import { isoDate } from "../lib/calendar";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
 import { type Person } from "../lib/use-people";
 import type { Schema } from "../../amplify/data/resource";
@@ -36,47 +40,51 @@ type Event = Schema["homeCalendarEvent"]["type"];
 interface Props {
   visible: boolean;
   event: Event | null;
-  /** Default date when creating from a non-today day. */
+  /** Default ISO date (YYYY-MM-DD) when creating from a non-today day. */
   defaultDate?: string;
   people: Person[];
   onClose: () => void;
   onSaved: () => void;
 }
 
-type DateQuick = "today" | "tomorrow" | "next-week" | "custom";
-
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
-
-function todayDate(): Date {
+function defaultStartSeed(defaultDate?: string): Date {
+  if (defaultDate) {
+    const d = new Date(`${defaultDate}T09:00:00`);
+    if (!Number.isNaN(d.getTime())) return d;
+  }
   const d = new Date();
-  d.setHours(0, 0, 0, 0);
+  d.setHours(9, 0, 0, 0);
   return d;
 }
 
-function dateForQuick(q: DateQuick, custom: string): string {
-  if (q === "custom" && ISO_DATE_RE.test(custom)) return custom;
-  const d = todayDate();
-  if (q === "tomorrow") d.setDate(d.getDate() + 1);
-  if (q === "next-week") d.setDate(d.getDate() + 7);
-  return isoDate(d);
+function formatDateTime(d: Date, allDay: boolean): string {
+  if (allDay) {
+    return d.toLocaleDateString(undefined, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
+  return d.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
-function quickFromDate(dateStr: string): { quick: DateQuick; custom: string } {
-  const today = isoDate(todayDate());
-  if (dateStr === today) return { quick: "today", custom: "" };
-  const tom = new Date(todayDate());
-  tom.setDate(tom.getDate() + 1);
-  if (dateStr === isoDate(tom)) return { quick: "tomorrow", custom: "" };
-  const nw = new Date(todayDate());
-  nw.setDate(nw.getDate() + 7);
-  if (dateStr === isoDate(nw)) return { quick: "next-week", custom: "" };
-  return { quick: "custom", custom: dateStr };
+function startOfDay(d: Date): Date {
+  const out = new Date(d);
+  out.setHours(0, 0, 0, 0);
+  return out;
 }
 
-function buildStartIso(dateStr: string, time: string, allDay: boolean): string {
-  if (allDay) return new Date(`${dateStr}T00:00:00`).toISOString();
-  return new Date(`${dateStr}T${time}:00`).toISOString();
+function endOfDay(d: Date): Date {
+  const out = new Date(d);
+  out.setHours(23, 59, 0, 0);
+  return out;
 }
 
 export function EventFormModal({
@@ -90,10 +98,13 @@ export function EventFormModal({
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [allDay, setAllDay] = useState(false);
-  const [quick, setQuick] = useState<DateQuick>("today");
-  const [custom, setCustom] = useState("");
-  const [time, setTime] = useState("09:00");
-  const [durationMin, setDurationMin] = useState("60");
+  const [startAt, setStartAt] = useState<Date>(() => defaultStartSeed(defaultDate));
+  const [endAt, setEndAt] = useState<Date>(() => {
+    const s = defaultStartSeed(defaultDate);
+    return new Date(s.getTime() + 60 * 60 * 1000);
+  });
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
   const [assignedIds, setAssignedIds] = useState<string[]>([]);
   const [recurrence, setRecurrence] = useState("");
   const [busy, setBusy] = useState(false);
@@ -106,22 +117,11 @@ export function EventFormModal({
       setTitle(event.title);
       setDescription(event.description ?? "");
       setAllDay(event.isAllDay ?? false);
-      const { quick: q, custom: c } = quickFromDate(isoDate(new Date(event.startAt)));
-      setQuick(q);
-      setCustom(c);
-      const start = new Date(event.startAt);
-      setTime(
-        `${String(start.getHours()).padStart(2, "0")}:${String(start.getMinutes()).padStart(2, "0")}`
+      const s = new Date(event.startAt);
+      setStartAt(s);
+      setEndAt(
+        event.endAt ? new Date(event.endAt) : new Date(s.getTime() + 60 * 60 * 1000)
       );
-      const dur = event.endAt
-        ? Math.max(
-            5,
-            Math.round(
-              (new Date(event.endAt).getTime() - start.getTime()) / 60_000
-            )
-          )
-        : 60;
-      setDurationMin(String(dur));
       setAssignedIds(
         (event.assignedPersonIds ?? []).filter((id): id is string => !!id)
       );
@@ -130,15 +130,14 @@ export function EventFormModal({
       setTitle("");
       setDescription("");
       setAllDay(false);
-      const seed = defaultDate ?? isoDate(todayDate());
-      const { quick: q, custom: c } = quickFromDate(seed);
-      setQuick(q);
-      setCustom(c);
-      setTime("09:00");
-      setDurationMin("60");
+      const s = defaultStartSeed(defaultDate);
+      setStartAt(s);
+      setEndAt(new Date(s.getTime() + 60 * 60 * 1000));
       setAssignedIds([]);
       setRecurrence("");
     }
+    setShowStartPicker(false);
+    setShowEndPicker(false);
   }, [visible, event, defaultDate]);
 
   function toggleAssignee(id: string) {
@@ -147,37 +146,32 @@ export function EventFormModal({
     );
   }
 
+  function onChangeStart(picked: Date) {
+    const delta = picked.getTime() - startAt.getTime();
+    setStartAt(picked);
+    // Preserve duration when start shifts (web parity).
+    setEndAt(new Date(endAt.getTime() + delta));
+  }
+
   async function save() {
     if (!title.trim()) {
       Alert.alert("Title required");
       return;
     }
-    if (quick === "custom" && !ISO_DATE_RE.test(custom)) {
-      Alert.alert("Custom date must be YYYY-MM-DD");
-      return;
-    }
-    if (!allDay && !TIME_RE.test(time)) {
-      Alert.alert("Time must be HH:MM (24-hour)");
-      return;
-    }
-    const dur = parseInt(durationMin, 10);
-    if (!allDay && (Number.isNaN(dur) || dur <= 0)) {
-      Alert.alert("Duration must be a positive number of minutes");
+    if (endAt.getTime() <= startAt.getTime()) {
+      Alert.alert("End must be after start");
       return;
     }
     setBusy(true);
     try {
-      const dateStr = dateForQuick(quick, custom);
-      const startAt = buildStartIso(dateStr, time, allDay);
-      const endAt = allDay
-        ? new Date(`${dateStr}T23:59:00`).toISOString()
-        : new Date(new Date(startAt).getTime() + dur * 60_000).toISOString();
+      const startIso = (allDay ? startOfDay(startAt) : startAt).toISOString();
+      const endIso = (allDay ? endOfDay(endAt) : endAt).toISOString();
 
       const payload = {
         title: title.trim(),
         description: description.trim() || null,
-        startAt,
-        endAt,
+        startAt: startIso,
+        endAt: endIso,
         isAllDay: allDay,
         assignedPersonIds: assignedIds.length > 0 ? assignedIds : null,
         recurrence: recurrence || null,
@@ -229,9 +223,16 @@ export function EventFormModal({
     ]);
   }
 
+  const pickerMode = allDay ? "date" : "datetime";
+  const pickerDisplay = Platform.OS === "ios" ? "inline" : "default";
+  const formDisabled = busy || isImported;
+
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
-      <View style={styles.screen}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         <View style={styles.header}>
           <Pressable onPress={onClose} disabled={busy}>
             <Text style={styles.cancel}>Cancel</Text>
@@ -254,7 +255,10 @@ export function EventFormModal({
           )}
         </View>
 
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+        >
           {isImported && (
             <View style={styles.importedBanner}>
               <Text style={styles.importedText}>
@@ -271,7 +275,7 @@ export function EventFormModal({
             onChangeText={setTitle}
             placeholder="Dentist"
             placeholderTextColor="#888"
-            editable={!busy && !isImported}
+            editable={!formDisabled}
             autoFocus={!event}
           />
 
@@ -283,7 +287,7 @@ export function EventFormModal({
             placeholder="Optional"
             placeholderTextColor="#888"
             multiline
-            editable={!busy && !isImported}
+            editable={!formDisabled}
           />
 
           <View style={styles.allDayRow}>
@@ -291,69 +295,61 @@ export function EventFormModal({
             <Switch
               value={allDay}
               onValueChange={setAllDay}
-              disabled={busy || isImported}
+              disabled={formDisabled}
             />
           </View>
 
-          <Text style={styles.label}>Date</Text>
-          <View style={styles.chipRow}>
-            {(["today", "tomorrow", "next-week", "custom"] as DateQuick[]).map((q) => {
-              const on = quick === q;
-              return (
-                <Pressable
-                  key={q}
-                  onPress={() => setQuick(q)}
-                  style={[styles.chip, on && styles.chipOn]}
-                  disabled={busy || isImported}
-                >
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                    {q === "next-week"
-                      ? "Next week"
-                      : q.charAt(0).toUpperCase() + q.slice(1)}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          {quick === "custom" && (
-            <TextInput
-              style={styles.input}
-              value={custom}
-              onChangeText={setCustom}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#888"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!busy && !isImported}
+          <Text style={styles.label}>Starts</Text>
+          <Pressable
+            onPress={() => {
+              setShowStartPicker((v) => !v);
+              setShowEndPicker(false);
+            }}
+            style={styles.dateBtn}
+            disabled={formDisabled}
+          >
+            <Ionicons name="calendar-outline" size={16} color="#735f55" />
+            <Text style={styles.dateBtnText}>
+              {formatDateTime(startAt, allDay)}
+            </Text>
+          </Pressable>
+          {showStartPicker && (
+            <DateTimePicker
+              value={startAt}
+              mode={pickerMode}
+              display={pickerDisplay}
+              onChange={(_, picked) => {
+                if (Platform.OS !== "ios") setShowStartPicker(false);
+                if (picked) onChangeStart(picked);
+              }}
             />
           )}
 
-          {!allDay && (
-            <>
-              <Text style={styles.label}>Start time (24h)</Text>
-              <TextInput
-                style={styles.input}
-                value={time}
-                onChangeText={setTime}
-                placeholder="HH:MM"
-                placeholderTextColor="#888"
-                autoCapitalize="none"
-                autoCorrect={false}
-                editable={!busy && !isImported}
-                keyboardType="numbers-and-punctuation"
-              />
-
-              <Text style={styles.label}>Duration (min)</Text>
-              <TextInput
-                style={styles.input}
-                value={durationMin}
-                onChangeText={setDurationMin}
-                placeholder="60"
-                placeholderTextColor="#888"
-                keyboardType="number-pad"
-                editable={!busy && !isImported}
-              />
-            </>
+          <Text style={styles.label}>Ends</Text>
+          <Pressable
+            onPress={() => {
+              setShowEndPicker((v) => !v);
+              setShowStartPicker(false);
+            }}
+            style={styles.dateBtn}
+            disabled={formDisabled}
+          >
+            <Ionicons name="calendar-outline" size={16} color="#735f55" />
+            <Text style={styles.dateBtnText}>
+              {formatDateTime(endAt, allDay)}
+            </Text>
+          </Pressable>
+          {showEndPicker && (
+            <DateTimePicker
+              value={endAt}
+              mode={pickerMode}
+              display={pickerDisplay}
+              minimumDate={startAt}
+              onChange={(_, picked) => {
+                if (Platform.OS !== "ios") setShowEndPicker(false);
+                if (picked) setEndAt(picked);
+              }}
+            />
           )}
 
           <Text style={styles.label}>Assigned to</Text>
@@ -365,7 +361,7 @@ export function EventFormModal({
                   key={p.id}
                   onPress={() => toggleAssignee(p.id)}
                   style={[styles.chip, on && styles.chipOn]}
-                  disabled={busy || isImported}
+                  disabled={formDisabled}
                 >
                   <Text style={[styles.chipText, on && styles.chipTextOn]}>
                     {p.name}
@@ -381,7 +377,7 @@ export function EventFormModal({
             <Pressable
               onPress={() => setRecurrence("")}
               style={[styles.chip, !recurrence && styles.chipOn]}
-              disabled={busy || isImported}
+              disabled={formDisabled}
             >
               <Text style={[styles.chipText, !recurrence && styles.chipTextOn]}>
                 None
@@ -394,7 +390,7 @@ export function EventFormModal({
                   key={p.value}
                   onPress={() => setRecurrence(p.value)}
                   style={[styles.chip, on && styles.chipOn]}
-                  disabled={busy || isImported}
+                  disabled={formDisabled}
                 >
                   <Text style={[styles.chipText, on && styles.chipTextOn]}>
                     {p.label}
@@ -420,7 +416,7 @@ export function EventFormModal({
             </Pressable>
           )}
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -477,6 +473,19 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     marginTop: 8,
   },
+
+  dateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+  },
+  dateBtnText: { fontSize: 15, color: "#222" },
 
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {

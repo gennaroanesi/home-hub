@@ -27,7 +27,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../lib/amplify";
@@ -455,14 +455,8 @@ function NotConfigured() {
     <View style={styles.center}>
       <Ionicons name="home-outline" size={36} color="#ccc" />
       <Text style={styles.notConfiguredText}>
-        Connect Home Assistant to control your devices from here.
+        Home Assistant is not configured for this build.
       </Text>
-      <Pressable
-        onPress={() => router.push("/more/ha-settings")}
-        style={styles.connectBtn}
-      >
-        <Text style={styles.connectBtnText}>Set up Home Assistant</Text>
-      </Pressable>
     </View>
   );
 }
@@ -604,14 +598,6 @@ const styles = StyleSheet.create({
   empty: { color: "#888", padding: 24, textAlign: "center" },
 
   notConfiguredText: { color: "#666", fontSize: 14, textAlign: "center", lineHeight: 20 },
-  connectBtn: {
-    marginTop: 8,
-    backgroundColor: "#735f55",
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-    borderRadius: 10,
-  },
-  connectBtnText: { color: "#fff", fontWeight: "600" },
 
   controls: {
     paddingHorizontal: 20,

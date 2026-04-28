@@ -2,17 +2,17 @@
 // null => create mode. `onSaved` fires after a successful write so
 // the parent list can refresh.
 //
-// Native date pickers were skipped for Phase 1B to avoid a dev-client
-// rebuild cycle — instead we expose four quick-pick buttons (None /
-// Today / Tomorrow / Next week) and a YYYY-MM-DD text input for
-// custom dates. We can drop in @react-native-community/datetimepicker
-// later when we rebuild the dev client for another reason.
+// Due date now uses the native iOS datetime picker (date+time) to
+// match the web's <input type="datetime-local">. Tap the date row
+// to expand the picker; the "x" pill clears the value.
 
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -20,6 +20,8 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
@@ -36,63 +38,22 @@ interface Props {
   onSaved: () => void;
 }
 
-type DueQuick = "none" | "today" | "tomorrow" | "next-week" | "custom";
-
-const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-
-function isoDate(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const day = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
-
-function dueDateForQuick(quick: DueQuick, custom: string): string | null {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  switch (quick) {
-    case "none":
-      return null;
-    case "today":
-      return today.toISOString();
-    case "tomorrow": {
-      const d = new Date(today);
-      d.setDate(d.getDate() + 1);
-      return d.toISOString();
-    }
-    case "next-week": {
-      const d = new Date(today);
-      d.setDate(d.getDate() + 7);
-      return d.toISOString();
-    }
-    case "custom":
-      if (!ISO_DATE_RE.test(custom)) return null;
-      return new Date(`${custom}T00:00:00`).toISOString();
-  }
-}
-
-function quickFromTask(task: Task | null): { quick: DueQuick; custom: string } {
-  if (!task?.dueDate) return { quick: "none", custom: "" };
-  const due = new Date(task.dueDate);
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const dueDay = isoDate(due);
-  if (dueDay === isoDate(today)) return { quick: "today", custom: "" };
-  const t = new Date(today);
-  t.setDate(t.getDate() + 1);
-  if (dueDay === isoDate(t)) return { quick: "tomorrow", custom: "" };
-  const w = new Date(today);
-  w.setDate(w.getDate() + 7);
-  if (dueDay === isoDate(w)) return { quick: "next-week", custom: "" };
-  return { quick: "custom", custom: dueDay };
+function formatDueLabel(d: Date): string {
+  return d.toLocaleString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [assignedIds, setAssignedIds] = useState<string[]>([]);
-  const [quick, setQuick] = useState<DueQuick>("none");
-  const [custom, setCustom] = useState("");
+  const [dueDate, setDueDate] = useState<Date | null>(null);
+  const [showDuePicker, setShowDuePicker] = useState(false);
   const [recurrence, setRecurrence] = useState<string>(""); // empty = none
   const [busy, setBusy] = useState(false);
 
@@ -106,18 +67,16 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
       setAssignedIds(
         (task.assignedPersonIds ?? []).filter((id): id is string => !!id)
       );
-      const { quick: q, custom: c } = quickFromTask(task);
-      setQuick(q);
-      setCustom(c);
+      setDueDate(task.dueDate ? new Date(task.dueDate) : null);
       setRecurrence(task.recurrence ?? "");
     } else {
       setTitle("");
       setDescription("");
       setAssignedIds([]);
-      setQuick("none");
-      setCustom("");
+      setDueDate(null);
       setRecurrence("");
     }
+    setShowDuePicker(false);
   }, [visible, task]);
 
   function toggleAssignee(id: string) {
@@ -131,19 +90,14 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
       Alert.alert("Title required");
       return;
     }
-    if (quick === "custom" && custom && !ISO_DATE_RE.test(custom)) {
-      Alert.alert("Custom date must be YYYY-MM-DD");
-      return;
-    }
     setBusy(true);
     try {
       const client = getClient();
-      const dueDate = dueDateForQuick(quick, custom);
       const payload = {
         title: title.trim(),
         description: description.trim() || null,
         assignedPersonIds: assignedIds.length > 0 ? assignedIds : null,
-        dueDate,
+        dueDate: dueDate ? dueDate.toISOString() : null,
         recurrence: recurrence || null,
       };
       if (task) {
@@ -196,7 +150,10 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
-      <View style={styles.screen}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         <View style={styles.header}>
           <Pressable onPress={onClose} disabled={busy}>
             <Text style={styles.cancel}>Cancel</Text>
@@ -211,7 +168,10 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
           </Pressable>
         </View>
 
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+        >
           <Text style={styles.label}>Title</Text>
           <TextInput
             style={styles.input}
@@ -253,37 +213,36 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
           <Text style={styles.muted}>None selected = household task</Text>
 
           <Text style={styles.label}>Due date</Text>
-          <View style={styles.chipRow}>
-            {(["none", "today", "tomorrow", "next-week", "custom"] as DueQuick[]).map(
-              (q) => {
-                const on = quick === q;
-                return (
-                  <Pressable
-                    key={q}
-                    onPress={() => setQuick(q)}
-                    style={[styles.chip, on && styles.chipOn]}
-                    disabled={busy}
-                  >
-                    <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                      {q === "next-week"
-                        ? "Next week"
-                        : q.charAt(0).toUpperCase() + q.slice(1)}
-                    </Text>
-                  </Pressable>
-                );
-              }
+          <Pressable
+            onPress={() => setShowDuePicker((v) => !v)}
+            style={styles.dateBtn}
+            disabled={busy}
+          >
+            <Text style={[styles.dateBtnText, !dueDate && styles.dateBtnPlaceholder]}>
+              {dueDate ? formatDueLabel(dueDate) : "Pick a date and time"}
+            </Text>
+            {dueDate && (
+              <Pressable
+                onPress={() => {
+                  setDueDate(null);
+                  setShowDuePicker(false);
+                }}
+                hitSlop={8}
+                disabled={busy}
+              >
+                <Ionicons name="close-circle" size={18} color="#bbb" />
+              </Pressable>
             )}
-          </View>
-          {quick === "custom" && (
-            <TextInput
-              style={styles.input}
-              value={custom}
-              onChangeText={setCustom}
-              placeholder="YYYY-MM-DD"
-              placeholderTextColor="#888"
-              autoCapitalize="none"
-              autoCorrect={false}
-              editable={!busy}
+          </Pressable>
+          {showDuePicker && (
+            <DateTimePicker
+              value={dueDate ?? defaultDueSeed()}
+              mode="datetime"
+              display={Platform.OS === "ios" ? "inline" : "default"}
+              onChange={(_, picked) => {
+                if (Platform.OS !== "ios") setShowDuePicker(false);
+                if (picked) setDueDate(picked);
+              }}
             />
           )}
 
@@ -331,9 +290,17 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
             </Pressable>
           )}
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
+}
+
+/** Default seed when opening the picker for the first time —
+ *  today at 9am local time. Avoids the picker landing on midnight. */
+function defaultDueSeed(): Date {
+  const d = new Date();
+  d.setHours(9, 0, 0, 0);
+  return d;
 }
 
 const styles = StyleSheet.create({
@@ -386,6 +353,20 @@ const styles = StyleSheet.create({
   chipOn: { backgroundColor: "#735f55", borderColor: "#735f55" },
   chipText: { color: "#444", fontSize: 13 },
   chipTextOn: { color: "#fff" },
+
+  dateBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+  },
+  dateBtnText: { fontSize: 15, color: "#222" },
+  dateBtnPlaceholder: { color: "#888" },
 
   delete: { marginTop: 32, paddingVertical: 14, alignItems: "center" },
   deletePressed: { opacity: 0.5 },
