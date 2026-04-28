@@ -403,19 +403,19 @@ export function PetFormModal({ visible, pet, onClose, onSaved }: Props) {
             )}
           </Pressable>
           {showDobPicker && (
-            <DateTimePicker
-              value={parseDob(dob) ?? new Date()}
-              mode="date"
-              // `inline` shows the iOS calendar inline — feels more
-              // native than the wheel and doesn't need a separate
-              // confirmation step.
-              display={Platform.OS === "ios" ? "inline" : "default"}
-              maximumDate={new Date()}
-              onChange={(_, picked) => {
-                if (Platform.OS !== "ios") setShowDobPicker(false);
-                if (picked) setDob(isoDateOf(picked));
-              }}
-            />
+            <View style={styles.spinnerCard}>
+              <DateTimePicker
+                value={parseDob(dob) ?? new Date()}
+                mode="date"
+                display={Platform.OS === "ios" ? "spinner" : "default"}
+                themeVariant="light"
+                maximumDate={new Date()}
+                onChange={(_, picked) => {
+                  if (Platform.OS !== "ios") setShowDobPicker(false);
+                  if (picked) setDob(isoDateOf(picked));
+                }}
+              />
+            </View>
           )}
 
           <Text style={styles.label}>Color</Text>
@@ -590,6 +590,14 @@ const styles = StyleSheet.create({
   },
   dateBtnText: { fontSize: 15, color: "#222" },
   dateBtnPlaceholder: { color: "#888" },
+  spinnerCard: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    marginTop: 6,
+    paddingVertical: 4,
+  },
 
   weightRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   weightInput: { flex: 1 },

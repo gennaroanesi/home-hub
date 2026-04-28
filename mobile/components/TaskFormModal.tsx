@@ -230,20 +230,22 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
                 hitSlop={8}
                 disabled={busy}
               >
-                <Ionicons name="close-circle" size={18} color="#bbb" />
+                <Ionicons name="close-circle" size={20} color="#bbb" />
               </Pressable>
             )}
           </Pressable>
           {showDuePicker && (
-            <DateTimePicker
-              value={dueDate ?? defaultDueSeed()}
-              mode="datetime"
-              display={Platform.OS === "ios" ? "inline" : "default"}
-              onChange={(_, picked) => {
-                if (Platform.OS !== "ios") setShowDuePicker(false);
-                if (picked) setDueDate(picked);
-              }}
-            />
+            <View style={styles.spinnerCard}>
+              <DateTimePicker
+                value={dueDate ?? defaultDueSeed()}
+                mode="datetime"
+                display="spinner"
+                themeVariant="light"
+                onChange={(_, picked) => {
+                  if (picked) setDueDate(picked);
+                }}
+              />
+            </View>
           )}
 
           <Text style={styles.label}>Recurrence</Text>
@@ -367,6 +369,14 @@ const styles = StyleSheet.create({
   },
   dateBtnText: { fontSize: 15, color: "#222" },
   dateBtnPlaceholder: { color: "#888" },
+  spinnerCard: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    marginTop: 6,
+    paddingVertical: 4,
+  },
 
   delete: { marginTop: 32, paddingVertical: 14, alignItems: "center" },
   deletePressed: { opacity: 0.5 },

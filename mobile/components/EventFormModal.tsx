@@ -57,7 +57,7 @@ function defaultStartSeed(defaultDate?: string): Date {
   return d;
 }
 
-function formatDateTime(d: Date, allDay: boolean): string {
+function formatLabel(d: Date, allDay: boolean): string {
   if (allDay) {
     return d.toLocaleDateString(undefined, {
       weekday: "short",
@@ -103,11 +103,11 @@ export function EventFormModal({
     const s = defaultStartSeed(defaultDate);
     return new Date(s.getTime() + 60 * 60 * 1000);
   });
-  const [showStartPicker, setShowStartPicker] = useState(false);
-  const [showEndPicker, setShowEndPicker] = useState(false);
   const [assignedIds, setAssignedIds] = useState<string[]>([]);
   const [recurrence, setRecurrence] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showStartPicker, setShowStartPicker] = useState(false);
+  const [showEndPicker, setShowEndPicker] = useState(false);
 
   const isImported = !!event?.feedId;
 
@@ -223,8 +223,6 @@ export function EventFormModal({
     ]);
   }
 
-  const pickerMode = allDay ? "date" : "datetime";
-  const pickerDisplay = Platform.OS === "ios" ? "inline" : "default";
   const formDisabled = busy || isImported;
 
   return (
@@ -309,20 +307,21 @@ export function EventFormModal({
             disabled={formDisabled}
           >
             <Ionicons name="calendar-outline" size={16} color="#735f55" />
-            <Text style={styles.dateBtnText}>
-              {formatDateTime(startAt, allDay)}
-            </Text>
+            <Text style={styles.dateBtnText}>{formatLabel(startAt, allDay)}</Text>
           </Pressable>
           {showStartPicker && (
-            <DateTimePicker
-              value={startAt}
-              mode={pickerMode}
-              display={pickerDisplay}
-              onChange={(_, picked) => {
-                if (Platform.OS !== "ios") setShowStartPicker(false);
-                if (picked) onChangeStart(picked);
-              }}
-            />
+            <View style={styles.spinnerCard}>
+              <DateTimePicker
+                value={startAt}
+                mode={allDay ? "date" : "datetime"}
+                display="spinner"
+                themeVariant="light"
+                onChange={(_, picked) => {
+                  if (picked) onChangeStart(picked);
+                }}
+                disabled={formDisabled}
+              />
+            </View>
           )}
 
           <Text style={styles.label}>Ends</Text>
@@ -335,21 +334,22 @@ export function EventFormModal({
             disabled={formDisabled}
           >
             <Ionicons name="calendar-outline" size={16} color="#735f55" />
-            <Text style={styles.dateBtnText}>
-              {formatDateTime(endAt, allDay)}
-            </Text>
+            <Text style={styles.dateBtnText}>{formatLabel(endAt, allDay)}</Text>
           </Pressable>
           {showEndPicker && (
-            <DateTimePicker
-              value={endAt}
-              mode={pickerMode}
-              display={pickerDisplay}
-              minimumDate={startAt}
-              onChange={(_, picked) => {
-                if (Platform.OS !== "ios") setShowEndPicker(false);
-                if (picked) setEndAt(picked);
-              }}
-            />
+            <View style={styles.spinnerCard}>
+              <DateTimePicker
+                value={endAt}
+                mode={allDay ? "date" : "datetime"}
+                display="spinner"
+                themeVariant="light"
+                minimumDate={startAt}
+                onChange={(_, picked) => {
+                  if (picked) setEndAt(picked);
+                }}
+                disabled={formDisabled}
+              />
+            </View>
           )}
 
           <Text style={styles.label}>Assigned to</Text>
@@ -486,6 +486,14 @@ const styles = StyleSheet.create({
     borderColor: "#ddd",
   },
   dateBtnText: { fontSize: 15, color: "#222" },
+  spinnerCard: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    marginTop: 6,
+    paddingVertical: 4,
+  },
 
   chipRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   chip: {
