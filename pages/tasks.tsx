@@ -19,6 +19,7 @@ import {
 import { Select, SelectItem } from "@heroui/select";
 import { FaPlus, FaTrash, FaPen, FaSync, FaArrowLeft } from "react-icons/fa";
 import { RRule } from "rrule";
+import dayjs from "dayjs";
 
 import DefaultLayout from "@/layouts/default";
 import { AttachmentSection } from "@/components/attachment-section";
@@ -114,7 +115,7 @@ export default function TasksPage() {
     setFormTitle(task.title);
     setFormDescription(task.description ?? "");
     setFormAssignedIds(getAssignedIds(task));
-    setFormDueDate(task.dueDate ? task.dueDate.slice(0, 16) : "");
+    setFormDueDate(task.dueDate ? dayjs(task.dueDate).format("YYYY-MM-DDTHH:mm") : "");
     setFormRecurrence(task.recurrence ?? "");
     setIsCustomRecurrence(task.recurrence ? !RECURRENCE_PRESETS.some((p) => p.value === task.recurrence) : false);
     onOpen();
