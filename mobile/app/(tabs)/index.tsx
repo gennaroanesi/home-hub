@@ -363,7 +363,10 @@ function TaskRow({
     // distinguish Mon/Tue/Wed at a glance.
     label = shortWeekday(effective);
   } else if (due) {
-    label = overdue ? "Overdue" : "Today";
+    // In the TODAY bucket the date is implied — show the time so the
+    // user knows when in the day the task is due. Overdue stays as a
+    // hard flag.
+    label = overdue ? "Overdue" : formatTime(task.dueDate!);
   } else if (nextRecur) {
     label = formatRelativeDate(nextRecur, now);
   }

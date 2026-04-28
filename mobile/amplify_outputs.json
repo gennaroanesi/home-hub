@@ -299,6 +299,13 @@
               "isRequired": false,
               "attributes": []
             },
+            "photoS3Key": {
+              "name": "photoS3Key",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
             "active": {
               "name": "active",
               "isArray": false,
