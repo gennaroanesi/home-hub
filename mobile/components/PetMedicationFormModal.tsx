@@ -9,7 +9,9 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -177,7 +179,10 @@ export function PetMedicationFormModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
-      <View style={styles.screen}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         <View style={styles.header}>
           <Pressable onPress={onClose} disabled={busy}>
             <Text style={styles.cancel}>Cancel</Text>
@@ -196,7 +201,10 @@ export function PetMedicationFormModal({
           </Pressable>
         </View>
 
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+        >
           <Text style={styles.label}>Medication</Text>
           <TextInput
             style={styles.input}
@@ -328,7 +336,7 @@ export function PetMedicationFormModal({
             </Pressable>
           )}
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

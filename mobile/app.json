@@ -14,7 +14,9 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false,
         "NSLocalNetworkUsageDescription": "Home Hub uses your home network to find and control Home Assistant directly when you're home.",
-        "NSBonjourServices": ["_home-assistant._tcp"],
+        "NSBonjourServices": [
+          "_home-assistant._tcp"
+        ],
         "NSAppTransportSecurity": {
           "NSExceptionDomains": {
             "homeassistant.local": {
@@ -40,7 +42,8 @@
             "backgroundColor": "#000000"
           }
         }
-      ]
+      ],
+      "@react-native-community/datetimepicker"
     ],
     "experiments": {
       "typedRoutes": true,

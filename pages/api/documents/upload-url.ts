@@ -54,9 +54,14 @@ function extensionFor(contentType: string): string {
  * row via the Amplify data client. Wave 2 will add the Duo-gated
  * read path at the agent tool layer.
  */
+// Allow-listed prefixes the caller can land their upload in. Keeps
+// callers from picking arbitrary paths under home/ via the body —
+// each surface that needs presigned uploads gets a known sub-prefix.
+const ALLOWED_PREFIXES = new Set(["documents", "pets"]);
+
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "POST") {
-    const { contentType } = req.body ?? {};
+    const { contentType, prefix } = req.body ?? {};
     if (!contentType || typeof contentType !== "string") {
       return res.status(400).json({ error: "contentType required" });
     }
@@ -65,10 +70,17 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
         error: "Unsupported content type. Allowed: PDF, JPEG, PNG, WebP, HEIC.",
       });
     }
+    // Default to the original "documents" prefix so existing callers
+    // (web Documents page, mobile DocumentFormModal) keep working
+    // without sending a prefix.
+    const subPrefix =
+      typeof prefix === "string" && ALLOWED_PREFIXES.has(prefix)
+        ? prefix
+        : "documents";
 
     const ext = extensionFor(contentType);
     const id = uuid();
-    const s3key = `home/documents/${id}.${ext}`;
+    const s3key = `home/${subPrefix}/${id}.${ext}`;
 
     const command = new PutObjectCommand({
       Bucket: BUCKET,

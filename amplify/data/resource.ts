@@ -96,8 +96,11 @@ const schema = a
         // convention homeTrip.startDate uses).
         dob: a.date(),
         color: a.string(),
-        // Free-form weight + unit ("12 lb", "5.4 kg") so we don't
-        // hardcode a unit system the user has to convert.
+        // Stored as a numeric string (no unit suffix), e.g. "12.3".
+        // The mobile UI constrains entry to decimals and shows " lb"
+        // alongside the input so the unit stays out of the stored
+        // value. Schema stays flexible (string) in case we ever want
+        // kg in the same row in the future.
         weight: a.string(),
         microchipId: a.string(),
         vetName: a.string(),
@@ -107,6 +110,10 @@ const schema = a
         foodBrand: a.string(),
         foodNotes: a.string(),
         notes: a.string(),
+        // Profile photo. Lives under home/pets/<uuid>.<ext> in the
+        // shared cristinegennaro.com bucket; render via the same
+        // CloudFront distribution as photos / attachments.
+        photoS3Key: a.string(),
         active: a.boolean().default(true),
       })
       .authorization((allow) => [allow.group("home-users")]),

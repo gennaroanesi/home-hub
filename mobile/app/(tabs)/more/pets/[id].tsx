@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Image,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -18,6 +19,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
+import { resizedImageUrl } from "../../../../lib/image";
 import {
   SPECIES_EMOJI,
   SPECIES_LABEL,
@@ -248,12 +250,20 @@ export default function PetDetail() {
 function PetHeaderCard({ pet }: { pet: Pet }) {
   const species = (pet.species as PetSpecies | null) ?? "OTHER";
   const age = ageLabel(pet.dob);
-  const meta = [pet.breed, SPECIES_LABEL[species], age, pet.weight]
+  const weightLabel = pet.weight ? `${pet.weight} lb` : null;
+  const meta = [pet.breed, SPECIES_LABEL[species], age, weightLabel]
     .filter(Boolean)
     .join(" · ");
   return (
     <View style={styles.headerCard}>
-      <Text style={styles.headerEmoji}>{SPECIES_EMOJI[species]}</Text>
+      {pet.photoS3Key ? (
+        <Image
+          source={{ uri: resizedImageUrl(pet.photoS3Key, 400) }}
+          style={styles.headerPhoto}
+        />
+      ) : (
+        <Text style={styles.headerEmoji}>{SPECIES_EMOJI[species]}</Text>
+      )}
       <Text style={styles.headerName}>{pet.name}</Text>
       {!!meta && <Text style={styles.headerMeta}>{meta}</Text>}
       {!!pet.color && <Text style={styles.headerMetaQuiet}>{pet.color}</Text>}
@@ -386,6 +396,13 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   headerEmoji: { fontSize: 56, marginBottom: 4 },
+  headerPhoto: {
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    marginBottom: 6,
+    backgroundColor: "#eee",
+  },
   headerName: { fontSize: 22, fontWeight: "600", color: "#222" },
   headerMeta: { fontSize: 13, color: "#666" },
   headerMetaQuiet: { fontSize: 12, color: "#888" },

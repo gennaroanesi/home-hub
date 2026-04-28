@@ -37,19 +37,25 @@ export interface UploadedDocFile {
  * Two-step upload: presign on the web side, then PUT to S3.
  * Returns the s3 key + content type so the caller can drop them
  * straight into a homeDocument.create() call.
+ *
+ * `prefix` selects the sub-bucket path (defaults to "documents" so
+ * existing callers don't need to change). The web endpoint only
+ * accepts a small allow-list — see ALLOWED_PREFIXES in
+ * pages/api/documents/upload-url.ts.
  */
 export async function uploadDocumentFile(args: {
   uri: string;
   contentType: string;
   filename?: string;
+  prefix?: "documents" | "pets";
 }): Promise<UploadedDocFile> {
-  const { uri, contentType } = args;
+  const { uri, contentType, prefix } = args;
 
   // 1. Presign.
   const presignRes = await fetch(`${WEB_BASE_URL}/api/documents/upload-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ contentType }),
+    body: JSON.stringify({ contentType, ...(prefix ? { prefix } : {}) }),
   });
   if (!presignRes.ok) {
     const text = await presignRes.text().catch(() => "");
