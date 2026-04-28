@@ -82,6 +82,83 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Pet ─────────────────────────────────────────────────────────────
+    // Household pet profile. Designed for multiple pets even though
+    // we typically have one — the medication / vaccine tables join
+    // back through petId. Photos are deferred until the photos
+    // phase; for now we display a species-based emoji on rows.
+    homePet: a
+      .model({
+        name: a.string().required(),
+        species: a.enum(["DOG", "CAT", "OTHER"]),
+        breed: a.string(),
+        // Pure-date YYYY-MM-DD (parses without timezone games — same
+        // convention homeTrip.startDate uses).
+        dob: a.date(),
+        color: a.string(),
+        // Free-form weight + unit ("12 lb", "5.4 kg") so we don't
+        // hardcode a unit system the user has to convert.
+        weight: a.string(),
+        microchipId: a.string(),
+        vetName: a.string(),
+        vetPhone: a.string(),
+        // Food — brand / amount / quirks. v1 is plain text; we'll
+        // add structured feed schedules if it gets enough use.
+        foodBrand: a.string(),
+        foodNotes: a.string(),
+        notes: a.string(),
+        active: a.boolean().default(true),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── PetMedication ──────────────────────────────────────────────────
+    // Ongoing prescriptions / supplements for a homePet. State, not
+    // events — one row per active or historical prescription. The
+    // homeReminder system is what fires "give Dolce her pill at 8am"
+    // on a schedule; this row is the rx record itself (dose, refills,
+    // start/end). When a med ends or the vet stops it, flip
+    // isActive=false rather than deleting so we keep history.
+    homePetMedication: a
+      .model({
+        petId: a.id().required(),
+        name: a.string().required(),
+        dosage: a.string(), // "1/2 pill", "5 mg", etc.
+        // Free-text schedule for now ("twice daily with food",
+        // "every 3 days"). Reminders that fire on a clock live in
+        // homeReminder; this is the human description.
+        schedule: a.string(),
+        purpose: a.string(),
+        prescribedBy: a.string(),
+        startDate: a.date(),
+        endDate: a.date(), // null = ongoing
+        refillsRemaining: a.integer(),
+        lastRefillAt: a.date(),
+        notes: a.string(),
+        isActive: a.boolean().default(true),
+      })
+      .secondaryIndexes((index) => [index("petId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── PetVaccine ─────────────────────────────────────────────────────
+    // Discrete vaccination event with a next-due reminder. Listed
+    // most-recent-first on the pet detail screen, with rows whose
+    // nextDueAt is approaching surfaced as warnings. Distinct from
+    // medications — meds are state, vaccines are events.
+    homePetVaccine: a
+      .model({
+        petId: a.id().required(),
+        // Vaccine name as given by the vet ("Rabies", "DHPP",
+        // "Bordetella", etc.). No enum — vet records vary.
+        name: a.string().required(),
+        administeredAt: a.date().required(),
+        nextDueAt: a.date(),
+        administeredBy: a.string(),
+        batchNumber: a.string(),
+        notes: a.string(),
+      })
+      .secondaryIndexes((index) => [index("petId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
     // ── Trip ────────────────────────────────────────────────────────────
     // Multi-day trip; days and events reference trips via tripId.
     homeTrip: a

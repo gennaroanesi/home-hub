@@ -93,6 +93,20 @@ export default function More() {
             <Ionicons name="chevron-forward" size={18} color="#bbb" />
           </Pressable>
           <Pressable
+            onPress={() => router.push("/more/pets")}
+            style={({ pressed }) => [
+              styles.row,
+              styles.rowDivider,
+              pressed && styles.rowPressed,
+            ]}
+          >
+            <View style={styles.rowLeft}>
+              <Ionicons name="paw-outline" size={20} color="#735f55" />
+              <Text style={styles.rowLabel}>Pets</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#bbb" />
+          </Pressable>
+          <Pressable
             onPress={() => router.push("/more/ha-settings")}
             style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
           >
