@@ -438,6 +438,13 @@ const schema = a
         friendlyName: a.string(),
         domain: a.string(), // "climate" | "lock" | "cover" | "camera" | "switch" | "sensor" | ...
         area: a.string(), // e.g. "Living Room"
+        // HA's device-registry id for the entity's parent device.
+        // Different from entityId — one device (a Z-Wave bulb, say)
+        // hosts many entities (light + signal_strength + button).
+        // Populated by hass-sync via the template API. Used by the
+        // mobile long-press → Companion deep-link, which opens
+        // homeassistant://navigate/config/devices/device/<id>.
+        haDeviceId: a.string(),
         // Sensitivity tier, set manually per device during enrollment.
         // Drives the risk matrix in lib/devicePolicy.ts.
         sensitivity: a.enum(["READ_ONLY", "LOW", "MEDIUM", "HIGH"]),

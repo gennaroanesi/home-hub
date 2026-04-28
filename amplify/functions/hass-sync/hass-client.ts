@@ -102,12 +102,35 @@ export class HassClient {
    * REST call gets us the whole map.
    */
   async getAreaMap(timeoutMs = 15000): Promise<Record<string, string>> {
+    return this.renderEntityMap("area_name", timeoutMs);
+  }
+
+  /**
+   * Map of entity_id → device-registry id. Powers the mobile
+   * long-press deep link into the Companion app's device page
+   * (homeassistant://navigate/config/devices/device/<id>). Same
+   * one-call template trick as getAreaMap.
+   */
+  async getDeviceIdMap(timeoutMs = 15000): Promise<Record<string, string>> {
+    return this.renderEntityMap("device_id", timeoutMs);
+  }
+
+  /**
+   * Render a Jinja template that emits {entity_id: <fn(entity_id)>}
+   * as JSON for every entity where the function returns truthy. Used
+   * for entity-keyed metadata maps (areas, device ids) that aren't
+   * exposed on the REST surface.
+   */
+  private async renderEntityMap(
+    fn: "area_name" | "device_id",
+    timeoutMs: number
+  ): Promise<Record<string, string>> {
     const template = [
       "{% set ns = namespace(items={}) %}",
       "{% for s in states %}",
-      "{% set a = area_name(s.entity_id) %}",
-      "{% if a %}",
-      "{% set ns.items = dict(ns.items, **{s.entity_id: a}) %}",
+      `{% set v = ${fn}(s.entity_id) %}`,
+      "{% if v %}",
+      "{% set ns.items = dict(ns.items, **{s.entity_id: v}) %}",
       "{% endif %}",
       "{% endfor %}",
       "{{ ns.items | tojson }}",
@@ -122,15 +145,15 @@ export class HassClient {
         signal: controller.signal,
       });
       if (!res.ok) {
-        throw new Error(`HA getAreaMap failed: ${res.status} ${await res.text()}`);
+        throw new Error(`HA renderEntityMap(${fn}) failed: ${res.status} ${await res.text()}`);
       }
       const body = await res.text();
       try {
         return JSON.parse(body) as Record<string, string>;
       } catch {
         // Older HA might return non-JSON if the template errors. Treat
-        // as "no areas known" — caller falls back to null and the UI
-        // still groups under "Other".
+        // as "no values known" — caller falls back to null and the UI
+        // degrades gracefully (e.g. groups under "Other" for area).
         return {};
       }
     } finally {

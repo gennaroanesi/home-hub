@@ -165,16 +165,23 @@ async function runSync(): Promise<SyncResult> {
     };
   }
 
-  // entity_id → area_name. We render this via the template API (the
-  // area registry isn't on the REST surface) so a single round-trip
-  // gives us areas for every entity at once. Failure here is
-  // non-fatal — devices fall back to area=null and group under
-  // "Other" in the UI, same as before this fix landed.
+  // entity_id → area_name and entity_id → device-registry id. Both
+  // fetched through /api/template since neither registry is on the
+  // REST surface. Failures here are non-fatal — devices fall back
+  // to null and the UI degrades gracefully (groups under "Other" /
+  // long-press skips the device-page deep-link).
   let areaMap: Record<string, string> = {};
+  let deviceIdMap: Record<string, string> = {};
   try {
-    areaMap = await hass.getAreaMap();
+    [areaMap, deviceIdMap] = await Promise.all([
+      hass.getAreaMap(),
+      hass.getDeviceIdMap(),
+    ]);
   } catch (err) {
-    console.warn("hass-sync: getAreaMap failed; areas will be null", err);
+    console.warn(
+      "hass-sync: template-API map fetch failed; areas / device ids will be null",
+      err
+    );
   }
 
   // Pull the existing homeDevice cache once so we can diff (update if
@@ -196,6 +203,7 @@ async function runSync(): Promise<SyncResult> {
   const { ok, failed } = await runWithConcurrency(wanted, WRITE_CONCURRENCY, async (entity) => {
     const domain = entityDomain(entity.entity_id);
     const area = areaMap[entity.entity_id] ?? null;
+    const haDeviceId = deviceIdMap[entity.entity_id] ?? null;
     const lastState = sanitizeForAWSJSON({
       state: entity.state,
       attributes: entity.attributes,
@@ -218,6 +226,7 @@ async function runSync(): Promise<SyncResult> {
           friendlyName: friendlyName(entity),
           domain,
           area,
+          haDeviceId,
           lastState: lastState as any,
           lastSyncedAt: now,
         });
@@ -232,6 +241,7 @@ async function runSync(): Promise<SyncResult> {
           friendlyName: friendlyName(entity),
           domain,
           area,
+          haDeviceId,
           sensitivity: "READ_ONLY",
           isPinned: AUTO_PIN_DOMAINS.has(domain),
           lastState: lastState as any,

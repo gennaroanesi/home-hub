@@ -17,6 +17,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -36,6 +37,7 @@ import {
   fetchState,
   invalidateLocalProbe,
   loadActiveHaConfig,
+  loadHaConfig,
   type ActiveHaConfig,
 } from "../../lib/ha";
 import type { Schema } from "../../../amplify/data/resource";
@@ -124,6 +126,11 @@ export default function Home() {
   const [haConfig, setHaConfig] = useState<ActiveHaConfig | null | "loading">(
     "loading"
   );
+  // The user-configured public URL (env var or secure-store), used
+  // for HA Companion deep-link routing. Distinct from haConfig.baseUrl
+  // which may swap in the local http://homeassistant.local URL when
+  // we're on home WiFi — universal links won't route from there.
+  const [publicBaseUrl, setPublicBaseUrl] = useState("");
   const [allDevices, setAllDevices] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -154,9 +161,13 @@ export default function Home() {
       let cancelled = false;
       (async () => {
         invalidateLocalProbe();
-        const cfg = await loadActiveHaConfig();
+        const [active, configured] = await Promise.all([
+          loadActiveHaConfig(),
+          loadHaConfig(),
+        ]);
         if (cancelled) return;
-        setHaConfig(cfg);
+        setHaConfig(active);
+        setPublicBaseUrl(configured?.baseUrl ?? "");
       })();
       void loadDevices();
       return () => {
@@ -361,6 +372,7 @@ export default function Home() {
       ) : (
         <>
           <View style={styles.controls}>
+            <Text style={styles.hint}>Long-press to view device on HA</Text>
             <View style={styles.scopeRow}>
               {(["pinned", "all"] as const).map((s) => {
                 const on = scope === s;
@@ -417,6 +429,7 @@ export default function Home() {
                       <DeviceRow
                         key={d.id}
                         device={d}
+                        publicBaseUrl={publicBaseUrl}
                         state={liveState[d.entityId] ?? readState(d)}
                         busy={busyId === d.id}
                         divider={i < areaDevices.length - 1}
@@ -456,6 +469,7 @@ function NotConfigured() {
 
 function DeviceRow({
   device,
+  publicBaseUrl,
   state,
   busy,
   divider,
@@ -463,6 +477,7 @@ function DeviceRow({
   onAction,
 }: {
   device: Device;
+  publicBaseUrl: string;
   state: HaState | null;
   busy: boolean;
   divider: boolean;
@@ -475,8 +490,46 @@ function DeviceRow({
   // HIGH actions only enabled when we're on home WiFi. Off-network
   // taps still surface the explanatory alert via runAction.
   const highBlocked = isHigh && !isLocal;
+
+  // Long-press → open the entity's parent device page in the HA
+  // Companion app via `homeassistant://navigate/config/devices/
+  // device/<haDeviceId>`. That URL is the only one we found that
+  // reliably lands on a specific entity surface in the iOS app —
+  // the various ?more-info-entity-id query-param tricks just open
+  // the default Lovelace overview.
+  //
+  // haDeviceId is HA's device-registry id, populated by hass-sync
+  // through a template-API render. It can be null for entities
+  // with no parent device (template sensors, helpers); in that case
+  // we fall back to the entity-config URL on the web frontend.
+  async function openInHa() {
+    if (device.haDeviceId) {
+      const url = `homeassistant://navigate/config/devices/device/${device.haDeviceId}`;
+      try {
+        await Linking.openURL(url);
+        return;
+      } catch {
+        /* HA app not installed — try the web fallback below */
+      }
+    }
+    if (!publicBaseUrl) {
+      Alert.alert("HA URL not configured");
+      return;
+    }
+    const webUrl = device.haDeviceId
+      ? `${publicBaseUrl}/config/devices/device/${device.haDeviceId}`
+      : `${publicBaseUrl}/config/entities/${encodeURIComponent(device.entityId)}`;
+    await Linking.openURL(webUrl).catch(() => {
+      Alert.alert("Couldn't open Home Assistant", webUrl);
+    });
+  }
+
   return (
-    <View style={[styles.row, divider && styles.rowDivider]}>
+    <Pressable
+      onLongPress={openInHa}
+      delayLongPress={400}
+      style={[styles.row, divider && styles.rowDivider]}
+    >
       <View style={styles.rowLeft}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {device.friendlyName ?? device.entityId}
@@ -510,7 +563,7 @@ function DeviceRow({
           ))
         )}
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -565,6 +618,7 @@ const styles = StyleSheet.create({
     paddingBottom: 8,
     gap: 8,
   },
+  hint: { fontSize: 12, color: "#888", fontStyle: "italic" },
   scopeRow: { flexDirection: "row", gap: 6 },
   scopePill: {
     paddingHorizontal: 12,

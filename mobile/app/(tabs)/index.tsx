@@ -445,12 +445,16 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   brandRow: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "stretch",
     justifyContent: "space-between",
     gap: 12,
     marginBottom: 16,
   },
-  brandText: { flexShrink: 1 },
+  // Stretch + justifyContent centers the heading/date pair against
+  // the taller monogram. alignItems:center alone leaves the text
+  // anchored to its own (shorter) bounding box, which reads as
+  // top-aligned next to a 56pt logo.
+  brandText: { flex: 1, justifyContent: "center" },
   heading: { fontSize: 28, fontWeight: "600" },
   dateLine: { color: "#666", marginTop: 2 },
   warn: { color: "#a44", marginTop: 12, marginBottom: 6 },
