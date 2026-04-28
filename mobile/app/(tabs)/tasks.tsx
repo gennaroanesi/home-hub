@@ -319,8 +319,12 @@ function startOfToday(): Date {
 }
 
 function formatDueDate(d: Date): string {
+  // Compare calendar days, not absolute time — so 9pm today is "Today",
+  // not "Tomorrow" (the absolute-diff approach rounds anything past noon
+  // up to the next day).
   const today = startOfToday();
-  const diffDays = Math.round((d.getTime() - today.getTime()) / (24 * 3600 * 1000));
+  const dayStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diffDays = Math.round((dayStart.getTime() - today.getTime()) / (24 * 3600 * 1000));
   if (diffDays < -1) return `${-diffDays}d overdue`;
   if (diffDays === -1) return "Yesterday";
   if (diffDays === 0) return "Today";

@@ -212,9 +212,14 @@ export default function TasksPage() {
 
   function formatDueDate(d: string | null | undefined) {
     if (!d) return null;
+    // Compare calendar days, not absolute time — so 9pm today is "Today",
+    // not "Tomorrow" (Math.ceil on an absolute-time diff bumps anything
+    // past the current moment up by a day).
     const date = new Date(d);
-    const now = new Date();
-    const diffDays = Math.ceil((date.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    const dayStart = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const diffDays = Math.round((dayStart.getTime() - today.getTime()) / (1000 * 60 * 60 * 24));
 
     if (diffDays < 0) return { text: `${Math.abs(diffDays)}d overdue`, color: "text-danger" };
     if (diffDays === 0) return { text: "Today", color: "text-warning" };
