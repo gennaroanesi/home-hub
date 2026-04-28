@@ -17,7 +17,6 @@ interface ComingRow {
 
 const COMING_ROWS: ComingRow[] = [
   { label: "Notes", comingPhase: "Coming soon" },
-  { label: "Documents", comingPhase: "Coming soon" },
   { label: "Photos", comingPhase: "Coming soon" },
 ];
 
@@ -76,6 +75,20 @@ export default function More() {
             <View style={styles.rowLeft}>
               <Ionicons name="airplane-outline" size={20} color="#735f55" />
               <Text style={styles.rowLabel}>Trips</Text>
+            </View>
+            <Ionicons name="chevron-forward" size={18} color="#bbb" />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push("/more/documents")}
+            style={({ pressed }) => [
+              styles.row,
+              styles.rowDivider,
+              pressed && styles.rowPressed,
+            ]}
+          >
+            <View style={styles.rowLeft}>
+              <Ionicons name="document-text-outline" size={20} color="#735f55" />
+              <Text style={styles.rowLabel}>Documents</Text>
             </View>
             <Ionicons name="chevron-forward" size={18} color="#bbb" />
           </Pressable>
