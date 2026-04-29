@@ -15,6 +15,18 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - **Meal planning** — weekly menu that auto-generates the shopping list; agent suggests meals from what's in the pantry.
 - **Home maintenance log** — HVAC filter changes, appliance service, warranty + manual storage. Reuses the recurring-task engine almost directly.
 - **Service providers** — plumber, electrician, cleaner, doctors with notes and last-contact date.
+- **Inventory** — household items with a barcode-driven scan→review→store flow. Pantry first (consumable, qty-driven, expiry-relevant), clothing later (low turnover, photo-driven, same model).
+  - **Data model: single polymorphic `inventoryItem`.** One table with a `kind` discriminator (`PANTRY` | `CLOTHING` | …) and a small set of common columns: `id`, `kind`, `name`, `quantity`, `unit`, `barcode`, `scannedAt`, `acquiredAt`, `location`, `unitPrice`. A few high-value search fields are promoted to top-level scalar columns so they can be filtered server-side: `subType` (e.g. "T_SHIRT", "RUB"), `color`, `size`. Long-tail per-kind fields go in `details` (AWSJSON) — fabric, expiry, brand, supplier link, washing notes. Specialization is in the form, not the schema. Promote a `details` field to top-level when you find yourself wanting to query it (one-line schema migration each time).
+    - Queries we want to support: "blue t-shirts" → `kind=CLOTHING, subType=T_SHIRT, color=blue`; "do we have any bbq rub" → `kind=PANTRY, name contains "rub"`. Both server-side. Janet does fuzzy/natural-language filtering on top via the same tool surface.
+  - **Ingestion: `pendingScan` queue.** Scans don't write to `inventoryItem` directly — they land in a `pendingScan` model (`barcode`, `scannedAt`, `source`, `lookupName`, `lookupBrand`, `status`). Review UI groups by scan date: user confirms / categorizes / sets quantity, then promotes to `inventoryItem`. Decoupling lets bulk-scanning happen offline and review happen later.
+  - **Scanner paths (Tera HW0009 Pro is HID-only — no native WiFi/HTTP):**
+    1. **Inventory Mode + Mac mini bridge (primary).** Use the scanner's onboard "Storage Mode" to scan around the house with no host paired. Dock via USB to the Mac mini; a small node daemon listens on the HID device, batches the dump, and POSTs to `/api/scan`. Closest match to the async-review UX.
+    2. **Bluetooth HID to phone (secondary).** Pair the scanner to the iPhone, open a "Scan items" screen with a hidden TextInput focused; each scan creates a `pendingScan` row instantly. Best for "I'm at the counter unpacking groceries".
+    3. **Phone camera fallback** — `expo-camera` barcode scanner for the rare case the scanner is across the house. Same `pendingScan` queue.
+  - **Barcode lookup.** Pre-fill name/brand on the review screen so the user only confirms and adds qty/category. OpenFoodFacts (free, decent for pantry) for `kind=PANTRY`; UPCitemdb-style API (mixed quality, paid tiers) as a fallback. Lookup happens on review-screen open, not on scan, so an offline scan still queues fine.
+  - **Phase 1 (pantry only):** `inventoryItem` + `pendingScan` models, `/api/scan` endpoint, Mac mini bridge daemon, mobile review screen, OpenFoodFacts integration, agent tools (`list_inventory`, `add_inventory`, `decrement_inventory`).
+  - **Phase 2:** clothing kind (subType + color + size already there from phase 1), photo upload on review.
+  - **Phase 3:** BT-HID screen on mobile, expiry-driven nudges, "do we need to buy X" Janet integration with the shopping list.
 
 ### Life admin
 - **Documents vault** — lease, insurance, passports, warranties; agent answers questions like "when does my passport expire?" via RAG over stored docs.
