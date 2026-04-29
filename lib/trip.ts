@@ -1,8 +1,14 @@
-// Shared types, config, and helpers used by both the calendar trip modal
-// and the dedicated /trips pages.
+// Shared trip types, constants, and helpers — single source of truth for
+// both the web (/trips, calendar trip modal, components/trip-form) and
+// the mobile trips screens. mobile/lib/trip.ts is a thin re-export so
+// the two surfaces never drift.
+//
+// Keep this file dependency-free beyond the Amplify Schema type import:
+// no dayjs, no Next-only path aliases, nothing that wouldn't bundle on
+// React Native. If you reach for a date library here, do it in a
+// platform-specific helper file instead and let this file stay portable.
 
-import dayjs from "dayjs";
-import type { Schema } from "@/amplify/data/resource";
+import type { Schema } from "../amplify/data/resource";
 
 export type Trip = Schema["homeTrip"]["type"];
 export type TripLeg = Schema["homeTripLeg"]["type"];
@@ -107,6 +113,9 @@ export const RESERVATION_TYPE_EMOJI: Record<ReservationType, string> = {
   ACTIVITY: "🎯",
   OTHER: "📌",
 };
+// Alias under the shorter name mobile uses. Both names point at the
+// same map so renaming on either side stays a no-op.
+export const RESERVATION_EMOJI = RESERVATION_TYPE_EMOJI;
 
 // Form-side reservation shape (id empty = not yet saved)
 export interface ReservationFormRow {
@@ -242,7 +251,13 @@ export function legToFormRow(leg: TripLeg): LegFormRow {
 }
 
 export function newTripFormState(): TripFormState {
-  const today = dayjs().format("YYYY-MM-DD");
+  // Plain "YYYY-MM-DD" in the local timezone. The Date constructor's
+  // toISOString would shift to UTC and could land us a day off.
+  const now = new Date();
+  const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}-${String(now.getDate()).padStart(2, "0")}`;
   return {
     id: "",
     name: "",
@@ -312,6 +327,73 @@ export function legIsoToLocalDate(iso: string | null | undefined): Date | null {
   const p = parseLegIso(iso);
   if (!p) return null;
   return new Date(p.year, p.month - 1, p.day, p.hour, p.minute, 0, 0);
+}
+
+// ── Trip date helpers (uses YYYY-MM-DD pure-date strings) ──────────────────
+
+/** "Apr 28" / "Apr 28 – May 2" range from two YYYY-MM-DD strings. */
+export function formatTripRange(
+  startDate: string,
+  endDate: string
+): string {
+  const s = parseDateOnly(startDate);
+  const e = parseDateOnly(endDate);
+  if (!s || !e) return `${startDate} – ${endDate}`;
+  const sLabel = s.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  const eLabel = e.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+  });
+  if (sLabel === eLabel) return sLabel;
+  return `${sLabel} – ${eLabel}`;
+}
+
+function parseDateOnly(s: string | null | undefined): Date | null {
+  if (!s) return null;
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+/** True if the trip ends on or after today (i.e. still ongoing or future). */
+export function isUpcomingOrOngoing(trip: Trip): boolean {
+  const end = parseDateOnly(trip.endDate);
+  if (!end) return true;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return end.getTime() >= today.getTime();
+}
+
+/** "Tue Apr 28" — short date label from a wall-clock leg ISO. */
+export function formatLegDateShort(iso: string | null | undefined): string {
+  const d = legIsoToLocalDate(iso);
+  if (!d) return "";
+  return d.toLocaleDateString(undefined, {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// ── Location formatting ────────────────────────────────────────────────────
+
+interface LocationLike {
+  city?: string | null;
+  country?: string | null;
+  airportCode?: string | null;
+}
+
+/** "MIA" if airport code, else "Miami, US", else null. */
+export function shortLocation(
+  loc: LocationLike | null | undefined
+): string | null {
+  if (!loc) return null;
+  if (loc.airportCode) return loc.airportCode;
+  if (loc.city && loc.country) return `${loc.city}, ${loc.country}`;
+  return loc.city ?? loc.country ?? null;
 }
 
 export function tripToFormState(
