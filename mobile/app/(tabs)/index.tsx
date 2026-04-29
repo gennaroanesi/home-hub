@@ -240,37 +240,33 @@ export default function Today() {
 
             {(data.laterEvents.length > 0 || data.laterTasks.length > 0) && (
               <SuperSection title="Later this week">
-                {data.laterEvents.length > 0 && (
-                  <Section title="Events">
-                    {data.laterEvents.map((e) => (
-                      <EventRow
-                        key={e.id}
-                        event={e}
-                        showDay
-                        onPress={() => {
-                          setEditingEvent(e);
-                          setEventModalOpen(true);
-                        }}
-                      />
-                    ))}
-                  </Section>
-                )}
-                {data.laterTasks.length > 0 && (
-                  <Section title="Tasks">
-                    {data.laterTasks.map((t) => (
-                      <TaskRow
-                        key={t.id}
-                        task={t}
-                        now={new Date()}
-                        showDay
-                        onPress={() => {
-                          setEditingTask(t);
-                          setTaskModalOpen(true);
-                        }}
-                      />
-                    ))}
-                  </Section>
-                )}
+                <View style={styles.sectionBody}>
+                  {mergeLaterItems(data.laterEvents, data.laterTasks).map(
+                    (item) =>
+                      item.kind === "event" ? (
+                        <EventRow
+                          key={`e-${item.event.id}`}
+                          event={item.event}
+                          showDay
+                          onPress={() => {
+                            setEditingEvent(item.event);
+                            setEventModalOpen(true);
+                          }}
+                        />
+                      ) : (
+                        <TaskRow
+                          key={`t-${item.task.id}`}
+                          task={item.task}
+                          now={new Date()}
+                          showDay
+                          onPress={() => {
+                            setEditingTask(item.task);
+                            setTaskModalOpen(true);
+                          }}
+                        />
+                      )
+                  )}
+                </View>
               </SuperSection>
             )}
           </>
@@ -343,6 +339,12 @@ function EventRow({
   return (
     <Pressable onPress={onPress} style={styles.row}>
       <Text style={styles.rowTime}>{label}</Text>
+      <Ionicons
+        name="calendar-outline"
+        size={16}
+        color="#735f55"
+        style={styles.rowKindIcon}
+      />
       <View style={styles.rowBody}>
         <Text style={styles.rowTitle} numberOfLines={1}>
           {event.title}
@@ -391,6 +393,12 @@ function TaskRow({
   return (
     <Pressable onPress={onPress} style={styles.row}>
       <Text style={[styles.rowTime, overdue && styles.overdue]}>{label}</Text>
+      <Ionicons
+        name="checkbox-outline"
+        size={16}
+        color="#4e5e53"
+        style={styles.rowKindIcon}
+      />
       <View style={styles.rowBody}>
         <View style={styles.rowTitleRow}>
           <Text style={styles.rowTitle} numberOfLines={1}>
@@ -450,6 +458,35 @@ function effectiveTaskDate(t: Task): Date | null {
   if (t.dueDate) return new Date(t.dueDate);
   if (t.recurrence) return nextRecurrence(t.recurrence);
   return null;
+}
+
+type LaterItem =
+  | { kind: "event"; sortKey: number; event: Event }
+  | { kind: "task"; sortKey: number; task: Task };
+
+/** Interleave events + tasks under "Later this week" by their effective
+ *  date. Mirrors how the user thinks about the next 7 days — "what's
+ *  next" wins over "what kind of thing it is". Tasks without any date
+ *  signal sink to the bottom. */
+function mergeLaterItems(events: Event[], tasks: Task[]): LaterItem[] {
+  const items: LaterItem[] = [
+    ...events.map(
+      (e): LaterItem => ({
+        kind: "event",
+        sortKey: new Date(e.startAt).getTime(),
+        event: e,
+      })
+    ),
+    ...tasks.map(
+      (t): LaterItem => ({
+        kind: "task",
+        sortKey: effectiveTaskDate(t)?.getTime() ?? Number.POSITIVE_INFINITY,
+        task: t,
+      })
+    ),
+  ];
+  items.sort((a, b) => a.sortKey - b.sortKey);
+  return items;
 }
 
 function formatToday(): string {
@@ -523,6 +560,7 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   rowTime: { width: 70, color: "#666", fontSize: 13 },
+  rowKindIcon: { opacity: 0.85 },
   rowBody: { flex: 1 },
   rowTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   rowTitle: { fontSize: 15, flexShrink: 1 },
