@@ -2,7 +2,6 @@ import Anthropic from "@anthropic-ai/sdk";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
-import { RRule } from "rrule";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
 import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
 // Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
@@ -1504,15 +1503,6 @@ function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function getNextOccurrence(rruleString: string, after: Date): Date | null {
-  try {
-    const rule = RRule.fromString(rruleString);
-    return rule.after(after);
-  } catch {
-    return null;
-  }
-}
-
 // ── Reminder helpers ────────────────────────────────────────────────────────
 // Shared between the schedule_reminder / schedule_compound_reminder /
 // resume_reminder tool cases. Kept consistent with the sweep Lambda's
@@ -1621,40 +1611,47 @@ async function executeTool(
     }
 
     case "complete_task": {
-      // Fetch the task to check for recurrence
       const { data: task } = await client.models.homeTask.get({ id: input.taskId });
       if (!task) return JSON.stringify({ error: "Task not found" });
 
+      // Resolve the sender to a personId so the occurrence record
+      // attributes the completion to whoever messaged Janet, not just
+      // an opaque "agent" actor.
+      const byPersonId = (await resolvePersonIds([ctx.sender]))[0] ?? null;
+
+      if (task.recurrence) {
+        // Recurring: hand off to the shared mutation. Closes the open
+        // occurrence (lazy-creating one from the legacy dueDate if
+        // needed) and spawns the next.
+        const { data: result, errors } =
+          await client.mutations.taskOccurrenceAction({
+            action: "COMPLETE",
+            taskId: input.taskId,
+            byPersonId,
+          });
+        if (errors?.length) {
+          return JSON.stringify({ error: errors[0].message });
+        }
+        if (result && !result.ok) {
+          return JSON.stringify({ error: result.message ?? "rejected" });
+        }
+        return JSON.stringify({
+          success: true,
+          taskId: input.taskId,
+          occurrenceId: result?.occurrenceId ?? null,
+          nextOccurrenceId: result?.nextOccurrenceId ?? null,
+        });
+      }
+
+      // One-time: same path as the UI clients — flip isCompleted, pause
+      // any linked reminders.
       await client.models.homeTask.update({
         id: input.taskId,
         isCompleted: true,
         completedAt: new Date().toISOString(),
       });
       await pauseRemindersFor(client, input.taskId);
-
-      // If recurring, create the next occurrence
-      let nextTaskId: string | null = null;
-      if (task.recurrence) {
-        const nextDate = getNextOccurrence(task.recurrence, new Date());
-        if (nextDate) {
-          const { data: nextTask } = await client.models.homeTask.create({
-            title: task.title,
-            description: task.description ?? null,
-            assignedPersonIds: (task.assignedPersonIds ?? []).filter((id): id is string => !!id),
-            dueDate: nextDate.toISOString(),
-            isCompleted: false,
-            recurrence: task.recurrence,
-            createdBy: "recurrence",
-          });
-          nextTaskId = nextTask?.id ?? null;
-        }
-      }
-
-      return JSON.stringify({
-        success: true,
-        taskId: input.taskId,
-        nextTaskId,
-      });
+      return JSON.stringify({ success: true, taskId: input.taskId });
     }
 
     case "update_task": {

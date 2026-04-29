@@ -45,6 +45,7 @@ type FilterStatus = "open" | "completed" | "all";
 export default function TasksPage() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [lastClosedAt, setLastClosedAt] = useState<Record<string, string>>({});
   const [people, setPeople] = useState<Person[]>([]);
   const [filterPersonId, setFilterPersonId] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("open");
@@ -78,11 +79,22 @@ export default function TasksPage() {
   }, []);
 
   const loadTasks = useCallback(async () => {
-    const { data } = await client.models.homeTask.list({ limit: 500 });
-    const sorted = [...(data ?? [])].sort(
+    const [tasksRes, occRes] = await Promise.all([
+      client.models.homeTask.list({ limit: 500 }),
+      client.models.homeTaskOccurrence.list({ limit: 500 }),
+    ]);
+    const sorted = [...(tasksRes.data ?? [])].sort(
       (a, b) => new Date(a.dueDate ?? a.createdAt).getTime() - new Date(b.dueDate ?? b.createdAt).getTime()
     );
+    const lastByTask: Record<string, string> = {};
+    for (const o of occRes.data ?? []) {
+      const ts = o.completedAt ?? o.skippedAt;
+      if (!ts) continue;
+      const prev = lastByTask[o.taskId];
+      if (!prev || ts > prev) lastByTask[o.taskId] = ts;
+    }
     setTasks(sorted);
+    setLastClosedAt(lastByTask);
   }, []);
 
   function getAssignedIds(task: Task): string[] {
@@ -197,6 +209,26 @@ export default function TasksPage() {
     await loadTasks();
   }
 
+  async function skipOccurrence(task: Task, onClose: () => void) {
+    const me = await resolveCurrentPerson(client);
+    const { data: result, errors } =
+      await client.mutations.taskOccurrenceAction({
+        action: "SKIP",
+        taskId: task.id,
+        byPersonId: me?.id ?? null,
+      });
+    if (errors?.length) {
+      console.error("taskOccurrenceAction skip errors", errors);
+      return;
+    }
+    if (result && !result.ok) {
+      console.error("taskOccurrenceAction skip rejected", result.message);
+      return;
+    }
+    await loadTasks();
+    onClose();
+  }
+
   async function deleteTask(id: string) {
     if (!confirm("Delete this task?")) return;
     await cascadeDeleteRemindersFor(client, id);
@@ -242,24 +274,17 @@ export default function TasksPage() {
     }
   }
 
-  function getNextOccurrenceDate(rruleStr: string, dueDate?: string | null): Date | null {
-    try {
-      const baseRule = RRule.fromString(rruleStr);
-      let dtstart = new Date();
-      if (dueDate) {
-        const [y, m, d] = dueDate.split("T")[0].split("-").map(Number);
-        dtstart = new Date(y, m - 1, d);
-      }
-      const rule = new RRule({ ...baseRule.origOptions, dtstart });
-      return rule.after(new Date());
-    } catch {
-      return null;
-    }
-  }
-
-  function getNextOccurrence(rruleStr: string, dueDate?: string | null): string | null {
-    const next = getNextOccurrenceDate(rruleStr, dueDate);
-    return next ? next.toLocaleDateString() : null;
+  function formatLastDone(iso: string): string {
+    const d = new Date(iso);
+    const diffMin = Math.round((Date.now() - d.getTime()) / 60_000);
+    if (diffMin < 1) return "just now";
+    if (diffMin < 60) return `${diffMin}m ago`;
+    const diffHr = Math.round(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h ago`;
+    const diffDays = Math.round(diffHr / 24);
+    if (diffDays === 1) return "yesterday";
+    if (diffDays < 7) return `${diffDays}d ago`;
+    return d.toLocaleDateString();
   }
 
   const RECURRENCE_PRESETS = [
@@ -356,12 +381,11 @@ export default function TasksPage() {
                           {formatRecurrence(task.recurrence)}
                         </span>
                       )}
-                      {task.recurrence && !task.isCompleted && (() => {
-                        const next = getNextOccurrence(task.recurrence!, task.dueDate);
-                        return next ? (
-                          <span className="text-xs text-default-400">Next: {next}</span>
-                        ) : null;
-                      })()}
+                      {task.recurrence && lastClosedAt[task.id] && (
+                        <span className="text-xs text-default-400">
+                          Last done {formatLastDone(lastClosedAt[task.id]!)}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div className="flex gap-1">
@@ -473,6 +497,14 @@ export default function TasksPage() {
                   </div>
                 </ModalBody>
                 <ModalFooter>
+                  {editingTask?.recurrence && !editingTask.isCompleted && (
+                    <Button
+                      variant="light"
+                      onPress={() => skipOccurrence(editingTask, onClose)}
+                    >
+                      Skip occurrence
+                    </Button>
+                  )}
                   <Button variant="light" onPress={onClose}>Cancel</Button>
                   <Button color="primary" onPress={() => saveTask(onClose)}>
                     {editingTask ? "Save" : "Create"}

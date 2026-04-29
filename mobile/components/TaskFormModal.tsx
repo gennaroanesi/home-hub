@@ -24,6 +24,7 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
+import { resolveCurrentPerson } from "../lib/current-person";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
 import { type Person } from "../lib/use-people";
 import type { Schema } from "../../amplify/data/resource";
@@ -121,6 +122,43 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
     } finally {
       setBusy(false);
     }
+  }
+
+  function confirmSkip() {
+    if (!task) return;
+    Alert.alert(
+      "Skip this occurrence?",
+      "The next occurrence will be scheduled normally.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Skip",
+          onPress: async () => {
+            setBusy(true);
+            try {
+              const client = getClient();
+              const { person } = await resolveCurrentPerson();
+              const { data: result, errors } =
+                await client.mutations.taskOccurrenceAction({
+                  action: "SKIP",
+                  taskId: task.id,
+                  byPersonId: person?.id ?? null,
+                });
+              if (errors?.length) throw new Error(errors[0].message);
+              if (result && !result.ok) {
+                throw new Error(result.message ?? "rejected");
+              }
+              onSaved();
+              onClose();
+            } catch (err: any) {
+              Alert.alert("Skip failed", err?.message ?? String(err));
+            } finally {
+              setBusy(false);
+            }
+          },
+        },
+      ]
+    );
   }
 
   async function confirmDelete() {
@@ -282,6 +320,16 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
               </Text>
             )}
 
+          {task && task.recurrence && !task.isCompleted && (
+            <Pressable
+              onPress={confirmSkip}
+              style={({ pressed }) => [styles.skip, pressed && styles.deletePressed]}
+              disabled={busy}
+            >
+              <Text style={styles.skipText}>Skip this occurrence</Text>
+            </Pressable>
+          )}
+
           {task && (
             <Pressable
               onPress={confirmDelete}
@@ -378,7 +426,9 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
 
-  delete: { marginTop: 32, paddingVertical: 14, alignItems: "center" },
+  skip: { marginTop: 32, paddingVertical: 14, alignItems: "center" },
+  skipText: { color: "#735f55", fontSize: 15, fontWeight: "500" },
+  delete: { marginTop: 8, paddingVertical: 14, alignItems: "center" },
   deletePressed: { opacity: 0.5 },
   deleteText: { color: "#c44", fontSize: 15, fontWeight: "500" },
 });

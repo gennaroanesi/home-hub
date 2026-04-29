@@ -36,11 +36,17 @@ export default function Tasks() {
   const [personFilter, setPersonFilter] = useState<string | null>(null);
   const [editing, setEditing] = useState<Task | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  // taskId → most recent closed occurrence's completedAt/skippedAt timestamp.
+  // Drives the "Last done X ago" footnote on recurring rows.
+  const [lastClosedAt, setLastClosedAt] = useState<Record<string, string>>({});
 
   const load = useCallback(async () => {
     const client = getClient();
-    const { data } = await client.models.homeTask.list();
-    const sorted = [...(data ?? [])].sort((a, b) => {
+    const [tasksRes, occRes] = await Promise.all([
+      client.models.homeTask.list(),
+      client.models.homeTaskOccurrence.list(),
+    ]);
+    const sorted = [...(tasksRes.data ?? [])].sort((a, b) => {
       // Open: by dueDate asc (no-due last); Completed: by completedAt desc.
       if (a.isCompleted && b.isCompleted) {
         return (b.completedAt ?? "").localeCompare(a.completedAt ?? "");
@@ -52,7 +58,15 @@ export default function Tasks() {
       if (b.dueDate) return 1;
       return a.title.localeCompare(b.title);
     });
+    const lastByTask: Record<string, string> = {};
+    for (const o of occRes.data ?? []) {
+      const ts = o.completedAt ?? o.skippedAt;
+      if (!ts) continue;
+      const prev = lastByTask[o.taskId];
+      if (!prev || ts > prev) lastByTask[o.taskId] = ts;
+    }
     setTasks(sorted);
+    setLastClosedAt(lastByTask);
     setLoading(false);
   }, []);
 
@@ -192,6 +206,7 @@ export default function Tasks() {
             <TaskRow
               task={item}
               people={people}
+              lastClosedAt={lastClosedAt[item.id]}
               onToggle={() => toggleComplete(item)}
               onEdit={() => openEdit(item)}
             />
@@ -278,11 +293,13 @@ function PersonFilter({
 function TaskRow({
   task,
   people,
+  lastClosedAt,
   onToggle,
   onEdit,
 }: {
   task: Task;
   people: Person[];
+  lastClosedAt: string | undefined;
   onToggle: () => void;
   onEdit: () => void;
 }) {
@@ -291,6 +308,8 @@ function TaskRow({
   const dueLabel = due ? formatDueDate(due) : null;
   const assignees = formatAssignees(task.assignedPersonIds ?? [], people);
   const recurrence = formatRecurrence(task.recurrence);
+  const lastDoneLabel =
+    task.recurrence && lastClosedAt ? formatLastDone(lastClosedAt) : null;
 
   return (
     <View style={styles.row}>
@@ -321,6 +340,9 @@ function TaskRow({
             </>
           )}
         </View>
+        {lastDoneLabel && (
+          <Text style={styles.rowSubtle}>Last done {lastDoneLabel}</Text>
+        )}
       </Pressable>
     </View>
   );
@@ -350,6 +372,19 @@ function formatDueDate(d: Date): string {
   if (diffDays === 0) return "Today";
   if (diffDays === 1) return "Tomorrow";
   if (diffDays < 7) return `${diffDays}d`;
+  return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function formatLastDone(iso: string): string {
+  const d = new Date(iso);
+  const diffMin = Math.round((Date.now() - d.getTime()) / 60_000);
+  if (diffMin < 1) return "just now";
+  if (diffMin < 60) return `${diffMin}m ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24) return `${diffHr}h ago`;
+  const diffDays = Math.round(diffHr / 24);
+  if (diffDays === 1) return "yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
@@ -413,5 +448,6 @@ const styles = StyleSheet.create({
   rowMeta: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2 },
   rowMetaText: { fontSize: 12, color: "#888" },
   rowMetaSep: { color: "#ccc", fontSize: 12 },
+  rowSubtle: { color: "#aaa", fontSize: 11, marginTop: 4 },
   overdue: { color: "#c44", fontWeight: "600" },
 });
