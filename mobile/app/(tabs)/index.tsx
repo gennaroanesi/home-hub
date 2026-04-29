@@ -54,6 +54,13 @@ export default function Today() {
   const [taskModalOpen, setTaskModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<Event | null>(null);
   const [eventModalOpen, setEventModalOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -169,6 +176,12 @@ export default function Today() {
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
+      {toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Ionicons name="checkmark-circle" size={16} color="#fff" />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
       <ScrollView
         contentContainerStyle={styles.scroll}
         refreshControl={
@@ -269,7 +282,10 @@ export default function Today() {
         task={editingTask}
         people={people}
         onClose={() => setTaskModalOpen(false)}
-        onSaved={load}
+        onSaved={(info) => {
+          void load();
+          if (info?.toast) setToast(info.toast);
+        }}
       />
       <EventFormModal
         visible={eventModalOpen}
@@ -512,4 +528,23 @@ const styles = StyleSheet.create({
   rowTitle: { fontSize: 15, flexShrink: 1 },
   rowRecurIcon: { opacity: 0.7 },
   overdue: { color: "#c44", fontWeight: "600" },
+
+  toast: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#4e5e53",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginHorizontal: 20,
+    marginTop: 8,
+    alignSelf: "flex-start",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  toastText: { color: "#fff", fontSize: 13, fontWeight: "500" },
 });

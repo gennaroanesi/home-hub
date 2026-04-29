@@ -5,6 +5,7 @@ import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
+import { addToast, Spinner } from "@heroui/react";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
 import { Checkbox } from "@heroui/checkbox";
@@ -46,6 +47,7 @@ export default function TasksPage() {
   const router = useRouter();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [lastClosedAt, setLastClosedAt] = useState<Record<string, string>>({});
+  const [pendingIds, setPendingIds] = useState<Record<string, boolean>>({});
   const [people, setPeople] = useState<Person[]>([]);
   const [filterPersonId, setFilterPersonId] = useState<string>("all");
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("open");
@@ -174,59 +176,85 @@ export default function TasksPage() {
   }
 
   async function toggleComplete(task: Task) {
-    if (task.isCompleted) {
-      // Uncomplete — resume any linked reminders that were auto-paused.
-      await client.models.homeTask.update({
-        id: task.id,
-        isCompleted: false,
-        completedAt: null,
-      });
-      await resumeRemindersFor(client, task.id);
-    } else if (task.recurrence) {
-      // Recurring task: hand off to the taskOccurrenceAction Lambda so
-      // web and mobile share the same close-and-spawn-next semantics.
-      const me = await resolveCurrentPerson(client);
-      const { data: result, errors } =
-        await client.mutations.taskOccurrenceAction({
-          action: "COMPLETE",
-          taskId: task.id,
-          byPersonId: me?.id ?? null,
+    if (pendingIds[task.id]) return;
+    setPendingIds((prev) => ({ ...prev, [task.id]: true }));
+    try {
+      if (task.isCompleted) {
+        await client.models.homeTask.update({
+          id: task.id,
+          isCompleted: false,
+          completedAt: null,
         });
-      if (errors?.length) {
-        console.error("taskOccurrenceAction errors", errors);
-      } else if (result && !result.ok) {
-        console.error("taskOccurrenceAction rejected", result.message);
+        await resumeRemindersFor(client, task.id);
+        addToast({ title: "Task reopened" });
+      } else if (task.recurrence) {
+        const me = await resolveCurrentPerson(client);
+        const { data: result, errors } =
+          await client.mutations.taskOccurrenceAction({
+            action: "COMPLETE",
+            taskId: task.id,
+            byPersonId: me?.id ?? null,
+          });
+        if (errors?.length) throw new Error(errors[0].message);
+        if (result && !result.ok) {
+          throw new Error(result.message ?? "rejected");
+        }
+        addToast({
+          title: "Marked done",
+          description: "Next cycle scheduled",
+          color: "success",
+        });
+      } else {
+        await client.models.homeTask.update({
+          id: task.id,
+          isCompleted: true,
+          completedAt: new Date().toISOString(),
+        });
+        await pauseRemindersFor(client, task.id);
+        addToast({ title: "Task completed", color: "success" });
       }
-    } else {
-      // One-time task: mark as completed and pause its reminders.
-      await client.models.homeTask.update({
-        id: task.id,
-        isCompleted: true,
-        completedAt: new Date().toISOString(),
+      await loadTasks();
+    } catch (err: any) {
+      addToast({
+        title: "Update failed",
+        description: err?.message ?? String(err),
+        color: "danger",
       });
-      await pauseRemindersFor(client, task.id);
+    } finally {
+      setPendingIds((prev) => {
+        const { [task.id]: _gone, ...rest } = prev;
+        return rest;
+      });
     }
-    await loadTasks();
   }
 
   async function skipOccurrence(task: Task, onClose: () => void) {
-    const me = await resolveCurrentPerson(client);
-    const { data: result, errors } =
-      await client.mutations.taskOccurrenceAction({
-        action: "SKIP",
-        taskId: task.id,
-        byPersonId: me?.id ?? null,
+    try {
+      const me = await resolveCurrentPerson(client);
+      const { data: result, errors } =
+        await client.mutations.taskOccurrenceAction({
+          action: "SKIP",
+          taskId: task.id,
+          byPersonId: me?.id ?? null,
+        });
+      if (errors?.length) throw new Error(errors[0].message);
+      if (result && !result.ok) {
+        throw new Error(result.message ?? "rejected");
+      }
+      addToast({
+        title: "Occurrence skipped",
+        description: "Next cycle scheduled",
+        color: "default",
       });
-    if (errors?.length) {
-      console.error("taskOccurrenceAction skip errors", errors);
-      return;
+      await loadTasks();
+      onClose();
+    } catch (err: any) {
+      addToast({
+        title: "Skip failed",
+        description: err?.message ?? String(err),
+        color: "danger",
+      });
     }
-    if (result && !result.ok) {
-      console.error("taskOccurrenceAction skip rejected", result.message);
-      return;
-    }
-    await loadTasks();
-    onClose();
   }
 
   async function deleteTask(id: string) {
@@ -357,10 +385,16 @@ export default function TasksPage() {
             return (
               <Card key={task.id} className={task.isCompleted ? "opacity-60" : ""}>
                 <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
-                  <Checkbox
-                    isSelected={!!task.isCompleted}
-                    onValueChange={() => toggleComplete(task)}
-                  />
+                  {pendingIds[task.id] ? (
+                    <div className="w-6 h-6 flex items-center justify-center">
+                      <Spinner size="sm" />
+                    </div>
+                  ) : (
+                    <Checkbox
+                      isSelected={!!task.isCompleted}
+                      onValueChange={() => toggleComplete(task)}
+                    />
+                  )}
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <p className={`text-sm font-medium ${task.isCompleted ? "line-through text-default-400" : ""}`}>

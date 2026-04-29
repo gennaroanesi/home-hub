@@ -39,6 +39,16 @@ export default function Tasks() {
   // taskId → most recent closed occurrence's completedAt/skippedAt timestamp.
   // Drives the "Last done X ago" footnote on recurring rows.
   const [lastClosedAt, setLastClosedAt] = useState<Record<string, string>>({});
+  // taskId → true while a complete/skip mutation is in flight. Drives
+  // the per-row spinner and prevents double taps.
+  const [pendingIds, setPendingIds] = useState<Record<string, boolean>>({});
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -96,11 +106,13 @@ export default function Tasks() {
   }, [tasks, statusFilter, personFilter]);
 
   async function toggleComplete(task: Task) {
+    if (pendingIds[task.id]) return;
     const client = getClient();
-    // Recurring tasks go through the shared mutation so close-and-spawn
-    // semantics match the web.
-    if (task.recurrence && !task.isCompleted) {
-      try {
+    setPendingIds((prev) => ({ ...prev, [task.id]: true }));
+    try {
+      // Recurring tasks go through the shared mutation so close-and-spawn
+      // semantics match the web.
+      if (task.recurrence && !task.isCompleted) {
         const { person } = await resolveCurrentPerson();
         const { data: result, errors } =
           await client.mutations.taskOccurrenceAction({
@@ -110,36 +122,39 @@ export default function Tasks() {
           });
         if (errors?.length) throw new Error(errors[0].message);
         if (result && !result.ok) throw new Error(result.message ?? "rejected");
-      } catch (err: any) {
-        Alert.alert("Update failed", err?.message ?? String(err));
+        await load();
+        setToast("Marked done · next cycle scheduled");
+        return;
       }
-      void load();
-      return;
-    }
 
-    // One-time task (or uncompleting a previously-closed one).
-    const next = !task.isCompleted;
-    setTasks((prev) =>
-      prev.map((t) =>
-        t.id === task.id
-          ? {
-              ...t,
-              isCompleted: next,
-              completedAt: next ? new Date().toISOString() : null,
-            }
-          : t
-      )
-    );
-    try {
+      // One-time task (or uncompleting a previously-closed one).
+      const next = !task.isCompleted;
+      setTasks((prev) =>
+        prev.map((t) =>
+          t.id === task.id
+            ? {
+                ...t,
+                isCompleted: next,
+                completedAt: next ? new Date().toISOString() : null,
+              }
+            : t
+        )
+      );
       const { errors } = await client.models.homeTask.update({
         id: task.id,
         isCompleted: next,
         completedAt: next ? new Date().toISOString() : null,
       });
       if (errors?.length) throw new Error(errors[0].message);
+      setToast(next ? "Task completed" : "Task reopened");
     } catch (err: any) {
       Alert.alert("Update failed", err?.message ?? String(err));
       void load();
+    } finally {
+      setPendingIds((prev) => {
+        const { [task.id]: _gone, ...rest } = prev;
+        return rest;
+      });
     }
   }
 
@@ -161,6 +176,12 @@ export default function Tasks() {
           <Ionicons name="add" size={28} color="#735f55" />
         </Pressable>
       </View>
+      {toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Ionicons name="checkmark-circle" size={16} color="#fff" />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
 
       <View style={styles.filters}>
         <FilterPills
@@ -207,6 +228,7 @@ export default function Tasks() {
               task={item}
               people={people}
               lastClosedAt={lastClosedAt[item.id]}
+              pending={!!pendingIds[item.id]}
               onToggle={() => toggleComplete(item)}
               onEdit={() => openEdit(item)}
             />
@@ -219,7 +241,10 @@ export default function Tasks() {
         task={editing}
         people={people}
         onClose={() => setModalOpen(false)}
-        onSaved={load}
+        onSaved={(info) => {
+          void load();
+          if (info?.toast) setToast(info.toast);
+        }}
       />
     </SafeAreaView>
   );
@@ -294,12 +319,14 @@ function TaskRow({
   task,
   people,
   lastClosedAt,
+  pending,
   onToggle,
   onEdit,
 }: {
   task: Task;
   people: Person[];
   lastClosedAt: string | undefined;
+  pending: boolean;
   onToggle: () => void;
   onEdit: () => void;
 }) {
@@ -313,12 +340,21 @@ function TaskRow({
 
   return (
     <View style={styles.row}>
-      <Pressable onPress={onToggle} hitSlop={8} style={styles.checkBtn}>
-        <Ionicons
-          name={task.isCompleted ? "checkmark-circle" : "ellipse-outline"}
-          size={26}
-          color={task.isCompleted ? "#4e5e53" : "#bbb"}
-        />
+      <Pressable
+        onPress={onToggle}
+        hitSlop={8}
+        style={styles.checkBtn}
+        disabled={pending}
+      >
+        {pending ? (
+          <ActivityIndicator size="small" color="#735f55" />
+        ) : (
+          <Ionicons
+            name={task.isCompleted ? "checkmark-circle" : "ellipse-outline"}
+            size={26}
+            color={task.isCompleted ? "#4e5e53" : "#bbb"}
+          />
+        )}
       </Pressable>
       <Pressable onPress={onEdit} style={styles.rowBody}>
         <Text style={[styles.rowTitle, task.isCompleted && styles.rowTitleDone]}>
@@ -449,5 +485,25 @@ const styles = StyleSheet.create({
   rowMetaText: { fontSize: 12, color: "#888" },
   rowMetaSep: { color: "#ccc", fontSize: 12 },
   rowSubtle: { color: "#aaa", fontSize: 11, marginTop: 4 },
+
+  toast: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#4e5e53",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginHorizontal: 20,
+    marginTop: 4,
+    marginBottom: 4,
+    alignSelf: "flex-start",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  toastText: { color: "#fff", fontSize: 13, fontWeight: "500" },
   overdue: { color: "#c44", fontWeight: "600" },
 });

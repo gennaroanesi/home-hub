@@ -36,7 +36,12 @@ interface Props {
   task: Task | null; // null = create
   people: Person[];
   onClose: () => void;
-  onSaved: () => void;
+  /**
+   * Fires after a successful write. The optional `toast` lets the parent
+   * surface a confirmation message — passed because the modal closes on
+   * success and the user might otherwise not know what happened.
+   */
+  onSaved: (info?: { toast?: string }) => void;
 }
 
 function formatDueLabel(d: Date): string {
@@ -115,10 +120,45 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
         });
         if (errors?.length) throw new Error(errors[0].message);
       }
-      onSaved();
+      onSaved({ toast: task ? "Task updated" : "Task created" });
       onClose();
     } catch (err: any) {
       Alert.alert("Save failed", err?.message ?? String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function markComplete() {
+    if (!task) return;
+    setBusy(true);
+    try {
+      const client = getClient();
+      if (task.recurrence) {
+        const { person } = await resolveCurrentPerson();
+        const { data: result, errors } =
+          await client.mutations.taskOccurrenceAction({
+            action: "COMPLETE",
+            taskId: task.id,
+            byPersonId: person?.id ?? null,
+          });
+        if (errors?.length) throw new Error(errors[0].message);
+        if (result && !result.ok) {
+          throw new Error(result.message ?? "rejected");
+        }
+        onSaved({ toast: "Marked done · next cycle scheduled" });
+      } else {
+        const { errors } = await client.models.homeTask.update({
+          id: task.id,
+          isCompleted: true,
+          completedAt: new Date().toISOString(),
+        });
+        if (errors?.length) throw new Error(errors[0].message);
+        onSaved({ toast: "Task completed" });
+      }
+      onClose();
+    } catch (err: any) {
+      Alert.alert("Update failed", err?.message ?? String(err));
     } finally {
       setBusy(false);
     }
@@ -148,7 +188,7 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
               if (result && !result.ok) {
                 throw new Error(result.message ?? "rejected");
               }
-              onSaved();
+              onSaved({ toast: "Occurrence skipped · next cycle scheduled" });
               onClose();
             } catch (err: any) {
               Alert.alert("Skip failed", err?.message ?? String(err));
@@ -174,7 +214,7 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
             const client = getClient();
             const { errors } = await client.models.homeTask.delete({ id: task.id });
             if (errors?.length) throw new Error(errors[0].message);
-            onSaved();
+            onSaved({ toast: "Task deleted" });
             onClose();
           } catch (err: any) {
             Alert.alert("Delete failed", err?.message ?? String(err));
@@ -320,6 +360,23 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
               </Text>
             )}
 
+          {task && !task.isCompleted && (
+            <Pressable
+              onPress={markComplete}
+              style={({ pressed }) => [styles.complete, pressed && styles.deletePressed]}
+              disabled={busy}
+            >
+              {busy ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <View style={styles.completeRow}>
+                  <Ionicons name="checkmark-circle" size={18} color="#fff" />
+                  <Text style={styles.completeText}>Mark complete</Text>
+                </View>
+              )}
+            </Pressable>
+          )}
+
           {task && task.recurrence && !task.isCompleted && (
             <Pressable
               onPress={confirmSkip}
@@ -426,7 +483,16 @@ const styles = StyleSheet.create({
     paddingVertical: 4,
   },
 
-  skip: { marginTop: 32, paddingVertical: 14, alignItems: "center" },
+  complete: {
+    marginTop: 32,
+    paddingVertical: 14,
+    alignItems: "center",
+    backgroundColor: "#4e5e53",
+    borderRadius: 10,
+  },
+  completeRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  completeText: { color: "#fff", fontSize: 15, fontWeight: "600" },
+  skip: { marginTop: 8, paddingVertical: 14, alignItems: "center" },
   skipText: { color: "#735f55", fontSize: 15, fontWeight: "500" },
   delete: { marginTop: 8, paddingVertical: 14, alignItems: "center" },
   deletePressed: { opacity: 0.5 },
