@@ -1210,6 +1210,7 @@ const schema = a
     allow.resource(postConfirmUser),
     allow.resource(setPersonGroups),
     allow.resource(mergePeople),
+    allow.resource(taskOccurrenceAction),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;
