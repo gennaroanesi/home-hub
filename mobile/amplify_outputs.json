@@ -1410,6 +1410,120 @@
             "sortKeyFieldNames": []
           }
         },
+        "homeTaskOccurrence": {
+          "name": "homeTaskOccurrence",
+          "fields": {
+            "id": {
+              "name": "id",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "taskId": {
+              "name": "taskId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "scheduledFor": {
+              "name": "scheduledFor",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": true,
+              "attributes": []
+            },
+            "completedAt": {
+              "name": "completedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": []
+            },
+            "completedByPersonId": {
+              "name": "completedByPersonId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "skippedAt": {
+              "name": "skippedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": []
+            },
+            "skipReason": {
+              "name": "skipReason",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "createdAt": {
+              "name": "createdAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            },
+            "updatedAt": {
+              "name": "updatedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            }
+          },
+          "syncable": true,
+          "pluralName": "homeTaskOccurrences",
+          "attributes": [
+            {
+              "type": "model",
+              "properties": {}
+            },
+            {
+              "type": "key",
+              "properties": {
+                "name": "homeTaskOccurrencesByTaskId",
+                "queryField": "listHomeTaskOccurrenceByTaskId",
+                "fields": [
+                  "taskId"
+                ]
+              }
+            },
+            {
+              "type": "auth",
+              "properties": {
+                "rules": [
+                  {
+                    "groupClaim": "cognito:groups",
+                    "provider": "userPools",
+                    "allow": "groups",
+                    "groups": [
+                      "home-users"
+                    ],
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "primaryKeyInfo": {
+            "isCustomPrimaryKey": false,
+            "primaryKeyFieldName": "id",
+            "sortKeyFieldNames": []
+          }
+        },
         "homeBill": {
           "name": "homeBill",
           "fields": {
@@ -5580,6 +5694,39 @@
             }
           }
         },
+        "taskOccurrenceActionResponse": {
+          "name": "taskOccurrenceActionResponse",
+          "fields": {
+            "ok": {
+              "name": "ok",
+              "isArray": false,
+              "type": "Boolean",
+              "isRequired": true,
+              "attributes": []
+            },
+            "occurrenceId": {
+              "name": "occurrenceId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "nextOccurrenceId": {
+              "name": "nextOccurrenceId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "message": {
+              "name": "message",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            }
+          }
+        },
         "HomeTripDestination": {
           "name": "HomeTripDestination",
           "fields": {
@@ -6053,6 +6200,40 @@
               "isArray": false,
               "type": "String",
               "isRequired": true
+            }
+          }
+        },
+        "taskOccurrenceAction": {
+          "name": "taskOccurrenceAction",
+          "isArray": false,
+          "type": {
+            "nonModel": "taskOccurrenceActionResponse"
+          },
+          "isRequired": false,
+          "arguments": {
+            "action": {
+              "name": "action",
+              "isArray": false,
+              "type": "String",
+              "isRequired": true
+            },
+            "taskId": {
+              "name": "taskId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true
+            },
+            "byPersonId": {
+              "name": "byPersonId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false
+            },
+            "reason": {
+              "name": "reason",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false
             }
           }
         }
