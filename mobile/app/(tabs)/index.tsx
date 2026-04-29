@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 
 import { RRule } from "rrule";
 
@@ -375,9 +376,19 @@ function TaskRow({
     <Pressable onPress={onPress} style={styles.row}>
       <Text style={[styles.rowTime, overdue && styles.overdue]}>{label}</Text>
       <View style={styles.rowBody}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {task.title}
-        </Text>
+        <View style={styles.rowTitleRow}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {task.title}
+          </Text>
+          {task.recurrence && (
+            <Ionicons
+              name="repeat"
+              size={14}
+              color="#888"
+              style={styles.rowRecurIcon}
+            />
+          )}
+        </View>
       </View>
     </Pressable>
   );
@@ -497,6 +508,8 @@ const styles = StyleSheet.create({
   },
   rowTime: { width: 70, color: "#666", fontSize: 13 },
   rowBody: { flex: 1 },
-  rowTitle: { fontSize: 15 },
+  rowTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  rowTitle: { fontSize: 15, flexShrink: 1 },
+  rowRecurIcon: { opacity: 0.7 },
   overdue: { color: "#c44", fontWeight: "600" },
 });

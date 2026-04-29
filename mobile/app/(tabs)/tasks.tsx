@@ -18,6 +18,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../lib/amplify";
+import { resolveCurrentPerson } from "../../lib/current-person";
 import { formatRecurrence } from "../../lib/recurrence";
 import { formatAssignees, usePeople, type Person } from "../../lib/use-people";
 import { TaskFormModal } from "../../components/TaskFormModal";
@@ -81,8 +82,29 @@ export default function Tasks() {
   }, [tasks, statusFilter, personFilter]);
 
   async function toggleComplete(task: Task) {
+    const client = getClient();
+    // Recurring tasks go through the shared mutation so close-and-spawn
+    // semantics match the web.
+    if (task.recurrence && !task.isCompleted) {
+      try {
+        const { person } = await resolveCurrentPerson();
+        const { data: result, errors } =
+          await client.mutations.taskOccurrenceAction({
+            action: "COMPLETE",
+            taskId: task.id,
+            byPersonId: person?.id ?? null,
+          });
+        if (errors?.length) throw new Error(errors[0].message);
+        if (result && !result.ok) throw new Error(result.message ?? "rejected");
+      } catch (err: any) {
+        Alert.alert("Update failed", err?.message ?? String(err));
+      }
+      void load();
+      return;
+    }
+
+    // One-time task (or uncompleting a previously-closed one).
     const next = !task.isCompleted;
-    // Optimistic: flip locally, then persist.
     setTasks((prev) =>
       prev.map((t) =>
         t.id === task.id
@@ -95,7 +117,6 @@ export default function Tasks() {
       )
     );
     try {
-      const client = getClient();
       const { errors } = await client.models.homeTask.update({
         id: task.id,
         isCompleted: next,
@@ -104,7 +125,6 @@ export default function Tasks() {
       if (errors?.length) throw new Error(errors[0].message);
     } catch (err: any) {
       Alert.alert("Update failed", err?.message ?? String(err));
-      // Roll back.
       void load();
     }
   }

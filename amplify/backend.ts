@@ -50,6 +50,7 @@ import { reminderSweep } from "./functions/reminder-sweep/resource";
 import { icsSync } from "./functions/ics-sync/resource";
 import { setPersonGroups } from "./functions/set-person-groups/resource";
 import { mergePeople } from "./functions/merge-people/resource";
+import { taskOccurrenceAction } from "./functions/task-occurrence-action/resource";
 
 const backend = defineBackend({
   auth,
@@ -65,6 +66,7 @@ const backend = defineBackend({
   icsSync,
   setPersonGroups,
   mergePeople,
+  taskOccurrenceAction,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -82,6 +84,7 @@ const lambdaDescriptions: Record<string, string> = {
   icsSync: "Home Hub — Every-15-minute ICS feed sync (external calendar subscriptions)",
   setPersonGroups: "Home Hub — Admin mutation: sync homePerson.groups + Cognito groups",
   mergePeople: "Home Hub — Admin mutation: rewrite personId references and delete source",
+  taskOccurrenceAction: "Home Hub — Recurring task occurrence: complete/skip/uncomplete (AppSync mutation)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {

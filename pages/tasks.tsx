@@ -32,6 +32,7 @@ import {
   resumeRemindersFor,
 } from "@/lib/reminder-parent";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
+import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -170,14 +171,19 @@ export default function TasksPage() {
       });
       await resumeRemindersFor(client, task.id);
     } else if (task.recurrence) {
-      // Recurring task: advance due date to next occurrence instead of
-      // completing. Reminders stay PENDING for the next cycle.
-      const nextDate = getNextOccurrenceDate(task.recurrence, task.dueDate);
-      if (nextDate) {
-        await client.models.homeTask.update({
-          id: task.id,
-          dueDate: nextDate.toISOString(),
+      // Recurring task: hand off to the taskOccurrenceAction Lambda so
+      // web and mobile share the same close-and-spawn-next semantics.
+      const me = await resolveCurrentPerson(client);
+      const { data: result, errors } =
+        await client.mutations.taskOccurrenceAction({
+          action: "COMPLETE",
+          taskId: task.id,
+          byPersonId: me?.id ?? null,
         });
+      if (errors?.length) {
+        console.error("taskOccurrenceAction errors", errors);
+      } else if (result && !result.ok) {
+        console.error("taskOccurrenceAction rejected", result.message);
       }
     } else {
       // One-time task: mark as completed and pause its reminders.
