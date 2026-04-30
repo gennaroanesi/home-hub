@@ -1,12 +1,13 @@
 // Document detail. Metadata view + actions:
-//   - Open document → Safari → web Duo flow → file
+//   - Download → Face ID gate → /api/d/<key> redirect → file
+//     Falls back to Duo Push (existing /api/documents/download endpoint)
+//     when Face ID hardware/enrollment is unavailable.
 //   - Edit → DocumentFormModal
 //   - Delete → confirm + remove S3 object + remove row
 //
-// `documentNumber` is intentionally not shown — the field is
-// Duo-gated at the agent / web layer and we haven't ported a
-// native Duo prompt to mobile yet. Users who need the number can
-// still see it on the web Documents page.
+// Web stays Duo-only. Both surfaces gate the same backend act — the
+// short-link redirect is unauthenticated; revealing the URL is the
+// thing the gate protects.
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -33,7 +34,7 @@ import {
   isExpiringSoon,
   ownerLabel,
 } from "../../../../lib/documents";
-import { webDocumentsUrl } from "../../../../lib/documents-upload";
+import { downloadDocument } from "../../../../lib/document-download";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
 import { DocumentFormModal } from "../../../../components/DocumentFormModal";
@@ -48,6 +49,7 @@ export default function DocumentDetail() {
   const [doc, setDoc] = useState<Document | null>(null);
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -61,10 +63,30 @@ export default function DocumentDetail() {
     void load();
   }, [load]);
 
-  function openOnWeb() {
-    void Linking.openURL(webDocumentsUrl()).catch(() => {
-      Alert.alert("Couldn't open browser");
-    });
+  async function onDownload() {
+    if (!doc) return;
+    if (downloading) return;
+    setDownloading(true);
+    try {
+      const result = await downloadDocument({
+        documentId: doc.id,
+        s3Key: doc.s3Key,
+        documentNumber: doc.documentNumber,
+      });
+      if (!result.ok) {
+        Alert.alert("Download failed", result.error);
+        return;
+      }
+      if (result.url) {
+        await Linking.openURL(result.url);
+      } else if (result.documentNumber) {
+        Alert.alert("Document number", result.documentNumber);
+      }
+    } catch (err: any) {
+      Alert.alert("Download failed", err?.message ?? String(err));
+    } finally {
+      setDownloading(false);
+    }
   }
 
   function confirmDelete() {
@@ -120,9 +142,19 @@ export default function DocumentDetail() {
           <DocumentSummary doc={doc} ownerName={ownerLabel(doc, people)} />
 
           <View style={styles.actions}>
-            <Pressable onPress={openOnWeb} style={styles.primaryBtn}>
-              <Ionicons name="open-outline" size={16} color="#fff" />
-              <Text style={styles.primaryBtnText}>Open on web</Text>
+            <Pressable
+              onPress={onDownload}
+              style={[styles.primaryBtn, downloading && styles.btnBusy]}
+              disabled={downloading}
+            >
+              {downloading ? (
+                <ActivityIndicator color="#fff" />
+              ) : (
+                <>
+                  <Ionicons name="download-outline" size={16} color="#fff" />
+                  <Text style={styles.primaryBtnText}>Download</Text>
+                </>
+              )}
             </Pressable>
             <Pressable onPress={() => setEditOpen(true)} style={styles.secondaryBtn}>
               <Ionicons name="pencil" size={14} color="#735f55" />
@@ -130,8 +162,8 @@ export default function DocumentDetail() {
             </Pressable>
           </View>
           <Text style={styles.openHint}>
-            "Open on web" launches Safari and routes through the web Duo flow
-            for the actual file. Native Duo on mobile is a follow-up.
+            Confirms with Face ID. Falls back to Duo Push if Face ID isn't
+            set up.
           </Text>
 
           <View style={styles.metaCard}>
@@ -294,6 +326,7 @@ const styles = StyleSheet.create({
     paddingVertical: 12,
   },
   primaryBtnText: { color: "#fff", fontWeight: "600", fontSize: 15 },
+  btnBusy: { opacity: 0.7 },
   secondaryBtn: {
     flexDirection: "row",
     alignItems: "center",

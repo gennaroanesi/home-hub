@@ -43,7 +43,13 @@
           }
         }
       ],
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Home Hub uses Face ID to confirm sensitive actions like document downloads."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,
