@@ -35,14 +35,14 @@ function matchPerson<P extends PersonLike>(
   const exact = people.find((p) => p.name.toLowerCase() === lc);
   if (exact) return exact;
 
-  // Pass 2: first-token match (handles "Gennaro Anesi" → "Gennaro").
+  // Pass 2: first-token match (handles "Alex Smith" → "Alex").
   if (firstToken) {
     const byToken = people.find((p) => p.name.toLowerCase() === firstToken);
     if (byToken) return byToken;
   }
 
   // Pass 3: person.name is a prefix of the candidate (handles
-  // email local part "gennaroanesi" → "Gennaro"). Prefix rather
+  // email local part "alexsmith" → "Alex"). Prefix rather
   // than substring keeps unrelated substrings like "ari" inside
   // "marilene" from claiming a short person named "Ari".
   const byPrefix = people.find((p) => {

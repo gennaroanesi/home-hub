@@ -65,7 +65,7 @@ export function usePeople(): { people: Person[]; loading: boolean } {
   return { people, loading };
 }
 
-/** Format a list of person ids as "Cris", "Cris and Gennaro", or "Household". */
+/** Format a list of person ids as "Alex", "Alex and Sam", or "Household". */
 export function formatAssignees(
   ids: (string | null | undefined)[],
   people: Person[]

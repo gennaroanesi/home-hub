@@ -961,7 +961,7 @@ const schema = a
       .model({
         personId: a.id().required(),
         expoPushToken: a.string().required(),
-        deviceLabel: a.string(), // e.g. "Gennaro's iPhone"
+        deviceLabel: a.string(), // e.g. "Alex's iPhone"
         platform: a.enum(["IOS", "ANDROID"]),
         lastSeenAt: a.datetime(),
       })

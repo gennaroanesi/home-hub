@@ -4,7 +4,7 @@
 
 /**
  * When a household member accesses another member's PERSONAL-scope
- * document (e.g. Gennaro downloads Cristine's passport), DM the owner
+ * document (e.g. one user downloads another's passport), DM the owner
  * with a heads-up notification. Disabled by default for the first week
  * of dogfooding; flip to `true` once you're confident the signal is
  * useful and not noise.

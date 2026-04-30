@@ -5,7 +5,7 @@
 // Sectioning is driven by the homePerson.groups cache (synced from
 // Cognito by the setPersonGroups Lambda):
 //
-//   - Household: groups includes "home-users". Cris, Gennaro, etc.
+//   - Household: groups includes "home-users". Members of the home.
 //   - Friends:   has cognitoUsername (so they can log in) but is NOT
 //                in home-users. Future-proofs invited guests.
 //   - Others:    no cognitoUsername — face-tag-only rows for kids /
@@ -341,7 +341,7 @@ export default function PeoplePage() {
 
         {people.length === 0 && (
           <p className="text-center text-default-300 py-10">
-            No people yet. Add Gennaro and Cristine to get started.
+            No people yet. Add household members to get started.
           </p>
         )}
 

@@ -353,6 +353,16 @@ new scheduler.CfnSchedule(recurringStack, "icsSyncSchedule", {
 // hard-code or look it up.
 
 const userPool = backend.auth.resources.userPool;
+
+// Disable Cognito self-signup. Accounts are created admin-only via
+// scripts/create-user.mjs (which calls AdminCreateUser). Without this,
+// anyone on the internet could sign up against the public hosted UI;
+// they wouldn't land in home-users automatically, but the account would
+// still exist and consume a MAU.
+backend.auth.resources.cfnResources.cfnUserPool.adminCreateUserConfig = {
+  allowAdminCreateUserOnly: true,
+};
+
 const setPersonGroupsLambda =
   backend.setPersonGroups.resources.lambda as LambdaFunction;
 setPersonGroupsLambda.addEnvironment("USER_POOL_ID", userPool.userPoolId);
@@ -538,13 +548,12 @@ botTaskDef.addContainer("bot", {
     // sidesteps AppSync's 30s resolver timeout, which was killing Duo
     // approval flows and long tool-chain responses.
     AGENT_LAMBDA_ARN: agentLambda.functionArn,
-    // Default to the household group JID. Can be overridden via .env.local /
-    // the shell env if you ever need to point the bot at a different group.
-    // The bot uses this for both inbound mention filtering (when set, only
-    // mentions in this group are processed) and outbound delivery (the
-    // composer queues GROUP-targeted messages without a groupJid override
+    // Required: the household WhatsApp group JID. Set via .env.local /
+    // the shell env. The bot uses this for both inbound mention filtering
+    // (only mentions in this group are processed) and outbound delivery
+    // (composer queues GROUP-targeted messages without a groupJid override
     // and the bot resolves them via this env var).
-    WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "REDACTED@g.us",
+    WHATSAPP_GROUP_JID: process.env.WHATSAPP_GROUP_JID ?? "",
     QR_ACCESS_TOKEN: process.env.QR_ACCESS_TOKEN ?? "",
     AWS_REGION: "us-east-1",
     // Bucket the bot writes agent image uploads to (phase 3). The agent
@@ -677,7 +686,7 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
     CLUSTER_ARN: { value: botCluster.clusterArn },
     SERVICE_NAME: { value: botService.serviceName },
     OUTBOUND_TABLE: { value: OUTBOUND_TABLE_NAME },
-    GROUP_JID: { value: process.env.WHATSAPP_GROUP_JID ?? "REDACTED@g.us" },
+    GROUP_JID: { value: process.env.WHATSAPP_GROUP_JID ?? "" },
     // COMMIT_SHA is overridden per-build by the Amplify postBuild step.
     COMMIT_SHA: { value: "unknown" },
   },

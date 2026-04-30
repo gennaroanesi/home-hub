@@ -109,7 +109,7 @@ Once we start shipping device control (v2), the new device classes map to the ri
 └──────────────────┘  +token   └─────────────────┘           └────────────┘
 ```
 
-- **Home Assistant OS** runs in a VM on Gennaro's Lenovo IdeaCentre Mini (Windows 11 Home, always on)
+- **Home Assistant OS** runs in a VM on a Lenovo IdeaCentre Mini (Windows 11 Home, always on)
 - **Nabu Casa** ($6.50/mo) provides a stable `https://*.ui.nabu.casa` URL — no DNS migration (domain stays on Route 53), no port forwarding, no Cloudflare account
 - **Lambdas** talk to HA via its REST API using a long-lived access token, stored as an Amplify secret
 - **Outbound queue** (existing `homeOutboundMessage`) is reused for HA health alerts via the WA bot
@@ -120,7 +120,7 @@ Once we start shipping device control (v2), the new device classes map to the ri
 
 ### Why Hyper-V and not VirtualBox
 
-Gennaro actively uses WSL2. VirtualBox runs in a degraded mode when Windows has Hyper-V/WSL2 enabled, and disabling WSL2 isn't an option. Windows 11 Home doesn't include Hyper-V by default but there's a well-known installer script. HA OS has an official Hyper-V image.
+The host actively uses WSL2. VirtualBox runs in a degraded mode when Windows has Hyper-V/WSL2 enabled, and disabling WSL2 isn't an option. Windows 11 Home doesn't include Hyper-V by default but there's a well-known installer script. HA OS has an official Hyper-V image.
 
 ## v1 — read-only scope
 
@@ -206,7 +206,7 @@ Builds on top of v1 without changing the data model. Adds:
 
 ---
 
-## Open items / TODO for Gennaro
+## Open items / TODO
 
 These unblock me from starting the code. Ordered by what I need first.
 

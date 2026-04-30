@@ -1,6 +1,6 @@
 # Home Hub
 
-Home management app for Gennaro & Cristine at home.cristinegennaro.com.
+Home management app for a two-person household.
 
 ## Stack
 - **Frontend**: Next.js (Pages Router) + HeroUI + Tailwind CSS
@@ -10,9 +10,7 @@ Home management app for Gennaro & Cristine at home.cristinegennaro.com.
 - **WhatsApp Bot**: ECS Fargate + Baileys (linked device approach)
 
 ## AWS
-- Amplify App ID: `dkiwlyw3k1yfi`
-- Region: `us-east-1`
-- S3 bucket (shared with wedding site): `cristinegennaro.com`
+- Amplify App ID, region, and S3 bucket name come from local sandbox config / Amplify Hosting env vars (not committed).
 
 ## Key decisions
 - Auth uses Cognito `home-users` group for all home models

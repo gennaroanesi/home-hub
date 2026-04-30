@@ -50,7 +50,7 @@ Ideas for future features. Not committed — just a parking lot for things that 
 ### Doorbell face recognition
 - **Who's at the door** — UniFi Protect doorbell ring (or motion-person on the front camera) → Rekognition lookup against the existing face collection → push notification with the person's name when matched, "unknown person" otherwise. Reuses the heavy machinery already in the repo: `homeHubFaceCollection`, per-`homePerson` enrollments, `faceDetector` Lambda, expo push fan-out.
   - **Trigger: HA → home-hub webhook.** HA's UniFi Protect integration fires events on doorbell ring + person-detected. An HA automation POSTs `/api/security/doorbell-event` with `{ cameraId, eventType: "ring" | "motion_person", snapshotUrl | snapshotBase64, capturedAt }`. The endpoint is gated by a shared secret in `X-Doorbell-Secret` (stored as an HA secret); no Cognito needed since HA can't carry a session.
-  - **Lambda (`doorbell-event`):** fetches the snapshot, stores it at `home/doorbell/<eventId>.jpg`, calls Rekognition `SearchFacesByImage` against `homeHubFaceCollection` (same collection enrolled faces live in). On match (≥85% confidence by default), resolves the FaceId → `homePerson`. Writes a `homeDoorbellEvent` row. Fans out a push notification to household members; "Cristine's mom is at the front door" / "Unknown person at the front door". Optional WA mirror via Janet for the moments no one's holding the phone.
+  - **Lambda (`doorbell-event`):** fetches the snapshot, stores it at `home/doorbell/<eventId>.jpg`, calls Rekognition `SearchFacesByImage` against `homeHubFaceCollection` (same collection enrolled faces live in). On match (≥85% confidence by default), resolves the FaceId → `homePerson`. Writes a `homeDoorbellEvent` row. Fans out a push notification to household members; "Alex's mom is at the front door" / "Unknown person at the front door". Optional WA mirror via Janet for the moments no one's holding the phone.
   - **Data model:**
     - `homeDoorbellEvent` — `cameraId`, `eventType`, `capturedAt`, `snapshotS3Key`, `recognizedPersonId?`, `recognizedFaceId?`, `confidence?`, `isUnknown` (boolean), `notifiedAt?`. GSI on `capturedAt` for the recent-events list.
     - `homeDoorbellPolicy` (singleton) — `quietHours?`, `notifyPersonIds[]` (default = whole household), `confidenceThreshold` (default 85). Lets the user mute pings during sleep without disabling the feature.
@@ -58,12 +58,12 @@ Ideas for future features. Not committed — just a parking lot for things that 
   - **Cost:** Rekognition `SearchFacesByImage` ~$0.001/call. Even at 50 doorbell events/day = $1.50/month. S3 snapshot retention is the bigger spend long-term.
   - **Phase 1:** webhook endpoint + Lambda + match + push notification + `homeDoorbellEvent` write. No UI yet — events visible only via DynamoDB or a quick `/admin/doorbell` table.
   - **Phase 2:** `/doorbell` history page on web (recent events with snapshots, manual "tag this unknown face as <person>" to fix bad matches and improve future hits via retroactive face match). Mobile mirror as a More-tab entry.
-  - **Phase 3:** Auto-actions on recognition. e.g. "if Cristine arrives → set living room scene to Welcome Home." HIGH-sensitivity actions (auto-unlock) gate on Face ID (mobile) / Duo (web) per the device-control v2 plan.
+  - **Phase 3:** Auto-actions on recognition. e.g. "if member X arrives → set living room scene to Welcome Home." HIGH-sensitivity actions (auto-unlock) gate on Face ID (mobile) / Duo (web) per the device-control v2 plan.
   - **Privacy / retention:** keep snapshots 30 days by default, prune nightly via the existing recurring-tasks sweep pattern. Unknown faces aren't enrolled automatically — that becomes a phase 2 manual step so we don't accumulate a face collection of every Amazon driver.
 
 ### Vehicle integration
 - **BMW ConnectedDrive** — both cars are BMWs with MyBMW app access. HA's `bmw_connected_drive` integration (via `bimmer_connected`) would surface location, odometer, fuel/charge, door/lock status, and remote services (lock/unlock, climate pre-conditioning) as entities that flow into `homeDevice` through `hass-sync` for free. **Blocker:** BMW discontinued public API access for this use case — needs a workaround or a future re-enablement before it's feasible. Parked until then.
-- Once unblocked, natural integrations: "where's Cristine's car?", "enough gas for the weekend trip?", fuel-level warnings in the daily summary, lock-cars-before-bed automation (gated on HIGH sensitivity in v2 device control).
+- Once unblocked, natural integrations: "where's the car?", "enough gas for the weekend trip?", fuel-level warnings in the daily summary, lock-cars-before-bed automation (gated on HIGH sensitivity in v2 device control).
 
 ### Agent capabilities
 - **WhatsApp image attachments → agent vision** — today Janet drops any incoming media on the floor. Three layers need changes to make "send a screenshot of a flight confirmation → agent parses it → creates trip legs" work:
@@ -74,7 +74,7 @@ Ideas for future features. Not committed — just a parking lot for things that 
 
 ### Weather / aviation briefing
 - **Location-based airport selection** — today the daily summary and Janet's `get_weather_briefing` tool hardcode `DEFAULT_ICAO = "KAUS"`. Instead, infer "where will I actually be today" from calendar events and trip destinations, then pick the nearest airport with a published TAF.
-  - Needs: a bundled dataset of ~2500 US airports with lat/lon + TAF availability (the FAA publishes this; ~200KB JSON), a nearest-point lookup (haversine, no index needed at this size), and a "whose location wins" rule when Gennaro and Cristine are in different places (household summary picks per-person if they differ).
+  - Needs: a bundled dataset of ~2500 US airports with lat/lon + TAF availability (the FAA publishes this; ~200KB JSON), a nearest-point lookup (haversine, no index needed at this size), and a "whose location wins" rule when household members are in different places (household summary picks per-person if they differ).
   - Source signals in priority order: active trip destination → today's calendar event with a `location.latitude/longitude` → home airport fallback.
   - Hook point already exists: `getMorningWeatherBriefing(icao, ctx)` in `lib/aviation-weather.ts` takes the ICAO as a param, so swapping in a dynamic selector is a one-line change at the call site once the lookup function exists.
 - **Decoded TAF period summaries** — right now Haiku interprets raw TAF text on the fly ("TEMPO 1518 -SHRA BKN020" → "brief showers 3-6pm"). A deterministic parser would be testable and faster. Not urgent — Haiku does fine — but worth noting as a quality improvement for flying-day briefings.
@@ -84,7 +84,7 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - **Gym check-in tracker** — the core feature. Optimized for the WhatsApp flow: message Janet "gym" or "worked out" and she logs it. No forms, no reps/sets, no friction. Tracks per-person streaks (consecutive days with rest-day awareness) and weekly goal progress (e.g. "3/4 this week").
   - Data model: `homeGymCheckin` (personId, checkedInAt, activityDate, notes, source) + `homeGymGoal` (personId, weeklyTarget, restDays).
   - Agent tools: `gym_checkin(person?, notes?)`, `gym_status(person?)`, `gym_set_goal(person, weeklyTarget, restDays?)`.
-  - Daily summary line: "Gennaro: 12-day streak, 3/4 this week | Cristine: 8-day streak, 2/3 this week — 1 more to hit goal". Mid-week nudge if behind pace.
+  - Daily summary line: "Alex: 12-day streak, 3/4 this week | Sam: 8-day streak, 2/3 this week — 1 more to hit goal". Mid-week nudge if behind pace.
   - `/fitness` page: streak counter, weekly progress bar, GitHub-style contribution calendar (~3 months), check-in button, recent history list, goal settings. Simple single page, everything above the fold.
 - **Workout notes (tier 2)** — optional free-text notes on check-ins ("upper body", "legs + cardio"). Janet can answer "when was my last leg day?" or "how many cardio sessions this month?". Only build if tier 1 sticks after 2 weeks of use.
 - **Weight tracking (tier 2)** — log via Janet ("175 lbs today") or the web UI. Weekly/monthly trend line on `/fitness`. Opt-in per person. Only build if requested.

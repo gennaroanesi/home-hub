@@ -273,7 +273,7 @@ export function DocumentFormModal({
             style={styles.input}
             value={title}
             onChangeText={setTitle}
-            placeholder="Gennaro's passport"
+            placeholder="e.g. Passport"
             placeholderTextColor="#888"
             editable={!busy}
             autoFocus={!doc}

@@ -555,7 +555,7 @@ async function composeSummary(data: SummaryData): Promise<string> {
   }
 
   const prompt = `You are formatting a concise daily household summary for a WhatsApp group chat.
-The household is Gennaro and Cristine. Keep it warm but brief.
+Keep it warm but brief.
 
 Today: ${data.today}
 
@@ -573,7 +573,7 @@ Formatting rules:
   - If data.weather.mode is "plain": one line with the temp, wind (if notable), conditions, and flight rules. Format like "☀️ 82°F, winds 160@12, VFR". Use the parsed metar fields — don't paste the raw METAR string. Include a brief TAF summary ("clear through afternoon, TSRA expected after 6pm") if the taf has meaningful periods, otherwise just the METAR line.
   - If data.weather.mode is "aviation": the user is flying today or soon, so be more thorough. Include the raw METAR line, raw TAF, a decoded summary of significant weather in the TAF periods, and a one-line "flight conditions" verdict (VFR/MVFR/IFR). Mention the flyingContext.title so they know WHY it's in aviation mode ("For your flight on 4/12..."). Still keep it under ~150 words total.
   - If data.weather.available is false, omit the section entirely.
-- Under "*Reminders*", render data.todayReminders if non-empty. One line per reminder: include the target (👥 for group, 👤 + name for person), the time it fires, the reminder name, and item names (especially useful for medications/supplements). Example: "💊 8am — Daily supplements: Vitamin B12, Omega-3 (Cristine)". If more than 4 reminders today, render the 4 earliest and add "…and N more" on a final line. Omit the section entirely if data.todayReminders is empty.
+- Under "*Reminders*", render data.todayReminders if non-empty. One line per reminder: include the target (👥 for group, 👤 + name for person), the time it fires, the reminder name, and item names (especially useful for medications/supplements). Example: "💊 8am — Daily supplements: Vitamin B12, Omega-3". If more than 4 reminders today, render the 4 earliest and add "…and N more" on a final line. Omit the section entirely if data.todayReminders is empty.
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.

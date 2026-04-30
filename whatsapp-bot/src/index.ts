@@ -66,8 +66,8 @@ const sentMessageIds = new Set<string>();
 // use case (a fresh deploy starts a fresh conversation).
 //
 // Scoped per chat (not per sender) so the whole household participates
-// in the same conversation: Cristine can follow up on something Gennaro
-// just said.
+// in the same conversation: any member can follow up on something
+// another just said.
 const HISTORY_TURNS = 5; // = 10 messages (5 user + 5 assistant)
 const chatHistories = new Map<string, HistoryMessage[]>();
 

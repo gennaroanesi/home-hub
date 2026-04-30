@@ -161,7 +161,7 @@ async function getDataClient() {
 }
 
 // ── Person resolution ────────────────────────────────────────────────────────
-// Resolves names like "Gennaro" / "Cristine" / ["both"] to person IDs.
+// Resolves names (or ["both"]) to homePerson IDs.
 
 let _peopleCache: { id: string; name: string }[] | null = null;
 
@@ -774,7 +774,7 @@ const tools: Anthropic.Tool[] = [
       type: "object" as const,
       properties: {
         date: { type: "string", description: "ISO date (YYYY-MM-DD)" },
-        person: { type: "string", description: "Person name (e.g. 'Gennaro' or 'Cristine')" },
+        person: { type: "string", description: "Person name (matched against homePerson.name)" },
         status: {
           type: "string",
           enum: [
@@ -1060,7 +1060,7 @@ const tools: Anthropic.Tool[] = [
       properties: {
         name: {
           type: "string",
-          description: "Objective label, e.g. 'Daily supplements', 'Cristine post-op meds'.",
+          description: "Objective label, e.g. 'Daily supplements', 'Post-op meds'.",
         },
         items: {
           type: "array",
@@ -1094,7 +1094,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "list_reminders",
     description:
-      "List reminders with their next scheduled fire time. Filter by personName, kind, or status. Useful for answering 'what reminders do I have?' or 'what's Cristine's medication schedule?'.",
+      "List reminders with their next scheduled fire time. Filter by personName, kind, or status. Useful for answering 'what reminders do I have?' or 'what's the medication schedule?'.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -3025,7 +3025,7 @@ async function executeTool(
           channel: "WHATSAPP",
           target: "PERSON",
           personId: doc.ownerPersonId,
-          text: `Heads up: ${requester.name} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let Gennaro know.`,
+          text: `Heads up: ${requester.name} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let an admin know.`,
           status: "PENDING",
           kind: "document_access_notification",
         });
@@ -3158,7 +3158,7 @@ async function executeTool(
           channel: "WHATSAPP",
           target: "PERSON",
           personId: doc.ownerPersonId,
-          text: `Heads up: ${reqPerson?.name ?? "someone"} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let Gennaro know.`,
+          text: `Heads up: ${reqPerson?.name ?? "someone"} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let an admin know.`,
           status: "PENDING",
           kind: "document_access_notification",
         });
@@ -4121,14 +4121,14 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
     timeZoneName: "short",
   });
 
-  const systemPrompt = `You are Janet, the household assistant for Gennaro and Cristine. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, and reminders.
+  const systemPrompt = `You are Janet, the household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, and reminders.
 
 Household members: ${peopleNames}
 Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
 Timezone: ${TZ} (Central)
 Message sender: ${sender}
 
-When assigning tasks/bills/events to people, pass their names in the assignedPeople array (e.g. ["Gennaro"], ["Cristine"], or ["both"] for the whole household). Empty/omitted = household.
+When assigning tasks/bills/events to people, pass their names in the assignedPeople array — names must match the Household members listed above, or use ["both"] for the whole household. Empty/omitted = household.
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
@@ -4165,7 +4165,7 @@ Reminders are persistent recurring or one-off notifications delivered via WhatsA
 
 For medications/supplements specifically, always use schedule_compound_reminder (even if one item) and set kind="medication". Set useLlm=true (default) so the message wording varies across firings.
 
-Default target is the household group. Only pass personName if the user explicitly wants it DM'd to a specific person ("remind Cristine privately that...").
+Default target is the household group. Only pass personName if the user explicitly wants it DM'd to a specific person ("remind <name> privately that...").
 
 RRULE examples:
 - Every day at 8pm: "RRULE:FREQ=DAILY;BYHOUR=20;BYMINUTE=0"
