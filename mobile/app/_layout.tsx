@@ -2,6 +2,7 @@ import { Stack } from "expo-router";
 import { useEffect } from "react";
 
 import { configureAmplify } from "../lib/amplify";
+import { AppLockProvider } from "../lib/app-lock";
 import { configureNotificationHandler } from "../lib/push";
 
 export default function RootLayout() {
@@ -13,5 +14,9 @@ export default function RootLayout() {
     configureNotificationHandler();
   }, []);
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  return (
+    <AppLockProvider>
+      <Stack screenOptions={{ headerShown: false }} />
+    </AppLockProvider>
+  );
 }
