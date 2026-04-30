@@ -15,7 +15,9 @@ import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  KeyboardAvoidingView,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -240,7 +242,10 @@ export function DocumentFormModal({
 
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet">
-      <View style={styles.screen}>
+      <KeyboardAvoidingView
+        style={styles.screen}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
         <View style={styles.header}>
           <Pressable onPress={onClose} disabled={busy}>
             <Text style={styles.cancel}>Cancel</Text>
@@ -259,7 +264,10 @@ export function DocumentFormModal({
           </Pressable>
         </View>
 
-        <ScrollView contentContainerStyle={styles.body}>
+        <ScrollView
+          contentContainerStyle={styles.body}
+          keyboardShouldPersistTaps="handled"
+        >
           <Text style={styles.label}>Title</Text>
           <TextInput
             style={styles.input}
@@ -400,7 +408,7 @@ export function DocumentFormModal({
             editable={!busy}
           />
         </ScrollView>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -422,7 +430,7 @@ const styles = StyleSheet.create({
   save: { color: "#735f55", fontWeight: "600", fontSize: 15 },
   disabled: { opacity: 0.4 },
 
-  body: { padding: 20, gap: 8, paddingBottom: 60 },
+  body: { padding: 20, gap: 8, paddingBottom: 120 },
   label: {
     fontSize: 12,
     fontWeight: "600",

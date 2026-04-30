@@ -438,7 +438,7 @@ const styles = StyleSheet.create({
   save: { color: "#735f55", fontWeight: "600", fontSize: 15 },
   disabled: { opacity: 0.4 },
 
-  body: { padding: 20, gap: 8, paddingBottom: 40 },
+  body: { padding: 20, gap: 8, paddingBottom: 120 },
   importedBanner: {
     backgroundColor: "#fff5e0",
     padding: 12,

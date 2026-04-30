@@ -2,6 +2,8 @@ import { useState } from "react";
 import {
   Alert,
   Button,
+  KeyboardAvoidingView,
+  Platform,
   SafeAreaView,
   StyleSheet,
   Text,
@@ -31,39 +33,45 @@ export default function SignIn() {
 
   return (
     <SafeAreaView style={styles.screen}>
-      <View style={styles.card}>
-        <Text style={styles.heading}>Home Hub</Text>
-        <Text style={styles.sub}>Sign in to continue</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Email"
-          placeholderTextColor="#888"
-          autoCapitalize="none"
-          autoCorrect={false}
-          keyboardType="email-address"
-          textContentType="username"
-          value={email}
-          onChangeText={setEmail}
-          editable={!busy}
-        />
-        <TextInput
-          style={styles.input}
-          placeholder="Password"
-          placeholderTextColor="#888"
-          secureTextEntry
-          textContentType="password"
-          value={password}
-          onChangeText={setPassword}
-          editable={!busy}
-        />
-        <Button title={busy ? "Signing in…" : "Sign in"} onPress={onSubmit} disabled={busy} />
-      </View>
+      <KeyboardAvoidingView
+        style={styles.flex}
+        behavior={Platform.OS === "ios" ? "padding" : undefined}
+      >
+        <View style={styles.card}>
+          <Text style={styles.heading}>Home Hub</Text>
+          <Text style={styles.sub}>Sign in to continue</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="Email"
+            placeholderTextColor="#888"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="email-address"
+            textContentType="username"
+            value={email}
+            onChangeText={setEmail}
+            editable={!busy}
+          />
+          <TextInput
+            style={styles.input}
+            placeholder="Password"
+            placeholderTextColor="#888"
+            secureTextEntry
+            textContentType="password"
+            value={password}
+            onChangeText={setPassword}
+            editable={!busy}
+          />
+          <Button title={busy ? "Signing in…" : "Sign in"} onPress={onSubmit} disabled={busy} />
+        </View>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  screen: { flex: 1, justifyContent: "center", padding: 24 },
+  screen: { flex: 1, padding: 24 },
+  flex: { flex: 1, justifyContent: "center" },
   card: { gap: 12 },
   heading: { fontSize: 28, fontWeight: "600" },
   sub: { color: "#666", marginBottom: 8 },
