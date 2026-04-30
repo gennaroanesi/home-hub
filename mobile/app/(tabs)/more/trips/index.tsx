@@ -18,6 +18,8 @@ import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
+import { usePeople } from "../../../../lib/use-people";
+import { TripFormModal } from "../../../../components/TripFormModal";
 import {
   TRIP_TYPE_CONFIG,
   type Trip,
@@ -28,9 +30,18 @@ import {
 } from "../../../../lib/trip";
 
 export default function TripsList() {
+  const { people } = usePeople();
   const [trips, setTrips] = useState<Trip[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -83,7 +94,21 @@ export default function TripsList() {
           <Ionicons name="chevron-back" size={28} color="#735f55" />
         </Pressable>
         <Text style={styles.heading}>Trips</Text>
+        <View style={styles.headerSpacer} />
+        <Pressable
+          onPress={() => setCreateOpen(true)}
+          hitSlop={12}
+          style={styles.addBtn}
+        >
+          <Ionicons name="add" size={28} color="#735f55" />
+        </Pressable>
       </View>
+      {toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Ionicons name="checkmark-circle" size={16} color="#fff" />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.center}>
@@ -116,6 +141,16 @@ export default function TripsList() {
           }
         />
       )}
+      <TripFormModal
+        visible={createOpen}
+        trip={null}
+        people={people}
+        onClose={() => setCreateOpen(false)}
+        onSaved={(info) => {
+          void load();
+          if (info?.toast) setToast(info.toast);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -158,6 +193,27 @@ const styles = StyleSheet.create({
   },
   backBtn: { padding: 4 },
   heading: { fontSize: 28, fontWeight: "600" },
+  headerSpacer: { flex: 1 },
+  addBtn: { padding: 4 },
+
+  toast: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#4e5e53",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginHorizontal: 20,
+    marginBottom: 4,
+    alignSelf: "flex-start",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  toastText: { color: "#fff", fontSize: 13, fontWeight: "500" },
 
   listBody: { paddingHorizontal: 20, paddingBottom: 40 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },

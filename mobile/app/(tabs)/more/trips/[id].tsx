@@ -26,6 +26,10 @@ import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
+import { usePeople } from "../../../../lib/use-people";
+import { TripFormModal } from "../../../../components/TripFormModal";
+import { TripLegFormModal } from "../../../../components/TripLegFormModal";
+import { TripReservationFormModal } from "../../../../components/TripReservationFormModal";
 import {
   LEG_MODE_EMOJI,
   LEG_MODE_LABEL,
@@ -51,9 +55,23 @@ interface TripData {
 
 export default function TripDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
+  const { people } = usePeople();
   const [data, setData] = useState<TripData | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [tripModalOpen, setTripModalOpen] = useState(false);
+  const [editingLeg, setEditingLeg] = useState<TripLeg | null>(null);
+  const [legModalOpen, setLegModalOpen] = useState(false);
+  const [editingReservation, setEditingReservation] =
+    useState<TripReservation | null>(null);
+  const [reservationModalOpen, setReservationModalOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 2200);
+    return () => clearTimeout(t);
+  }, [toast]);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -106,7 +124,22 @@ export default function TripDetail() {
         <Text style={styles.heading} numberOfLines={1}>
           {data?.trip.name ?? "Trip"}
         </Text>
+        {data && (
+          <Pressable
+            onPress={() => setTripModalOpen(true)}
+            hitSlop={12}
+            style={styles.editBtn}
+          >
+            <Ionicons name="create-outline" size={22} color="#735f55" />
+          </Pressable>
+        )}
       </View>
+      {toast && (
+        <View style={styles.toast} pointerEvents="none">
+          <Ionicons name="checkmark-circle" size={16} color="#fff" />
+          <Text style={styles.toastText}>{toast}</Text>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.center}>
@@ -123,7 +156,18 @@ export default function TripDetail() {
         >
           <TripHeader trip={data.trip} />
 
-          <Text style={styles.sectionLabel}>Legs</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionLabel}>Legs</Text>
+            <Pressable
+              onPress={() => {
+                setEditingLeg(null);
+                setLegModalOpen(true);
+              }}
+              hitSlop={12}
+            >
+              <Ionicons name="add-circle-outline" size={22} color="#735f55" />
+            </Pressable>
+          </View>
           {data.legs.length === 0 ? (
             <Text style={styles.empty}>No legs.</Text>
           ) : (
@@ -133,12 +177,27 @@ export default function TripDetail() {
                   key={l.id}
                   leg={l}
                   divider={i < data.legs.length - 1}
+                  onEdit={() => {
+                    setEditingLeg(l);
+                    setLegModalOpen(true);
+                  }}
                 />
               ))}
             </View>
           )}
 
-          <Text style={styles.sectionLabel}>Reservations</Text>
+          <View style={styles.sectionHeader}>
+            <Text style={styles.sectionLabel}>Reservations</Text>
+            <Pressable
+              onPress={() => {
+                setEditingReservation(null);
+                setReservationModalOpen(true);
+              }}
+              hitSlop={12}
+            >
+              <Ionicons name="add-circle-outline" size={22} color="#735f55" />
+            </Pressable>
+          </View>
           {data.reservations.length === 0 ? (
             <Text style={styles.empty}>No reservations.</Text>
           ) : (
@@ -148,11 +207,59 @@ export default function TripDetail() {
                   key={r.id}
                   reservation={r}
                   divider={i < data.reservations.length - 1}
+                  onEdit={() => {
+                    setEditingReservation(r);
+                    setReservationModalOpen(true);
+                  }}
                 />
               ))}
             </View>
           )}
         </ScrollView>
+      )}
+
+      {data && (
+        <TripFormModal
+          visible={tripModalOpen}
+          trip={data.trip}
+          people={people}
+          onClose={() => setTripModalOpen(false)}
+          onSaved={(info) => {
+            // If the trip was deleted, the next load will return null —
+            // bounce back to the list. Otherwise refresh in place.
+            if (info?.toast === "Trip deleted") {
+              if (info?.toast) setToast(info.toast);
+              router.back();
+              return;
+            }
+            void load();
+            if (info?.toast) setToast(info.toast);
+          }}
+        />
+      )}
+      {data && (
+        <TripLegFormModal
+          visible={legModalOpen}
+          tripId={data.trip.id}
+          leg={editingLeg}
+          onClose={() => setLegModalOpen(false)}
+          onSaved={(info) => {
+            void load();
+            if (info?.toast) setToast(info.toast);
+          }}
+        />
+      )}
+      {data && (
+        <TripReservationFormModal
+          visible={reservationModalOpen}
+          tripId={data.trip.id}
+          reservation={editingReservation}
+          onClose={() => setReservationModalOpen(false)}
+          onSaved={(info) => {
+            void load();
+            if (info?.toast) setToast(info.toast);
+          }}
+        />
       )}
     </SafeAreaView>
   );
@@ -188,7 +295,15 @@ function TripHeader({ trip }: { trip: Trip }) {
   );
 }
 
-function LegRow({ leg, divider }: { leg: TripLeg; divider: boolean }) {
+function LegRow({
+  leg,
+  divider,
+  onEdit,
+}: {
+  leg: TripLeg;
+  divider: boolean;
+  onEdit: () => void;
+}) {
   const mode = (leg.mode as LegMode | null) ?? "OTHER";
   const fromLabel = shortLocation(leg.fromLocation) ?? "—";
   const toLabel = shortLocation(leg.toLocation) ?? "—";
@@ -206,12 +321,9 @@ function LegRow({ leg, divider }: { leg: TripLeg; divider: boolean }) {
     headline = leg.aircraft;
   }
 
-  const onPress = leg.url ? () => Linking.openURL(leg.url!) : undefined;
-  const Wrapper = onPress ? Pressable : View;
-
   return (
-    <Wrapper
-      onPress={onPress}
+    <Pressable
+      onPress={onEdit}
       style={[styles.row, divider && styles.rowDivider]}
     >
       <Text style={styles.legEmoji}>{LEG_MODE_EMOJI[mode]}</Text>
@@ -228,17 +340,30 @@ function LegRow({ leg, divider }: { leg: TripLeg; divider: boolean }) {
           </Text>
         )}
       </View>
-      {leg.url && <Ionicons name="open-outline" size={16} color="#888" />}
-    </Wrapper>
+      {leg.url && (
+        <Pressable
+          onPress={(e) => {
+            e.stopPropagation();
+            Linking.openURL(leg.url!);
+          }}
+          hitSlop={12}
+          style={styles.openBtn}
+        >
+          <Ionicons name="open-outline" size={18} color="#735f55" />
+        </Pressable>
+      )}
+    </Pressable>
   );
 }
 
 function ReservationRow({
   reservation,
   divider,
+  onEdit,
 }: {
   reservation: TripReservation;
   divider: boolean;
+  onEdit: () => void;
 }) {
   const type = (reservation.type as ReservationType | null) ?? "OTHER";
   const startDate = formatLegDateShort(reservation.startAt);
@@ -248,12 +373,10 @@ function ReservationRow({
       ? `${startDate} – ${endDate}`
       : startDate || endDate;
   const loc = shortLocation(reservation.location);
-  const onPress = reservation.url ? () => Linking.openURL(reservation.url!) : undefined;
-  const Wrapper = onPress ? Pressable : View;
 
   return (
-    <Wrapper
-      onPress={onPress}
+    <Pressable
+      onPress={onEdit}
       style={[styles.row, divider && styles.rowDivider]}
     >
       <Text style={styles.legEmoji}>{RESERVATION_EMOJI[type]}</Text>
@@ -269,8 +392,19 @@ function ReservationRow({
           </Text>
         )}
       </View>
-      {reservation.url && <Ionicons name="open-outline" size={16} color="#888" />}
-    </Wrapper>
+      {reservation.url && (
+        <Pressable
+          onPress={(e) => {
+            e.stopPropagation();
+            Linking.openURL(reservation.url!);
+          }}
+          hitSlop={12}
+          style={styles.openBtn}
+        >
+          <Ionicons name="open-outline" size={18} color="#735f55" />
+        </Pressable>
+      )}
+    </Pressable>
   );
 }
 
@@ -289,6 +423,34 @@ const styles = StyleSheet.create({
   },
   backBtn: { padding: 4 },
   heading: { fontSize: 22, fontWeight: "600", flex: 1 },
+  editBtn: { padding: 4 },
+
+  toast: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: "#4e5e53",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    marginHorizontal: 20,
+    marginBottom: 4,
+    alignSelf: "flex-start",
+    shadowColor: "#000",
+    shadowOpacity: 0.12,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 2 },
+    elevation: 2,
+  },
+  toastText: { color: "#fff", fontSize: 13, fontWeight: "500" },
+
+  sectionHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginTop: 8,
+    marginBottom: 6,
+  },
 
   body: { padding: 20, paddingBottom: 40 },
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
@@ -320,8 +482,6 @@ const styles = StyleSheet.create({
     color: "#888",
     textTransform: "uppercase",
     letterSpacing: 0.5,
-    marginTop: 8,
-    marginBottom: 6,
   },
 
   card: {
@@ -354,6 +514,7 @@ const styles = StyleSheet.create({
     fontFamily: "Menlo",
   },
   legEmoji: { fontSize: 22, paddingTop: 2 },
+  openBtn: { padding: 4 },
 
   typeChip: {
     paddingHorizontal: 8,
