@@ -38,15 +38,35 @@ function urlFromS3Key(s3Key: string): string {
   return `${WEB_BASE_URL}/api/d/${filename}`;
 }
 
+/** Open the file (s3Key) when present, else fall back to the number. */
 export async function downloadDocument(
   input: DownloadInput
 ): Promise<DownloadResult> {
-  const localAuth = await requireLocalAuth({
-    promptMessage: "Confirm document download",
-  });
+  return runGated(input, "file", "Confirm document download");
+}
+
+/** Reveal the document number specifically. Used when a doc has both
+ *  a file and a number — the file path doesn't expose the number. */
+export async function revealDocumentNumber(
+  input: DownloadInput
+): Promise<DownloadResult> {
+  if (!input.documentNumber) {
+    return { ok: false, error: "This document has no number to reveal" };
+  }
+  return runGated(input, "number", "Reveal document number");
+}
+
+type RevealMode = "file" | "number";
+
+async function runGated(
+  input: DownloadInput,
+  mode: RevealMode,
+  promptMessage: string
+): Promise<DownloadResult> {
+  const localAuth = await requireLocalAuth({ promptMessage });
 
   if (localAuth.ok) {
-    return revealAfterAuth(input, "faceid");
+    return revealAfterAuth(input, mode, "faceid");
   }
 
   // Face ID gate didn't pass. If the user explicitly cancelled, don't
@@ -56,13 +76,21 @@ export async function downloadDocument(
     return { ok: false, error: "Cancelled" };
   }
 
-  return runDuoFallback(input, localAuth);
+  return runDuoFallback(input, mode, localAuth);
 }
 
 function revealAfterAuth(
   input: DownloadInput,
+  mode: RevealMode,
   via: "faceid" | "duo"
 ): DownloadResult {
+  if (mode === "number") {
+    if (!input.documentNumber) {
+      return { ok: false, error: "Document has no number" };
+    }
+    return { ok: true, documentNumber: input.documentNumber, via };
+  }
+  // mode === "file"
   if (input.s3Key) {
     return { ok: true, url: urlFromS3Key(input.s3Key), via };
   }
@@ -74,11 +102,11 @@ function revealAfterAuth(
 
 async function runDuoFallback(
   input: DownloadInput,
+  mode: RevealMode,
   authOutcome: LocalAuthOutcome
 ): Promise<DownloadResult> {
   if (authOutcome.ok) {
-    // Defensive — runDuoFallback is only called on a non-ok outcome.
-    return revealAfterAuth(input, "faceid");
+    return revealAfterAuth(input, mode, "faceid");
   }
 
   const client = getClient();
@@ -91,7 +119,6 @@ async function runDuoFallback(
     };
   }
 
-  // Look up the user's Duo username so we can fire the push.
   const { data: authRows, errors } = await client.models.homePersonAuth.list({
     filter: { personId: { eq: person.id } },
   });
@@ -107,14 +134,15 @@ async function runDuoFallback(
     };
   }
 
-  // Hit the existing web endpoint — same one the web Documents page uses.
+  // For "number" mode skip s3Key in the request so the web endpoint
+  // returns the number rather than a download URL.
   const res = await fetch(`${WEB_BASE_URL}/api/documents/download`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       documentId: input.documentId,
       duoUsername,
-      s3Key: input.s3Key ?? undefined,
+      s3Key: mode === "file" ? input.s3Key ?? undefined : undefined,
       documentNumber: input.documentNumber ?? undefined,
     }),
   });

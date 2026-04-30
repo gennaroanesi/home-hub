@@ -34,7 +34,10 @@ import {
   isExpiringSoon,
   ownerLabel,
 } from "../../../../lib/documents";
-import { downloadDocument } from "../../../../lib/document-download";
+import {
+  downloadDocument,
+  revealDocumentNumber,
+} from "../../../../lib/document-download";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
 import { DocumentFormModal } from "../../../../components/DocumentFormModal";
@@ -50,18 +53,45 @@ export default function DocumentDetail() {
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [revealing, setRevealing] = useState(false);
+  // Once the user has unlocked the number for this screen viewing,
+  // keep it visible until they back out. Cleared when `doc` reloads.
+  const [revealedNumber, setRevealedNumber] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     const client = getClient();
     const { data } = await client.models.homeDocument.get({ id });
     setDoc(data ?? null);
+    setRevealedNumber(null);
     setLoading(false);
   }, [id]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  async function onRevealNumber() {
+    if (!doc) return;
+    if (revealing) return;
+    setRevealing(true);
+    try {
+      const result = await revealDocumentNumber({
+        documentId: doc.id,
+        s3Key: doc.s3Key,
+        documentNumber: doc.documentNumber,
+      });
+      if (!result.ok) {
+        Alert.alert("Couldn't reveal", result.error);
+        return;
+      }
+      if (result.documentNumber) setRevealedNumber(result.documentNumber);
+    } catch (err: any) {
+      Alert.alert("Couldn't reveal", err?.message ?? String(err));
+    } finally {
+      setRevealing(false);
+    }
+  }
 
   async function onDownload() {
     if (!doc) return;
@@ -169,6 +199,38 @@ export default function DocumentDetail() {
           <View style={styles.metaCard}>
             <MetaRow label="Type" value={DOCUMENT_TYPE_LABEL[(doc.type as DocumentType) ?? "OTHER"]} />
             <MetaRow label="Owner" value={ownerLabel(doc, people)} divider />
+            {!!doc.documentNumber && (
+              <View style={[styles.metaRow, styles.metaRowDivider]}>
+                <Text style={styles.metaLabel}>Number</Text>
+                {revealedNumber ? (
+                  <Text style={styles.metaValue} selectable>
+                    {revealedNumber}
+                  </Text>
+                ) : (
+                  <Pressable
+                    onPress={onRevealNumber}
+                    disabled={revealing}
+                    style={({ pressed }) => [
+                      styles.revealBtn,
+                      (pressed || revealing) && styles.revealBtnPressed,
+                    ]}
+                  >
+                    {revealing ? (
+                      <ActivityIndicator size="small" color="#735f55" />
+                    ) : (
+                      <>
+                        <Ionicons
+                          name="eye-outline"
+                          size={14}
+                          color="#735f55"
+                        />
+                        <Text style={styles.revealText}>Reveal</Text>
+                      </>
+                    )}
+                  </Pressable>
+                )}
+              </View>
+            )}
             {!!doc.issuer && <MetaRow label="Issuer" value={doc.issuer} divider />}
             {!!doc.issuedDate && (
               <MetaRow label="Issued" value={formatDate(doc.issuedDate)} divider />
@@ -368,6 +430,18 @@ const styles = StyleSheet.create({
   },
   metaLabel: { color: "#888", fontSize: 13 },
   metaValue: { color: "#222", fontSize: 14, flexShrink: 1, textAlign: "right" },
+  revealBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#735f55",
+  },
+  revealBtnPressed: { opacity: 0.6 },
+  revealText: { color: "#735f55", fontSize: 12, fontWeight: "500" },
 
   sectionLabel: {
     fontSize: 12,
