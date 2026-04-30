@@ -117,7 +117,13 @@ const schedulerRole = new iam.Role(dataStack, "homeSchedulerEventBridgeRole", {
   },
 });
 
-// Agent lambda — EventBridge Scheduler access
+// Agent lambda — EventBridge Scheduler access. Scoped to schedules in
+// the home-hub group so a compromised agent (e.g. via prompt injection)
+// can't create schedules that fire arbitrary lambdas elsewhere in the
+// account. iam:PassRole is restricted to the dedicated scheduler role
+// and gated by an iam:PassedToService condition so the role can only
+// be handed to scheduler.amazonaws.com.
+const SCHEDULER_GROUP = "home-hub";
 const schedulerPolicy = new Policy(dataStack, "homeAgentSchedulerPolicy", {
   statements: [
     new PolicyStatement({
@@ -126,9 +132,19 @@ const schedulerPolicy = new Policy(dataStack, "homeAgentSchedulerPolicy", {
         "scheduler:CreateSchedule",
         "scheduler:DeleteSchedule",
         "scheduler:GetSchedule",
-        "iam:PassRole",
+        "scheduler:UpdateSchedule",
       ],
-      resources: ["*"],
+      resources: [
+        `arn:aws:scheduler:${dataStack.region}:${dataStack.account}:schedule/${SCHEDULER_GROUP}/*`,
+      ],
+    }),
+    new PolicyStatement({
+      effect: Effect.ALLOW,
+      actions: ["iam:PassRole"],
+      resources: [schedulerRole.roleArn],
+      conditions: {
+        StringEquals: { "iam:PassedToService": "scheduler.amazonaws.com" },
+      },
     }),
   ],
 });
@@ -143,12 +159,16 @@ agentLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ??
 // Bucket holding user-uploaded image attachments under home/agent-uploads/.
 // The agent handler downloads each key passed in via invokeHomeAgent's
 // imageS3Keys argument and forwards it to Claude as an image block.
-agentLambda.addEnvironment("PHOTOS_BUCKET", "cristinegennaro.com");
+const HOME_HUB_BUCKET = process.env.HOME_HUB_BUCKET ?? "";
+if (!HOME_HUB_BUCKET) {
+  throw new Error("HOME_HUB_BUCKET env var must be set (the S3 bucket holding home/* prefixes)");
+}
+agentLambda.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
 agentLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
     actions: ["s3:GetObject"],
-    resources: ["arn:aws:s3:::cristinegennaro.com/home/agent-uploads/*"],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/agent-uploads/*`],
   })
 );
 
@@ -158,7 +178,7 @@ agentLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
     actions: ["s3:GetObject"],
-    resources: ["arn:aws:s3:::cristinegennaro.com/home/documents/*"],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/documents/*`],
   })
 );
 
@@ -169,7 +189,7 @@ agentLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
     actions: ["s3:GetObject"],
-    resources: ["arn:aws:s3:::cristinegennaro.com/home/messages/*"],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/messages/*`],
   })
 );
 
@@ -385,7 +405,6 @@ setPersonGroupsLambda.addToRolePolicy(
 // the full pipeline. The collection itself is created (and torn down)
 // via an AwsCustomResource because CDK has no L2 for Rekognition.
 
-const PHOTOS_BUCKET_NAME = "cristinegennaro.com";
 const REKOGNITION_COLLECTION_ID = "home-hub-faces";
 
 const faceDetectorLambda = backend.faceDetector.resources.lambda as LambdaFunction;
@@ -444,12 +463,12 @@ faceDetectorLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
     actions: ["s3:GetObject"],
-    resources: [`arn:aws:s3:::${PHOTOS_BUCKET_NAME}/home/photos/*`],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/photos/*`],
   })
 );
 
 faceDetectorLambda.addEnvironment("REKOGNITION_COLLECTION_ID", REKOGNITION_COLLECTION_ID);
-faceDetectorLambda.addEnvironment("PHOTOS_BUCKET", PHOTOS_BUCKET_NAME);
+faceDetectorLambda.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
 
 // Wire the homePhoto DynamoDB stream to the lambda. Amplify Gen 2 enables
 // streams on every model table by default (they power AppSync's
@@ -541,7 +560,7 @@ botTaskDef.addContainer("bot", {
     // This is the canonical path — Amplify's own factory.js uses it when
     // building the amplify_outputs GraphQL endpoint.
     APPSYNC_ENDPOINT: backend.data.resources.cfnResources.cfnGraphqlApi.attrGraphQlUrl,
-    S3_BUCKET: "cristinegennaro.com",
+    S3_BUCKET: HOME_HUB_BUCKET,
     S3_AUTH_PREFIX: "whatsapp-bot/auth",
     // Agent Lambda ARN — the bot invokes it asynchronously (InvocationType:
     // "Event") after writing the inbound message to DynamoDB. Direct invoke
@@ -559,7 +578,7 @@ botTaskDef.addContainer("bot", {
     // Bucket the bot writes agent image uploads to (phase 3). The agent
     // Lambda reads from the same home/agent-uploads/ prefix on the other
     // side of the pipeline.
-    PHOTOS_BUCKET: "cristinegennaro.com",
+    HOME_HUB_BUCKET,
   },
 });
 
@@ -572,7 +591,7 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"],
-  resources: ["arn:aws:s3:::cristinegennaro.com/whatsapp-bot/*"],
+  resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/whatsapp-bot/*`],
 }));
 
 // Phase 3: WA bot forwards user-sent images to the agent by uploading them
@@ -582,7 +601,7 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:PutObject"],
-  resources: ["arn:aws:s3:::cristinegennaro.com/home/agent-uploads/*"],
+  resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/agent-uploads/*`],
 }));
 
 // Phase 4: async message pipeline. Bot writes inbound messages +
@@ -602,7 +621,7 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:PutObject"],
-  resources: ["arn:aws:s3:::cristinegennaro.com/home/messages/*"],
+  resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/messages/*`],
 }));
 
 // ListBucket is required so GetObject on a missing key returns 404 instead of 403
@@ -610,7 +629,7 @@ botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
 botTaskDef.taskRole.addToPrincipalPolicy(new PolicyStatement({
   effect: Effect.ALLOW,
   actions: ["s3:ListBucket"],
-  resources: ["arn:aws:s3:::cristinegennaro.com"],
+  resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}`],
   conditions: {
     StringLike: { "s3:prefix": ["whatsapp-bot/*"] },
   },
@@ -671,7 +690,7 @@ const botBuildProject = new codebuild.Project(botStack, "whatsappBotImageBuild",
   // NO_SOURCE — the Amplify postBuild step passes the S3 path of the
   // tarred bot source via BOT_SRC_S3_URI as an env var override.
   source: codebuild.Source.s3({
-    bucket: s3.Bucket.fromBucketName(botStack, "BotBuildSrcBucket", "cristinegennaro.com"),
+    bucket: s3.Bucket.fromBucketName(botStack, "BotBuildSrcBucket", HOME_HUB_BUCKET),
     path: `${BUILD_ARTIFACTS_PREFIX}/placeholder.tar.gz`,
   }),
   environment: {
@@ -794,7 +813,7 @@ botBuildProject.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
     actions: ["s3:GetObject", "s3:GetObjectVersion"],
-    resources: [`arn:aws:s3:::cristinegennaro.com/${BUILD_ARTIFACTS_PREFIX}/*`],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/${BUILD_ARTIFACTS_PREFIX}/*`],
   })
 );
 botRepo.grantPullPush(botBuildProject);
@@ -829,7 +848,7 @@ new CfnOutput(backend.stack, "whatsappBotBuildProjectName", {
   value: botBuildProject.projectName,
 });
 new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
-  value: `s3://cristinegennaro.com/${BUILD_ARTIFACTS_PREFIX}`,
+  value: `s3://${HOME_HUB_BUCKET}/${BUILD_ARTIFACTS_PREFIX}`,
 });
 
 } // end if (!isSandbox)

@@ -18,6 +18,7 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { preauth, pushAndWait } from "@/lib/duo-server";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
 const HASS_BASE_URL = process.env.HASS_BASE_URL ?? "";
 const HASS_TOKEN = process.env.HASS_TOKEN ?? "";
@@ -43,7 +44,7 @@ async function callHassService(
   return res.json();
 }
 
-export default async function handler(
+async function handler(
   req: NextApiRequest,
   res: NextApiResponse,
 ) {
@@ -102,3 +103,5 @@ export default async function handler(
     });
   }
 }
+
+export default withHomeUserAuth(handler);

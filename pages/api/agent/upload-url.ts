@@ -2,9 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v7 as uuid } from "uuid";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
 const REGION = "us-east-1";
-const BUCKET = "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 const s3 = new S3Client({ region: REGION });
 
 // Strict allow-list for what the agent will accept. We deliberately do
@@ -26,7 +27,7 @@ const ACCEPTED_TYPES: Record<string, string> = {
  * The agent Lambda has s3:GetObject scoped to that exact prefix, so
  * uploads MUST land there.
  */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -61,3 +62,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Could not generate upload URL" });
   }
 }
+
+export default withHomeUserAuth(handler);

@@ -2,9 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v7 as uuid } from "uuid";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
 const REGION = "us-east-1";
-const BUCKET = "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 const s3 = new S3Client({ region: REGION });
 
 // Documents are a flat prefix under home/documents/ — no album/unfiled
@@ -59,7 +60,7 @@ function extensionFor(contentType: string): string {
 // each surface that needs presigned uploads gets a known sub-prefix.
 const ALLOWED_PREFIXES = new Set(["documents", "pets"]);
 
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "POST") {
     const { contentType, prefix } = req.body ?? {};
     if (!contentType || typeof contentType !== "string") {
@@ -119,3 +120,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
 
   return res.status(405).json({ error: "Method not allowed" });
 }
+
+export default withHomeUserAuth(handler);

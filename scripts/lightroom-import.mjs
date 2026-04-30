@@ -46,8 +46,12 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 
 const TOKEN_URL = "https://ims-na1.adobelogin.com/ims/token/v3";
 const LR_BASE = "https://lr.adobe.io/v2";
-const BUCKET = "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 const REGION = "us-east-1";
+if (!BUCKET) {
+  console.error("HOME_HUB_BUCKET env var must be set");
+  process.exit(1);
+}
 
 const ENV_FILE = path.resolve(process.cwd(), ".env.local");
 const OUTPUTS_FILE = path.resolve(process.cwd(), "amplify_outputs.json");

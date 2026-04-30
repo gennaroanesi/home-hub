@@ -13,8 +13,9 @@
 
 import type { NextApiRequest, NextApiResponse } from "next";
 import { preauth, pushAndWait } from "@/lib/duo-server";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
-export default async function handler(
+async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
@@ -78,3 +79,5 @@ export default async function handler(
     return res.status(500).json({ error: message });
   }
 }
+
+export default withHomeUserAuth(handler);

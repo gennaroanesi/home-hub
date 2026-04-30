@@ -6,7 +6,10 @@ import { randomUUID } from "node:crypto";
 // async WhatsApp pipeline). Both prefixes are writable by the bot's ECS
 // task role (see backend.ts).
 const s3 = new S3Client({});
-const BUCKET = process.env.PHOTOS_BUCKET ?? "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
+if (!BUCKET) {
+  throw new Error("HOME_HUB_BUCKET env var must be set");
+}
 const AGENT_UPLOADS_PREFIX = "home/agent-uploads";
 const MESSAGES_INBOUND_PREFIX = "home/messages/inbound";
 

@@ -2,9 +2,10 @@ import type { NextApiRequest, NextApiResponse } from "next";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { v7 as uuid } from "uuid";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
 const REGION = "us-east-1";
-const BUCKET = "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 const s3 = new S3Client({ region: REGION });
 
 function extensionFor(contentType: string): string {
@@ -34,7 +35,7 @@ function extensionFor(contentType: string): string {
  * The client uploads the file directly to S3 with the returned URL,
  * then creates a homePhoto record via the Amplify data client.
  */
-export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -66,3 +67,5 @@ export default async function handler(req: NextApiRequest, res: NextApiResponse)
     return res.status(500).json({ error: "Could not generate upload URL" });
   }
 }
+
+export default withHomeUserAuth(handler);

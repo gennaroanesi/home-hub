@@ -105,6 +105,7 @@ frontend:
         - |
           [ -n "$HASS_BASE_URL" ] && echo "HASS_BASE_URL=$HASS_BASE_URL" >> .env.production
           [ -n "$HASS_TOKEN" ] && echo "HASS_TOKEN=$HASS_TOKEN" >> .env.production
+          [ -n "$HOME_HUB_BUCKET" ] && echo "HOME_HUB_BUCKET=$HOME_HUB_BUCKET" >> .env.production
           true
     build:
       commands:

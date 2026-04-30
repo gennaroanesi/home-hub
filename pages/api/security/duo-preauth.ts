@@ -1,5 +1,6 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { preauth } from "@/lib/duo-server";
+import { withHomeUserAuth } from "@/lib/api-auth";
 
 /**
  * POST /api/security/duo-preauth
@@ -19,7 +20,7 @@ import { preauth } from "@/lib/duo-server";
  * If you get a permissions error, add the grant in backend.ts or via
  * the IAM console on the Amplify SSR Lambda's execution role.
  */
-export default async function handler(
+async function handler(
   req: NextApiRequest,
   res: NextApiResponse
 ) {
@@ -84,3 +85,5 @@ export default async function handler(
     });
   }
 }
+
+export default withHomeUserAuth(handler);

@@ -7,14 +7,18 @@
  * homeDocument by matching the UUID prefix of the s3Key, verify the
  * object exists, and redirect to the direct S3 URL.
  *
- * No auth on the redirect itself — the Duo push is the auth gate, and
- * the UUID is unguessable (same security model as photos). A future
- * session can add one-time-use tokens or expiry if needed.
+ * AUTH MODEL: no Cognito session required — the agent DMs this URL via
+ * WhatsApp and the user clicks it from the phone (where they aren't
+ * logged into the web app). The "auth" is the unguessable UUID + the
+ * Duo push that happened upstream (see /api/documents/download). This
+ * is the WEAKEST gate in the system — TODO before going wide:
+ * generate a single-use token at Duo approval time, validate it here,
+ * and consume it on the redirect.
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
 
-const BUCKET = "cristinegennaro.com";
+const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 
 export default async function handler(
   req: NextApiRequest,

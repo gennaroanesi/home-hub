@@ -35,7 +35,7 @@ const s3 = new S3Client({});
 
 // ── Attachment helpers ───────────────────────────────────────────────────────
 // User-uploaded images/PDFs live under home/agent-uploads/ (web UI) or
-// home/messages/inbound/ (WhatsApp bot) in the photos bucket (PHOTOS_BUCKET
+// home/messages/inbound/ (WhatsApp bot) in the home-hub bucket (HOME_HUB_BUCKET
 // env var, set in backend.ts). The agent Lambda has s3:GetObject scoped to
 // both prefixes.
 
@@ -62,8 +62,8 @@ function inferImageMediaType(s3Key: string): string {
 }
 
 async function fetchS3AsBase64(s3Key: string): Promise<{ contentType: string; data: string }> {
-  const bucket = process.env.PHOTOS_BUCKET;
-  if (!bucket) throw new Error("PHOTOS_BUCKET env var not set");
+  const bucket = process.env.HOME_HUB_BUCKET;
+  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
 
   const res = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: s3Key }));
   if (!res.Body) throw new Error(`Empty body for s3://${bucket}/${s3Key}`);

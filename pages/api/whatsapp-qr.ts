@@ -1,3 +1,7 @@
+// AUTH MODEL: shared-secret via QR_ACCESS_TOKEN env var (not Cognito).
+// The /pair page uses this to fetch a fresh QR before logging in.
+// Intentionally not wrapped with withHomeUserAuth so the bot can be
+// re-paired even when no human session exists.
 import type { NextApiRequest, NextApiResponse } from "next";
 import { ECSClient, ListTasksCommand, DescribeTasksCommand } from "@aws-sdk/client-ecs";
 

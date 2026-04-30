@@ -19,7 +19,7 @@ const client = generateClient<Schema>();
 const rek = new RekognitionClient({});
 
 const COLLECTION_ID = process.env.REKOGNITION_COLLECTION_ID!;
-const PHOTOS_BUCKET = process.env.PHOTOS_BUCKET!;
+const HOME_HUB_BUCKET = process.env.HOME_HUB_BUCKET!;
 const SIMILARITY_THRESHOLD = 85;
 
 /**
@@ -79,7 +79,7 @@ async function processPhoto(photoId: string, s3key: string) {
     indexResult = await rek.send(
       new IndexFacesCommand({
         CollectionId: COLLECTION_ID,
-        Image: { S3Object: { Bucket: PHOTOS_BUCKET, Name: s3key } },
+        Image: { S3Object: { Bucket: HOME_HUB_BUCKET, Name: s3key } },
         DetectionAttributes: [],
         MaxFaces: 20,
         QualityFilter: "AUTO",

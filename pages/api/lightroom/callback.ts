@@ -1,3 +1,7 @@
+// AUTH MODEL: public OAuth callback. Adobe redirects here after consent
+// with ?code=... or ?error=... in the query. No session exists at this
+// point; the page just renders the code as HTML for the user to paste
+// into their terminal. No tokens or sensitive state touch the server.
 import type { NextApiRequest, NextApiResponse } from "next";
 
 /**
