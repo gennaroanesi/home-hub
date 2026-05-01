@@ -28,18 +28,22 @@ async function findBotTaskIp(clusterArn: string): Promise<string | null> {
 
 export default async function handler(req: NextApiRequest, res: NextApiResponse) {
   const token = process.env.QR_ACCESS_TOKEN;
-  const clusterArn = process.env.WHATSAPP_BOT_CLUSTER_ARN;
 
-  if (!token || !clusterArn) {
-    return res.status(500).json({ error: "Bot not configured" });
+  // Auth FIRST — before any config check or downstream call. Without
+  // this, an unauthenticated caller learns whether the bot is deployed
+  // (500 "Bot not configured" vs 503 "not running"), and any future
+  // ordering bug could expose the QR itself.
+  if (!token) {
+    return res.status(500).json({ error: "Server misconfigured" });
   }
-
-  // Constant-time-ish check on the request token. Without this, anyone
-  // who knows the URL can pull the bot's pairing QR code and link the
-  // WhatsApp account to their own phone.
   const supplied = typeof req.query.token === "string" ? req.query.token : "";
   if (supplied.length !== token.length || supplied !== token) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  const clusterArn = process.env.WHATSAPP_BOT_CLUSTER_ARN;
+  if (!clusterArn) {
+    return res.status(503).json({ error: "Bot not configured" });
   }
 
   try {

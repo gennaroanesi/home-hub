@@ -41,14 +41,18 @@ async function getAuthedUser(
  * Wrap a Next.js API handler so it requires a Cognito session whose
  * access token contains the `home-users` group claim.
  *
- * On failure, responds 401 with `{ error: "Unauthorized" }`. On success,
- * the wrapped handler receives the resolved AuthedUser as a third arg.
+ * Responds 401 if no valid session is present, 403 if the session is
+ * valid but the user is not in `home-users`. On success, the wrapped
+ * handler receives the resolved AuthedUser as a third arg.
  */
 export function withHomeUserAuth(handler: AuthedHandler): NextApiHandler {
   return async (req, res) => {
     const user = await getAuthedUser(req, res);
-    if (!user || !user.groups.includes("home-users")) {
+    if (!user) {
       return res.status(401).json({ error: "Unauthorized" });
+    }
+    if (!user.groups.includes("home-users")) {
+      return res.status(403).json({ error: "Forbidden" });
     }
     return handler(req, res, user);
   };
