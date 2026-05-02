@@ -23,6 +23,7 @@ import {
   FaArrowLeft,
   FaPlus,
   FaDownload,
+  FaEye,
   FaPen,
   FaTrash,
   FaLock,
@@ -182,6 +183,9 @@ export default function DocumentsPage() {
   // Duo auth state
   const [myDuoUsername, setMyDuoUsername] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  const [viewing, setViewing] = useState(false);
+  const [viewerUrl, setViewerUrl] = useState<string | null>(null);
+  const [viewerDoc, setViewerDoc] = useState<HomeDocument | null>(null);
 
   useEffect(() => {
     (async () => {
@@ -271,6 +275,44 @@ export default function DocumentsPage() {
       addToast({ title: "Download failed", description: err instanceof Error ? err.message : String(err), color: "danger" });
     } finally {
       setDownloading(false);
+    }
+  }, [myDuoUsername]);
+
+  const handleView = useCallback(async (doc: HomeDocument) => {
+    if (!myDuoUsername) {
+      addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
+      return;
+    }
+    if (!doc.s3Key) {
+      addToast({ title: "Nothing to view", description: "This document has no file.", color: "warning" });
+      return;
+    }
+    setViewing(true);
+    addToast({ title: "Duo push sent", description: "Approve on your phone…", color: "primary" });
+    try {
+      const res = await fetch("/api/documents/download", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          documentId: doc.id,
+          duoUsername: myDuoUsername,
+          s3Key: doc.s3Key,
+          originalFilename: doc.originalFilename ?? undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        addToast({ title: "View denied", description: data.error ?? "Unknown error", color: "danger" });
+        return;
+      }
+      if (data.url) {
+        setViewerDoc(doc);
+        setViewerUrl(data.url);
+      }
+    } catch (err) {
+      addToast({ title: "View failed", description: err instanceof Error ? err.message : String(err), color: "danger" });
+    } finally {
+      setViewing(false);
     }
   }, [myDuoUsername]);
 
@@ -643,20 +685,38 @@ export default function DocumentsPage() {
                             </div>
                           </div>
                           {(doc.s3Key || doc.documentNumber) && (
-                            <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
-                              <div>
-                                <Button
-                                  size="sm"
-                                  variant="flat"
-                                  isDisabled={!myDuoUsername || downloading}
-                                  isLoading={downloading}
-                                  startContent={!downloading ? <FaDownload size={10} /> : undefined}
-                                  onPress={() => handleDownload(doc)}
-                                >
-                                  Download
-                                </Button>
-                              </div>
-                            </Tooltip>
+                            <div className="flex items-center gap-1">
+                              {doc.s3Key && (
+                                <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                                  <div>
+                                    <Button
+                                      size="sm"
+                                      variant="flat"
+                                      isDisabled={!myDuoUsername || viewing}
+                                      isLoading={viewing}
+                                      startContent={!viewing ? <FaEye size={10} /> : undefined}
+                                      onPress={() => handleView(doc)}
+                                    >
+                                      View
+                                    </Button>
+                                  </div>
+                                </Tooltip>
+                              )}
+                              <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                                <div>
+                                  <Button
+                                    size="sm"
+                                    variant="flat"
+                                    isDisabled={!myDuoUsername || downloading}
+                                    isLoading={downloading}
+                                    startContent={!downloading ? <FaDownload size={10} /> : undefined}
+                                    onPress={() => handleDownload(doc)}
+                                  >
+                                    Download
+                                  </Button>
+                                </div>
+                              </Tooltip>
+                            </div>
                           )}
                         </CardBody>
                       </Card>
@@ -901,7 +961,23 @@ export default function DocumentsPage() {
                     </div>
                   )}
                   {detailDoc && (detailDoc.s3Key || detailDoc.documentNumber) && (
-                    <div className="pt-2">
+                    <div className="pt-2 flex items-center gap-2">
+                      {detailDoc.s3Key && (
+                        <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                          <div className="inline-block">
+                            <Button
+                              size="sm"
+                              variant="flat"
+                              isDisabled={!myDuoUsername || viewing}
+                              isLoading={viewing}
+                              startContent={!viewing ? <FaEye size={10} /> : undefined}
+                              onPress={() => handleView(detailDoc)}
+                            >
+                              View
+                            </Button>
+                          </div>
+                        </Tooltip>
+                      )}
                       <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
                         <div className="inline-block">
                           <Button
@@ -995,6 +1071,69 @@ export default function DocumentsPage() {
               </ModalFooter>
             </>
           )}
+        </ModalContent>
+      </Modal>
+
+      {/* Inline viewer modal — opens after Duo approval, shows the file
+          without forcing a download. The presigned URL is short-lived;
+          closing the modal drops it. */}
+      <Modal
+        isOpen={viewerUrl !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setViewerUrl(null);
+            setViewerDoc(null);
+          }
+        }}
+        size="5xl"
+        scrollBehavior="inside"
+      >
+        <ModalContent>
+          {(onClose) => {
+            if (!viewerUrl || !viewerDoc) return null;
+            const ext = (viewerDoc.s3Key ?? "").split(".").pop()?.toLowerCase() ?? "";
+            const isImage = ["jpg", "jpeg", "png", "webp", "gif"].includes(ext);
+            const isPdf = ext === "pdf";
+            const isHeic = ext === "heic" || ext === "heif";
+            return (
+              <>
+                <ModalHeader className="flex items-center justify-between gap-2">
+                  <span className="truncate">{viewerDoc.title}</span>
+                </ModalHeader>
+                <ModalBody className="p-0">
+                  {isPdf && (
+                    <iframe
+                      src={viewerUrl}
+                      title={viewerDoc.title}
+                      className="w-full h-[75vh] border-0"
+                    />
+                  )}
+                  {isImage && (
+                    <div className="flex items-center justify-center bg-default-50 p-2">
+                      <img
+                        src={viewerUrl}
+                        alt={viewerDoc.title}
+                        className="max-w-full max-h-[75vh] object-contain"
+                      />
+                    </div>
+                  )}
+                  {isHeic && (
+                    <div className="p-6 text-sm text-default-600">
+                      HEIC images can&apos;t be previewed in the browser. Use Download to open the file.
+                    </div>
+                  )}
+                  {!isPdf && !isImage && !isHeic && (
+                    <div className="p-6 text-sm text-default-600">
+                      No inline preview for this file type. Use Download instead.
+                    </div>
+                  )}
+                </ModalBody>
+                <ModalFooter>
+                  <Button variant="light" onPress={onClose}>Close</Button>
+                </ModalFooter>
+              </>
+            );
+          }}
         </ModalContent>
       </Modal>
     </DefaultLayout>
