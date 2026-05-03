@@ -1,9 +1,14 @@
 // Documents list. Search by title + scope filter (Mine /
-// Household / All) + type filter (passport, license, …). Tap row
-// to drill into the detail screen. The "+" header opens the form
-// modal in create mode. Sensitive fields (documentNumber, the
-// file itself) live behind the Duo flow on web — the row only
-// shows metadata.
+// Household / All) + type filter (passport, license, …). Tap a row
+// to EXPAND it inline — the card opens to show full metadata
+// (number behind a Face ID Reveal gate), notes, and Edit/Delete
+// actions. View / Share / Download icons live in the row header
+// and are always reachable. The "+" header opens the form
+// modal in create mode.
+//
+// The /more/documents/[id] route still exists as a fallback for
+// deep links from outside the app (agent DMs, push notifications);
+// nothing in this list pushes to it anymore.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -40,6 +45,7 @@ import {
   shareDocument,
   viewDocument,
 } from "../../../../lib/document-download";
+import { revealDocumentNumber } from "../../../../lib/document-download";
 import { requireLocalAuth } from "../../../../lib/local-auth";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
@@ -61,6 +67,14 @@ export default function DocumentsList() {
   const [typeFilter, setTypeFilter] = useState<DocumentType | "ALL">("ALL");
   const [editing, setEditing] = useState<Document | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Last-revealed document number, for the currently-expanded card.
+  // Cleared when the card collapses or another row is expanded.
+  const [revealedNumber, setRevealedNumber] = useState<{
+    docId: string;
+    value: string;
+  } | null>(null);
+  const [revealing, setRevealing] = useState(false);
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -112,7 +126,13 @@ export default function DocumentsList() {
     setModalOpen(true);
   }
 
-  async function openEdit(d: Document) {
+  function toggleExpanded(id: string) {
+    setExpandedId((prev) => (prev === id ? null : id));
+    // Drop any revealed number when changing rows or collapsing.
+    setRevealedNumber(null);
+  }
+
+  async function onEdit(d: Document) {
     // The edit form exposes documentNumber and an inline file preview,
     // both sensitive. Gate behind Face ID. If the device has no Face ID,
     // fall through and open the form — there's no second-factor fallback
@@ -125,7 +145,58 @@ export default function DocumentsList() {
     setModalOpen(true);
   }
 
-  // Row actions — all gated by Face ID/Duo via the underlying helpers.
+  function onDelete(d: Document) {
+    Alert.alert(
+      `Delete "${d.title}"?`,
+      "This removes the metadata row. The S3 file is left in place — clean it up from the web if needed.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              const client = getClient();
+              const { errors } = await client.models.homeDocument.delete({
+                id: d.id,
+              });
+              if (errors?.length) throw new Error(errors[0].message);
+              setExpandedId((prev) => (prev === d.id ? null : prev));
+              await load();
+            } catch (err: any) {
+              Alert.alert("Delete failed", err?.message ?? String(err));
+            }
+          },
+        },
+      ]
+    );
+  }
+
+  async function onReveal(d: Document) {
+    if (!d.documentNumber) {
+      Alert.alert("No number", "This document has no number to reveal.");
+      return;
+    }
+    setRevealing(true);
+    try {
+      const result = await revealDocumentNumber({
+        documentId: d.id,
+        s3Key: d.s3Key,
+        documentNumber: d.documentNumber,
+      });
+      if (!result.ok) {
+        if (result.error !== "Cancelled")
+          Alert.alert("Couldn't reveal", result.error);
+        return;
+      }
+      if (result.documentNumber) {
+        setRevealedNumber({ docId: d.id, value: result.documentNumber });
+      }
+    } finally {
+      setRevealing(false);
+    }
+  }
+
   async function onView(d: Document) {
     if (!d.s3Key) {
       Alert.alert("Nothing to view", "This document has no file attached.");
@@ -148,7 +219,8 @@ export default function DocumentsList() {
       documentNumber: d.documentNumber,
     });
     if (!result.ok) {
-      if (result.error !== "Cancelled") Alert.alert("Download failed", result.error);
+      if (result.error !== "Cancelled")
+        Alert.alert("Download failed", result.error);
       return;
     }
     if (result.url) {
@@ -275,13 +347,21 @@ export default function DocumentsList() {
             </Text>
           }
           renderItem={({ item }) => (
-            <DocumentRow
+            <DocumentCard
               doc={item}
               ownerName={ownerLabel(item, people)}
-              onPress={() => router.push(`/more/documents/${item.id}`)}
+              expanded={expandedId === item.id}
+              revealedNumber={
+                revealedNumber?.docId === item.id ? revealedNumber.value : null
+              }
+              revealing={revealing && expandedId === item.id}
+              onToggle={() => toggleExpanded(item.id)}
               onView={() => onView(item)}
               onDownload={() => onDownload(item)}
               onShare={() => onShare(item)}
+              onEdit={() => onEdit(item)}
+              onDelete={() => onDelete(item)}
+              onReveal={() => onReveal(item)}
             />
           )}
         />
@@ -299,57 +379,165 @@ export default function DocumentsList() {
   );
 }
 
-function DocumentRow({
-  doc,
-  ownerName,
-  onPress,
-  onView,
-  onDownload,
-  onShare,
-}: {
+interface DocumentCardProps {
   doc: Document;
   ownerName: string;
-  onPress: () => void;
+  expanded: boolean;
+  revealedNumber: string | null;
+  revealing: boolean;
+  onToggle: () => void;
   onView: () => void;
   onDownload: () => void;
   onShare: () => void;
-}) {
+  onEdit: () => void;
+  onDelete: () => void;
+  onReveal: () => void;
+}
+
+function DocumentCard({
+  doc,
+  ownerName,
+  expanded,
+  revealedNumber,
+  revealing,
+  onToggle,
+  onView,
+  onDownload,
+  onShare,
+  onEdit,
+  onDelete,
+  onReveal,
+}: DocumentCardProps) {
   const type = (doc.type as DocumentType | null) ?? "OTHER";
   const expiring = isExpiringSoon(doc);
   const expiry = expiryLabel(doc);
   const hasFile = !!doc.s3Key;
+
   return (
-    <Pressable onPress={onPress} style={styles.row}>
-      <Text style={styles.rowEmoji}>{DOCUMENT_TYPE_EMOJI[type]}</Text>
-      <View style={styles.rowMain}>
-        <Text style={styles.rowTitle} numberOfLines={1}>
-          {doc.title}
-        </Text>
-        <Text style={styles.rowMeta}>
-          {DOCUMENT_TYPE_LABEL[type]} · {ownerName}
-        </Text>
-        {expiry && (
-          <Text style={[styles.rowExpiry, expiring && styles.rowExpiryWarn]}>
-            {expiry}
+    <View style={[styles.card, expanded && styles.cardExpanded]}>
+      <Pressable onPress={onToggle} style={styles.cardHeader}>
+        <Text style={styles.rowEmoji}>{DOCUMENT_TYPE_EMOJI[type]}</Text>
+        <View style={styles.rowMain}>
+          <Text style={styles.rowTitle} numberOfLines={1}>
+            {doc.title}
           </Text>
-        )}
-      </View>
-      <View style={styles.rowActions}>
-        {hasFile && (
-          <>
-            <RowAction icon="eye-outline" label="View" onPress={onView} />
-            <RowAction icon="share-outline" label="Share" onPress={onShare} />
-          </>
-        )}
-        {(hasFile || doc.documentNumber) && (
-          <RowAction
-            icon="download-outline"
-            label="Download"
-            onPress={onDownload}
+          <Text style={styles.rowMeta}>
+            {DOCUMENT_TYPE_LABEL[type]} · {ownerName}
+          </Text>
+          {expiry && (
+            <Text style={[styles.rowExpiry, expiring && styles.rowExpiryWarn]}>
+              {expiry}
+            </Text>
+          )}
+        </View>
+        <View style={styles.rowActions}>
+          {hasFile && (
+            <>
+              <RowAction icon="eye-outline" label="View" onPress={onView} />
+              <RowAction icon="share-outline" label="Share" onPress={onShare} />
+            </>
+          )}
+          {(hasFile || doc.documentNumber) && (
+            <RowAction
+              icon="download-outline"
+              label="Download"
+              onPress={onDownload}
+            />
+          )}
+          <Ionicons
+            name={expanded ? "chevron-up" : "chevron-down"}
+            size={16}
+            color="#bbb"
+            style={{ marginLeft: 4 }}
           />
-        )}
-      </View>
-    </Pressable>
+        </View>
+      </Pressable>
+
+      {expanded && (
+        <View style={styles.cardBody}>
+          {!!doc.documentNumber && (
+            <View style={styles.metaRow}>
+              <Text style={styles.metaLabel}>Number</Text>
+              {revealedNumber ? (
+                <Text style={styles.metaValue} selectable>
+                  {revealedNumber}
+                </Text>
+              ) : (
+                <Pressable
+                  onPress={onReveal}
+                  disabled={revealing}
+                  style={({ pressed }) => [
+                    styles.revealBtn,
+                    (pressed || revealing) && styles.revealBtnPressed,
+                  ]}
+                >
+                  {revealing ? (
+                    <ActivityIndicator size="small" color="#735f55" />
+                  ) : (
+                    <>
+                      <Ionicons
+                        name="eye-outline"
+                        size={14}
+                        color="#735f55"
+                      />
+                      <Text style={styles.revealText}>Reveal</Text>
+                    </>
+                  )}
+                </Pressable>
+              )}
+            </View>
+          )}
+          {!!doc.scope && (
+            <MetaRow
+              label="Scope"
+              value={doc.scope === "HOUSEHOLD" ? "Household" : "Personal"}
+            />
+          )}
+          {!!doc.issuer && <MetaRow label="Issuer" value={doc.issuer} />}
+          {!!doc.issuedDate && (
+            <MetaRow label="Issued" value={formatDate(doc.issuedDate)} />
+          )}
+          {!!doc.expiresDate && (
+            <MetaRow
+              label="Expires"
+              value={formatDate(doc.expiresDate)}
+              accent={expiring ? "#a44" : undefined}
+            />
+          )}
+          {!!doc.s3Key && (
+            <MetaRow
+              label="File"
+              value={
+                doc.originalFilename ??
+                doc.s3Key.split("/").pop() ??
+                "(uploaded)"
+              }
+            />
+          )}
+          {!!doc.uploadedBy && (
+            <MetaRow label="Uploaded by" value={doc.uploadedBy} />
+          )}
+
+          {!!doc.notes && (
+            <>
+              <Text style={styles.sectionLabel}>Notes</Text>
+              <Text style={styles.notes}>{doc.notes}</Text>
+            </>
+          )}
+
+          <View style={styles.bodyActions}>
+            <Pressable onPress={onEdit} style={styles.bodyBtn}>
+              <Ionicons name="pencil" size={14} color="#735f55" />
+              <Text style={styles.bodyBtnText}>Edit</Text>
+            </Pressable>
+            <Pressable onPress={onDelete} style={[styles.bodyBtn, styles.deleteBtn]}>
+              <Ionicons name="trash-outline" size={14} color="#a44" />
+              <Text style={[styles.bodyBtnText, styles.deleteBtnText]}>Delete</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -375,6 +563,41 @@ function RowAction({
       <Ionicons name={icon} size={18} color="#735f55" />
     </Pressable>
   );
+}
+
+function MetaRow({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent?: string;
+}) {
+  return (
+    <View style={styles.metaRow}>
+      <Text style={styles.metaLabel}>{label}</Text>
+      <Text
+        style={[styles.metaValue, accent ? { color: accent } : null]}
+        selectable
+      >
+        {value}
+      </Text>
+    </View>
+  );
+}
+
+function formatDate(iso: string): string {
+  // ISO date might be `YYYY-MM-DD` (whole day) or full ISO. We render
+  // local-formatted but only date part — these are calendar-day fields.
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return iso;
+  const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
 }
 
 const styles = StyleSheet.create({
@@ -429,16 +652,32 @@ const styles = StyleSheet.create({
   center: { flex: 1, justifyContent: "center", alignItems: "center" },
   empty: { color: "#888", padding: 24, textAlign: "center" },
 
-  row: {
+  card: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    marginVertical: 3,
+    overflow: "hidden",
+  },
+  cardExpanded: {
+    borderWidth: 1,
+    borderColor: "#e0d8d2",
+  },
+  cardHeader: {
     flexDirection: "row",
     alignItems: "center",
     paddingVertical: 12,
     paddingHorizontal: 14,
-    backgroundColor: "#fff",
-    borderRadius: 10,
-    marginVertical: 3,
     gap: 12,
   },
+  cardBody: {
+    paddingHorizontal: 14,
+    paddingBottom: 14,
+    gap: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: "#eee",
+    paddingTop: 12,
+  },
+
   rowEmoji: { fontSize: 22 },
   rowMain: { flex: 1 },
   rowTitle: { fontSize: 15, color: "#222", fontWeight: "500" },
@@ -456,4 +695,61 @@ const styles = StyleSheet.create({
     padding: 6,
     borderRadius: 6,
   },
+
+  metaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 6,
+    gap: 12,
+  },
+  metaLabel: { fontSize: 13, color: "#888" },
+  metaValue: { fontSize: 14, color: "#222", flexShrink: 1, textAlign: "right" },
+
+  revealBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ccc",
+    backgroundColor: "#faf6f3",
+  },
+  revealBtnPressed: { opacity: 0.6 },
+  revealText: { fontSize: 12, color: "#735f55", fontWeight: "500" },
+
+  sectionLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#888",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+    marginTop: 8,
+  },
+  notes: { fontSize: 13, color: "#444", lineHeight: 18 },
+
+  bodyActions: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 12,
+  },
+  bodyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#d8c9bf",
+    backgroundColor: "#faf6f3",
+  },
+  bodyBtnText: { fontSize: 13, color: "#735f55", fontWeight: "500" },
+  deleteBtn: {
+    borderColor: "#e8c2c2",
+    backgroundColor: "#fdf3f3",
+  },
+  deleteBtnText: { color: "#a44" },
 });

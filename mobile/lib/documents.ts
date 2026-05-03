@@ -11,42 +11,42 @@ import { type Person } from "./use-people";
 export type Document = Schema["homeDocument"]["type"];
 
 export type DocumentType =
-  | "DRIVERS_LICENSE"
-  | "PASSPORT"
-  | "GREEN_CARD"
-  | "TSA_PRECHECK"
-  | "GLOBAL_ENTRY"
+  | "ID"
   | "INSURANCE"
+  | "TAX"
+  | "MEDICAL"
+  | "TRAVEL"
+  | "FINANCIAL"
   | "OTHER";
 
 export const DOCUMENT_TYPE_LABEL: Record<DocumentType, string> = {
-  DRIVERS_LICENSE: "Driver's license",
-  PASSPORT: "Passport",
-  GREEN_CARD: "Green card",
-  TSA_PRECHECK: "TSA PreCheck",
-  GLOBAL_ENTRY: "Global Entry",
+  ID: "ID",
   INSURANCE: "Insurance",
+  TAX: "Tax",
+  MEDICAL: "Medical",
+  TRAVEL: "Travel",
+  FINANCIAL: "Financial",
   OTHER: "Other",
 };
 
 export const DOCUMENT_TYPE_EMOJI: Record<DocumentType, string> = {
-  DRIVERS_LICENSE: "🪪",
-  PASSPORT: "🛂",
-  GREEN_CARD: "🟢",
-  TSA_PRECHECK: "✈️",
-  GLOBAL_ENTRY: "🌎",
-  INSURANCE: "📋",
+  ID: "🪪",
+  INSURANCE: "🛡️",
+  TAX: "🧾",
+  MEDICAL: "💊",
+  TRAVEL: "✈️",
+  FINANCIAL: "💰",
   OTHER: "📄",
 };
 
 /** All known document types in display order. */
 export const DOCUMENT_TYPES: DocumentType[] = [
-  "DRIVERS_LICENSE",
-  "PASSPORT",
-  "GREEN_CARD",
-  "TSA_PRECHECK",
-  "GLOBAL_ENTRY",
+  "ID",
   "INSURANCE",
+  "TAX",
+  "MEDICAL",
+  "TRAVEL",
+  "FINANCIAL",
   "OTHER",
 ];
 

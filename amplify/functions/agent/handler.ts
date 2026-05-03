@@ -1213,12 +1213,12 @@ const tools: Anthropic.Tool[] = [
         type: {
           type: "string",
           enum: [
-            "DRIVERS_LICENSE",
-            "PASSPORT",
-            "GREEN_CARD",
-            "TSA_PRECHECK",
-            "GLOBAL_ENTRY",
+            "ID",
             "INSURANCE",
+            "TAX",
+            "MEDICAL",
+            "TRAVEL",
+            "FINANCIAL",
             "OTHER",
           ],
           description: "Filter to a specific document type.",

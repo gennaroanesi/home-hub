@@ -586,12 +586,12 @@ const schema = a
       .model({
         title: a.string().required(),
         type: a.enum([
-          "DRIVERS_LICENSE",
-          "PASSPORT",
-          "GREEN_CARD",
-          "TSA_PRECHECK",
-          "GLOBAL_ENTRY",
+          "ID",
           "INSURANCE",
+          "TAX",
+          "MEDICAL",
+          "TRAVEL",
+          "FINANCIAL",
           "OTHER",
         ]),
         // PERSONAL → ownerPersonId must be set. HOUSEHOLD → shared among all

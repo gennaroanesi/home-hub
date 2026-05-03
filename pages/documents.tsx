@@ -46,32 +46,32 @@ const ALL = "all";
 const HOUSEHOLD = "household";
 
 const DOC_TYPE_LABEL: Record<DocType, string> = {
-  DRIVERS_LICENSE: "Driver's License",
-  PASSPORT: "Passport",
-  GREEN_CARD: "Green Card",
-  TSA_PRECHECK: "TSA PreCheck",
-  GLOBAL_ENTRY: "Global Entry",
+  ID: "ID",
   INSURANCE: "Insurance",
+  TAX: "Tax",
+  MEDICAL: "Medical",
+  TRAVEL: "Travel",
+  FINANCIAL: "Financial",
   OTHER: "Other",
 };
 
 const DOC_TYPE_EMOJI: Record<DocType, string> = {
-  DRIVERS_LICENSE: "🪪",
-  PASSPORT: "🛂",
-  GREEN_CARD: "🟩",
-  TSA_PRECHECK: "✈️",
-  GLOBAL_ENTRY: "✈️",
+  ID: "🪪",
   INSURANCE: "🛡️",
+  TAX: "🧾",
+  MEDICAL: "💊",
+  TRAVEL: "✈️",
+  FINANCIAL: "💰",
   OTHER: "📄",
 };
 
 const DOC_TYPES: DocType[] = [
-  "DRIVERS_LICENSE",
-  "PASSPORT",
-  "GREEN_CARD",
-  "TSA_PRECHECK",
-  "GLOBAL_ENTRY",
+  "ID",
   "INSURANCE",
+  "TAX",
+  "MEDICAL",
+  "TRAVEL",
+  "FINANCIAL",
   "OTHER",
 ];
 
@@ -129,7 +129,7 @@ interface FormState {
 function emptyForm(): FormState {
   return {
     title: "",
-    type: "PASSPORT",
+    type: "ID",
     scope: "PERSONAL",
     ownerPersonId: "",
     issuer: "",

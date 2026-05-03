@@ -137,7 +137,7 @@ export default function DocumentDetail() {
                 id: doc.id,
               });
               if (errors?.length) throw new Error(errors[0].message);
-              router.back();
+              goBack();
             } catch (err: any) {
               Alert.alert("Delete failed", err?.message ?? String(err));
             }
@@ -147,11 +147,19 @@ export default function DocumentDetail() {
     );
   }
 
+  // Deep links from outside the app (agent DM, push notification) land
+  // here with no back stack, so router.back() would no-op. Fall through
+  // to the list page in that case.
+  function goBack() {
+    if (router.canGoBack()) router.back();
+    else router.replace("/(tabs)/more/documents");
+  }
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       <View style={styles.header}>
         <Pressable
-          onPress={() => router.back()}
+          onPress={goBack}
           hitSlop={12}
           style={styles.backBtn}
         >
