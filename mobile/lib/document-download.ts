@@ -16,6 +16,7 @@
 import { requireLocalAuth, type LocalAuthOutcome } from "./local-auth";
 import { getClient } from "./amplify";
 import { resolveCurrentPerson } from "./current-person";
+import { authedFetch } from "./authed-fetch";
 
 const WEB_BASE_URL =
   process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
@@ -136,7 +137,7 @@ async function runDuoFallback(
 
   // For "number" mode skip s3Key in the request so the web endpoint
   // returns the number rather than a download URL.
-  const res = await fetch(`${WEB_BASE_URL}/api/documents/download`, {
+  const res = await authedFetch(`${WEB_BASE_URL}/api/documents/download`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({

@@ -49,6 +49,17 @@
         {
           "faceIDPermission": "Home Hub uses Face ID to confirm sensitive actions like document downloads."
         }
+      ],
+      ["./plugins/with-share-extension-display-name", "Home Hub"],
+      [
+        "expo-share-intent",
+        {
+          "iosActivationRules": {
+            "NSExtensionActivationSupportsImageWithMaxCount": 1,
+            "NSExtensionActivationSupportsFileWithMaxCount": 1
+          },
+          "iosShareExtensionName": "ShareExtension"
+        }
       ]
     ],
     "experiments": {

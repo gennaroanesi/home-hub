@@ -3,18 +3,22 @@
 // Mirrors the web's two-step flow:
 //   1. POST /api/documents/upload-url with { contentType } → returns
 //      { uploadUrl, s3key } where uploadUrl is a 5-minute presigned
-//      PUT against s3://cristinegennaro.com/home/documents/<id>.<ext>.
+//      PUT against s3://<HOME_HUB_BUCKET>/home/documents/<id>.<ext>.
 //   2. PUT the file body to uploadUrl with the same Content-Type.
 //
 // We hit the same web endpoint instead of writing a mobile-specific
 // presigner Lambda — single source of truth for the allow-list of
-// content types and the s3 key shape. The endpoint is currently
-// unauthenticated (same as it is for the web), so no extra plumbing.
+// content types and the s3 key shape. The presign endpoint requires a
+// Cognito session via `withHomeUserAuth` — `authedFetch` adds the
+// access token as a Bearer header. The S3 PUT uses plain `fetch` since
+// the presigned URL is the auth.
 //
 // File source: any file:// URI from expo-image-picker (camera /
 // library) or expo-document-picker (PDFs). RN's fetch resolves
 // file:// URIs into a blob, which is what S3's presigned PUT
 // expects.
+
+import { authedFetch } from "./authed-fetch";
 
 const WEB_BASE_URL =
   process.env.EXPO_PUBLIC_WEB_BASE_URL ??
@@ -52,7 +56,7 @@ export async function uploadDocumentFile(args: {
   const { uri, contentType, prefix } = args;
 
   // 1. Presign.
-  const presignRes = await fetch(`${WEB_BASE_URL}/api/documents/upload-url`, {
+  const presignRes = await authedFetch(`${WEB_BASE_URL}/api/documents/upload-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ contentType, ...(prefix ? { prefix } : {}) }),
