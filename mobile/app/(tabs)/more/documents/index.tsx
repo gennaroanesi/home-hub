@@ -8,7 +8,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
+  Linking,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -33,6 +35,12 @@ import {
   isExpiringSoon,
   ownerLabel,
 } from "../../../../lib/documents";
+import {
+  downloadDocument,
+  shareDocument,
+  viewDocument,
+} from "../../../../lib/document-download";
+import { requireLocalAuth } from "../../../../lib/local-auth";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
 import { DocumentFormModal } from "../../../../components/DocumentFormModal";
@@ -104,9 +112,66 @@ export default function DocumentsList() {
     setModalOpen(true);
   }
 
-  function openEdit(d: Document) {
+  async function openEdit(d: Document) {
+    // The edit form exposes documentNumber and an inline file preview,
+    // both sensitive. Gate behind Face ID. If the device has no Face ID,
+    // fall through and open the form — there's no second-factor fallback
+    // here today.
+    const auth = await requireLocalAuth({
+      promptMessage: "Edit document",
+    });
+    if (!auth.ok && auth.reason === "cancelled") return;
     setEditing(d);
     setModalOpen(true);
+  }
+
+  // Row actions — all gated by Face ID/Duo via the underlying helpers.
+  async function onView(d: Document) {
+    if (!d.s3Key) {
+      Alert.alert("Nothing to view", "This document has no file attached.");
+      return;
+    }
+    const result = await viewDocument({
+      documentId: d.id,
+      s3Key: d.s3Key,
+      documentNumber: d.documentNumber,
+    });
+    if (!result.ok && result.error && result.error !== "Cancelled") {
+      Alert.alert("View failed", result.error);
+    }
+  }
+
+  async function onDownload(d: Document) {
+    const result = await downloadDocument({
+      documentId: d.id,
+      s3Key: d.s3Key,
+      documentNumber: d.documentNumber,
+    });
+    if (!result.ok) {
+      if (result.error !== "Cancelled") Alert.alert("Download failed", result.error);
+      return;
+    }
+    if (result.url) {
+      await Linking.openURL(result.url);
+    } else if (result.documentNumber) {
+      Alert.alert("Document number", result.documentNumber);
+    }
+  }
+
+  async function onShare(d: Document) {
+    if (!d.s3Key) {
+      Alert.alert("Nothing to share", "This document has no file attached.");
+      return;
+    }
+    const result = await shareDocument({
+      documentId: d.id,
+      s3Key: d.s3Key,
+      documentNumber: d.documentNumber,
+      filename: d.originalFilename,
+    });
+    if (!result.ok && result.error && result.error !== "Cancelled") {
+      Alert.alert("Share failed", result.error);
+    }
   }
 
   return (
@@ -214,6 +279,9 @@ export default function DocumentsList() {
               doc={item}
               ownerName={ownerLabel(item, people)}
               onPress={() => router.push(`/more/documents/${item.id}`)}
+              onView={() => onView(item)}
+              onDownload={() => onDownload(item)}
+              onShare={() => onShare(item)}
             />
           )}
         />
@@ -235,14 +303,21 @@ function DocumentRow({
   doc,
   ownerName,
   onPress,
+  onView,
+  onDownload,
+  onShare,
 }: {
   doc: Document;
   ownerName: string;
   onPress: () => void;
+  onView: () => void;
+  onDownload: () => void;
+  onShare: () => void;
 }) {
   const type = (doc.type as DocumentType | null) ?? "OTHER";
   const expiring = isExpiringSoon(doc);
   const expiry = expiryLabel(doc);
+  const hasFile = !!doc.s3Key;
   return (
     <Pressable onPress={onPress} style={styles.row}>
       <Text style={styles.rowEmoji}>{DOCUMENT_TYPE_EMOJI[type]}</Text>
@@ -259,7 +334,45 @@ function DocumentRow({
           </Text>
         )}
       </View>
-      <Ionicons name="chevron-forward" size={18} color="#bbb" />
+      <View style={styles.rowActions}>
+        {hasFile && (
+          <>
+            <RowAction icon="eye-outline" label="View" onPress={onView} />
+            <RowAction icon="share-outline" label="Share" onPress={onShare} />
+          </>
+        )}
+        {(hasFile || doc.documentNumber) && (
+          <RowAction
+            icon="download-outline"
+            label="Download"
+            onPress={onDownload}
+          />
+        )}
+      </View>
+    </Pressable>
+  );
+}
+
+function RowAction({
+  icon,
+  label,
+  onPress,
+}: {
+  icon: keyof typeof Ionicons.glyphMap;
+  label: string;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={(e) => {
+        e.stopPropagation();
+        onPress();
+      }}
+      hitSlop={6}
+      style={styles.rowActionBtn}
+      accessibilityLabel={label}
+    >
+      <Ionicons name={icon} size={18} color="#735f55" />
     </Pressable>
   );
 }
@@ -332,4 +445,15 @@ const styles = StyleSheet.create({
   rowMeta: { fontSize: 13, color: "#666", marginTop: 2 },
   rowExpiry: { fontSize: 12, color: "#888", marginTop: 1 },
   rowExpiryWarn: { color: "#a44", fontWeight: "500" },
+
+  rowActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    marginLeft: 8,
+  },
+  rowActionBtn: {
+    padding: 6,
+    borderRadius: 6,
+  },
 });

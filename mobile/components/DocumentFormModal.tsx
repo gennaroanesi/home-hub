@@ -26,9 +26,11 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
+import * as WebBrowser from "expo-web-browser";
 
 import { getClient } from "../lib/amplify";
 import {
@@ -63,6 +65,7 @@ export function DocumentFormModal({
   const [type, setType] = useState<DocumentType>("OTHER");
   const [scope, setScope] = useState<"PERSONAL" | "HOUSEHOLD">("PERSONAL");
   const [ownerPersonId, setOwnerPersonId] = useState<string | null>(null);
+  const [documentNumber, setDocumentNumber] = useState("");
   const [issuer, setIssuer] = useState("");
   const [issuedDate, setIssuedDate] = useState("");
   const [expiresDate, setExpiresDate] = useState("");
@@ -84,6 +87,7 @@ export function DocumentFormModal({
       setType((doc.type as DocumentType | null) ?? "OTHER");
       setScope((doc.scope as "PERSONAL" | "HOUSEHOLD" | null) ?? "PERSONAL");
       setOwnerPersonId(doc.ownerPersonId ?? null);
+      setDocumentNumber(doc.documentNumber ?? "");
       setIssuer(doc.issuer ?? "");
       setIssuedDate(doc.issuedDate ?? "");
       setExpiresDate(doc.expiresDate ?? "");
@@ -94,6 +98,7 @@ export function DocumentFormModal({
       setType("OTHER");
       setScope("PERSONAL");
       setOwnerPersonId(myPersonId);
+      setDocumentNumber("");
       setIssuer("");
       setIssuedDate("");
       setExpiresDate("");
@@ -194,6 +199,7 @@ export function DocumentFormModal({
         type,
         scope,
         ownerPersonId: scope === "PERSONAL" ? ownerPersonId : null,
+        documentNumber: documentNumber.trim() || null,
         issuer: issuer.trim() || null,
         issuedDate: issuedDate || null,
         expiresDate: expiresDate || null,
@@ -330,6 +336,20 @@ export function DocumentFormModal({
             </>
           )}
 
+          {doc?.s3Key && <FilePreview s3Key={doc.s3Key} title={doc.title} />}
+
+          <Text style={styles.label}>Number (optional)</Text>
+          <TextInput
+            style={styles.input}
+            value={documentNumber}
+            onChangeText={setDocumentNumber}
+            placeholder="e.g. passport / license number"
+            placeholderTextColor="#888"
+            autoCapitalize="characters"
+            autoCorrect={false}
+            editable={!busy}
+          />
+
           <Text style={styles.label}>Issuer (optional)</Text>
           <TextInput
             style={styles.input}
@@ -412,6 +432,80 @@ export function DocumentFormModal({
     </Modal>
   );
 }
+
+// Inline preview for an existing document. Image renders directly via
+// expo-image; PDF gets a tap target that opens the in-app Safari sheet
+// (handles PDF rendering natively, no extra dep). The s3 key is the
+// secret — we only render this in edit mode, which already required
+// Face ID to open.
+function FilePreview({ s3Key, title }: { s3Key: string; title: string }) {
+  const ext = (s3Key.split(".").pop() ?? "").toLowerCase();
+  const isImage = ["jpg", "jpeg", "png", "webp", "gif"].includes(ext);
+  const isPdf = ext === "pdf";
+  const url = (() => {
+    // Inline so this component doesn't depend on document-download.
+    const filename = s3Key.replace(/^home\/documents\//, "");
+    const base =
+      process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
+    return `${base}/api/d/${filename}`;
+  })();
+
+  return (
+    <>
+      <Text style={styles.label}>Preview</Text>
+      {isImage ? (
+        <Image
+          source={{ uri: url }}
+          style={previewStyles.image}
+          contentFit="contain"
+          accessibilityLabel={title}
+        />
+      ) : isPdf ? (
+        <Pressable
+          onPress={() => WebBrowser.openBrowserAsync(url)}
+          style={previewStyles.pdfTile}
+        >
+          <Ionicons name="document-text-outline" size={28} color="#735f55" />
+          <View style={{ flex: 1 }}>
+            <Text style={previewStyles.pdfTitle} numberOfLines={1}>
+              {title}
+            </Text>
+            <Text style={previewStyles.pdfHint}>Tap to open PDF</Text>
+          </View>
+          <Ionicons name="open-outline" size={18} color="#888" />
+        </Pressable>
+      ) : (
+        <Text style={previewStyles.unsupported}>
+          No inline preview for .{ext} — use the actions on the list to download.
+        </Text>
+      )}
+    </>
+  );
+}
+
+const previewStyles = StyleSheet.create({
+  image: {
+    width: "100%",
+    height: 220,
+    borderRadius: 8,
+    backgroundColor: "#f0f0f0",
+    marginTop: 4,
+  },
+  pdfTile: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    backgroundColor: "#fff",
+    borderRadius: 8,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    marginTop: 4,
+  },
+  pdfTitle: { fontSize: 14, color: "#222", fontWeight: "500" },
+  pdfHint: { fontSize: 12, color: "#888", marginTop: 2 },
+  unsupported: { fontSize: 13, color: "#888", padding: 8 },
+});
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#f7f7f7" },

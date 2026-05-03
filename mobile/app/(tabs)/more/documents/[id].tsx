@@ -38,6 +38,7 @@ import {
   downloadDocument,
   revealDocumentNumber,
 } from "../../../../lib/document-download";
+import { requireLocalAuth } from "../../../../lib/local-auth";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
 import { DocumentFormModal } from "../../../../components/DocumentFormModal";
@@ -186,7 +187,18 @@ export default function DocumentDetail() {
                 </>
               )}
             </Pressable>
-            <Pressable onPress={() => setEditOpen(true)} style={styles.secondaryBtn}>
+            <Pressable
+              onPress={async () => {
+                // Edit form exposes documentNumber + (now) inline file
+                // preview. Same Face ID gate as Reveal/Download.
+                const auth = await requireLocalAuth({
+                  promptMessage: "Edit document",
+                });
+                if (!auth.ok && auth.reason === "cancelled") return;
+                setEditOpen(true);
+              }}
+              style={styles.secondaryBtn}
+            >
               <Ionicons name="pencil" size={14} color="#735f55" />
               <Text style={styles.secondaryBtnText}>Edit</Text>
             </Pressable>

@@ -80,6 +80,7 @@ export function ShareHandler() {
   // Document fields
   const [docTitle, setDocTitle] = useState("");
   const [docType, setDocType] = useState<DocumentType>("OTHER");
+  const [docNumber, setDocNumber] = useState("");
 
   // Attachment fields
   const [attParentType, setAttParentType] = useState<AttachmentParentType | null>(null);
@@ -118,6 +119,7 @@ export function ShareHandler() {
     setBusy(false);
     setDocTitle("");
     setDocType("OTHER");
+    setDocNumber("");
     setAttParentType(null);
     setAttParentList([]);
     setAttParentId(null);
@@ -192,6 +194,7 @@ export function ShareHandler() {
           contentType: uploaded.contentType,
           sizeBytes: uploaded.sizeBytes,
           originalFilename: uploaded.originalFilename,
+          documentNumber: docNumber.trim() || undefined,
           uploadedBy: person?.name ?? undefined,
         });
         if (errors?.length) throw new Error(errors[0].message);
@@ -327,6 +330,17 @@ export function ShareHandler() {
                   </Pressable>
                 ))}
               </View>
+              <Text style={styles.label}>Number (optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={docNumber}
+                onChangeText={setDocNumber}
+                placeholder="e.g. passport / license number"
+                placeholderTextColor="#888"
+                autoCapitalize="characters"
+                autoCorrect={false}
+                editable={!busy}
+              />
             </View>
           )}
 

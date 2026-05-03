@@ -13,6 +13,10 @@
 // Web has no Face ID equivalent worth wiring; the web Documents page
 // keeps using Duo directly. Both surfaces gate the same backend act.
 
+import { File, Paths } from "expo-file-system";
+import * as Sharing from "expo-sharing";
+import * as WebBrowser from "expo-web-browser";
+
 import { requireLocalAuth, type LocalAuthOutcome } from "./local-auth";
 import { getClient } from "./amplify";
 import { resolveCurrentPerson } from "./current-person";
@@ -34,7 +38,7 @@ export type DownloadResult =
 /** Construct the short-link redirect URL from an s3 key. The redirect
  *  itself is unauthenticated (UUID is the secret); revealing the URL
  *  is what the Face ID / Duo gate protects. */
-function urlFromS3Key(s3Key: string): string {
+export function urlFromS3Key(s3Key: string): string {
   const filename = s3Key.replace(/^home\/documents\//, "");
   return `${WEB_BASE_URL}/api/d/${filename}`;
 }
@@ -158,4 +162,62 @@ async function runDuoFallback(
     documentNumber?: string;
   };
   return { ok: true, url: body.url, documentNumber: body.documentNumber, via: "duo" };
+}
+
+// ── View + share helpers ──────────────────────────────────────────────────
+//
+// Both go through the same Face ID / Duo gate as downloadDocument. View
+// renders the file inline via the in-app Safari sheet (handles PDF and
+// images natively). Share downloads the bytes to a cache file and hands
+// it to the iOS share sheet so the user can AirDrop / save to Files /
+// send via Messages with the actual file payload (not just a public URL).
+
+/** Open the file in an in-app browser sheet. Face ID / Duo gated. */
+export async function viewDocument(input: DownloadInput): Promise<{
+  ok: boolean;
+  error?: string;
+}> {
+  const result = await downloadDocument(input);
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.url) return { ok: false, error: "This document has no file to view." };
+  await WebBrowser.openBrowserAsync(result.url);
+  return { ok: true };
+}
+
+/** Download the file to a local cache and trigger the iOS share sheet. */
+export async function shareDocument(
+  input: DownloadInput & { filename?: string | null }
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await downloadDocument(input);
+  if (!result.ok) return { ok: false, error: result.error };
+  if (!result.url) return { ok: false, error: "This document has no file to share." };
+
+  const available = await Sharing.isAvailableAsync();
+  if (!available) {
+    return { ok: false, error: "Sharing isn't available on this device." };
+  }
+
+  const filename =
+    input.filename?.trim() ||
+    extractFilenameFromS3Key(input.s3Key ?? null) ||
+    "document";
+  const dest = new File(Paths.cache, filename);
+
+  try {
+    // expo-file-system v19: downloads to the destination File and
+    // returns the resulting File. The previous (`exists`) file is
+    // overwritten if present.
+    if (dest.exists) dest.delete();
+    const downloaded = await File.downloadFileAsync(result.url, dest);
+    await Sharing.shareAsync(downloaded.uri);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+function extractFilenameFromS3Key(s3Key: string | null): string | null {
+  if (!s3Key) return null;
+  const last = s3Key.split("/").pop();
+  return last && last.length > 0 ? last : null;
 }
