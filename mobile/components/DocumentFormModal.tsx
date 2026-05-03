@@ -28,6 +28,7 @@ import {
 } from "react-native";
 import { Image } from "expo-image";
 import { Ionicons } from "@expo/vector-icons";
+import DateTimePicker from "@react-native-community/datetimepicker";
 import * as DocumentPicker from "expo-document-picker";
 import * as ImagePicker from "expo-image-picker";
 import * as WebBrowser from "expo-web-browser";
@@ -69,6 +70,8 @@ export function DocumentFormModal({
   const [issuer, setIssuer] = useState("");
   const [issuedDate, setIssuedDate] = useState("");
   const [expiresDate, setExpiresDate] = useState("");
+  const [showIssuedPicker, setShowIssuedPicker] = useState(false);
+  const [showExpiresPicker, setShowExpiresPicker] = useState(false);
   const [notes, setNotes] = useState("");
   // Pending file replacement: null = keep existing s3Key, set =
   // upload this on save.
@@ -360,30 +363,24 @@ export function DocumentFormModal({
             editable={!busy}
           />
 
-          <Text style={styles.label}>Issued (YYYY-MM-DD)</Text>
-          <TextInput
-            style={styles.input}
+          <Text style={styles.label}>Issued</Text>
+          <DateField
             value={issuedDate}
-            onChangeText={setIssuedDate}
-            placeholder="2020-04-15"
-            placeholderTextColor="#888"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="numbers-and-punctuation"
-            editable={!busy}
+            onChange={setIssuedDate}
+            show={showIssuedPicker}
+            setShow={setShowIssuedPicker}
+            placeholder="Pick the issue date"
+            disabled={busy}
           />
 
-          <Text style={styles.label}>Expires (YYYY-MM-DD)</Text>
-          <TextInput
-            style={styles.input}
+          <Text style={styles.label}>Expires</Text>
+          <DateField
             value={expiresDate}
-            onChangeText={setExpiresDate}
-            placeholder="2030-04-15"
-            placeholderTextColor="#888"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="numbers-and-punctuation"
-            editable={!busy}
+            onChange={setExpiresDate}
+            show={showExpiresPicker}
+            setShow={setShowExpiresPicker}
+            placeholder="Pick the expiration date"
+            disabled={busy}
           />
 
           <Text style={styles.label}>File</Text>
@@ -432,6 +429,111 @@ export function DocumentFormModal({
     </Modal>
   );
 }
+
+// Calendar-date field. Stored as wall-clock "YYYY-MM-DD" (the
+// homeDocument schema uses a.date()). The native picker hands back a
+// Date instance whose y/m/d we read in local time so we don't drift
+// across timezones.
+function DateField({
+  value,
+  onChange,
+  show,
+  setShow,
+  placeholder,
+  disabled,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  show: boolean;
+  setShow: (b: boolean) => void;
+  placeholder: string;
+  disabled?: boolean;
+}) {
+  const parsed = parseIsoDate(value);
+  return (
+    <>
+      <Pressable
+        onPress={() => setShow(!show)}
+        style={dateStyles.btn}
+        disabled={disabled}
+      >
+        <Text style={[dateStyles.btnText, !parsed && dateStyles.placeholder]}>
+          {parsed ? formatDateLabel(parsed) : placeholder}
+        </Text>
+        {parsed && (
+          <Pressable
+            onPress={() => {
+              onChange("");
+              setShow(false);
+            }}
+            hitSlop={8}
+            disabled={disabled}
+          >
+            <Ionicons name="close-circle" size={20} color="#bbb" />
+          </Pressable>
+        )}
+      </Pressable>
+      {show && (
+        <View style={dateStyles.spinner}>
+          <DateTimePicker
+            value={parsed ?? new Date()}
+            mode="date"
+            display="spinner"
+            themeVariant="light"
+            onChange={(_, picked) => {
+              if (picked) onChange(toIsoDate(picked));
+            }}
+          />
+        </View>
+      )}
+    </>
+  );
+}
+
+function parseIsoDate(iso: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso);
+  if (!m) return null;
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+}
+
+function toIsoDate(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function formatDateLabel(d: Date): string {
+  return d.toLocaleDateString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+const dateStyles = StyleSheet.create({
+  btn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+  },
+  btnText: { fontSize: 15, color: "#222" },
+  placeholder: { color: "#888" },
+  spinner: {
+    backgroundColor: "#fff",
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#ddd",
+    marginTop: 6,
+    paddingVertical: 4,
+  },
+});
 
 // Inline preview for an existing document. Image renders directly via
 // expo-image; PDF gets a tap target that opens the in-app Safari sheet
