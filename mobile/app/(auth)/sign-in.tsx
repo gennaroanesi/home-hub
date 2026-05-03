@@ -11,6 +11,9 @@ import {
   View,
 } from "react-native";
 
+import { Hub } from "aws-amplify/utils";
+import { getCurrentUser, signOut } from "aws-amplify/auth";
+
 import { signIn } from "../../lib/auth";
 
 export default function SignIn() {
@@ -25,7 +28,30 @@ export default function SignIn() {
       await signIn(email.trim(), password);
       // Auth Hub fires `signedIn` → root <Index> re-renders → redirect to (tabs).
     } catch (err: any) {
-      Alert.alert("Sign-in failed", err?.message ?? String(err));
+      // Recovery path: if Amplify says "a user is already logged in",
+      // useAuthSession hasn't realized it (stale "signedOut" state).
+      // Confirm via getCurrentUser() and nudge the Hub so the route
+      // guard re-evaluates and bounces the user into the app.
+      const message = err?.message ?? String(err);
+      const alreadyLoggedIn =
+        err?.name === "UserAlreadyAuthenticatedException" ||
+        /already.*log/i.test(message);
+      if (alreadyLoggedIn) {
+        try {
+          await getCurrentUser();
+          Hub.dispatch("auth", { event: "signedIn" });
+          return;
+        } catch {
+          // The local session is actually broken — clear it and let
+          // the user try again with fresh credentials.
+          try {
+            await signOut();
+          } catch {}
+          Alert.alert("Session reset", "Please sign in again.");
+          return;
+        }
+      }
+      Alert.alert("Sign-in failed", message);
     } finally {
       setBusy(false);
     }

@@ -28,19 +28,32 @@ export function useAuthSession(): AuthState {
     let cancelled = false;
 
     async function refresh() {
+      // Split the two awaits: `getCurrentUser` is the source of truth
+      // for "is anyone signed in"; `fetchAuthSession` is just the
+      // secondary fetch for the id token. If only the latter throws
+      // (transient network blip mid-token-refresh, common during the
+      // Face ID prompt), we'd otherwise flip the user to "signedOut"
+      // and bounce them to /sign-in — where the next signIn call
+      // throws "a user is already logged in" because Amplify's local
+      // session is actually intact.
+      let user;
       try {
-        const user = await getCurrentUser();
-        const session = await fetchAuthSession();
-        if (cancelled) return;
-        setState({
-          status: "signedIn",
-          user,
-          idToken: session.tokens?.idToken?.toString() ?? null,
-        });
+        user = await getCurrentUser();
       } catch {
         if (cancelled) return;
         setState({ status: "signedOut" });
+        return;
       }
+      let idToken: string | null = null;
+      try {
+        const session = await fetchAuthSession();
+        idToken = session.tokens?.idToken?.toString() ?? null;
+      } catch {
+        // Token refresh failed transiently. We're still signed in per
+        // getCurrentUser(); subsequent API calls will retry the refresh.
+      }
+      if (cancelled) return;
+      setState({ status: "signedIn", user, idToken });
     }
 
     refresh();
