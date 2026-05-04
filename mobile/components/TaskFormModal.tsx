@@ -28,6 +28,7 @@ import { resolveCurrentPerson } from "../lib/current-person";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
 import { type Person } from "../lib/use-people";
 import type { Schema } from "../../amplify/data/resource";
+import { AttachmentSection } from "./AttachmentSection";
 
 type Task = Schema["homeTask"]["type"];
 
@@ -385,6 +386,13 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
             >
               <Text style={styles.skipText}>Skip this occurrence</Text>
             </Pressable>
+          )}
+
+          {task && (
+            <>
+              <Text style={styles.label}>Attachments</Text>
+              <AttachmentSection parentType="TASK" parentId={task.id} />
+            </>
           )}
 
           {task && (

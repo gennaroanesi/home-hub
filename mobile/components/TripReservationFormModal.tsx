@@ -30,6 +30,7 @@ import {
   type ReservationType,
   type TripReservation,
 } from "../../lib/trip";
+import { AttachmentSection } from "./AttachmentSection";
 
 const RESERVATION_TYPES: ReservationType[] = [
   "HOTEL",
@@ -441,6 +442,16 @@ export function TripReservationFormModal({
             multiline
             editable={!busy}
           />
+
+          {reservation && (
+            <>
+              <Text style={styles.label}>Attachments</Text>
+              <AttachmentSection
+                parentType="RESERVATION"
+                parentId={reservation.id}
+              />
+            </>
+          )}
 
           {reservation && (
             <Pressable

@@ -34,6 +34,7 @@ import { getClient } from "../lib/amplify";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
 import { type Person } from "../lib/use-people";
 import type { Schema } from "../../amplify/data/resource";
+import { AttachmentSection } from "./AttachmentSection";
 
 type Event = Schema["homeCalendarEvent"]["type"];
 
@@ -405,6 +406,13 @@ export function EventFormModal({
                 Custom rule (edit on web): {recurrence}
               </Text>
             )}
+
+          {event && (
+            <>
+              <Text style={styles.label}>Attachments</Text>
+              <AttachmentSection parentType="EVENT" parentId={event.id} />
+            </>
+          )}
 
           {event && !isImported && (
             <Pressable

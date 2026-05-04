@@ -23,8 +23,11 @@ export type AttachmentParentType =
   | "BILL";
 
 interface PresignResponse {
+  // The attachments endpoint returns capital `s3Key` (mismatching the
+  // documents/photos endpoints which return lowercase `s3key`). This
+  // type pins it down so we can't accidentally read undefined.
   uploadUrl: string;
-  s3key: string;
+  s3Key: string;
   filename: string;
   expiresIn: number;
 }
@@ -57,7 +60,7 @@ export async function uploadAttachmentFile(args: {
     const text = await presignRes.text().catch(() => "");
     throw new Error(`Attachment presign failed (${presignRes.status}): ${text}`);
   }
-  const { uploadUrl, s3key, filename: serverFilename } =
+  const { uploadUrl, s3Key, filename: serverFilename } =
     (await presignRes.json()) as PresignResponse;
 
   const fileRes = await fetch(uri);
@@ -77,7 +80,7 @@ export async function uploadAttachmentFile(args: {
   }
 
   return {
-    s3Key: s3key,
+    s3Key,
     contentType,
     sizeBytes: blob.size,
     filename: serverFilename,
