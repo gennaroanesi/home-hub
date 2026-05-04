@@ -50,7 +50,10 @@
           "faceIDPermission": "Home Hub uses Face ID to confirm sensitive actions like document downloads."
         }
       ],
-      ["./plugins/with-share-extension-display-name", "Home Hub"],
+      [
+        "./plugins/with-share-extension-display-name",
+        "Home Hub"
+      ],
       [
         "expo-share-intent",
         {
@@ -72,6 +75,18 @@
         "projectId": "e7781de0-8c4b-40ee-9f08-bb1d0fc78bf7"
       }
     },
-    "owner": "gennaroanesi"
+    "owner": "gennaroanesi",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/e7781de0-8c4b-40ee-9f08-bb1d0fc78bf7"
+    },
+    "android": {
+      "permissions": [
+        "android.permission.USE_BIOMETRIC",
+        "android.permission.USE_FINGERPRINT"
+      ]
+    }
   }
 }
