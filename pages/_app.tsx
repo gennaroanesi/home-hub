@@ -12,7 +12,10 @@ import "@uiw/react-markdown-preview/markdown.css";
 import { Amplify } from "aws-amplify";
 import outputs from "@/amplify_outputs.json";
 
-Amplify.configure(outputs);
+// `ssr: true` makes Amplify store Cognito tokens in cookies instead of
+// localStorage so server-side `runWithAmplifyServerContext` (used by
+// withHomeUserAuth on pages/api/**) can read them.
+Amplify.configure(outputs, { ssr: true });
 
 function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
