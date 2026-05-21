@@ -15,7 +15,7 @@ import {
   getHouseholdTimezone,
   resolveReminderTimezone,
 } from "../../../lib/household-settings.js";
-import { sendExpoPush, type ExpoPushMessage } from "./expo-push.js";
+import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);

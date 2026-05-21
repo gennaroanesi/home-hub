@@ -68,6 +68,13 @@ const schema = a
         // means push notifications skip you even on group sends.
         notifyWhatsApp: a.boolean().default(true),
         notifyPush: a.boolean().default(true),
+        // Per-kind push opt-outs. `notifyPush` is the master kill switch;
+        // this array carries exceptions for individual notification kinds
+        // ("daily_summary", "reminder", …). Empty = receive everything
+        // that `notifyPush=true` would normally deliver. New kinds added
+        // over time default ON for existing users and require an opt-out
+        // here to mute.
+        mutedPushKinds: a.string().array(),
         // Home Assistant device_tracker entity for this person's phone
         // (e.g. "device_tracker.gennaro_iphone"). Populated by Unifi
         // integration. Used by the v2 risk matrix to detect whether an

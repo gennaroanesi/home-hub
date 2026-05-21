@@ -1,7 +1,8 @@
-// Tiny Expo push client for use inside the reminder-sweep lambda.
-// Speaks the Expo Push API directly (no SDK) — one HTTPS POST, no
-// auth required. Mirrors what scripts/send-test-push.mjs does for
-// ad-hoc testing, just inside the Lambda runtime.
+// Tiny Expo push client shared across Amplify Lambdas (reminder-sweep,
+// daily-summary, …). Speaks the Expo Push API directly (no SDK) —
+// one HTTPS POST, no auth required. Mirrors what
+// scripts/send-test-push.mjs does for ad-hoc testing, just inside
+// the Lambda runtime.
 //
 // We pass through high-level errors; Expo will return per-token
 // statuses in the `data` array so callers can decide whether to

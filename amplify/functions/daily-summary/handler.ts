@@ -21,6 +21,9 @@ import {
   getHouseholdTimezone,
   resolveReminderTimezone,
 } from "../../../lib/household-settings.js";
+import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
+
+const PUSH_KIND = "daily_summary";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -543,7 +546,13 @@ function isEmpty(data: SummaryData): boolean {
   );
 }
 
-async function composeSummary(data: SummaryData): Promise<string> {
+interface ComposedSummary {
+  whatsappText: string;
+  pushTitle: string;
+  pushBody: string;
+}
+
+async function composeSummary(data: SummaryData): Promise<ComposedSummary> {
   if (isEmpty(data)) {
     const dateLabel = new Date(data.today).toLocaleDateString("en-US", {
       timeZone: TZ,
@@ -551,18 +560,23 @@ async function composeSummary(data: SummaryData): Promise<string> {
       month: "long",
       day: "numeric",
     });
-    return `*Good morning!* ${dateLabel}\n\nAll clear today — nothing big coming up in the next few days. 🌤️`;
+    return {
+      whatsappText: `*Good morning!* ${dateLabel}\n\nAll clear today — nothing big coming up in the next few days. 🌤️`,
+      pushTitle: `Good morning · ${dateLabel}`,
+      pushBody: "All clear today — nothing big coming up.",
+    };
   }
 
-  const prompt = `You are formatting a concise daily household summary for a WhatsApp group chat.
-Keep it warm but brief.
+  const prompt = `You are formatting a concise daily household summary. You produce two outputs at once:
+  1. A WhatsApp group-chat message (warm, multi-section, plain text).
+  2. A short mobile push notification (one title + one body line) summarizing the same data.
 
 Today: ${data.today}
 
 Structured data (JSON):
 ${JSON.stringify(data, null, 2)}
 
-Formatting rules:
+WhatsApp output rules (key "whatsappText"):
 - Start with a short greeting line with the day of week and date (e.g. "*Good morning! Thursday, April 9*").
 - Use WhatsApp-flavored markdown: *bold* for headers, no other formatting.
 - Group into up to these sections: "*Today*", "*Coming up*", "*Home*", "*Weather*", "*Reminders*". Omit any section entirely if it has no content.
@@ -577,11 +591,23 @@ Formatting rules:
 - For tasks that are overdue, prefix with "⚠️".
 - Keep it concise — no filler, no preamble about being an assistant. Don't add anything not in the data.
 - Total length under 300 words.
-- Do not wrap the output in code blocks. Output plain text only.`;
+- Plain text only.
+
+Push notification rules (keys "pushTitle", "pushBody"):
+- pushTitle: a short greeting with day-of-week and date, ≤45 characters. Example: "Good morning · Thu May 21".
+- pushBody: ONE LINE summarizing the most important items, ≤140 characters. Lead with what the user most needs to know:
+  - If there are overdue tasks, mention the count first.
+  - Then the rest: "N tasks · M events" today, plus one upcoming highlight (trip or notable event in next 3 days), plus any active home alert (unlocked door, open garage).
+  - Use "·" as a separator. Skip anything irrelevant.
+  - Example: "⚠️ 1 overdue · 3 tasks · 2 events · Trip to Chicago in 2 days"
+  - Example: "2 events today · Mom visiting Sunday · 🏠 Front door unlocked"
+- No emojis except: ⚠️ (overdue or alert), 🏠 (home alert). Keep punctuation simple.
+
+Return ONLY a single JSON object with exactly these keys: whatsappText, pushTitle, pushBody. No code fences, no preamble.`;
 
   const response = await anthropic.messages.create({
     model: MODEL_ID,
-    max_tokens: 800,
+    max_tokens: 1200,
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -591,7 +617,59 @@ Formatting rules:
     .join("\n")
     .trim();
 
-  return text || "Daily summary unavailable.";
+  return parseComposed(text, data);
+}
+
+// Pull the JSON object out of Haiku's response. Tolerates stray code
+// fences or leading text from the model, and falls back to a deterministic
+// push body keyed off the structured data if parsing fails.
+function parseComposed(raw: string, data: SummaryData): ComposedSummary {
+  const fallbackDateLabel = new Date(data.today).toLocaleDateString("en-US", {
+    timeZone: TZ,
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+  });
+  const deterministicPushBody = buildFallbackPushBody(data);
+  const fallback: ComposedSummary = {
+    whatsappText: raw || "Daily summary unavailable.",
+    pushTitle: `Good morning · ${fallbackDateLabel}`,
+    pushBody: deterministicPushBody,
+  };
+
+  // Strip code fences if Haiku ignored the instruction.
+  const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)```/);
+  const body = (fenced ? fenced[1] : raw).trim();
+  const firstBrace = body.indexOf("{");
+  const lastBrace = body.lastIndexOf("}");
+  if (firstBrace < 0 || lastBrace <= firstBrace) return fallback;
+  try {
+    const parsed = JSON.parse(body.slice(firstBrace, lastBrace + 1));
+    const whatsappText = typeof parsed.whatsappText === "string" ? parsed.whatsappText.trim() : "";
+    const pushTitle = typeof parsed.pushTitle === "string" ? parsed.pushTitle.trim() : "";
+    const pushBody = typeof parsed.pushBody === "string" ? parsed.pushBody.trim() : "";
+    return {
+      whatsappText: whatsappText || fallback.whatsappText,
+      pushTitle: pushTitle || fallback.pushTitle,
+      pushBody: pushBody || fallback.pushBody,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function buildFallbackPushBody(data: SummaryData): string {
+  const overdue = data.todayTasks.filter((t) => t.overdueDays > 0).length;
+  const parts: string[] = [];
+  if (overdue > 0) parts.push(`⚠️ ${overdue} overdue`);
+  if (data.todayTasks.length > 0) parts.push(`${data.todayTasks.length} tasks`);
+  if (data.todayEvents.length > 0) parts.push(`${data.todayEvents.length} events`);
+  const nextTrip = data.upcomingTrips[0];
+  if (nextTrip) {
+    parts.push(`${nextTrip.name} in ${nextTrip.daysAway}d`);
+  }
+  if (parts.length === 0) return "Nothing scheduled today.";
+  return parts.join(" · ");
 }
 
 // ── Main handler ─────────────────────────────────────────────────────────────
@@ -601,13 +679,13 @@ export const handler: Handler = async () => {
   const data = await gatherData();
   console.log("Daily summary data:", JSON.stringify(data));
 
-  const text = await composeSummary(data);
-  console.log("Daily summary composed:", text);
+  const composed = await composeSummary(data);
+  console.log("Daily summary composed:", composed);
 
   const { data: created, errors } = await client.models.homeOutboundMessage.create({
     channel: "WHATSAPP",
     target: "GROUP",
-    text,
+    text: composed.whatsappText,
     status: "PENDING",
     kind: "daily_summary",
   });
@@ -618,5 +696,62 @@ export const handler: Handler = async () => {
   }
 
   console.log("Outbound message queued:", created?.id);
-  return { messageId: created?.id, length: text.length };
+
+  // Fan out the short push to every household member who hasn't muted
+  // this kind. Push failure is non-fatal — the WA path still delivers.
+  const pushResult = await fanOutPush(composed.pushTitle, composed.pushBody);
+
+  return {
+    messageId: created?.id,
+    length: composed.whatsappText.length,
+    pushSent: pushResult.sent,
+    pushErrors: pushResult.errors,
+  };
 };
+
+// ── Push fan-out ────────────────────────────────────────────────────────────
+// Mirrors the reminder-sweep dispatch pattern: filter household members
+// by notifyPush + per-kind mute, collect every Expo token, send a single
+// batched POST to Expo's push API.
+
+async function fanOutPush(title: string, body: string): Promise<{ sent: number; errors: number }> {
+  try {
+    const { data: people } = await client.models.homePerson.list();
+    const household = (people ?? []).filter((p) => {
+      if (p.active === false) return false;
+      if (p.notifyPush === false) return false;
+      const muted = (p.mutedPushKinds ?? []).filter((k): k is string => !!k);
+      if (muted.includes(PUSH_KIND)) return false;
+      const groups = (p.groups ?? []).filter((g): g is string => !!g);
+      return groups.includes("home-users");
+    });
+
+    const tokenLists = await Promise.all(
+      household.map(async (p) => {
+        const { data } = await client.models.homePushSubscription.list({
+          filter: { personId: { eq: p.id } },
+        });
+        return (data ?? []).map((s) => s.expoPushToken).filter((t): t is string => !!t);
+      })
+    );
+    const tokens = Array.from(new Set(tokenLists.flat()));
+    if (tokens.length === 0) {
+      console.log("Daily summary push: no eligible recipients");
+      return { sent: 0, errors: 0 };
+    }
+
+    const messages: ExpoPushMessage[] = tokens.map((token) => ({
+      to: token,
+      title,
+      body,
+      data: { kind: PUSH_KIND },
+    }));
+    const tickets = await sendExpoPush(messages);
+    const errors = tickets.filter((t) => t.status === "error").length;
+    console.log(`Daily summary push: ${tickets.length - errors}/${tickets.length} delivered`);
+    return { sent: tickets.length - errors, errors };
+  } catch (err) {
+    console.warn("Daily summary push fan-out failed:", err);
+    return { sent: 0, errors: 0 };
+  }
+}
