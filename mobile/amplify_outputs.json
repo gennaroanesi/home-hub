@@ -134,6 +134,14 @@
               "isRequired": false,
               "attributes": []
             },
+            "mutedPushKinds": {
+              "name": "mutedPushKinds",
+              "isArray": true,
+              "type": "String",
+              "isRequired": false,
+              "attributes": [],
+              "isArrayNullable": true
+            },
             "homeDeviceTrackerEntity": {
               "name": "homeDeviceTrackerEntity",
               "isArray": false,
@@ -5393,12 +5401,12 @@
         "HomeDocumentType": {
           "name": "HomeDocumentType",
           "values": [
-            "DRIVERS_LICENSE",
-            "PASSPORT",
-            "GREEN_CARD",
-            "TSA_PRECHECK",
-            "GLOBAL_ENTRY",
+            "ID",
             "INSURANCE",
+            "TAX",
+            "MEDICAL",
+            "TRAVEL",
+            "FINANCIAL",
             "OTHER"
           ]
         },
