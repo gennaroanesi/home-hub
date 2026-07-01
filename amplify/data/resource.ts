@@ -846,6 +846,11 @@ const schema = a
         entityId: a.id().required(),
         name: a.string().required(),
         sortOrder: a.integer().default(0),
+        // Soft-hide flag. Existing rows have this unset (null) which
+        // callers treat as "active", so no backfill required — every
+        // filter reads `isArchived === true` explicitly.
+        isArchived: a.boolean().default(false),
+        archivedAt: a.datetime(),
         items: a.hasMany("homeChecklistItem", "checklistId"),
       })
       .secondaryIndexes((index) => [

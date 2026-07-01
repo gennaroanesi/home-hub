@@ -33,10 +33,13 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
 import {
+  ARCHIVE_FILTERS,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
   ENTITY_TYPE_SINGULAR,
   TEMPLATE_ENTITY_ID,
+  matchesArchiveFilter,
+  type ArchiveFilter,
   type Checklist,
   type EntityType,
 } from "../../../../lib/checklist";
@@ -81,6 +84,7 @@ export default function ChecklistsList() {
   const [refreshing, setRefreshing] = useState(false);
   const [checklists, setChecklists] = useState<ChecklistRow[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("ACTIVE");
 
   // Create modal state
   const [createOpen, setCreateOpen] = useState(false);
@@ -243,19 +247,24 @@ export default function ChecklistsList() {
 
   // ── Grouped render data ───────────────────────────────────────────
 
+  const filtered = useMemo(
+    () => checklists.filter((c) => matchesArchiveFilter(c, archiveFilter)),
+    [checklists, archiveFilter]
+  );
+
   const templates = useMemo(
     () =>
-      checklists
+      filtered
         .filter((c) => c.entityType === "TEMPLATE")
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [checklists]
+    [filtered]
   );
 
   const grouped = useMemo(() => {
     return ENTITY_TYPE_ORDER.map((type) => ({
       type,
       label: ENTITY_TYPE_LABELS[type],
-      items: checklists
+      items: filtered
         .filter((c) => (c.entityType ?? "OTHER") === type)
         .sort((a, b) => {
           const ae = entityNames[a.entityId] ?? a.entityId;
@@ -264,7 +273,7 @@ export default function ChecklistsList() {
           return a.name.localeCompare(b.name);
         }),
     })).filter((g) => g.items.length > 0);
-  }, [checklists, entityNames]);
+  }, [filtered, entityNames]);
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -280,6 +289,23 @@ export default function ChecklistsList() {
         <Pressable onPress={openCreate} hitSlop={12} style={styles.headerBtn}>
           <Ionicons name="add" size={28} color="#735f55" />
         </Pressable>
+      </View>
+
+      <View style={styles.filterRow}>
+        {ARCHIVE_FILTERS.map((f) => {
+          const on = archiveFilter === f.id;
+          return (
+            <Pressable
+              key={f.id}
+              onPress={() => setArchiveFilter(f.id)}
+              style={[styles.pill, on && styles.pillOn]}
+            >
+              <Text style={[styles.pillText, on && styles.pillTextOn]}>
+                {f.label}
+              </Text>
+            </Pressable>
+          );
+        })}
       </View>
 
       {loading ? (
@@ -303,7 +329,11 @@ export default function ChecklistsList() {
           ListEmptyComponent={
             templates.length === 0 ? (
               <Text style={styles.empty}>
-                No checklists yet. Tap + to create one.
+                {archiveFilter === "ARCHIVED"
+                  ? "No archived checklists."
+                  : archiveFilter === "ACTIVE" && checklists.length > 0
+                    ? "No active checklists. Toggle Archived to see the rest."
+                    : "No checklists yet. Tap + to create one."}
               </Text>
             ) : null
           }
@@ -517,15 +547,27 @@ function ChecklistCard({
     checklist.itemCount === 0
       ? 0
       : Math.round((checklist.doneCount / checklist.itemCount) * 100);
+  const archived = checklist.isArchived === true;
   return (
     <Pressable
       onPress={onPress}
-      style={({ pressed }) => [styles.card, pressed && styles.cardPressed]}
+      style={({ pressed }) => [
+        styles.card,
+        archived && styles.cardArchived,
+        pressed && styles.cardPressed,
+      ]}
     >
       <View style={styles.cardBody}>
-        <Text style={styles.cardTitle} numberOfLines={1}>
-          {checklist.name}
-        </Text>
+        <View style={styles.cardTitleRow}>
+          <Text style={styles.cardTitle} numberOfLines={1}>
+            {checklist.name}
+          </Text>
+          {archived && (
+            <View style={styles.archivedBadge}>
+              <Text style={styles.archivedBadgeText}>Archived</Text>
+            </View>
+          )}
+        </View>
         {subtitle && (
           <Text style={styles.cardSubtitle} numberOfLines={1}>
             {subtitle}
@@ -584,8 +626,26 @@ const styles = StyleSheet.create({
     borderColor: "#e5e5e5",
   },
   cardPressed: { backgroundColor: "#f0ece8" },
+  cardArchived: { opacity: 0.6 },
   cardBody: { flex: 1, gap: 4 },
-  cardTitle: { fontSize: 15, fontWeight: "500", color: "#3d3a37" },
+  cardTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  cardTitle: { flex: 1, fontSize: 15, fontWeight: "500", color: "#3d3a37" },
+  archivedBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+    backgroundColor: "#eee",
+  },
+  archivedBadgeText: {
+    fontSize: 10,
+    color: "#666",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
+  },
   cardSubtitle: { fontSize: 13, color: "#888" },
   cardProgressRow: {
     flexDirection: "row",
@@ -632,6 +692,12 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   typePillRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
+  filterRow: {
+    flexDirection: "row",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+  },
   pill: {
     paddingHorizontal: 12,
     paddingVertical: 8,

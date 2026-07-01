@@ -9,6 +9,7 @@ import { Spinner, addToast } from "@heroui/react";
 import {
   FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy,
   FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight, FaLink,
+  FaArchive, FaBoxOpen,
 } from "react-icons/fa";
 import {
   DndContext,
@@ -427,6 +428,16 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       await client.models.homeChecklistItem.delete({ id: item.id });
     }
     await client.models.homeChecklist.delete({ id: cl.id });
+    await loadData();
+  }
+
+  async function toggleArchiveChecklist(cl: Checklist) {
+    const nextArchived = !(cl.isArchived === true);
+    await client.models.homeChecklist.update({
+      id: cl.id,
+      isArchived: nextArchived,
+      archivedAt: nextArchived ? new Date().toISOString() : null,
+    });
     await loadData();
   }
 
@@ -991,7 +1002,14 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                 ) : (
                   <>
                     <div>
-                      <p className="text-sm font-medium">{cl.name}</p>
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-medium">{cl.name}</p>
+                        {cl.isArchived === true && (
+                          <span className="text-[10px] uppercase tracking-wider text-default-500 bg-default-100 px-1.5 py-0.5 rounded">
+                            Archived
+                          </span>
+                        )}
+                      </div>
                       {items.length > 0 && (
                         <p className="text-xs text-default-400">{doneCount}/{items.length} done</p>
                       )}
@@ -1010,6 +1028,19 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
                       )}
                       <Button size="sm" isIconOnly variant="light" onPress={() => { setEditingChecklistId(cl.id); setEditingChecklistName(cl.name); }}>
                         <FaPen size={10} />
+                      </Button>
+                      <Button
+                        size="sm"
+                        isIconOnly
+                        variant="light"
+                        title={cl.isArchived === true ? "Unarchive" : "Archive"}
+                        onPress={() => toggleArchiveChecklist(cl)}
+                      >
+                        {cl.isArchived === true ? (
+                          <FaBoxOpen size={10} />
+                        ) : (
+                          <FaArchive size={10} />
+                        )}
                       </Button>
                       <Button size="sm" isIconOnly variant="light" color="danger" onPress={() => deleteChecklist(cl)}>
                         <FaTrash size={10} />

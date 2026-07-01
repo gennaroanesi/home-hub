@@ -223,6 +223,36 @@ export default function ChecklistDetail() {
     }
   }
 
+  async function toggleArchive() {
+    if (!checklist) return;
+    const nextArchived = !(checklist.isArchived === true);
+    const nowIso = new Date().toISOString();
+    setChecklist({
+      ...checklist,
+      isArchived: nextArchived,
+      archivedAt: nextArchived ? nowIso : null,
+    });
+    try {
+      const client = getClient();
+      const { errors } = await client.models.homeChecklist.update({
+        id: checklist.id,
+        isArchived: nextArchived,
+        archivedAt: nextArchived ? nowIso : null,
+      });
+      if (errors?.length) throw new Error(errors[0].message);
+      // Archiving is the typical case — bounce back so the list
+      // reflects the change immediately. Unarchive stays on the
+      // screen so the user can keep working with the checklist.
+      if (nextArchived) router.back();
+    } catch (err: any) {
+      Alert.alert(
+        nextArchived ? "Archive failed" : "Unarchive failed",
+        err?.message ?? String(err)
+      );
+      await load();
+    }
+  }
+
   function deleteChecklist() {
     if (!checklist) return;
     Alert.alert(
@@ -331,6 +361,21 @@ export default function ChecklistDetail() {
           </Pressable>
         )}
         <Pressable
+          onPress={toggleArchive}
+          hitSlop={12}
+          style={styles.headerBtn}
+        >
+          <Ionicons
+            name={
+              checklist.isArchived
+                ? "archive"
+                : "archive-outline"
+            }
+            size={22}
+            color="#735f55"
+          />
+        </Pressable>
+        <Pressable
           onPress={deleteChecklist}
           hitSlop={12}
           style={styles.headerBtn}
@@ -338,6 +383,18 @@ export default function ChecklistDetail() {
           <Ionicons name="trash-outline" size={22} color="#b96868" />
         </Pressable>
       </View>
+
+      {checklist.isArchived && (
+        <View style={styles.archivedBanner}>
+          <Ionicons name="archive" size={14} color="#7a5c50" />
+          <Text style={styles.archivedBannerText}>
+            Archived
+            {checklist.archivedAt
+              ? ` · ${new Date(checklist.archivedAt).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+              : ""}
+          </Text>
+        </View>
+      )}
 
       <View style={styles.progressBar}>
         <View style={styles.progressTrack}>
@@ -559,6 +616,22 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#ddd",
+  },
+
+  archivedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    backgroundColor: "#eee2d9",
+  },
+  archivedBannerText: {
+    fontSize: 12,
+    color: "#7a5c50",
+    fontWeight: "500",
+    textTransform: "uppercase",
+    letterSpacing: 0.5,
   },
 
   progressBar: {

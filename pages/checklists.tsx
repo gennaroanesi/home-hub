@@ -17,8 +17,11 @@ import DefaultLayout from "@/layouts/default";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
 import {
+  ARCHIVE_FILTERS,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
+  matchesArchiveFilter,
+  type ArchiveFilter,
   type Checklist,
   type EntityType,
 } from "@/lib/checklist";
@@ -52,6 +55,7 @@ export default function ChecklistsPage() {
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
+  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("ACTIVE");
 
   // Create checklist flow
   const [showCreate, setShowCreate] = useState(false);
@@ -171,11 +175,15 @@ export default function ChecklistsPage() {
     }
   }
 
+  const filtered = checklists.filter((c) =>
+    matchesArchiveFilter(c, archiveFilter),
+  );
+
   // Group checklists by entityType
   const grouped = ENTITY_TYPE_ORDER.map((type) => ({
     type,
     label: ENTITY_TYPE_LABELS[type],
-    checklists: checklists
+    checklists: filtered
       .filter((c) => (c.entityType ?? "OTHER") === type)
       .sort((a, b) => a.name.localeCompare(b.name)),
   })).filter((g) => g.checklists.length > 0);
@@ -270,7 +278,28 @@ export default function ChecklistsPage() {
 
         {/* ── All checklists section ─────────────────────────────────── */}
         <div>
-          <h2 className="text-lg font-semibold mb-4">All Checklists</h2>
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold">All Checklists</h2>
+            <div className="flex gap-1">
+              {ARCHIVE_FILTERS.map((f) => {
+                const on = archiveFilter === f.id;
+                return (
+                  <button
+                    key={f.id}
+                    type="button"
+                    onClick={() => setArchiveFilter(f.id)}
+                    className={`px-3 py-1 rounded-full text-xs ${
+                      on
+                        ? "bg-default-700 text-white"
+                        : "bg-default-100 text-default-600"
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
 
           {loading ? (
             <div className="flex justify-center py-12">
@@ -278,8 +307,11 @@ export default function ChecklistsPage() {
             </div>
           ) : grouped.length === 0 ? (
             <p className="text-default-400 text-sm py-4">
-              No checklists yet. Create one from a trip, event, or document
-              detail page.
+              {archiveFilter === "ARCHIVED"
+                ? "No archived checklists."
+                : archiveFilter === "ACTIVE" && checklists.length > 0
+                  ? "No active checklists. Switch to Archived to see the rest."
+                  : "No checklists yet. Create one from a trip, event, or document detail page."}
             </p>
           ) : (
             <div className="space-y-8">

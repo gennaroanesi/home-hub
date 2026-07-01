@@ -163,3 +163,30 @@ export function progress(items: ChecklistItem[]): ChecklistProgress {
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
   return { done, total, pct };
 }
+
+// ── Archive filter ────────────────────────────────────────────────
+// A row is "archived" when isArchived === true. null/undefined counts
+// as active so existing rows created before this field lands stay
+// visible without a backfill.
+
+export type ArchiveFilter = "ACTIVE" | "ARCHIVED" | "ALL";
+
+export const ARCHIVE_FILTERS: { id: ArchiveFilter; label: string }[] = [
+  { id: "ACTIVE", label: "Active" },
+  { id: "ARCHIVED", label: "Archived" },
+  { id: "ALL", label: "All" },
+];
+
+export function isArchived(cl: Pick<Checklist, "isArchived">): boolean {
+  return cl.isArchived === true;
+}
+
+export function matchesArchiveFilter(
+  cl: Pick<Checklist, "isArchived">,
+  filter: ArchiveFilter
+): boolean {
+  const archived = isArchived(cl);
+  if (filter === "ACTIVE") return !archived;
+  if (filter === "ARCHIVED") return archived;
+  return true;
+}
