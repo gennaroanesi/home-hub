@@ -16,26 +16,15 @@ import { Select, SelectItem } from "@heroui/select";
 import DefaultLayout from "@/layouts/default";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
+import {
+  ENTITY_TYPE_LABELS,
+  ENTITY_TYPE_ORDER,
+  type Checklist,
+  type EntityType,
+} from "@/lib/checklist";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
-
-type Checklist = Schema["homeChecklist"]["type"];
-type ChecklistItem = Schema["homeChecklistItem"]["type"];
-type EntityType = "TRIP" | "EVENT" | "BILL" | "DOCUMENT" | "TASK" | "TEMPLATE" | "OTHER";
-
-// ── Entity type display config ──────────────────────────────────────────
-
-const ENTITY_TYPE_ORDER: EntityType[] = ["TRIP", "EVENT", "TASK", "BILL", "DOCUMENT", "OTHER"];
-
-const ENTITY_TYPE_LABELS: Record<string, string> = {
-  TRIP: "Trips",
-  EVENT: "Events",
-  TASK: "Tasks",
-  BILL: "Bills",
-  DOCUMENT: "Documents",
-  OTHER: "Other",
-};
 
 function entityDetailHref(entityType: string, entityId: string): string | null {
   switch (entityType) {
@@ -52,26 +41,6 @@ function entityDetailHref(entityType: string, entityId: string): string | null {
     default:
       return null;
   }
-}
-
-// ── Helpers ──────────────────────────────────────────────────────────────
-
-function groupBySection(items: ChecklistItem[]): { section: string | null; items: ChecklistItem[] }[] {
-  const map = new Map<string | null, ChecklistItem[]>();
-  for (const item of items) {
-    const key = (item as any).section || null;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(item);
-  }
-  const groups: { section: string | null; items: ChecklistItem[] }[] = [];
-  if (map.has(null)) groups.push({ section: null, items: map.get(null)! });
-  const sorted = Array.from(map.entries())
-    .filter(([k]) => k !== null)
-    .sort((a, b) => a[0]!.localeCompare(b[0]!));
-  for (const [key, items] of sorted) {
-    groups.push({ section: key, items });
-  }
-  return groups;
 }
 
 // ── Page ─────────────────────────────────────────────────────────────────

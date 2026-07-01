@@ -20,6 +20,21 @@ const COMING_ROWS: ComingRow[] = [
   { label: "Photos", comingPhase: "Coming soon" },
 ];
 
+interface FeatureRow {
+  label: string;
+  icon: keyof typeof Ionicons.glyphMap;
+  route: string;
+}
+
+const FEATURE_ROWS: FeatureRow[] = [
+  { label: "Shopping", icon: "cart-outline", route: "/more/shopping" },
+  { label: "Reminders", icon: "alarm-outline", route: "/more/reminders" },
+  { label: "Checklists", icon: "checkbox-outline", route: "/more/checklists" },
+  { label: "Trips", icon: "airplane-outline", route: "/more/trips" },
+  { label: "Documents", icon: "document-text-outline", route: "/more/documents" },
+  { label: "Pets", icon: "paw-outline", route: "/more/pets" },
+];
+
 export default function More() {
   const personState = usePerson();
   const personLabel =
@@ -36,72 +51,23 @@ export default function More() {
 
         <Text style={styles.sectionTitle}>Features</Text>
         <View style={styles.card}>
-          <Pressable
-            onPress={() => router.push("/more/shopping")}
-            style={({ pressed }) => [
-              styles.row,
-              styles.rowDivider,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <View style={styles.rowLeft}>
-              <Ionicons name="cart-outline" size={20} color="#735f55" />
-              <Text style={styles.rowLabel}>Shopping</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#bbb" />
-          </Pressable>
-          <Pressable
-            onPress={() => router.push("/more/reminders")}
-            style={({ pressed }) => [
-              styles.row,
-              styles.rowDivider,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <View style={styles.rowLeft}>
-              <Ionicons name="alarm-outline" size={20} color="#735f55" />
-              <Text style={styles.rowLabel}>Reminders</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#bbb" />
-          </Pressable>
-          <Pressable
-            onPress={() => router.push("/more/trips")}
-            style={({ pressed }) => [
-              styles.row,
-              styles.rowDivider,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <View style={styles.rowLeft}>
-              <Ionicons name="airplane-outline" size={20} color="#735f55" />
-              <Text style={styles.rowLabel}>Trips</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#bbb" />
-          </Pressable>
-          <Pressable
-            onPress={() => router.push("/more/documents")}
-            style={({ pressed }) => [
-              styles.row,
-              styles.rowDivider,
-              pressed && styles.rowPressed,
-            ]}
-          >
-            <View style={styles.rowLeft}>
-              <Ionicons name="document-text-outline" size={20} color="#735f55" />
-              <Text style={styles.rowLabel}>Documents</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#bbb" />
-          </Pressable>
-          <Pressable
-            onPress={() => router.push("/more/pets")}
-            style={({ pressed }) => [styles.row, pressed && styles.rowPressed]}
-          >
-            <View style={styles.rowLeft}>
-              <Ionicons name="paw-outline" size={20} color="#735f55" />
-              <Text style={styles.rowLabel}>Pets</Text>
-            </View>
-            <Ionicons name="chevron-forward" size={18} color="#bbb" />
-          </Pressable>
+          {FEATURE_ROWS.map((r, i) => (
+            <Pressable
+              key={r.route}
+              onPress={() => router.push(r.route as any)}
+              style={({ pressed }) => [
+                styles.row,
+                i < FEATURE_ROWS.length - 1 && styles.rowDivider,
+                pressed && styles.rowPressed,
+              ]}
+            >
+              <View style={styles.rowLeft}>
+                <Ionicons name={r.icon} size={20} color="#735f55" />
+                <Text style={styles.rowLabel}>{r.label}</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color="#bbb" />
+            </Pressable>
+          ))}
         </View>
 
         <Text style={styles.sectionTitle}>Account</Text>

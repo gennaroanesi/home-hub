@@ -31,101 +31,21 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import type { Schema } from "@/amplify/data/resource";
+import {
+  UNGROUPED,
+  buildSectionGroups,
+  deriveSectionOrder,
+  type Checklist,
+  type ChecklistItem,
+  type EntityType,
+  type SectionGroup,
+} from "@/lib/checklist";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
-
-type Checklist = Schema["homeChecklist"]["type"];
-type ChecklistItem = Schema["homeChecklistItem"]["type"];
-type EntityType = "TRIP" | "EVENT" | "BILL" | "DOCUMENT" | "TASK" | "TEMPLATE" | "OTHER";
 
 interface ChecklistPanelProps {
   entityType: EntityType;
   entityId: string;
-}
-
-// ── Constants ────────────────────────────────────────────────────────
-const UNGROUPED = "__ungrouped__";
-
-// ── Helpers ──────────────────────────────────────────────────────────
-
-interface SectionGroup {
-  sectionId: string;       // UNGROUPED or actual section name
-  sectionName: string;     // display name
-  items: ChecklistItem[];
-  sortOrder: number;       // for ordering sections among each other
-}
-
-/**
- * Build ordered section groups from a flat list of items.
- * Sections are ordered by the minimum sortOrder among their items,
- * with ungrouped first.
- */
-function buildSectionGroups(items: ChecklistItem[], sectionOrder: string[]): SectionGroup[] {
-  const map = new Map<string, ChecklistItem[]>();
-
-  for (const item of items) {
-    const key = (item as any).section || UNGROUPED;
-    if (!map.has(key)) map.set(key, []);
-    map.get(key)!.push(item);
-  }
-
-  // Sort items within each group
-  Array.from(map.values()).forEach((groupItems) => {
-    groupItems.sort((a: ChecklistItem, b: ChecklistItem) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-  });
-
-  const groups: SectionGroup[] = [];
-
-  // Ungrouped always first
-  if (map.has(UNGROUPED)) {
-    groups.push({
-      sectionId: UNGROUPED,
-      sectionName: "Ungrouped",
-      items: map.get(UNGROUPED)!,
-      sortOrder: -1,
-    });
-    map.delete(UNGROUPED);
-  }
-
-  // Remaining sections, ordered by sectionOrder array
-  const remaining = Array.from(map.keys());
-  remaining.sort((a, b) => {
-    const aIdx = sectionOrder.indexOf(a);
-    const bIdx = sectionOrder.indexOf(b);
-    const aOrder = aIdx >= 0 ? aIdx : 9999;
-    const bOrder = bIdx >= 0 ? bIdx : 9999;
-    return aOrder - bOrder || a.localeCompare(b);
-  });
-
-  for (const key of remaining) {
-    const idx = sectionOrder.indexOf(key);
-    groups.push({
-      sectionId: key,
-      sectionName: key,
-      items: map.get(key)!,
-      sortOrder: idx >= 0 ? idx : 9999,
-    });
-  }
-
-  return groups;
-}
-
-/** Derive ordered section names from items (preserving sortOrder-based ordering). */
-function deriveSectionOrder(items: ChecklistItem[]): string[] {
-  const map = new Map<string, number>();
-  for (const item of items) {
-    const sec = (item as any).section;
-    if (sec) {
-      const existing = map.get(sec);
-      const order = item.sortOrder ?? 0;
-      if (existing === undefined || order < existing) {
-        map.set(sec, order);
-      }
-    }
-  }
-  return Array.from(map.entries())
-    .sort((a, b) => a[1] - b[1])
-    .map(([name]) => name);
 }
 
 // ── Sortable Item ────────────────────────────────────────────────────
