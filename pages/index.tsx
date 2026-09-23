@@ -40,6 +40,7 @@ import {
   type UpcomingTrip,
 } from "@/lib/dashboard";
 import { householdMembers } from "@/lib/household";
+import { formatUsd, wishlistSummary, type WishlistSummary } from "@/lib/inventory";
 import { careUrgency, gestationalAge } from "@/lib/pregnancy";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -54,6 +55,7 @@ type ShoppingItem = Schema["homeShoppingItem"]["type"];
 type Pregnancy = Schema["homePregnancy"]["type"];
 type CareItem = Schema["homeCareItem"]["type"];
 type Visit = Schema["homeMedicalVisit"]["type"];
+type InventoryItem = Schema["homeInventoryItem"]["type"];
 
 const EVENT_DAYS = 7;
 const TASK_DAYS = 7;
@@ -68,6 +70,8 @@ interface BabyData {
   person: string | null;
   careItems: CareItem[];
   nextVisit: Visit | null;
+  // Wishlist items linked to this pregnancy (the baby registry).
+  registry: WishlistSummary | null;
 }
 
 interface ShoppingSummary {
@@ -165,12 +169,17 @@ export default function HomeDashboard() {
         filter: { status: { eq: "ACTIVE" } },
       }));
       if (pregnancies.length === 0) return [];
-      const [allPeople, careItems, visits] = await Promise.all([
+      const [allPeople, careItems, visits, wishlist] = await Promise.all([
         peopleP,
         listAllPages<CareItem>(models.homeCareItem),
         listAllPages<Visit>(models.homeMedicalVisit, {
           filter: { status: { eq: "PLANNED" } },
         }),
+        models.homeInventoryItem
+          ? listAllPages<InventoryItem>(models.homeInventoryItem, {
+              filter: { status: { eq: "WISHLIST" } },
+            })
+          : Promise.resolve([] as InventoryItem[]),
       ]);
       const nowIso = new Date().toISOString();
       return pregnancies.map((pregnancy) => ({
@@ -181,6 +190,10 @@ export default function HomeDashboard() {
           visits
             .filter((v) => v.personId === pregnancy.personId && v.visitAt >= nowIso)
             .sort((a, b) => a.visitAt.localeCompare(b.visitAt))[0] ?? null,
+        registry: (() => {
+          const summary = wishlistSummary(wishlist.filter((w) => w.pregnancyId === pregnancy.id));
+          return summary.count > 0 ? summary : null;
+        })(),
       }));
     });
   }
@@ -508,6 +521,22 @@ function BabyCard({ data, now }: { data: BabyData; now: Date }) {
       <div className="mt-2 h-1.5 rounded-full bg-default-200 overflow-hidden">
         <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
       </div>
+
+      {data.registry && (
+        <>
+          <GroupLabel>Wishlist</GroupLabel>
+          <Row
+            href="/inventory"
+            left={`${data.registry.count} item${data.registry.count === 1 ? "" : "s"}`}
+            title={`~${formatUsd(data.registry.estimatedTotal)} to go`}
+            right={
+              data.registry.unpriced > 0 ? (
+                <span className="text-xs text-default-400 shrink-0">{data.registry.unpriced} unpriced</span>
+              ) : undefined
+            }
+          />
+        </>
+      )}
 
       {data.nextVisit && (
         <>

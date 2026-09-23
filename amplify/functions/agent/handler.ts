@@ -38,6 +38,7 @@ import {
   ymdInTimezone,
 } from "../../../lib/pregnancy.js";
 import { isHouseholdMember } from "../../../lib/household.js";
+import { isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -1712,6 +1713,94 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
+
+  // ── Inventory ──────────────────────────────────────────────────────────────
+  {
+    name: "list_inventory",
+    description:
+      "Search household inventory: things we own, the wishlist (also the private baby registry), and sold/given-away items. Answers 'do we have any size 0-3M sleepers?', 'what's left on the baby wishlist and how much will it cost?', 'how many diapers do we have?', 'what's running low?'. Returns items with their clothing/consumable details, plus wishlist totals when listing the wishlist.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        status: {
+          type: "string",
+          enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY", "ALL"],
+          description: "Default OWNED. WISHLIST = things we want to get.",
+        },
+        category: {
+          type: "string",
+          enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
+        },
+        ownerName: {
+          type: "string",
+          description: "Person's name, 'household' for shared items, or 'baby' for items for the baby on the way.",
+        },
+        query: { type: "string", description: "Fuzzy match on name, brand, notes, tags, clothing type/color." },
+        size: { type: "string", description: "Clothing size, e.g. 'NB', '0-3M', '3T', 'M'." },
+        lowStockOnly: { type: "boolean", description: "Only consumables at or below their low-stock threshold." },
+      },
+    },
+  },
+  {
+    name: "manage_inventory_item",
+    description:
+      "Create, update or delete an inventory item. Use status=WISHLIST for things to get (with estimatedPrice, priority, neededBy, url) and OWNED for things we have. action=mark_owned moves a wishlist item to OWNED (bought or received as a gift). Clothing takes size/color/clothingType/season; consumables take unit/lowStockThreshold/shoppingListName/expiresOn. Set forBaby=true for items for the baby on the way. Identify an existing item by itemId or query.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["create", "update", "delete", "mark_owned"] },
+        itemId: { type: "string" },
+        query: { type: "string", description: "Fuzzy name match when itemId isn't known." },
+        name: { type: "string", description: "Required for create." },
+        category: {
+          type: "string",
+          enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
+          description: "Required for create.",
+        },
+        status: { type: "string", enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"], description: "Default OWNED on create." },
+        ownerName: { type: "string", description: "Whose item. Omit or 'household' for shared." },
+        forBaby: { type: "boolean", description: "Item is for the baby on the way (links it to the active pregnancy)." },
+        brand: { type: "string" },
+        quantity: { type: "integer" },
+        location: { type: "string" },
+        tags: { type: "array", items: { type: "string" }, description: "e.g. ['nursery'], ['feeding']" },
+        notes: { type: "string" },
+        url: { type: "string" },
+        priority: { type: "string", enum: ["MUST_HAVE", "NICE_TO_HAVE"] },
+        neededBy: { type: "string", description: "YYYY-MM-DD" },
+        estimatedPrice: { type: "number", description: "Per unit, USD." },
+        acquiredVia: { type: "string", enum: ["PURCHASED", "GIFT", "HAND_ME_DOWN"] },
+        giftFrom: { type: "string" },
+        vendor: { type: "string" },
+        acquiredAt: { type: "string", description: "YYYY-MM-DD. Defaults to today on mark_owned." },
+        pricePaid: { type: "number", description: "Per unit, USD." },
+        priceSold: { type: "number" },
+        size: { type: "string" },
+        color: { type: "string" },
+        clothingType: { type: "string", description: "Onesie, sleeper, pants…" },
+        season: { type: "string", enum: ["ALL", "WARM", "COLD"] },
+        unit: { type: "string", description: "pack, box, can…" },
+        lowStockThreshold: { type: "integer", description: "At or below this quantity it's added to the shopping list." },
+        shoppingListName: { type: "string", description: "List to restock onto. Default: the supermarket list." },
+        expiresOn: { type: "string", description: "YYYY-MM-DD" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "adjust_inventory_quantity",
+    description:
+      "Change how many of an item we have: 'we used a pack of diapers' (delta -1), 'bought 3 more cans of formula' (delta 3), 'we have 2 boxes of wipes left' (set 2). When a consumable drops to its low-stock threshold it's added to the shopping list automatically.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+        query: { type: "string", description: "Fuzzy name match when itemId isn't known." },
+        delta: { type: "integer", description: "Relative change (+/-)." },
+        set: { type: "integer", description: "Absolute new quantity." },
+      },
+    },
+  },
 ];
 
 // ── Health / pregnancy helpers ───────────────────────────────────────────────
@@ -1788,6 +1877,95 @@ async function resolveProviderId(name?: string | null): Promise<string | null> {
     (data ?? []).find((p) => p.name.toLowerCase() === q) ??
     (data ?? []).find((p) => p.name.toLowerCase().includes(q) || (p.practice ?? "").toLowerCase().includes(q));
   return match?.id ?? null;
+}
+
+// ── Inventory helpers ────────────────────────────────────────────────────────
+
+async function loadInventory() {
+  const client = await getDataClient();
+  const [items, clothing, consumables] = await Promise.all([
+    client.models.homeInventoryItem.list({ limit: 1000 }),
+    client.models.homeInventoryClothing.list({ limit: 1000 }),
+    client.models.homeInventoryConsumable.list({ limit: 1000 }),
+  ]);
+  return {
+    items: items.data ?? [],
+    clothingByItem: new Map((clothing.data ?? []).map((c) => [c.itemId, c])),
+    consumableByItem: new Map((consumables.data ?? []).map((c) => [c.itemId, c])),
+  };
+}
+
+function matchInventoryItem<T extends { id: string; name: string; status?: string | null }>(
+  items: T[],
+  itemId?: string | null,
+  query?: string | null,
+): T | null {
+  if (itemId) return items.find((i) => i.id === itemId) ?? null;
+  if (!query) return null;
+  const q = query.toLowerCase().trim();
+  // Prefer items we still have over sold/given-away ones with the same name.
+  const ranked = [...items].sort(
+    (a, b) => Number(a.status === "SOLD" || a.status === "GIVEN_AWAY") - Number(b.status === "SOLD" || b.status === "GIVEN_AWAY"),
+  );
+  return (
+    ranked.find((i) => i.name.toLowerCase() === q) ??
+    ranked.find((i) => i.name.toLowerCase().includes(q)) ??
+    ranked.find((i) => q.includes(i.name.toLowerCase())) ??
+    null
+  );
+}
+
+// ownerName → { ownerPersonId, pregnancyId }. "household"/empty = shared,
+// "baby" (or forBaby) = the active pregnancy.
+async function resolveInventoryOwner(
+  ownerName?: string | null,
+  forBaby?: boolean,
+): Promise<{ ownerPersonId: string | null; pregnancyId: string | null } | { error: string }> {
+  const name = (ownerName ?? "").toLowerCase().trim();
+  if (forBaby || name === "baby") {
+    const active = await listActivePregnancies();
+    if (active.length !== 1) {
+      return { error: active.length === 0 ? "No active pregnancy to link baby items to" : "Multiple active pregnancies — say whose" };
+    }
+    return { ownerPersonId: null, pregnancyId: active[0].id };
+  }
+  if (!name || ["household", "both", "shared", "us"].includes(name)) {
+    return { ownerPersonId: null, pregnancyId: null };
+  }
+  const id = await resolveSinglePersonId(ownerName);
+  if (!id) return { error: `No person named "${ownerName}"` };
+  return { ownerPersonId: id, pregnancyId: null };
+}
+
+// If a consumable is at/below its threshold, put it on the shopping list
+// (its own list, else the default one) unless it's already there unchecked.
+async function restockIfLow(
+  item: { name: string; quantity?: number | null; status?: string | null },
+  consumable: { lowStockThreshold?: number | null; shoppingListId?: string | null; unit?: string | null } | undefined | null,
+): Promise<{ lowStock: boolean; addedToList: string | null; alreadyOnList: boolean }> {
+  const none = { lowStock: false, addedToList: null, alreadyOnList: false };
+  if (!consumable || item.status !== "OWNED") return none;
+  if (!isLowStock(item.quantity, consumable.lowStockThreshold)) return none;
+  const client = await getDataClient();
+  const list = consumable.shoppingListId
+    ? (await client.models.homeShoppingList.get({ id: consumable.shoppingListId })).data
+    : await resolveShoppingList(null);
+  if (!list) return { lowStock: true, addedToList: null, alreadyOnList: false };
+  const { data: open } = await client.models.homeShoppingItem.list({
+    filter: { listId: { eq: list.id }, isChecked: { eq: false } },
+    limit: 500,
+  });
+  const already = (open ?? []).some((i) => i.name.toLowerCase() === item.name.toLowerCase());
+  if (already) return { lowStock: true, addedToList: null, alreadyOnList: true };
+  await client.models.homeShoppingItem.create({
+    listId: list.id,
+    name: item.name,
+    notes: `Low stock (${item.quantity ?? 0}${consumable.unit ? ` ${consumable.unit}` : ""} left)`,
+    isChecked: false,
+    addedBy: "inventory",
+    sortOrder: 0,
+  });
+  return { lowStock: true, addedToList: list.name, alreadyOnList: false };
 }
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -4829,6 +5007,241 @@ async function executeTool(
       });
     }
 
+    // ── Inventory ──────────────────────────────────────────────────────────
+
+    case "list_inventory": {
+      const { items, clothingByItem, consumableByItem } = await loadInventory();
+      const status: string = input.status ?? "OWNED";
+      let owner: { ownerPersonId: string | null; pregnancyId: string | null } | null = null;
+      if (input.ownerName) {
+        const r = await resolveInventoryOwner(input.ownerName);
+        if ("error" in r) return JSON.stringify({ error: r.error });
+        owner = r;
+      }
+      const q = (input.query ?? "").toLowerCase().trim();
+      const size = (input.size ?? "").toLowerCase().trim();
+      const people = await getPeople();
+
+      const rows = items
+        .filter((i) => status === "ALL" || i.status === status)
+        .filter((i) => !input.category || i.category === input.category)
+        .filter((i) => {
+          if (!owner) return true;
+          if (owner.pregnancyId) return i.pregnancyId === owner.pregnancyId;
+          if (owner.ownerPersonId) return i.ownerPersonId === owner.ownerPersonId;
+          return !i.ownerPersonId && !i.pregnancyId; // household
+        })
+        .filter((i) => {
+          if (!q) return true;
+          const c = clothingByItem.get(i.id);
+          const hay = [i.name, i.brand, i.notes, ...(i.tags ?? []), c?.type, c?.color]
+            .filter(Boolean)
+            .join(" ")
+            .toLowerCase();
+          return hay.includes(q);
+        })
+        .filter((i) => !size || (clothingByItem.get(i.id)?.size ?? "").toLowerCase() === size)
+        .filter((i) => {
+          if (!input.lowStockOnly) return true;
+          const c = consumableByItem.get(i.id);
+          return !!c && i.status === "OWNED" && isLowStock(i.quantity, c.lowStockThreshold);
+        })
+        .sort(
+          (a, b) =>
+            (a.category ?? "").localeCompare(b.category ?? "") ||
+            sizeRank(clothingByItem.get(a.id)?.size) - sizeRank(clothingByItem.get(b.id)?.size) ||
+            a.name.localeCompare(b.name),
+        );
+
+      return JSON.stringify({
+        count: rows.length,
+        ...(status === "WISHLIST" ? { wishlist: wishlistSummary(rows) } : {}),
+        items: rows.slice(0, 100).map((i) => {
+          const c = clothingByItem.get(i.id);
+          const k = consumableByItem.get(i.id);
+          return {
+            id: i.id,
+            name: i.name,
+            category: i.category,
+            status: i.status,
+            owner: i.pregnancyId
+              ? "baby (on the way)"
+              : i.ownerPersonId
+                ? people.find((p) => p.id === i.ownerPersonId)?.name ?? "?"
+                : "household",
+            brand: i.brand,
+            quantity: i.quantity,
+            location: i.location,
+            tags: i.tags,
+            priority: i.priority,
+            neededBy: i.neededBy,
+            estimatedPrice: i.estimatedPrice,
+            pricePaid: i.pricePaid,
+            acquiredVia: i.acquiredVia,
+            giftFrom: i.giftFrom,
+            url: i.url,
+            notes: i.notes,
+            ...(c ? { size: c.size, color: c.color, clothingType: c.type, season: c.season } : {}),
+            ...(k
+              ? {
+                  unit: k.unit,
+                  lowStockThreshold: k.lowStockThreshold,
+                  lowStock: i.status === "OWNED" && isLowStock(i.quantity, k.lowStockThreshold),
+                  expiresOn: k.expiresOn,
+                }
+              : {}),
+          };
+        }),
+      });
+    }
+
+    case "manage_inventory_item": {
+      const today = ymdInTimezone(HOUSEHOLD_TZ);
+      const defined = <T extends Record<string, unknown>>(o: T) =>
+        Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+
+      let shoppingListId: string | undefined;
+      if (input.shoppingListName) {
+        const list = await resolveShoppingList(input.shoppingListName);
+        if (!list) return JSON.stringify({ error: `No shopping list matching "${input.shoppingListName}"` });
+        shoppingListId = list.id;
+      }
+      const clothingFields = defined({
+        size: input.size,
+        color: input.color,
+        type: input.clothingType,
+        season: input.season,
+      });
+      const consumableFields = defined({
+        unit: input.unit,
+        lowStockThreshold: input.lowStockThreshold,
+        shoppingListId,
+        expiresOn: input.expiresOn,
+      });
+      const baseFields = defined({
+        name: input.name,
+        category: input.category,
+        status: input.status,
+        brand: input.brand,
+        quantity: input.quantity,
+        location: input.location,
+        tags: input.tags,
+        notes: input.notes,
+        url: input.url,
+        priority: input.priority,
+        neededBy: input.neededBy,
+        estimatedPrice: input.estimatedPrice,
+        acquiredVia: input.acquiredVia,
+        giftFrom: input.giftFrom,
+        vendor: input.vendor,
+        acquiredAt: input.acquiredAt,
+        pricePaid: input.pricePaid,
+        priceSold: input.priceSold,
+      });
+      let ownerFields: { ownerPersonId: string | null; pregnancyId: string | null } | undefined;
+      if (input.ownerName !== undefined || input.forBaby) {
+        const r = await resolveInventoryOwner(input.ownerName, input.forBaby);
+        if ("error" in r) return JSON.stringify({ error: r.error });
+        ownerFields = r;
+      }
+
+      // Create or update the category's detail row with whatever fields were given.
+      const upsertDetail = async (itemId: string, category: string | null | undefined, existing: { id: string } | undefined) => {
+        if (category === "CLOTHING") {
+          if (existing) {
+            if (Object.keys(clothingFields).length) await client.models.homeInventoryClothing.update({ id: existing.id, ...clothingFields });
+          } else await client.models.homeInventoryClothing.create({ itemId, ...clothingFields });
+        } else if (category === "CONSUMABLE") {
+          if (existing) {
+            if (Object.keys(consumableFields).length) await client.models.homeInventoryConsumable.update({ id: existing.id, ...consumableFields });
+          } else await client.models.homeInventoryConsumable.create({ itemId, ...consumableFields });
+        }
+      };
+
+      if (input.action === "create") {
+        if (!input.name || !input.category) return JSON.stringify({ error: "name and category are required for create" });
+        const status = input.status ?? "OWNED";
+        const { data: item, errors } = await client.models.homeInventoryItem.create({
+          quantity: 1,
+          ...baseFields,
+          name: input.name,
+          category: input.category,
+          status,
+          ...(ownerFields ?? {}),
+          ...(status === "OWNED" && !input.acquiredAt ? { acquiredAt: today } : {}),
+          createdBy: "agent",
+        });
+        if (errors || !item) return JSON.stringify({ error: errors?.[0]?.message ?? "create failed" });
+        await upsertDetail(item.id, item.category, undefined);
+        const restock =
+          item.category === "CONSUMABLE"
+            ? await restockIfLow(item, { ...consumableFields })
+            : null;
+        return JSON.stringify({ success: true, itemId: item.id, name: item.name, status: item.status, restock });
+      }
+
+      const { items, clothingByItem, consumableByItem } = await loadInventory();
+      const item = matchInventoryItem(items, input.itemId, input.query ?? (input.itemId ? null : input.name));
+      if (!item) return JSON.stringify({ error: `No inventory item matching "${input.itemId ?? input.query ?? input.name ?? ""}"` });
+
+      if (input.action === "delete") {
+        const c = clothingByItem.get(item.id);
+        const k = consumableByItem.get(item.id);
+        if (c) await client.models.homeInventoryClothing.delete({ id: c.id });
+        if (k) await client.models.homeInventoryConsumable.delete({ id: k.id });
+        const { errors } = await client.models.homeInventoryItem.delete({ id: item.id });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, deleted: item.name });
+      }
+
+      const via = input.acquiredVia ?? item.acquiredVia ?? "PURCHASED";
+      const markOwned =
+        input.action === "mark_owned"
+          ? {
+              status: "OWNED" as const,
+              acquiredAt: input.acquiredAt ?? today,
+              acquiredVia: via,
+              // Bought at the estimate unless told otherwise; gifts cost nothing.
+              ...(via === "PURCHASED" && input.pricePaid === undefined && item.estimatedPrice != null
+                ? { pricePaid: item.estimatedPrice }
+                : {}),
+            }
+          : {};
+      const { data: updated, errors } = await client.models.homeInventoryItem.update({
+        id: item.id,
+        ...baseFields,
+        ...(ownerFields ?? {}),
+        ...markOwned,
+        ...((input.status === "SOLD" || input.status === "GIVEN_AWAY") ? { disposedAt: today } : {}),
+      });
+      if (errors || !updated) return JSON.stringify({ error: errors?.[0]?.message ?? "update failed" });
+
+      const cat = updated.category;
+      const existingDetail = cat === "CLOTHING" ? clothingByItem.get(item.id) : cat === "CONSUMABLE" ? consumableByItem.get(item.id) : undefined;
+      await upsertDetail(item.id, cat, existingDetail);
+
+      const restock =
+        cat === "CONSUMABLE"
+          ? await restockIfLow(updated, { ...(consumableByItem.get(item.id) ?? {}), ...consumableFields })
+          : null;
+      return JSON.stringify({ success: true, itemId: updated.id, name: updated.name, status: updated.status, restock });
+    }
+
+    case "adjust_inventory_quantity": {
+      if (input.delta === undefined && input.set === undefined) {
+        return JSON.stringify({ error: "Pass delta or set" });
+      }
+      const { items, consumableByItem } = await loadInventory();
+      const item = matchInventoryItem(items, input.itemId, input.query);
+      if (!item) return JSON.stringify({ error: `No inventory item matching "${input.itemId ?? input.query ?? ""}"` });
+      const before = item.quantity ?? 0;
+      const after = Math.max(0, input.set ?? before + input.delta);
+      const { data: updated, errors } = await client.models.homeInventoryItem.update({ id: item.id, quantity: after });
+      if (errors || !updated) return JSON.stringify({ error: errors?.[0]?.message ?? "update failed" });
+      const restock = await restockIfLow(updated, consumableByItem.get(item.id));
+      return JSON.stringify({ success: true, name: updated.name, before, after, restock });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -5119,6 +5532,25 @@ manage_care_item).
   for anything specific. For urgent symptoms (bleeding, severe pain, reduced
   fetal movement later on, severe headache or vision changes), tell them to
   call the OB or go to labor & delivery now.
+
+## Inventory & wishlist
+
+Household inventory (list_inventory / manage_inventory_item /
+adjust_inventory_quantity): things we own (OWNED), things we want
+(WISHLIST — also the private baby registry), and SOLD / GIVEN_AWAY.
+Every item has a category; CLOTHING carries size/color/type and
+CONSUMABLE carries unit + a low-stock threshold.
+
+- "Add a stroller to the baby wishlist, ~$400" → manage_inventory_item
+  create, status WISHLIST, forBaby true, estimatedPrice 400.
+- "We bought the stroller" / "Grandma gave us the crib" → action
+  mark_owned (acquiredVia GIFT + giftFrom for gifts).
+- "Used the last pack of wipes" → adjust_inventory_quantity; if it comes
+  back with restock.addedToList, mention it went on that shopping list.
+- "How much is left on the wishlist?" → list_inventory status WISHLIST and
+  read back wishlist.estimatedTotal (and how many items have no price).
+- Items for the baby on the way use forBaby / ownerName "baby"; shared
+  household items have no owner.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 

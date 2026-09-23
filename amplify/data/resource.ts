@@ -344,6 +344,100 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Inventory ───────────────────────────────────────────────────────
+    // Modular: one base row per item (what it is, whose it is, whether we
+    // own it or want it, what it cost) plus an optional detail row for
+    // categories that need their own fields — homeInventoryClothing for
+    // CLOTHING, homeInventoryConsumable for CONSUMABLE. Other categories
+    // are base-only. A new category that needs detail fields gets its own
+    // homeInventory<Category> model keyed by itemId (same pattern as
+    // gennaroanesi.com's inventoryItem + inventoryFirearm, …).
+    //
+    // status WISHLIST doubles as the (private) baby registry. Items for
+    // the baby on the way carry pregnancyId until the baby is a
+    // homePerson; after that, ownerPersonId points at them.
+    homeInventoryItem: a
+      .model({
+        name: a.string().required(),
+        category: a.enum([
+          "CLOTHING",
+          "CONSUMABLE", // diapers, wipes, formula, pantry, toiletries
+          "GEAR", // stroller, car seat, carrier, luggage
+          "FURNITURE",
+          "KITCHEN",
+          "ELECTRONICS",
+          "TOYS",
+          "BOOKS",
+          "TOOLS",
+          "OTHER",
+        ]),
+        status: a.enum(["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]),
+        // Whose it is (FK → homePerson.id). Null = shared by the household.
+        ownerPersonId: a.id(),
+        // For the baby on the way (FK → homePregnancy.id).
+        pregnancyId: a.id(),
+        brand: a.string(),
+        quantity: a.integer().default(1),
+        location: a.string(), // "Nursery closet", "Garage shelf 2"
+        // Free-form grouping across categories: "nursery", "feeding", "bath".
+        tags: a.string().array(),
+        notes: a.string(),
+        url: a.url(), // product / registry link
+        // Wishlist fields.
+        priority: a.enum(["MUST_HAVE", "NICE_TO_HAVE"]),
+        neededBy: a.date(),
+        estimatedPrice: a.float(), // per unit, USD
+        // Acquisition.
+        acquiredVia: a.enum(["PURCHASED", "GIFT", "HAND_ME_DOWN"]),
+        giftFrom: a.string(),
+        vendor: a.string(),
+        acquiredAt: a.date(),
+        pricePaid: a.float(), // per unit, USD
+        // Disposal (SOLD / GIVEN_AWAY).
+        disposedAt: a.date(),
+        priceSold: a.float(),
+        barcode: a.string(),
+        imageKeys: a.string().array(),
+        createdBy: a.string(),
+      })
+      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeInventoryClothing: a
+      .model({
+        itemId: a.id().required(), // FK → homeInventoryItem.id (1:1)
+        // Free text with presets in lib/inventory.ts: "NB", "0-3M", "3T", "M".
+        size: a.string(),
+        color: a.string(),
+        // "Onesie", "Sleeper", "Pants", "Jacket"…
+        type: a.string(),
+        season: a.enum(["ALL", "WARM", "COLD"]),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeInventoryConsumable: a
+      .model({
+        itemId: a.id().required(), // FK → homeInventoryItem.id (1:1)
+        unit: a.string(), // "pack", "box", "can", "diapers"
+        // At or below this quantity the item is low and gets added to
+        // the shopping list (shoppingListId, else the default list).
+        lowStockThreshold: a.integer(),
+        shoppingListId: a.id(),
+        expiresOn: a.date(),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Trip ────────────────────────────────────────────────────────────
     // Multi-day trip; days and events reference trips via tripId.
     homeTrip: a
