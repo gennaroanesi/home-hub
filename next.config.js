@@ -2,6 +2,9 @@
 
 const nextConfig = {
   reactStrictMode: true,
+  // tests/next-build.test.ts builds into .next-test so running the test
+  // suite doesn't clobber a running `npm run dev` (which uses .next).
+  distDir: process.env.NEXT_DIST_DIR || ".next",
   images: {
     remotePatterns: [
       {
