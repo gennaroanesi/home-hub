@@ -37,6 +37,7 @@ import {
   SEASONAL_CARE_KEYS,
   ymdInTimezone,
 } from "../../../lib/pregnancy.js";
+import { isHouseholdMember } from "../../../lib/household.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -172,11 +173,11 @@ async function getDataClient() {
 // ── Person resolution ────────────────────────────────────────────────────────
 // Resolves names (or ["both"]) to homePerson IDs.
 //
-// homePerson holds more than the household: face-tagging-only people
-// (friends, family in photos) and, later, kids. getPeople() returns
-// everyone so any of them can be looked up by name or id; "the
-// household" — what "both" expands to and what the system prompt lists —
-// is only the people who can log in (cognitoUsername set).
+// homePerson holds more than the household (face-tagging-only people,
+// guests, later kids). getPeople() returns everyone so any of them can
+// be looked up by name or id; "the household" — what "both" expands to
+// and what the system prompt lists — is the home-users group (see
+// lib/household.ts).
 
 interface PersonLite {
   id: string;
@@ -193,7 +194,7 @@ async function getPeople(): Promise<PersonLite[]> {
   _peopleCache = (data ?? []).map((p) => ({
     id: p.id,
     name: p.name,
-    household: !!p.cognitoUsername && p.active !== false,
+    household: isHouseholdMember(p),
   }));
   return _peopleCache;
 }
@@ -201,8 +202,8 @@ async function getPeople(): Promise<PersonLite[]> {
 async function getHouseholdMembers(): Promise<PersonLite[]> {
   const people = await getPeople();
   const household = people.filter((p) => p.household);
-  // No rows linked to a login yet → fall back to everyone (the old
-  // behavior) rather than "both" resolving to nobody.
+  // groups not synced yet → fall back to everyone (the old behavior)
+  // rather than "both" resolving to nobody.
   return household.length > 0 ? household : people;
 }
 

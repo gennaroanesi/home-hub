@@ -16,6 +16,7 @@ import {
   resolveReminderTimezone,
 } from "../../../lib/household-settings.js";
 import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
+import { householdMembers } from "../../../lib/household.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -71,11 +72,7 @@ async function collectRecipients(
   // homePerson rather than cognitoUsername — invited guests will
   // have a username but shouldn't receive household reminders.
   const { data: people } = await client.models.homePerson.list();
-  const household = (people ?? []).filter((p) => {
-    if (p.active === false) return false;
-    const groups = (p.groups ?? []).filter((g): g is string => !!g);
-    return groups.includes("home-users");
-  });
+  const household = householdMembers(people ?? []);
   const wantWhatsApp = household.some((p) => p.notifyWhatsApp !== false);
   const pushable = household.filter((p) => p.notifyPush !== false);
   const tokenLists = await Promise.all(

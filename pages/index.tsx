@@ -39,6 +39,7 @@ import {
   type TaskBuckets,
   type UpcomingTrip,
 } from "@/lib/dashboard";
+import { householdMembers } from "@/lib/household";
 import { careUrgency, gestationalAge } from "@/lib/pregnancy";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -106,9 +107,7 @@ export default function HomeDashboard() {
     const todayYmd = localYmd(now);
 
     const peopleP = listAllPages<Person>(client.models.homePerson).then((rows) => {
-      // Household members only — face-tagging people have no login.
-      const household = rows.filter((p) => p.cognitoUsername);
-      setPeople(household);
+      setPeople(householdMembers(rows));
       return rows;
     });
 

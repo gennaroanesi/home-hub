@@ -44,6 +44,7 @@ import {
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { HOUSEHOLD_GROUP } from "@/lib/household";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -74,7 +75,9 @@ function rowGroups(p: Person): string[] {
 }
 
 function isHousehold(p: Person): boolean {
-  return rowGroups(p).includes("home-users");
+  // Unlike lib/household's isHouseholdMember, inactive rows still count
+  // here so the admin can see and reactivate them.
+  return rowGroups(p).includes(HOUSEHOLD_GROUP);
 }
 
 function isFriend(p: Person): boolean {

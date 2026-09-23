@@ -23,6 +23,7 @@ import {
 } from "../../../lib/household-settings.js";
 import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
 import { careUrgency, gestationalAge } from "../../../lib/pregnancy.js";
+import { isHouseholdMember } from "../../../lib/household.js";
 
 const PUSH_KIND = "daily_summary";
 
@@ -784,8 +785,7 @@ async function fanOutPush(title: string, body: string): Promise<{ sent: number; 
       if (p.notifyPush === false) return false;
       const muted = (p.mutedPushKinds ?? []).filter((k): k is string => !!k);
       if (muted.includes(PUSH_KIND)) return false;
-      const groups = (p.groups ?? []).filter((g): g is string => !!g);
-      return groups.includes("home-users");
+      return isHouseholdMember(p);
     });
 
     const tokenLists = await Promise.all(

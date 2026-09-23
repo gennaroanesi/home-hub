@@ -35,6 +35,7 @@ import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
+import { householdMembers } from "@/lib/household";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -353,11 +354,11 @@ export default function CalendarPage() {
   }
 
   // Calendar stripes + day-status editor only show household members
-  // (people with a linked Cognito login). Non-household people —
+  // (home-users group — see lib/household.ts). Non-household people —
   // kids, extended family, pets, etc. — stay available for task and
   // event assignment but don't get their own row on the calendar.
   const householdPeople = useMemo(
-    () => people.filter((p) => !!p.cognitoUsername),
+    () => householdMembers(people),
     [people]
   );
 

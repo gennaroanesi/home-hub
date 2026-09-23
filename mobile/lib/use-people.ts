@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Hub } from "aws-amplify/utils";
 
 import { getClient } from "./amplify";
+import { householdMembers } from "./household";
 import type { Schema } from "../../amplify/data/resource";
 
 export type Person = Schema["homePerson"]["type"];
@@ -25,17 +26,10 @@ Hub.listen("auth", (data) => {
 
 async function fetchPeople(): Promise<Person[]> {
   const client = getClient();
-  const { data } = await client.models.homePerson.list();
-  // Household members only. We key off the home-users Cognito group
-  // (cached in homePerson.groups by setPersonGroups) rather than the
-  // mere presence of cognitoUsername — invited guests will have a
-  // cognitoUsername too but won't be in home-users, and they
-  // shouldn't show up as assignee / filter options for chores.
-  return (data ?? []).filter((p) => {
-    if (p.active === false) return false;
-    const groups = (p.groups ?? []).filter((g): g is string => !!g);
-    return groups.includes("home-users");
-  });
+  const { data } = await client.models.homePerson.list({ limit: 500 });
+  // Household members only (home-users group) — guests and face-tag-only
+  // people shouldn't show up as assignee / filter options for chores.
+  return householdMembers(data ?? []);
 }
 
 export function usePeople(): { people: Person[]; loading: boolean } {

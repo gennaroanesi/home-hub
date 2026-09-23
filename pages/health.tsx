@@ -28,6 +28,7 @@ import { FaHeartbeat, FaPlus } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
+import { householdMembers } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
 import {
   CARE_CATEGORY_LABELS,
@@ -171,9 +172,7 @@ export default function HealthPage() {
         listAllPages<LabResult>(client.models.homeLabResult),
         listAllPages<Provider>(client.models.homeHealthProvider),
       ]);
-      const household = ppl.filter(
-        (p) => p.active !== false && (p.groups ?? []).includes("home-users"),
-      );
+      const household = householdMembers(ppl);
       setPeople(household.length > 0 ? household : ppl.filter((p) => p.active !== false));
       setPregnancies(preg);
       setCareItems(care);
