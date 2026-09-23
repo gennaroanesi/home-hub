@@ -1,20 +1,23 @@
 import React from "react";
+import { useRouter } from "next/router";
 
 import { Head } from "./head";
-import { Navbar } from "@/components/navbar";
+import { Sidebar } from "@/components/sidebar";
 
 export default function DefaultLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const router = useRouter();
+  // No nav on the login screen — nothing behind it is reachable yet.
+  const bare = router.pathname.startsWith("/login");
+
   return (
-    <div className="relative flex flex-col h-dvh">
-      <main className="container mx-auto max-w-full flex-grow">
-        <Head />
-        <Navbar />
-        {children}
-      </main>
+    <div className="md:flex min-h-dvh">
+      <Head />
+      {!bare && <Sidebar />}
+      <main className="flex-1 min-w-0">{children}</main>
     </div>
   );
 }

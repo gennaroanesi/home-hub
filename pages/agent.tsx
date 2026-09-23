@@ -479,7 +479,7 @@ export default function HomeAgent() {
 
   return (
     <DefaultLayout>
-      <div className="flex h-[calc(100dvh-4rem)] relative">
+      <div className="flex h-[calc(100dvh-4rem)] md:h-dvh relative">
         {/* Mobile backdrop */}
         {sidebarOpen && (
           <div
