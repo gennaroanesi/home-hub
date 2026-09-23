@@ -171,23 +171,47 @@ async function getDataClient() {
 
 // ── Person resolution ────────────────────────────────────────────────────────
 // Resolves names (or ["both"]) to homePerson IDs.
+//
+// homePerson holds more than the household: face-tagging-only people
+// (friends, family in photos) and, later, kids. getPeople() returns
+// everyone so any of them can be looked up by name or id; "the
+// household" — what "both" expands to and what the system prompt lists —
+// is only the people who can log in (cognitoUsername set).
 
-let _peopleCache: { id: string; name: string }[] | null = null;
+interface PersonLite {
+  id: string;
+  name: string;
+  household: boolean;
+}
 
-async function getPeople(): Promise<{ id: string; name: string }[]> {
+let _peopleCache: PersonLite[] | null = null;
+
+async function getPeople(): Promise<PersonLite[]> {
   if (_peopleCache) return _peopleCache;
   const client = await getDataClient();
-  const { data } = await client.models.homePerson.list();
-  _peopleCache = (data ?? []).map((p) => ({ id: p.id, name: p.name }));
+  const { data } = await client.models.homePerson.list({ limit: 500 });
+  _peopleCache = (data ?? []).map((p) => ({
+    id: p.id,
+    name: p.name,
+    household: !!p.cognitoUsername && p.active !== false,
+  }));
   return _peopleCache;
+}
+
+async function getHouseholdMembers(): Promise<PersonLite[]> {
+  const people = await getPeople();
+  const household = people.filter((p) => p.household);
+  // No rows linked to a login yet → fall back to everyone (the old
+  // behavior) rather than "both" resolving to nobody.
+  return household.length > 0 ? household : people;
 }
 
 async function resolvePersonIds(names?: string[] | null): Promise<string[]> {
   if (!names || names.length === 0) return [];
   const people = await getPeople();
-  // "both", "all", "household" → all people
+  // "both", "all", "household" → the household members, not every person row
   if (names.some((n) => ["both", "all", "household", "everyone"].includes(n.toLowerCase()))) {
-    return people.map((p) => p.id);
+    return (await getHouseholdMembers()).map((p) => p.id);
   }
   const ids: string[] = [];
   for (const name of names) {
@@ -4946,7 +4970,7 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
 
   const now = new Date();
   const people = await getPeople();
-  const peopleNames = people.map((p) => p.name).join(", ");
+  const peopleNames = (await getHouseholdMembers()).map((p) => p.name).join(", ");
 
   // Format date and time consistently in the household's local timezone.
   // Mixing `now.toISOString()` (UTC) with a localized weekday previously
@@ -4985,7 +5009,7 @@ Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
 Timezone: ${TZ} (Central)
 Message sender: ${sender}
 ${pregnancyContext ? `${pregnancyContext}\n` : ""}
-When assigning tasks/bills/events to people, pass their names in the assignedPeople array — names must match the Household members listed above, or use ["both"] for the whole household. Empty/omitted = household.
+When assigning tasks/bills/events to people, pass their names in the assignedPeople array — names must match a person's name (usually one of the Household members listed above, but anyone in the people list can be named), or use ["both"] for the whole household (the members listed above). Empty/omitted = household.
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
