@@ -48,18 +48,41 @@ export const NAV_SECTIONS: NavSection[] = [
     ],
   },
   {
-    label: "Life",
+    label: "To-do",
     items: [
       { name: "Tasks", href: "/tasks", icon: FaTasks },
-      { name: "Calendar", href: "/calendar", icon: FaCalendarAlt },
       { name: "Shopping", href: "/shopping", icon: FaShoppingCart },
-      { name: "Trips", href: "/trips", icon: FaPlane },
-      { name: "Health", href: "/health", icon: FaHeartbeat },
       { name: "Checklists", href: "/checklists", icon: FaCheckSquare },
       { name: "Reminders", href: "/reminders", icon: FaBell },
+    ],
+  },
+  {
+    label: "Events",
+    items: [
+      { name: "Calendar", href: "/calendar", icon: FaCalendarAlt },
+      { name: "Trips", href: "/trips", icon: FaPlane },
+    ],
+  },
+  {
+    label: "People",
+    items: [
+      { name: "Health", href: "/health", icon: FaHeartbeat },
+      { name: "Household", href: "/admin/people", icon: FaUsers },
+    ],
+  },
+  {
+    label: "Home",
+    items: [
+      { name: "Devices", href: "/devices", icon: FaLightbulb },
+      { name: "Bills", href: "/bills", icon: FaFileInvoiceDollar, coming: true },
+    ],
+  },
+  {
+    label: "Files",
+    items: [
+      { name: "Documents", href: "/documents", icon: FaFileAlt },
       { name: "Notes", href: "/notes", icon: FaStickyNote },
       { name: "Attachments", href: "/attachments", icon: FaPaperclip },
-      { name: "Bills", href: "/bills", icon: FaFileInvoiceDollar, coming: true },
     ],
   },
   {
@@ -70,18 +93,10 @@ export const NAV_SECTIONS: NavSection[] = [
       { name: "Faces", href: "/admin/faces", icon: FaSmile },
     ],
   },
-  {
-    label: "Home",
-    items: [
-      { name: "Devices", href: "/devices", icon: FaLightbulb },
-      { name: "Documents", href: "/documents", icon: FaFileAlt },
-    ],
-  },
 ];
 
 // Pinned to the bottom of the sidebar, above Sign out.
 export const ACCOUNT_LINKS: NavLink[] = [
-  { name: "People", href: "/admin/people", icon: FaUsers },
   { name: "Settings", href: "/admin/settings", icon: FaCog },
   { name: "Calendar feeds", href: "/admin/calendar-feeds", icon: FaCalendarAlt },
   { name: "Security", href: "/security", icon: FaLock },
