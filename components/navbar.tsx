@@ -46,6 +46,7 @@ import {
   FaBell,
   FaStickyNote,
   FaCog,
+  FaHeartbeat,
 } from "react-icons/fa";
 
 // ── Nav group definitions ──────────────────────────────────────────────
@@ -88,6 +89,7 @@ const NAV: NavEntry[] = [
       { name: "Attachments", href: "/attachments", icon: <FaPaperclip /> },
       { name: "Notes", href: "/notes", icon: <FaStickyNote /> },
       { name: "Reminders", href: "/reminders", icon: <FaBell /> },
+      { name: "Health", href: "/health", icon: <FaHeartbeat /> },
     ],
   },
   {

@@ -22,6 +22,7 @@ import {
   resolveReminderTimezone,
 } from "../../../lib/household-settings.js";
 import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
+import { careUrgency, gestationalAge } from "../../../lib/pregnancy.js";
 
 const PUSH_KIND = "daily_summary";
 
@@ -104,6 +105,18 @@ interface SummaryData {
     target: string; // "Group" or person name
     nextFireLabel: string; // localized HH:MM
     items: { name: string; notes?: string }[];
+  }[];
+  // Active pregnancies with gestational age and the care-timeline items
+  // that need attention (overdue, window open now, or opening within a
+  // week). `newWeek` = today is the first day of a new gestational week.
+  pregnancies: {
+    person: string;
+    gestationalAge: string;
+    weeks: number;
+    newWeek: boolean;
+    trimester: number;
+    daysToGo: number;
+    careItems: { title: string; urgency: "OVERDUE" | "DUE_NOW" | "SOON"; windowStart: string; windowEnd: string }[];
   }[];
 }
 
@@ -244,7 +257,52 @@ async function gatherData(): Promise<SummaryData> {
     home: await gatherHomeState(),
     weather: await gatherWeatherBriefing(allEvents ?? []),
     todayReminders: await gatherTodayReminders(people ?? [], todayStr),
+    pregnancies: await gatherPregnancies(people ?? [], todayStr),
   };
+}
+
+// ── Pregnancy ────────────────────────────────────────────────────────────────
+
+async function gatherPregnancies(
+  people: PersonLite[],
+  todayStr: string,
+): Promise<SummaryData["pregnancies"]> {
+  const { data: pregnancies } = await client.models.homePregnancy.list({
+    filter: { status: { eq: "ACTIVE" } },
+  });
+  const out: SummaryData["pregnancies"] = [];
+  for (const p of pregnancies ?? []) {
+    const ga = gestationalAge(p.dueDate, todayStr);
+    const { data: items } = await client.models.homeCareItem.list({
+      filter: { pregnancyId: { eq: p.id } },
+      limit: 500,
+    });
+    const careItems = (items ?? [])
+      .map((i) => ({
+        title: i.title,
+        windowStart: i.windowStart,
+        windowEnd: i.windowEnd,
+        urgency: careUrgency(
+          { status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd },
+          todayStr,
+          7,
+        ),
+      }))
+      .filter((i): i is typeof i & { urgency: "OVERDUE" | "DUE_NOW" | "SOON" } =>
+        i.urgency === "OVERDUE" || i.urgency === "DUE_NOW" || i.urgency === "SOON",
+      )
+      .sort((a, b) => a.windowStart.localeCompare(b.windowStart));
+    out.push({
+      person: people.find((x) => x.id === p.personId)?.name ?? "?",
+      gestationalAge: ga.label,
+      weeks: ga.weeks,
+      newWeek: ga.dayOfWeek === 0,
+      trimester: ga.trimester,
+      daysToGo: ga.daysToGo,
+      careItems,
+    });
+  }
+  return out;
 }
 
 // ── Today's reminders ────────────────────────────────────────────────────────
@@ -542,7 +600,8 @@ function isEmpty(data: SummaryData): boolean {
     data.todayDayStatuses.length === 0 &&
     data.upcomingTrips.length === 0 &&
     data.upcomingAllDayEvents.length === 0 &&
-    data.upcomingMultiPersonEvents.length === 0
+    data.upcomingMultiPersonEvents.length === 0 &&
+    data.pregnancies.length === 0
   );
 }
 
@@ -579,7 +638,8 @@ ${JSON.stringify(data, null, 2)}
 WhatsApp output rules (key "whatsappText"):
 - Start with a short greeting line with the day of week and date (e.g. "*Good morning! Thursday, April 9*").
 - Use WhatsApp-flavored markdown: *bold* for headers, no other formatting.
-- Group into up to these sections: "*Today*", "*Coming up*", "*Home*", "*Weather*", "*Reminders*". Omit any section entirely if it has no content.
+- Group into up to these sections: "*Baby*", "*Today*", "*Coming up*", "*Home*", "*Weather*", "*Reminders*". Omit any section entirely if it has no content.
+- Under "*Baby*" (first section, right after the greeting), render data.pregnancies if non-empty. First line: "🤰 <gestationalAge> · <daysToGo> days to go" (e.g. "🤰 7w4d · 229 days to go"). If newWeek is true, make it celebratory: "🎉 Week <weeks> starts today · <daysToGo> days to go". Then one "• " line per careItems entry: OVERDUE → "⚠️ <title> — window closed <windowEnd>"; DUE_NOW → "<title> — due by <windowEnd>"; SOON → "<title> — window opens <windowStart>". Write dates like "Oct 29". Don't add baby-development facts or advice that isn't in the data.
 - Under "*Today*", list tasks, events, and any notable day statuses (WFH, PTO, travel) as short bullet lines starting with "• ".
 - Under "*Coming up*", only show trips, all-day events, and multi-person events within the next 3 days. Include how many days away (e.g. "in 2 days").
 - Under "*Home*", render whatever is in data.home.devices as compact lines. The data is pre-filtered: devices only appear if they're notable (unlocked doors, open garage, running washer, low battery, current indoor temperature). Keep it short — a single line per device or merge into a summary line like "🏠 Inside 68°F heat, all else normal". If data.home.devices is empty but home.available is true, omit the Home section entirely. Drop the section if home.available is false — instead add a single line "⚠️ Home devices unreachable — can't read device state" under the greeting.
@@ -597,6 +657,7 @@ Push notification rules (keys "pushTitle", "pushBody"):
 - pushTitle: a short greeting with day-of-week and date, ≤45 characters. Example: "Good morning · Thu May 21".
 - pushBody: ONE LINE summarizing the most important items, ≤140 characters. Lead with what the user most needs to know:
   - If there are overdue tasks, mention the count first.
+  - If data.pregnancies is non-empty, include the gestational age compactly (e.g. "7w4d").
   - Then the rest: "N tasks · M events" today, plus one upcoming highlight (trip or notable event in next 3 days), plus any active home alert (unlocked door, open garage).
   - Use "·" as a separator. Skip anything irrelevant.
   - Example: "⚠️ 1 overdue · 3 tasks · 2 events · Trip to Chicago in 2 days"
@@ -664,6 +725,7 @@ function buildFallbackPushBody(data: SummaryData): string {
   if (overdue > 0) parts.push(`⚠️ ${overdue} overdue`);
   if (data.todayTasks.length > 0) parts.push(`${data.todayTasks.length} tasks`);
   if (data.todayEvents.length > 0) parts.push(`${data.todayEvents.length} events`);
+  for (const p of data.pregnancies) parts.push(p.gestationalAge);
   const nextTrip = data.upcomingTrips[0];
   if (nextTrip) {
     parts.push(`${nextTrip.name} in ${nextTrip.daysAway}d`);

@@ -10,6 +10,16 @@ Ideas for future features. Not committed — just a parking lot for things that 
 
 ## Candidates
 
+### Baby / health (in progress — due 2027-05-27)
+Phase 1 is built: per-person health records (`homeHealthProvider`, `homeMedicalVisit`, `homeLabResult`), `homePregnancy` + a seeded prenatal care timeline (`homeCareItem`, template in `lib/pregnancy.ts`), Janet tools, a *Baby* section in the daily summary, and the `/health` web page. Next, roughly in order:
+- **Lab report ingestion polish** — when a lab PDF arrives over WhatsApp or the iOS share extension, also file it as a MEDICAL `homeDocument` (Duo-gated) and link `documentId`, instead of only extracting values.
+- **Medications & supplements for people** — generalize `homePetMedication` into a person-level model (prenatal vitamin, DHA, iron) with refill tracking; daily doses stay in `homeReminder` (kind=medication). Trimester nutrition notes (calories, caffeine, foods to avoid) as curated static content, not LLM-generated.
+- **Mobile** — `more/health` screen mirroring `/health`; later a kick counter (from ~28w) and contraction timer (5-1-1) with push to the partner, and a "go time" button (hospital address, triage phone, bag checklist).
+- **Checklists on the pregnancy** — hospital bag, nursery, car seat; add `PREGNANCY` to `homeChecklist.entityType`.
+- **Household inventory** — build the `inventoryItem` / `pendingScan` design under *Inventory* below, borrowing two ideas from gennaroanesi.com's inventory: a `WISHLIST | OWNED | SOLD` status (WISHLIST doubles as the baby registry; SOLD covers outgrown/donated) and per-item low-stock thresholds (like `ammoThreshold`) that add diapers/wipes/formula/vitamins to the shopping list. Baby clothes use the `size` column (NB, 0–3m, …).
+- **Newborn log** (by ~32w) — baby as a `homePerson`; feeds / diapers / sleep via one-handed mobile quick-taps and WhatsApp; well-baby visits and the vaccine schedule reuse the care-item pattern.
+- **Finances stay in gennaroanesi.com** — a "Baby" `financeSpendGroup`, a savings goal targeting the due date, and a "with baby" planning scenario (family-tier `medicalPerCheck` from 2027, childcare, dependent-care FSA / child tax credit). Delivery lands in the 2027 plan year, so pick the 2027 insurance tier at open enrollment with that in mind.
+
 ### Household operations
 - **Shopping list / pantry** — shared list, agent adds items from WhatsApp ("we're out of olive oil"), tracks pantry staples + expiries.
 - **Meal planning** — weekly menu that auto-generates the shopping list; agent suggests meals from what's in the pantry.

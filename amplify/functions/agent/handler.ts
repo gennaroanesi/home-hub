@@ -28,6 +28,15 @@ import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flag
 import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus } from "./duo.js";
 import { HassClient, entityDomain } from "./hass-client.js";
 import { canPerform, type Sensitivity, type Action, type PolicyContext } from "../../../lib/devicePolicy.js";
+import {
+  buildCareTimeline,
+  careUrgency,
+  dueDateFromLmp,
+  gestationalAge,
+  lmpFromDueDate,
+  SEASONAL_CARE_KEYS,
+  ymdInTimezone,
+} from "../../../lib/pregnancy.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -1472,7 +1481,289 @@ const tools: Anthropic.Tool[] = [
       required: ["parentId"],
     },
   },
+
+  // ── Health records & pregnancy ─────────────────────────────────────────────
+  {
+    name: "get_pregnancy_status",
+    description:
+      "Current pregnancy snapshot: due date, gestational age (e.g. 7w4d), trimester, days to go, care-timeline items that are overdue / due now / coming up in the next 3 weeks, and the next planned visit with its question list. Call this for 'how far along are we?', 'what's coming up for the baby?', 'what do we need to do next?'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: {
+          type: "string",
+          description: "Whose pregnancy. Omit when there's only one active pregnancy.",
+        },
+      },
+    },
+  },
+  {
+    name: "set_pregnancy",
+    description:
+      "Create or update a pregnancy. Creating one seeds the standard prenatal care timeline (labs, scans, vaccines, admin). Pass lmpDate (first day of last period) or dueDate — whichever the user gives; the other is derived. When a dating ultrasound changes the due date, call this with the new dueDate and dueDateSource=ULTRASOUND: every open timeline item shifts automatically. Also used to mark the pregnancy DELIVERED (with deliveredAt).",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "The pregnant household member." },
+        lmpDate: { type: "string", description: "YYYY-MM-DD, first day of last menstrual period." },
+        dueDate: { type: "string", description: "YYYY-MM-DD estimated due date." },
+        dueDateSource: { type: "string", enum: ["LMP", "ULTRASOUND", "IVF", "OTHER"] },
+        providerName: { type: "string", description: "OB/midwife — must match a health provider (see manage_health_provider)." },
+        hospitalName: { type: "string" },
+        status: { type: "string", enum: ["ACTIVE", "DELIVERED", "ENDED"] },
+        deliveredAt: { type: "string", description: "YYYY-MM-DD birth date." },
+        notes: { type: "string" },
+      },
+      required: ["personName"],
+    },
+  },
+  {
+    name: "list_care_items",
+    description:
+      "List the prenatal care timeline (first-trimester labs, NIPT, anatomy scan, glucose test, Tdap, GBS, hospital pre-registration, etc.) with each item's date window and status.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Omit when there's only one active pregnancy." },
+        filter: {
+          type: "string",
+          enum: ["open", "all"],
+          description: "open (default) = UPCOMING/SCHEDULED only; all = include done/skipped/N/A.",
+        },
+      },
+    },
+  },
+  {
+    name: "manage_care_item",
+    description:
+      "Update, add, or delete a care-timeline item. Use update to mark something SCHEDULED (optionally with the calendar eventId), DONE, SKIPPED (declined — e.g. opted out of NIPT or a vaccine), or NOT_APPLICABLE (e.g. Rh immune globulin when she's Rh-positive). Identify the item by careItemId or by a fuzzy query on its title/key ('anatomy', 'glucose', 'tdap').",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["update", "add", "delete"] },
+        personName: { type: "string", description: "Omit when there's only one active pregnancy." },
+        careItemId: { type: "string" },
+        query: { type: "string", description: "Fuzzy match on title or key when careItemId isn't known." },
+        title: { type: "string", description: "Required for add." },
+        category: {
+          type: "string",
+          enum: ["VISIT", "LAB", "IMAGING", "SCREENING", "VACCINE", "TREATMENT", "ADMIN"],
+        },
+        windowStart: { type: "string", description: "YYYY-MM-DD. Required for add." },
+        windowEnd: { type: "string", description: "YYYY-MM-DD. Required for add." },
+        status: { type: "string", enum: ["UPCOMING", "SCHEDULED", "DONE", "SKIPPED", "NOT_APPLICABLE"] },
+        eventId: { type: "string", description: "Linked homeCalendarEvent id." },
+        completedAt: { type: "string", description: "YYYY-MM-DD. Defaults to today when status=DONE." },
+        notes: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "manage_health_provider",
+    description:
+      "Create, update, list, or delete health providers (OB/GYN, lab, hospital, pediatrician, dentist…) with phone, address and patient-portal URL.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["create", "update", "list", "delete"] },
+        providerId: { type: "string" },
+        name: { type: "string" },
+        specialty: { type: "string", description: "Free text: OB/GYN, Lab, Hospital, Pediatrician…" },
+        practice: { type: "string" },
+        phone: { type: "string" },
+        address: { type: "string" },
+        portalUrl: { type: "string" },
+        personNames: { type: "array", items: { type: "string" }, description: "Whose provider. Empty = household." },
+        notes: { type: "string" },
+      },
+      required: ["action"],
+    },
+  },
+  {
+    name: "log_medical_visit",
+    description:
+      "Create or update a medical visit record. Use status=PLANNED for an upcoming appointment (so questions can be collected against it) and COMPLETED once it's happened, with notes, follow-ups and vitals (weight, blood pressure, fetal heart rate). Pass visitId to update an existing visit. If the visit fulfils a care-timeline item (e.g. the anatomy scan), pass careItemQuery and the item is linked and marked SCHEDULED/DONE to match.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        visitId: { type: "string", description: "Set to update an existing visit." },
+        personName: { type: "string", description: "Patient. Required on create." },
+        visitAt: { type: "string", description: "ISO datetime of the appointment. Required on create." },
+        kind: {
+          type: "string",
+          enum: ["PRENATAL", "ULTRASOUND", "LAB_DRAW", "CHECKUP", "SPECIALIST", "VACCINE", "URGENT", "OTHER"],
+        },
+        status: { type: "string", enum: ["PLANNED", "COMPLETED", "CANCELLED"] },
+        providerName: { type: "string" },
+        title: { type: "string", description: "Short label, e.g. 'Intake visit', '20-week anatomy scan'." },
+        notes: { type: "string" },
+        followUp: { type: "string" },
+        weightLb: { type: "number" },
+        bpSystolic: { type: "integer" },
+        bpDiastolic: { type: "integer" },
+        fetalHeartRate: { type: "integer", description: "bpm" },
+        eventId: { type: "string", description: "Linked calendar event id, if the appointment is on the calendar." },
+        careItemQuery: { type: "string", description: "Care-timeline item this visit fulfils ('dating ultrasound', 'anatomy')." },
+      },
+    },
+  },
+  {
+    name: "list_medical_visits",
+    description: "List medical visits, most recent first (planned visits included). Returns vitals, notes, questions and follow-ups.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string" },
+        status: { type: "string", enum: ["PLANNED", "COMPLETED", "CANCELLED"] },
+        limit: { type: "integer", description: "Default 10." },
+      },
+    },
+  },
+  {
+    name: "add_visit_question",
+    description:
+      "Append a question to ask the doctor at the person's next PLANNED visit ('ask the OB about flying in the 2nd trimester'). Fails if there's no planned visit — create one with log_medical_visit first.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Omit when there's only one active pregnancy — defaults to that person." },
+        question: { type: "string" },
+      },
+      required: ["question"],
+    },
+  },
+  {
+    name: "record_lab_results",
+    description:
+      "Record lab results — one entry per analyte (e.g. Hemoglobin 11.8 g/dL, Blood type O+, Rubella Immune, GBS Negative). Use when the user sends a photo/PDF of a lab report or types results. Pending results can be recorded with flag=PENDING and are updated in place (matched by testName) when the value arrives. Pass careItemQuery to link the results to a timeline item ('glucose', 'GBS'); the item is marked DONE once none of its results are pending.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Patient. Omit when there's only one active pregnancy." },
+        visitId: { type: "string" },
+        careItemQuery: { type: "string" },
+        panel: { type: "string", description: "Label shared by results that came back together, e.g. 'First-trimester labs'." },
+        collectedAt: { type: "string", description: "YYYY-MM-DD" },
+        resultedAt: { type: "string", description: "YYYY-MM-DD" },
+        lab: { type: "string" },
+        documentId: { type: "string", description: "homeDocument id of the stored report, if any." },
+        results: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              testName: { type: "string" },
+              valueText: { type: "string", description: "Value as printed: '11.8', 'O+', 'Negative', 'Immune'." },
+              valueNum: { type: "number", description: "Numeric value when there is one." },
+              unit: { type: "string" },
+              referenceRange: { type: "string" },
+              flag: {
+                type: "string",
+                enum: ["NORMAL", "LOW", "HIGH", "ABNORMAL", "POSITIVE", "NEGATIVE", "PENDING"],
+                description: "Use the flag printed on the report; don't infer one the report doesn't give beyond NORMAL/POSITIVE/NEGATIVE.",
+              },
+              notes: { type: "string" },
+            },
+            required: ["testName"],
+          },
+        },
+      },
+      required: ["results"],
+    },
+  },
+  {
+    name: "list_lab_results",
+    description:
+      "Look up lab results. Answers 'what's her blood type?', 'what was her hemoglobin?', 'are any results still pending?'. Filter by testName (fuzzy), panel, or flag. latestOnly=true returns just the newest value per test.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string" },
+        testName: { type: "string" },
+        panel: { type: "string" },
+        flag: { type: "string", enum: ["NORMAL", "LOW", "HIGH", "ABNORMAL", "POSITIVE", "NEGATIVE", "PENDING"] },
+        latestOnly: { type: "boolean" },
+      },
+    },
+  },
 ];
+
+// ── Health / pregnancy helpers ───────────────────────────────────────────────
+
+const HOUSEHOLD_TZ = "America/Chicago";
+
+async function resolveSinglePersonId(name?: string | null): Promise<string | null> {
+  if (!name) return null;
+  const [id] = await resolvePersonIds([name]);
+  return id ?? null;
+}
+
+async function listActivePregnancies() {
+  const client = await getDataClient();
+  const { data } = await client.models.homePregnancy.list({
+    filter: { status: { eq: "ACTIVE" } },
+    limit: 50,
+  });
+  return data ?? [];
+}
+
+// Resolve the pregnancy a tool call is about: the named person's active
+// pregnancy, or the only active one when no name is given.
+async function resolveActivePregnancy(personName?: string | null) {
+  const active = await listActivePregnancies();
+  if (personName) {
+    const personId = await resolveSinglePersonId(personName);
+    if (!personId) return { error: `No household member named "${personName}"` };
+    const match = active.find((p) => p.personId === personId);
+    return match ? { pregnancy: match } : { error: `No active pregnancy for ${personName}` };
+  }
+  if (active.length === 1) return { pregnancy: active[0] };
+  if (active.length === 0) return { error: "No active pregnancy — create one with set_pregnancy" };
+  return { error: "Multiple active pregnancies — pass personName" };
+}
+
+// Patient for a health-record tool: explicit name wins, else the
+// person with the (single) active pregnancy.
+async function resolvePatientId(personName?: string | null): Promise<string | null> {
+  if (personName) return resolveSinglePersonId(personName);
+  const active = await listActivePregnancies();
+  return active.length === 1 ? active[0].personId : null;
+}
+
+async function listCareItems(pregnancyId: string) {
+  const client = await getDataClient();
+  const { data } = await client.models.homeCareItem.list({
+    filter: { pregnancyId: { eq: pregnancyId } },
+    limit: 500,
+  });
+  return (data ?? []).sort((a, b) =>
+    a.windowStart === b.windowStart
+      ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+      : a.windowStart < b.windowStart ? -1 : 1,
+  );
+}
+
+function matchCareItem<T extends { key?: string | null; title: string }>(items: T[], query: string): T | null {
+  const q = query.toLowerCase().trim();
+  return (
+    items.find((i) => i.key?.toLowerCase() === q) ??
+    items.find((i) => i.title.toLowerCase() === q) ??
+    items.find((i) => i.title.toLowerCase().includes(q) || (i.key ?? "").replace(/_/g, " ").includes(q)) ??
+    null
+  );
+}
+
+async function resolveProviderId(name?: string | null): Promise<string | null> {
+  if (!name) return null;
+  const client = await getDataClient();
+  const { data } = await client.models.homeHealthProvider.list({ limit: 200 });
+  const q = name.toLowerCase().trim();
+  const match =
+    (data ?? []).find((p) => p.name.toLowerCase() === q) ??
+    (data ?? []).find((p) => p.name.toLowerCase().includes(q) || (p.practice ?? "").toLowerCase().includes(q));
+  return match?.id ?? null;
+}
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
 
@@ -3957,6 +4248,562 @@ async function executeTool(
       });
     }
 
+    // ── Health records & pregnancy ─────────────────────────────────────────
+
+    case "get_pregnancy_status": {
+      const res = await resolveActivePregnancy(input.personName);
+      if ("error" in res) return JSON.stringify({ error: res.error });
+      const p = res.pregnancy;
+      const today = ymdInTimezone(HOUSEHOLD_TZ);
+      const ga = gestationalAge(p.dueDate, today);
+      const items = await listCareItems(p.id);
+      const bucket = (u: string) =>
+        items
+          .filter((i) => careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd }, today) === u)
+          .map((i) => ({
+            id: i.id,
+            title: i.title,
+            status: i.status,
+            windowStart: i.windowStart,
+            windowEnd: i.windowEnd,
+            optional: i.optional,
+            notes: i.notes,
+          }));
+      const { data: visits } = await client.models.homeMedicalVisit.list({
+        filter: { personId: { eq: p.personId }, status: { eq: "PLANNED" } },
+        limit: 100,
+      });
+      const nextVisit = (visits ?? [])
+        .filter((v) => v.visitAt >= new Date().toISOString())
+        .sort((a, b) => a.visitAt.localeCompare(b.visitAt))[0];
+      const people = await getPeople();
+      return JSON.stringify({
+        pregnancyId: p.id,
+        person: people.find((x) => x.id === p.personId)?.name ?? null,
+        dueDate: p.dueDate,
+        dueDateSource: p.dueDateSource,
+        gestationalAge: ga.label,
+        trimester: ga.trimester,
+        daysToGo: ga.daysToGo,
+        hospitalName: p.hospitalName,
+        overdue: bucket("OVERDUE"),
+        dueNow: bucket("DUE_NOW"),
+        comingUp: bucket("SOON"),
+        nextVisit: nextVisit
+          ? {
+              id: nextVisit.id,
+              visitAt: nextVisit.visitAt,
+              title: nextVisit.title,
+              kind: nextVisit.kind,
+              questions: nextVisit.questions,
+            }
+          : null,
+      });
+    }
+
+    case "set_pregnancy": {
+      const personId = await resolveSinglePersonId(input.personName);
+      if (!personId) return JSON.stringify({ error: `No household member named "${input.personName}"` });
+      const providerId = input.providerName ? await resolveProviderId(input.providerName) : undefined;
+      if (input.providerName && !providerId) {
+        return JSON.stringify({ error: `No health provider matching "${input.providerName}" — create it with manage_health_provider first` });
+      }
+
+      const dueDate: string | undefined =
+        input.dueDate ?? (input.lmpDate ? dueDateFromLmp(input.lmpDate) : undefined);
+      const lmpDate: string | undefined =
+        input.lmpDate ?? (input.dueDate ? lmpFromDueDate(input.dueDate) : undefined);
+
+      const { data: existingList } = await client.models.homePregnancy.list({
+        filter: { personId: { eq: personId }, status: { eq: "ACTIVE" } },
+        limit: 10,
+      });
+      const existing = existingList?.[0];
+
+      if (!existing) {
+        if (!dueDate) return JSON.stringify({ error: "lmpDate or dueDate is required to create a pregnancy" });
+        const { data: created, errors } = await client.models.homePregnancy.create({
+          personId,
+          lmpDate: lmpDate ?? null,
+          dueDate,
+          dueDateSource: input.dueDateSource ?? (input.lmpDate && !input.dueDate ? "LMP" : "OTHER"),
+          providerId: providerId ?? null,
+          hospitalName: input.hospitalName ?? null,
+          status: input.status ?? "ACTIVE",
+          deliveredAt: input.deliveredAt ?? null,
+          notes: input.notes ?? null,
+        });
+        if (errors || !created) return JSON.stringify({ error: errors?.[0]?.message ?? "create failed" });
+        const timeline = buildCareTimeline(dueDate);
+        for (const item of timeline) {
+          await client.models.homeCareItem.create({
+            pregnancyId: created.id,
+            key: item.key,
+            title: item.title,
+            category: item.category,
+            optional: item.optional,
+            windowStart: item.windowStart,
+            windowEnd: item.windowEnd,
+            status: item.status,
+            notes: item.notes,
+            sortOrder: item.sortOrder,
+          });
+        }
+        const ga = gestationalAge(dueDate, ymdInTimezone(HOUSEHOLD_TZ));
+        return JSON.stringify({
+          success: true,
+          pregnancyId: created.id,
+          dueDate,
+          gestationalAge: ga.label,
+          careItemsSeeded: timeline.length,
+        });
+      }
+
+      const { errors } = await client.models.homePregnancy.update({
+        id: existing.id,
+        ...(dueDate ? { dueDate } : {}),
+        ...(lmpDate ? { lmpDate } : {}),
+        ...(input.dueDateSource ? { dueDateSource: input.dueDateSource } : {}),
+        ...(providerId ? { providerId } : {}),
+        ...(input.hospitalName !== undefined ? { hospitalName: input.hospitalName } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.deliveredAt ? { deliveredAt: input.deliveredAt } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+
+      // Due date moved → shift every templated item that's still open.
+      // Items with a null key were added by hand and keep their windows;
+      // closed items keep theirs as a historical record.
+      let shifted = 0;
+      if (dueDate && dueDate !== existing.dueDate) {
+        const fresh = new Map(buildCareTimeline(dueDate).map((i) => [i.key, i]));
+        for (const item of await listCareItems(existing.id)) {
+          if (!item.key) continue;
+          const next = fresh.get(item.key);
+          if (!next) continue;
+          const isOpen = item.status === "UPCOMING" || item.status === "SCHEDULED";
+          // Seasonal vaccines can move in/out of season when the due
+          // date moves, so their UPCOMING ⇄ NOT_APPLICABLE status is
+          // recomputed. Anything else marked N/A was a human decision
+          // (e.g. Rh-positive → no Rh immune globulin) and stays put.
+          const seasonal = SEASONAL_CARE_KEYS.has(item.key);
+          const autoFlip = seasonal && (item.status === "UPCOMING" || item.status === "NOT_APPLICABLE");
+          if (!isOpen && !autoFlip) continue;
+          await client.models.homeCareItem.update({
+            id: item.id,
+            windowStart: next.windowStart,
+            windowEnd: next.windowEnd,
+            ...(autoFlip ? { status: next.status } : {}),
+          });
+          shifted++;
+        }
+      }
+      const effectiveDue = dueDate ?? existing.dueDate;
+      return JSON.stringify({
+        success: true,
+        pregnancyId: existing.id,
+        dueDate: effectiveDue,
+        gestationalAge: gestationalAge(effectiveDue, ymdInTimezone(HOUSEHOLD_TZ)).label,
+        careItemsShifted: shifted,
+      });
+    }
+
+    case "list_care_items": {
+      const res = await resolveActivePregnancy(input.personName);
+      if ("error" in res) return JSON.stringify({ error: res.error });
+      const today = ymdInTimezone(HOUSEHOLD_TZ);
+      const all = await listCareItems(res.pregnancy.id);
+      const items = input.filter === "all"
+        ? all
+        : all.filter((i) => i.status === "UPCOMING" || i.status === "SCHEDULED");
+      return JSON.stringify({
+        dueDate: res.pregnancy.dueDate,
+        items: items.map((i) => ({
+          id: i.id,
+          key: i.key,
+          title: i.title,
+          category: i.category,
+          optional: i.optional,
+          windowStart: i.windowStart,
+          windowEnd: i.windowEnd,
+          status: i.status,
+          urgency: careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd }, today),
+          eventId: i.eventId,
+          notes: i.notes,
+        })),
+        count: items.length,
+      });
+    }
+
+    case "manage_care_item": {
+      const res = await resolveActivePregnancy(input.personName);
+      if ("error" in res) return JSON.stringify({ error: res.error });
+      const pregnancyId = res.pregnancy.id;
+
+      if (input.action === "add") {
+        if (!input.title || !input.windowStart || !input.windowEnd) {
+          return JSON.stringify({ error: "title, windowStart and windowEnd are required for add" });
+        }
+        const { data, errors } = await client.models.homeCareItem.create({
+          pregnancyId,
+          key: null,
+          title: input.title,
+          category: input.category ?? "VISIT",
+          windowStart: input.windowStart,
+          windowEnd: input.windowEnd,
+          status: input.status ?? "UPCOMING",
+          eventId: input.eventId ?? null,
+          notes: input.notes ?? null,
+          sortOrder: 999,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, careItemId: data?.id, title: input.title });
+      }
+
+      const items = await listCareItems(pregnancyId);
+      const item = input.careItemId
+        ? items.find((i) => i.id === input.careItemId)
+        : input.query ? matchCareItem(items, input.query) : null;
+      if (!item) return JSON.stringify({ error: `No care item matching "${input.careItemId ?? input.query ?? ""}"` });
+
+      if (input.action === "delete") {
+        const { errors } = await client.models.homeCareItem.delete({ id: item.id });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, deleted: item.title });
+      }
+
+      const completedAt =
+        input.completedAt ?? (input.status === "DONE" && !item.completedAt ? ymdInTimezone(HOUSEHOLD_TZ) : undefined);
+      const { data, errors } = await client.models.homeCareItem.update({
+        id: item.id,
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.category ? { category: input.category } : {}),
+        ...(input.windowStart ? { windowStart: input.windowStart } : {}),
+        ...(input.windowEnd ? { windowEnd: input.windowEnd } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        ...(input.eventId ? { eventId: input.eventId } : {}),
+        ...(completedAt ? { completedAt } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, careItemId: data?.id, title: data?.title, status: data?.status });
+    }
+
+    case "manage_health_provider": {
+      if (input.action === "list") {
+        const { data } = await client.models.homeHealthProvider.list({ limit: 200 });
+        const people = await getPeople();
+        return JSON.stringify({
+          providers: (data ?? [])
+            .filter((p) => p.active !== false)
+            .map((p) => ({
+              id: p.id,
+              name: p.name,
+              specialty: p.specialty,
+              practice: p.practice,
+              phone: p.phone,
+              address: p.address,
+              portalUrl: p.portalUrl,
+              people: (p.personIds ?? []).map((id) => people.find((x) => x.id === id)?.name ?? "?"),
+              notes: p.notes,
+            })),
+        });
+      }
+      const personIds = input.personNames ? await resolvePersonIds(input.personNames) : undefined;
+      const fields = {
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.specialty !== undefined ? { specialty: input.specialty } : {}),
+        ...(input.practice !== undefined ? { practice: input.practice } : {}),
+        ...(input.phone !== undefined ? { phone: input.phone } : {}),
+        ...(input.address !== undefined ? { address: input.address } : {}),
+        ...(input.portalUrl !== undefined ? { portalUrl: input.portalUrl } : {}),
+        ...(personIds ? { personIds } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+      };
+      if (input.action === "create") {
+        if (!input.name) return JSON.stringify({ error: "name is required" });
+        const { data, errors } = await client.models.homeHealthProvider.create({
+          name: input.name,
+          ...fields,
+          active: true,
+        });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, providerId: data?.id, name: data?.name });
+      }
+      const providerId = input.providerId ?? (await resolveProviderId(input.name));
+      if (!providerId) return JSON.stringify({ error: "providerId (or a matching name) is required" });
+      if (input.action === "delete") {
+        // Soft-delete: visits keep pointing at the provider row.
+        const { errors } = await client.models.homeHealthProvider.update({ id: providerId, active: false });
+        if (errors) return JSON.stringify({ error: errors[0].message });
+        return JSON.stringify({ success: true, providerId, archived: true });
+      }
+      const { data, errors } = await client.models.homeHealthProvider.update({ id: providerId, ...fields });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, providerId: data?.id, name: data?.name });
+    }
+
+    case "log_medical_visit": {
+      const providerId = input.providerName ? await resolveProviderId(input.providerName) : undefined;
+      if (input.providerName && !providerId) {
+        return JSON.stringify({ error: `No health provider matching "${input.providerName}" — create it with manage_health_provider first` });
+      }
+      const fields = {
+        ...(input.visitAt ? { visitAt: input.visitAt } : {}),
+        ...(input.kind ? { kind: input.kind } : {}),
+        ...(input.status ? { status: input.status } : {}),
+        ...(providerId ? { providerId } : {}),
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.followUp !== undefined ? { followUp: input.followUp } : {}),
+        ...(input.weightLb !== undefined ? { weightLb: input.weightLb } : {}),
+        ...(input.bpSystolic !== undefined ? { bpSystolic: input.bpSystolic } : {}),
+        ...(input.bpDiastolic !== undefined ? { bpDiastolic: input.bpDiastolic } : {}),
+        ...(input.fetalHeartRate !== undefined ? { fetalHeartRate: input.fetalHeartRate } : {}),
+        ...(input.eventId ? { eventId: input.eventId } : {}),
+      };
+
+      let visit;
+      if (input.visitId) {
+        const { data, errors } = await client.models.homeMedicalVisit.update({ id: input.visitId, ...fields });
+        if (errors || !data) return JSON.stringify({ error: errors?.[0]?.message ?? "visit not found" });
+        visit = data;
+      } else {
+        const personId = await resolvePatientId(input.personName);
+        if (!personId) return JSON.stringify({ error: "personName is required (couldn't resolve a patient)" });
+        if (!input.visitAt) return JSON.stringify({ error: "visitAt is required on create" });
+        const pregnancy = (await listActivePregnancies()).find((p) => p.personId === personId);
+        const { data, errors } = await client.models.homeMedicalVisit.create({
+          personId,
+          pregnancyId: pregnancy?.id ?? null,
+          status: "PLANNED",
+          kind: "OTHER",
+          ...fields,
+          visitAt: input.visitAt,
+          createdBy: "agent",
+        });
+        if (errors || !data) return JSON.stringify({ error: errors?.[0]?.message ?? "create failed" });
+        visit = data;
+      }
+
+      // Link + advance the matching care-timeline item.
+      let careItem: { id: string; title: string; status: string | null } | null = null;
+      if (input.careItemQuery && visit.pregnancyId) {
+        const match = matchCareItem(await listCareItems(visit.pregnancyId), input.careItemQuery);
+        if (match) {
+          const status =
+            visit.status === "COMPLETED" ? "DONE" : visit.status === "PLANNED" ? "SCHEDULED" : match.status;
+          const { data } = await client.models.homeCareItem.update({
+            id: match.id,
+            visitId: visit.id,
+            status,
+            ...(visit.eventId ? { eventId: visit.eventId } : {}),
+            ...(status === "DONE" ? { completedAt: visit.visitAt.slice(0, 10) } : {}),
+          });
+          if (data) careItem = { id: data.id, title: data.title, status: data.status ?? null };
+          await client.models.homeMedicalVisit.update({ id: visit.id, careItemId: match.id });
+        }
+      }
+
+      const pregnancy = visit.pregnancyId
+        ? (await client.models.homePregnancy.get({ id: visit.pregnancyId })).data
+        : null;
+      return JSON.stringify({
+        success: true,
+        visitId: visit.id,
+        status: visit.status,
+        visitAt: visit.visitAt,
+        gestationalAgeAtVisit: pregnancy
+          ? gestationalAge(pregnancy.dueDate, ymdInTimezone(HOUSEHOLD_TZ, new Date(visit.visitAt))).label
+          : null,
+        careItem,
+      });
+    }
+
+    case "list_medical_visits": {
+      const personId = await resolvePatientId(input.personName);
+      const { data } = await client.models.homeMedicalVisit.list({
+        filter: {
+          ...(personId ? { personId: { eq: personId } } : {}),
+          ...(input.status ? { status: { eq: input.status } } : {}),
+        },
+        limit: 500,
+      });
+      const { data: providers } = await client.models.homeHealthProvider.list({ limit: 200 });
+      const visits = (data ?? [])
+        .sort((a, b) => b.visitAt.localeCompare(a.visitAt))
+        .slice(0, input.limit ?? 10);
+      return JSON.stringify({
+        visits: visits.map((v) => ({
+          id: v.id,
+          visitAt: v.visitAt,
+          status: v.status,
+          kind: v.kind,
+          title: v.title,
+          provider: (providers ?? []).find((p) => p.id === v.providerId)?.name ?? null,
+          weightLb: v.weightLb,
+          bloodPressure: v.bpSystolic && v.bpDiastolic ? `${v.bpSystolic}/${v.bpDiastolic}` : null,
+          fetalHeartRate: v.fetalHeartRate,
+          questions: v.questions,
+          notes: v.notes,
+          followUp: v.followUp,
+        })),
+        count: visits.length,
+      });
+    }
+
+    case "add_visit_question": {
+      const personId = await resolvePatientId(input.personName);
+      if (!personId) return JSON.stringify({ error: "personName is required (couldn't resolve a patient)" });
+      const { data } = await client.models.homeMedicalVisit.list({
+        filter: { personId: { eq: personId }, status: { eq: "PLANNED" } },
+        limit: 100,
+      });
+      const next = (data ?? [])
+        .filter((v) => v.visitAt >= new Date().toISOString())
+        .sort((a, b) => a.visitAt.localeCompare(b.visitAt))[0];
+      if (!next) {
+        return JSON.stringify({ error: "No upcoming planned visit — create one with log_medical_visit (status PLANNED) first" });
+      }
+      const questions = [next.questions?.trim(), `- ${input.question.trim()}`].filter(Boolean).join("\n");
+      const { errors } = await client.models.homeMedicalVisit.update({ id: next.id, questions });
+      if (errors) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({
+        success: true,
+        visitId: next.id,
+        visitAt: next.visitAt,
+        title: next.title,
+        questionCount: questions.split("\n").filter((l) => l.trim()).length,
+      });
+    }
+
+    case "record_lab_results": {
+      const personId = await resolvePatientId(input.personName);
+      if (!personId) return JSON.stringify({ error: "personName is required (couldn't resolve a patient)" });
+      const results: any[] = Array.isArray(input.results) ? input.results : [];
+      if (results.length === 0) return JSON.stringify({ error: "results is empty" });
+
+      let careItemId: string | null = null;
+      let careItemTitle: string | null = null;
+      if (input.careItemQuery) {
+        const pregnancy = (await listActivePregnancies()).find((p) => p.personId === personId);
+        const match = pregnancy ? matchCareItem(await listCareItems(pregnancy.id), input.careItemQuery) : null;
+        careItemId = match?.id ?? null;
+        careItemTitle = match?.title ?? null;
+      }
+
+      // Pending rows get filled in place rather than duplicated.
+      const { data: pending } = await client.models.homeLabResult.list({
+        filter: { personId: { eq: personId }, flag: { eq: "PENDING" } },
+        limit: 500,
+      });
+
+      const saved: { id: string; testName: string; updated: boolean }[] = [];
+      for (const r of results) {
+        const fields = {
+          testName: r.testName,
+          valueText: r.valueText ?? (r.valueNum != null ? String(r.valueNum) : null),
+          valueNum: typeof r.valueNum === "number" ? r.valueNum : null,
+          unit: r.unit ?? null,
+          referenceRange: r.referenceRange ?? null,
+          flag: r.flag ?? null,
+          notes: r.notes ?? null,
+          ...(input.visitId ? { visitId: input.visitId } : {}),
+          ...(careItemId ? { careItemId } : {}),
+          ...(input.panel ? { panel: input.panel } : {}),
+          ...(input.collectedAt ? { collectedAt: input.collectedAt } : {}),
+          ...(input.resultedAt ? { resultedAt: input.resultedAt } : {}),
+          ...(input.lab ? { lab: input.lab } : {}),
+          ...(input.documentId ? { documentId: input.documentId } : {}),
+        };
+        const existing = (pending ?? []).find(
+          (p) => p.testName.toLowerCase() === String(r.testName).toLowerCase(),
+        );
+        if (existing) {
+          const { data } = await client.models.homeLabResult.update({ id: existing.id, ...fields });
+          if (data) saved.push({ id: data.id, testName: data.testName, updated: true });
+        } else {
+          const { data, errors } = await client.models.homeLabResult.create({
+            personId,
+            ...fields,
+            createdBy: "agent",
+          });
+          if (errors) return JSON.stringify({ error: errors[0].message, savedSoFar: saved });
+          if (data) saved.push({ id: data.id, testName: data.testName, updated: false });
+        }
+      }
+
+      // Close the timeline item once none of its results are pending.
+      let careItemStatus: string | null = null;
+      if (careItemId) {
+        const { data: linked } = await client.models.homeLabResult.list({
+          filter: { careItemId: { eq: careItemId } },
+          limit: 200,
+        });
+        const anyPending = (linked ?? []).some((l) => l.flag === "PENDING");
+        careItemStatus = anyPending ? "SCHEDULED" : "DONE";
+        await client.models.homeCareItem.update({
+          id: careItemId,
+          status: careItemStatus as "SCHEDULED" | "DONE",
+          ...(careItemStatus === "DONE"
+            ? { completedAt: input.resultedAt ?? input.collectedAt ?? ymdInTimezone(HOUSEHOLD_TZ) }
+            : {}),
+        });
+      }
+
+      return JSON.stringify({
+        success: true,
+        saved: saved.length,
+        updatedPending: saved.filter((s) => s.updated).length,
+        careItem: careItemId ? { title: careItemTitle, status: careItemStatus } : null,
+      });
+    }
+
+    case "list_lab_results": {
+      const personId = await resolvePatientId(input.personName);
+      const { data } = await client.models.homeLabResult.list({
+        filter: {
+          ...(personId ? { personId: { eq: personId } } : {}),
+          ...(input.flag ? { flag: { eq: input.flag } } : {}),
+        },
+        limit: 1000,
+      });
+      const q = (input.testName ?? "").toLowerCase().trim();
+      const panelQ = (input.panel ?? "").toLowerCase().trim();
+      let rows = (data ?? [])
+        .filter((r) => !q || r.testName.toLowerCase().includes(q))
+        .filter((r) => !panelQ || (r.panel ?? "").toLowerCase().includes(panelQ))
+        .sort((a, b) =>
+          (b.collectedAt ?? b.createdAt).localeCompare(a.collectedAt ?? a.createdAt),
+        );
+      if (input.latestOnly) {
+        const seen = new Set<string>();
+        rows = rows.filter((r) => {
+          const k = r.testName.toLowerCase();
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
+      }
+      return JSON.stringify({
+        results: rows.slice(0, 100).map((r) => ({
+          id: r.id,
+          testName: r.testName,
+          value: r.valueText,
+          unit: r.unit,
+          referenceRange: r.referenceRange,
+          flag: r.flag,
+          panel: r.panel,
+          collectedAt: r.collectedAt,
+          resultedAt: r.resultedAt,
+          lab: r.lab,
+          notes: r.notes,
+        })),
+        count: rows.length,
+      });
+    }
+
     default:
       return JSON.stringify({ error: `Unknown tool: ${name}` });
   }
@@ -4121,13 +4968,23 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
     timeZoneName: "short",
   });
 
-  const systemPrompt = `You are Janet, the household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, and reminders.
+  // One line of pregnancy context so "how far along are we?" doesn't
+  // need a tool round-trip. Empty when nobody's pregnant.
+  const pregnancyContext = (await listActivePregnancies())
+    .map((p) => {
+      const who = people.find((x) => x.id === p.personId)?.name ?? "?";
+      const ga = gestationalAge(p.dueDate, ymdInTimezone(TZ, now));
+      return `${who} is pregnant: ${ga.label} (trimester ${ga.trimester}), due ${p.dueDate}, ${ga.daysToGo} days to go.`;
+    })
+    .join("\n");
+
+  const systemPrompt = `You are Janet, the household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, reminders, and health records.
 
 Household members: ${peopleNames}
 Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
 Timezone: ${TZ} (Central)
 Message sender: ${sender}
-
+${pregnancyContext ? `${pregnancyContext}\n` : ""}
 When assigning tasks/bills/events to people, pass their names in the assignedPeople array — names must match the Household members listed above, or use ["both"] for the whole household. Empty/omitted = household.
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
@@ -4207,6 +5064,36 @@ calling request_document_download.
 
 Never include documentNumber from list_documents output in your responses —
 the tool returns "<REDACTED>" and you should not try to work around this.
+
+## Health records & pregnancy
+
+Per-person health records: providers (manage_health_provider), visits
+(log_medical_visit / list_medical_visits), and lab results
+(record_lab_results / list_lab_results). A pregnancy (set_pregnancy) adds a
+prenatal care timeline — labs, scans, vaccines, admin — with date windows
+derived from the due date (get_pregnancy_status, list_care_items,
+manage_care_item).
+
+- Appointments: the calendar event is still where the time lives. When
+  someone mentions a doctor's appointment, create the calendar event AND a
+  PLANNED visit (log_medical_visit with eventId) so questions can be
+  collected against it. If it fulfils a timeline item ("the anatomy scan is
+  Jan 8"), pass careItemQuery.
+- "Ask the doctor about X" / "add to the OB list" → add_visit_question.
+- After a visit, update it to COMPLETED with notes, follow-ups and vitals.
+  If a dating ultrasound changes the due date, call set_pregnancy with the
+  new dueDate and dueDateSource=ULTRASOUND.
+- Lab reports (photo or PDF): extract EVERY analyte on the report into
+  record_lab_results — testName, value as printed, numeric value, unit,
+  reference range, and the flag the report prints. Include collected/resulted
+  dates and the lab name when shown. Read back a compact summary, calling out
+  anything the report itself flags.
+- Don't diagnose or interpret results beyond what the report states, and
+  don't give medical advice. For "is X normal?" / "can she eat or take X?",
+  share general, widely-accepted guidance briefly and point them to the OB
+  for anything specific. For urgent symptoms (bleeding, severe pain, reduced
+  fetal movement later on, severe headache or vision changes), tell them to
+  call the OB or go to labor & delivery now.
 
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 

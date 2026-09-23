@@ -174,6 +174,176 @@ const schema = a
       .secondaryIndexes((index) => [index("petId")])
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Health records ─────────────────────────────────────────────────
+    // Per-homePerson medical history: providers, visits, and lab results.
+    // Generic on purpose — a pregnancy (below) layers a care timeline on
+    // top, but the same tables serve anyone in the household, including
+    // a baby once they're a homePerson. Calendar events stay the source
+    // of truth for *when* an appointment is; a visit row is the clinical
+    // record of what happened (and the questions to ask beforehand).
+    // Scanned reports / portal PDFs live in homeDocument (type MEDICAL,
+    // Duo-gated) and are linked by documentId rather than stored here.
+    homeHealthProvider: a
+      .model({
+        name: a.string().required(), // "Dr. Smith" or "Austin Regional Clinic Lab"
+        // Free text: "OB/GYN", "Lab", "Hospital", "Pediatrician", "Dentist"…
+        specialty: a.string(),
+        practice: a.string(),
+        phone: a.string(),
+        address: a.string(),
+        portalUrl: a.url(),
+        // Whose provider this is. Empty = household-wide (e.g. a lab).
+        personIds: a.id().array(),
+        notes: a.string(),
+        active: a.boolean().default(true),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeMedicalVisit: a
+      .model({
+        personId: a.id().required(),
+        providerId: a.id(),
+        // Linked calendar event, when the appointment is on the calendar.
+        eventId: a.id(),
+        // Set when the visit belongs to a pregnancy — lets the /health
+        // page show gestational age at the time of the visit.
+        pregnancyId: a.id(),
+        // Care-timeline item this visit fulfils (e.g. anatomy scan).
+        careItemId: a.id(),
+        visitAt: a.datetime().required(),
+        kind: a.enum([
+          "PRENATAL",
+          "ULTRASOUND",
+          "LAB_DRAW",
+          "CHECKUP",
+          "SPECIALIST",
+          "VACCINE",
+          "URGENT",
+          "OTHER",
+        ]),
+        // PLANNED visits collect questions ahead of time; flipped to
+        // COMPLETED once notes / vitals are logged.
+        status: a.enum(["PLANNED", "COMPLETED", "CANCELLED"]),
+        title: a.string(),
+        // Markdown list of questions to ask at this visit. Agent appends
+        // to the next PLANNED visit via add_visit_question.
+        questions: a.string(),
+        notes: a.string(),
+        followUp: a.string(),
+        // Vitals as taken at the visit. Stored as numbers so they chart.
+        weightLb: a.float(),
+        bpSystolic: a.integer(),
+        bpDiastolic: a.integer(),
+        fetalHeartRate: a.integer(), // bpm
+        documentIds: a.id().array(),
+        createdBy: a.string(),
+      })
+      .secondaryIndexes((index) => [index("personId"), index("pregnancyId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // One row per measured analyte (not per panel) so values trend over
+    // time and "what's her blood type?" is a single lookup. A panel
+    // ("First-trimester labs") is just the shared `panel` label on the
+    // rows that came back together.
+    homeLabResult: a
+      .model({
+        personId: a.id().required(),
+        visitId: a.id(),
+        careItemId: a.id(),
+        panel: a.string(),
+        testName: a.string().required(), // "Hemoglobin", "Blood type", "GBS"
+        // valueText is always set (as printed on the report: "O+",
+        // "Negative", "11.8"); valueNum is set when numeric so it charts.
+        valueText: a.string(),
+        valueNum: a.float(),
+        unit: a.string(),
+        referenceRange: a.string(),
+        flag: a.enum([
+          "NORMAL",
+          "LOW",
+          "HIGH",
+          "ABNORMAL",
+          "POSITIVE",
+          "NEGATIVE",
+          "PENDING",
+        ]),
+        collectedAt: a.date(),
+        resultedAt: a.date(),
+        lab: a.string(),
+        documentId: a.id(),
+        notes: a.string(),
+        createdBy: a.string(),
+      })
+      .secondaryIndexes((index) => [index("personId"), index("visitId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Pregnancy ──────────────────────────────────────────────────────
+    // Anchor for gestational age everywhere (home page, daily summary,
+    // agent context). dueDate is the source of truth — lmpDate is kept
+    // for reference, but a dating ultrasound can move dueDate and every
+    // care-item window follows (see lib/pregnancy.ts).
+    homePregnancy: a
+      .model({
+        personId: a.id().required(),
+        lmpDate: a.date(),
+        dueDate: a.date().required(),
+        dueDateSource: a.enum(["LMP", "ULTRASOUND", "IVF", "OTHER"]),
+        providerId: a.id(),
+        hospitalName: a.string(),
+        status: a.enum(["ACTIVE", "DELIVERED", "ENDED"]),
+        deliveredAt: a.date(),
+        notes: a.string(),
+      })
+      .secondaryIndexes((index) => [index("personId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // One row per prenatal care milestone, seeded from the template in
+    // lib/pregnancy.ts when the pregnancy is created. `key` ties the row
+    // back to its template entry so windows can be recomputed when the
+    // due date changes; hand-added items have a null key and keep their
+    // windows as entered.
+    homeCareItem: a
+      .model({
+        pregnancyId: a.id().required(),
+        key: a.string(),
+        title: a.string().required(),
+        category: a.enum([
+          "VISIT",
+          "LAB",
+          "IMAGING",
+          "SCREENING",
+          "VACCINE",
+          "TREATMENT",
+          "ADMIN",
+        ]),
+        optional: a.boolean().default(false),
+        windowStart: a.date().required(),
+        windowEnd: a.date().required(),
+        status: a.enum(["UPCOMING", "SCHEDULED", "DONE", "SKIPPED", "NOT_APPLICABLE"]),
+        eventId: a.id(),
+        visitId: a.id(),
+        completedAt: a.date(),
+        notes: a.string(),
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("pregnancyId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Trip ────────────────────────────────────────────────────────────
     // Multi-day trip; days and events reference trips via tripId.
     homeTrip: a
