@@ -18,6 +18,7 @@ import {
   FaCheckSquare,
   FaPaperclip,
   FaBell,
+  FaHeartbeat,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
@@ -98,6 +99,12 @@ const GROUPS: DashboardGroup[] = [
         description: "Scheduled WhatsApp reminders — medications, supplements, anything recurring",
         icon: <FaBell size={22} />,
         href: "/reminders",
+      },
+      {
+        title: "Health",
+        description: "Pregnancy timeline, doctor visits, lab results, providers",
+        icon: <FaHeartbeat size={22} />,
+        href: "/health",
       },
     ],
   },
