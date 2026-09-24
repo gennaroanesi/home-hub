@@ -29,14 +29,19 @@ import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthSt
 import { HassClient, entityDomain } from "./hass-client.js";
 import { canPerform, type Sensitivity, type Action, type PolicyContext } from "../../../lib/devicePolicy.js";
 import {
-  buildCareTimeline,
   careUrgency,
   dueDateFromLmp,
   gestationalAge,
   lmpFromDueDate,
-  SEASONAL_CARE_KEYS,
+  seedCareTimeline,
+  shiftCareTimeline,
   ymdInTimezone,
 } from "../../../lib/pregnancy.js";
+import {
+  linkVisitToCareItem,
+  providerPhones,
+  syncVisitEvent,
+} from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
 import { isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 
@@ -1588,7 +1593,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_health_provider",
     description:
-      "Create, update, list, or delete health providers (OB/GYN, lab, hospital, pediatrician, dentist…) with phone, address and patient-portal URL.",
+      "Create, update, list, or delete health providers (OB/GYN, lab, hospital, pediatrician, dentist…) with phone numbers (typed: clinic, personal/cell, after-hours, nurse line…), address and patient-portal URL. To add a number, list the provider first and pass the full phones array back.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1597,7 +1602,22 @@ const tools: Anthropic.Tool[] = [
         name: { type: "string" },
         specialty: { type: "string", description: "Free text: OB/GYN, Lab, Hospital, Pediatrician…" },
         practice: { type: "string" },
-        phone: { type: "string" },
+        phones: {
+          type: "array",
+          description: "Replaces the provider's phone list. Pass every number to keep, not just the new one.",
+          items: {
+            type: "object",
+            properties: {
+              kind: {
+                type: "string",
+                enum: ["CLINIC", "PERSONAL", "AFTER_HOURS", "NURSE_LINE", "SCHEDULING", "BILLING", "FAX", "OTHER"],
+              },
+              number: { type: "string" },
+              label: { type: "string", description: "Optional, e.g. \"Dr. Lee's cell\", \"L&D triage\"." },
+            },
+            required: ["number"],
+          },
+        },
         address: { type: "string" },
         portalUrl: { type: "string" },
         personNames: { type: "array", items: { type: "string" }, description: "Whose provider. Empty = household." },
@@ -1609,7 +1629,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "log_medical_visit",
     description:
-      "Create or update a medical visit record. Use status=PLANNED for an upcoming appointment (so questions can be collected against it) and COMPLETED once it's happened, with notes, follow-ups and vitals (weight, blood pressure, fetal heart rate). Pass visitId to update an existing visit. If the visit fulfils a care-timeline item (e.g. the anatomy scan), pass careItemQuery and the item is linked and marked SCHEDULED/DONE to match.",
+      "Create or update a medical visit record. The visit is put on the calendar automatically (and moved/removed when the visit changes or is cancelled) — don't also create a calendar event. Use status=PLANNED for an upcoming appointment (so questions can be collected against it) and COMPLETED once it's happened, with notes, follow-ups and vitals (weight, blood pressure, fetal heart rate). Pass visitId to update an existing visit. If the visit fulfils a care-timeline item (e.g. the anatomy scan), pass careItemQuery and the item is linked and marked SCHEDULED/DONE to match.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1629,7 +1649,7 @@ const tools: Anthropic.Tool[] = [
         bpSystolic: { type: "integer" },
         bpDiastolic: { type: "integer" },
         fetalHeartRate: { type: "integer", description: "bpm" },
-        eventId: { type: "string", description: "Linked calendar event id, if the appointment is on the calendar." },
+        eventId: { type: "string", description: "Only if the appointment is ALREADY on the calendar as an event — links that event instead of creating a new one." },
         careItemQuery: { type: "string", description: "Care-timeline item this visit fulfils ('dating ultrasound', 'anatomy')." },
       },
     },
@@ -4538,28 +4558,15 @@ async function executeTool(
           notes: input.notes ?? null,
         });
         if (errors || !created) return JSON.stringify({ error: errors?.[0]?.message ?? "create failed" });
-        const timeline = buildCareTimeline(dueDate);
-        for (const item of timeline) {
-          await client.models.homeCareItem.create({
-            pregnancyId: created.id,
-            key: item.key,
-            title: item.title,
-            category: item.category,
-            optional: item.optional,
-            windowStart: item.windowStart,
-            windowEnd: item.windowEnd,
-            status: item.status,
-            notes: item.notes,
-            sortOrder: item.sortOrder,
-          });
-        }
+        const seeded = await seedCareTimeline(client, created.id, dueDate);
         const ga = gestationalAge(dueDate, ymdInTimezone(HOUSEHOLD_TZ));
         return JSON.stringify({
           success: true,
           pregnancyId: created.id,
           dueDate,
           gestationalAge: ga.label,
-          careItemsSeeded: timeline.length,
+          careItemsSeeded: seeded.created,
+          ...(seeded.failed ? { careItemsFailed: seeded.failed } : {}),
         });
       }
 
@@ -4576,33 +4583,9 @@ async function executeTool(
       });
       if (errors) return JSON.stringify({ error: errors[0].message });
 
-      // Due date moved → shift every templated item that's still open.
-      // Items with a null key were added by hand and keep their windows;
-      // closed items keep theirs as a historical record.
-      let shifted = 0;
-      if (dueDate && dueDate !== existing.dueDate) {
-        const fresh = new Map(buildCareTimeline(dueDate).map((i) => [i.key, i]));
-        for (const item of await listCareItems(existing.id)) {
-          if (!item.key) continue;
-          const next = fresh.get(item.key);
-          if (!next) continue;
-          const isOpen = item.status === "UPCOMING" || item.status === "SCHEDULED";
-          // Seasonal vaccines can move in/out of season when the due
-          // date moves, so their UPCOMING ⇄ NOT_APPLICABLE status is
-          // recomputed. Anything else marked N/A was a human decision
-          // (e.g. Rh-positive → no Rh immune globulin) and stays put.
-          const seasonal = SEASONAL_CARE_KEYS.has(item.key);
-          const autoFlip = seasonal && (item.status === "UPCOMING" || item.status === "NOT_APPLICABLE");
-          if (!isOpen && !autoFlip) continue;
-          await client.models.homeCareItem.update({
-            id: item.id,
-            windowStart: next.windowStart,
-            windowEnd: next.windowEnd,
-            ...(autoFlip ? { status: next.status } : {}),
-          });
-          shifted++;
-        }
-      }
+      // Due date moved → shift open templated items (see planCareShift).
+      const shifted =
+        dueDate && dueDate !== existing.dueDate ? await shiftCareTimeline(client, existing.id, dueDate) : 0;
       const effectiveDue = dueDate ?? existing.dueDate;
       return JSON.stringify({
         success: true,
@@ -4706,7 +4689,7 @@ async function executeTool(
               name: p.name,
               specialty: p.specialty,
               practice: p.practice,
-              phone: p.phone,
+              phones: providerPhones(p),
               address: p.address,
               portalUrl: p.portalUrl,
               people: (p.personIds ?? []).map((id) => people.find((x) => x.id === id)?.name ?? "?"),
@@ -4719,7 +4702,14 @@ async function executeTool(
         ...(input.name ? { name: input.name } : {}),
         ...(input.specialty !== undefined ? { specialty: input.specialty } : {}),
         ...(input.practice !== undefined ? { practice: input.practice } : {}),
-        ...(input.phone !== undefined ? { phone: input.phone } : {}),
+        ...(Array.isArray(input.phones)
+          ? {
+              phones: input.phones
+                .filter((ph: any) => ph?.number)
+                .map((ph: any) => ({ kind: ph.kind ?? "OTHER", number: String(ph.number).trim(), label: ph.label ?? null })),
+              phone: null, // legacy single number now lives in phones
+            }
+          : {}),
         ...(input.address !== undefined ? { address: input.address } : {}),
         ...(input.portalUrl !== undefined ? { portalUrl: input.portalUrl } : {}),
         ...(personIds ? { personIds } : {}),
@@ -4791,23 +4781,26 @@ async function executeTool(
         visit = data;
       }
 
+      // Every non-cancelled visit lives on the calendar (lib/health.ts).
+      let eventId: string | null = visit.eventId ?? null;
+      let calendarError: string | null = null;
+      try {
+        const provider = visit.providerId
+          ? (await client.models.homeHealthProvider.get({ id: visit.providerId })).data
+          : null;
+        eventId = await syncVisitEvent(client, visit, {
+          providerName: provider?.name,
+          providerAddress: provider?.address,
+        });
+      } catch (err: any) {
+        calendarError = err?.message ?? String(err);
+      }
+
       // Link + advance the matching care-timeline item.
       let careItem: { id: string; title: string; status: string | null } | null = null;
       if (input.careItemQuery && visit.pregnancyId) {
         const match = matchCareItem(await listCareItems(visit.pregnancyId), input.careItemQuery);
-        if (match) {
-          const status =
-            visit.status === "COMPLETED" ? "DONE" : visit.status === "PLANNED" ? "SCHEDULED" : match.status;
-          const { data } = await client.models.homeCareItem.update({
-            id: match.id,
-            visitId: visit.id,
-            status,
-            ...(visit.eventId ? { eventId: visit.eventId } : {}),
-            ...(status === "DONE" ? { completedAt: visit.visitAt.slice(0, 10) } : {}),
-          });
-          if (data) careItem = { id: data.id, title: data.title, status: data.status ?? null };
-          await client.models.homeMedicalVisit.update({ id: visit.id, careItemId: match.id });
-        }
+        if (match) careItem = await linkVisitToCareItem(client, { ...visit, eventId }, match.id);
       }
 
       const pregnancy = visit.pregnancyId
@@ -4821,6 +4814,8 @@ async function executeTool(
         gestationalAgeAtVisit: pregnancy
           ? gestationalAge(pregnancy.dueDate, ymdInTimezone(HOUSEHOLD_TZ, new Date(visit.visitAt))).label
           : null,
+        calendarEventId: eventId,
+        ...(calendarError ? { calendarError } : {}),
         careItem,
       });
     }
@@ -5559,11 +5554,11 @@ prenatal care timeline — labs, scans, vaccines, admin — with date windows
 derived from the due date (get_pregnancy_status, list_care_items,
 manage_care_item).
 
-- Appointments: the calendar event is still where the time lives. When
-  someone mentions a doctor's appointment, create the calendar event AND a
-  PLANNED visit (log_medical_visit with eventId) so questions can be
-  collected against it. If it fulfils a timeline item ("the anatomy scan is
-  Jan 8"), pass careItemQuery.
+- Appointments: when someone mentions a doctor's appointment, call
+  log_medical_visit (status PLANNED). It creates the calendar event itself
+  and keeps it in sync — don't call create_event for it. If the appointment
+  is already on the calendar, pass that event's id as eventId. If it
+  fulfils a timeline item ("the anatomy scan is Jan 8"), pass careItemQuery.
 - "Ask the doctor about X" / "add to the OB list" → add_visit_question.
 - After a visit, update it to COMPLETED with notes, follow-ups and vitals.
   If a dating ultrasound changes the due date, call set_pregnancy with the

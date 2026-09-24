@@ -29,7 +29,7 @@ import type { Schema } from "@/amplify/data/resource";
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Note = Schema["homeNote"]["type"];
-export type NoteParentType = "TASK" | "EVENT" | "TRIP";
+export type NoteParentType = "TASK" | "EVENT" | "TRIP" | "VISIT" | "PROVIDER";
 
 // Editor is client-only — its `window` references break SSR
 // hydration if imported at module scope.

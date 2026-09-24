@@ -189,7 +189,10 @@ const schema = a
         // Free text: "OB/GYN", "Lab", "Hospital", "Pediatrician", "Dentist"…
         specialty: a.string(),
         practice: a.string(),
+        // Legacy single number — superseded by `phones`; still shown
+        // until it's edited (the UI folds it into phones on save).
         phone: a.string(),
+        phones: a.ref("HealthProviderPhone").array(),
         address: a.string(),
         portalUrl: a.url(),
         // Whose provider this is. Empty = household-wide (e.g. a lab).
@@ -202,11 +205,18 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    HealthProviderPhone: a.customType({
+      kind: a.enum(["CLINIC", "PERSONAL", "AFTER_HOURS", "NURSE_LINE", "SCHEDULING", "BILLING", "FAX", "OTHER"]),
+      number: a.string().required(),
+      label: a.string(), // free text, e.g. "Dr. Lee's cell", "L&D triage"
+    }),
+
     homeMedicalVisit: a
       .model({
         personId: a.id().required(),
         providerId: a.id(),
-        // Linked calendar event, when the appointment is on the calendar.
+        // Linked calendar event. Every non-cancelled visit gets one,
+        // created/updated by syncVisitEvent (lib/health.ts) on save.
         eventId: a.id(),
         // Set when the visit belongs to a pregnancy — lets the /health
         // page show gestational age at the time of the visit.
@@ -644,8 +654,8 @@ const schema = a
       .model({
         // Both parentType and parentId are optional so notes can be
         // standalone (no linked entity). When set, parentId points at a
-        // task / event / trip row.
-        parentType: a.enum(["TASK", "EVENT", "TRIP"]),
+        // task / event / trip / medical visit / health provider row.
+        parentType: a.enum(["TASK", "EVENT", "TRIP", "VISIT", "PROVIDER"]),
         parentId: a.id(),
         title: a.string(), // optional headline; rest of the note is markdown
         content: a.string().required(),

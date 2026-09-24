@@ -24,21 +24,37 @@ import {
   ModalBody,
   ModalFooter,
 } from "@heroui/modal";
-import { FaHeartbeat, FaPlus } from "react-icons/fa";
+import { FaCalendarCheck, FaHeartbeat, FaPen, FaPlus, FaTrash } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
+import { NotesSection } from "@/components/notes-section";
+import {
+  PHONE_KINDS,
+  PHONE_KIND_LABELS,
+  VISIT_KINDS,
+  VISIT_KIND_LABELS,
+  deleteVisit,
+  linkVisitToCareItem,
+  providerPhones,
+  syncVisitEvent,
+  type PhoneKind,
+  type ProviderPhone,
+} from "@/lib/health";
 import { householdMembers } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
 import {
+  CARE_CATEGORIES,
   CARE_CATEGORY_LABELS,
   CARE_STATUSES,
   CARE_STATUS_LABELS,
-  buildCareTimeline,
+  DUE_DATE_SOURCE_LABELS,
   careUrgency,
   dueDateFromLmp,
   gestationalAge,
   lmpFromDueDate,
+  seedCareTimeline,
+  shiftCareTimeline,
   ymdInTimezone,
   type CareCategory,
   type CareStatus,
@@ -55,27 +71,6 @@ type CareItem = Schema["homeCareItem"]["type"];
 type Visit = Schema["homeMedicalVisit"]["type"];
 type LabResult = Schema["homeLabResult"]["type"];
 type Provider = Schema["homeHealthProvider"]["type"];
-
-const VISIT_KINDS = [
-  "PRENATAL",
-  "ULTRASOUND",
-  "LAB_DRAW",
-  "CHECKUP",
-  "SPECIALIST",
-  "VACCINE",
-  "URGENT",
-  "OTHER",
-] as const;
-const VISIT_KIND_LABELS: Record<(typeof VISIT_KINDS)[number], string> = {
-  PRENATAL: "Prenatal",
-  ULTRASOUND: "Ultrasound",
-  LAB_DRAW: "Lab draw",
-  CHECKUP: "Checkup",
-  SPECIALIST: "Specialist",
-  VACCINE: "Vaccine",
-  URGENT: "Urgent",
-  OTHER: "Other",
-};
 
 const URGENCY_STYLES: Record<CareUrgency, string> = {
   OVERDUE: "bg-danger-100 text-danger-700",
@@ -147,6 +142,10 @@ export default function HealthPage() {
   const [editingVisit, setEditingVisit] = useState<Visit | null>(null);
   const [labModalOpen, setLabModalOpen] = useState(false);
   const [providerModalOpen, setProviderModalOpen] = useState(false);
+  const [editingProvider, setEditingProvider] = useState<Provider | null>(null);
+  const [pregnancyModalOpen, setPregnancyModalOpen] = useState(false);
+  const [careModalOpen, setCareModalOpen] = useState(false);
+  const [editingCare, setEditingCare] = useState<CareItem | null>(null);
 
   const today = ymdInTimezone(TZ);
 
@@ -287,7 +286,11 @@ export default function HealthPage() {
           <>
             {/* ── Pregnancy ─────────────────────────────────────────── */}
             {pregnancy ? (
-              <PregnancyHeader pregnancy={pregnancy} today={today} />
+              <PregnancyHeader
+                pregnancy={pregnancy}
+                today={today}
+                onEdit={() => setPregnancyModalOpen(true)}
+              />
             ) : (
               personId && (
                 <CreatePregnancy
@@ -301,13 +304,26 @@ export default function HealthPage() {
               <section className="mb-10">
                 <div className="flex items-center justify-between mb-3">
                   <h2 className="text-lg font-semibold">Care timeline</h2>
-                  <button
-                    type="button"
-                    onClick={() => setShowClosedCare((v) => !v)}
-                    className="px-3 py-1 rounded-full text-xs bg-default-100 text-default-600"
-                  >
-                    {showClosedCare ? "Hide done" : "Show all"}
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setShowClosedCare((v) => !v)}
+                      className="px-3 py-1 rounded-full text-xs bg-default-100 text-default-600"
+                    >
+                      {showClosedCare ? "Hide done" : "Show all"}
+                    </button>
+                    <Button
+                      size="sm"
+                      variant="flat"
+                      startContent={<FaPlus size={11} />}
+                      onPress={() => {
+                        setEditingCare(null);
+                        setCareModalOpen(true);
+                      }}
+                    >
+                      Item
+                    </Button>
+                  </div>
                 </div>
                 <div className="space-y-2">
                   {pregnancyCare
@@ -324,11 +340,19 @@ export default function HealthPage() {
                           className={`border border-default-200 rounded-md p-3 bg-default-50 ${closed ? "opacity-60" : ""}`}
                         >
                           <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
+                            <button
+                              type="button"
+                              className="min-w-0 text-left flex-1 group"
+                              onClick={() => {
+                                setEditingCare(c);
+                                setCareModalOpen(true);
+                              }}
+                            >
                               <div className="flex flex-wrap items-center gap-2">
-                                <span className={`text-sm font-medium ${closed ? "line-through" : ""}`}>
+                                <span className={`text-sm font-medium group-hover:text-primary ${closed ? "line-through" : ""}`}>
                                   {c.title}
                                 </span>
+                                <FaPen size={9} className="text-default-300 group-hover:text-primary" />
                                 {c.optional && (
                                   <span className="text-[10px] uppercase tracking-wide text-default-400">optional</span>
                                 )}
@@ -344,7 +368,7 @@ export default function HealthPage() {
                                 {c.completedAt ? ` · done ${fmtDate(c.completedAt)}` : ""}
                               </p>
                               {c.notes && <p className="text-xs text-default-400 mt-1">{c.notes}</p>}
-                            </div>
+                            </button>
                             <Select
                               size="sm"
                               aria-label="Status"
@@ -412,6 +436,11 @@ export default function HealthPage() {
                           )}
                           {v.status === "CANCELLED" && (
                             <span className="px-2 py-0.5 rounded-full text-[11px] bg-default-100 text-default-500">Cancelled</span>
+                          )}
+                          {v.eventId && (
+                            <span title="On the calendar" className="text-default-400">
+                              <FaCalendarCheck size={11} />
+                            </span>
                           )}
                         </div>
                         <p className="text-xs text-default-500 mt-0.5">
@@ -499,7 +528,10 @@ export default function HealthPage() {
                   size="sm"
                   variant="flat"
                   startContent={<FaPlus size={11} />}
-                  onPress={() => setProviderModalOpen(true)}
+                  onPress={() => {
+                    setEditingProvider(null);
+                    setProviderModalOpen(true);
+                  }}
                 >
                   Provider
                 </Button>
@@ -509,20 +541,54 @@ export default function HealthPage() {
               ) : (
                 <div className="space-y-2">
                   {providers.map((p) => (
-                    <div key={p.id} className="border border-default-200 rounded-md p-3 bg-default-50 text-sm">
+                    <div
+                      key={p.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => {
+                        setEditingProvider(p);
+                        setProviderModalOpen(true);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          setEditingProvider(p);
+                          setProviderModalOpen(true);
+                        }
+                      }}
+                      className="border border-default-200 rounded-md p-3 bg-default-50 text-sm cursor-pointer hover:bg-default-100"
+                    >
                       <div className="font-medium">
                         {p.name}
                         {p.specialty && <span className="text-default-500 font-normal"> · {p.specialty}</span>}
                       </div>
-                      <div className="text-xs text-default-500 mt-0.5 flex flex-wrap gap-x-3">
+                      <div className="text-xs text-default-500 mt-0.5 flex flex-wrap gap-x-3 gap-y-0.5">
                         {p.practice && <span>{p.practice}</span>}
-                        {p.phone && <a href={`tel:${p.phone}`} className="text-primary">{p.phone}</a>}
+                        {providerPhones(p).map((ph, i) => (
+                          <a
+                            key={i}
+                            href={`tel:${ph.number}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-primary"
+                          >
+                            <span className="text-default-400">
+                              {ph.label || (ph.kind ? PHONE_KIND_LABELS[ph.kind] : "Phone")}:
+                            </span>{" "}
+                            {ph.number}
+                          </a>
+                        ))}
                         {p.portalUrl && (
-                          <a href={p.portalUrl} target="_blank" rel="noreferrer" className="text-primary">
+                          <a
+                            href={p.portalUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-primary"
+                          >
                             Patient portal
                           </a>
                         )}
                       </div>
+                      {p.address && <p className="text-xs text-default-400 mt-0.5">{p.address}</p>}
                     </div>
                   ))}
                 </div>
@@ -539,6 +605,7 @@ export default function HealthPage() {
         personId={personId}
         pregnancyId={pregnancy?.id ?? null}
         providers={providers}
+        careItems={pregnancyCare}
         onSaved={loadAll}
       />
       <LabModal
@@ -550,16 +617,44 @@ export default function HealthPage() {
       <ProviderModal
         isOpen={providerModalOpen}
         onOpenChange={setProviderModalOpen}
+        editing={editingProvider}
         personId={personId}
         onSaved={loadAll}
       />
+      {pregnancy && (
+        <PregnancyModal
+          isOpen={pregnancyModalOpen}
+          onOpenChange={setPregnancyModalOpen}
+          pregnancy={pregnancy}
+          providers={providers}
+          onSaved={loadAll}
+        />
+      )}
+      {pregnancy && (
+        <CareItemModal
+          isOpen={careModalOpen}
+          onOpenChange={setCareModalOpen}
+          editing={editingCare}
+          pregnancyId={pregnancy.id}
+          today={today}
+          onSaved={loadAll}
+        />
+      )}
     </DefaultLayout>
   );
 }
 
 // ── Pregnancy header ─────────────────────────────────────────────────────
 
-function PregnancyHeader({ pregnancy, today }: { pregnancy: Pregnancy; today: string }) {
+function PregnancyHeader({
+  pregnancy,
+  today,
+  onEdit,
+}: {
+  pregnancy: Pregnancy;
+  today: string;
+  onEdit: () => void;
+}) {
   const ga = gestationalAge(pregnancy.dueDate, today);
   const pct = Math.min(100, Math.max(0, (ga.days / 280) * 100));
   return (
@@ -572,7 +667,12 @@ function PregnancyHeader({ pregnancy, today }: { pregnancy: Pregnancy; today: st
           </p>
         </div>
         <div className="text-right text-sm">
-          <p className="text-default-500">Due</p>
+          <p className="text-default-500 flex items-center justify-end gap-1">
+            Due
+            <Button isIconOnly size="sm" variant="light" aria-label="Edit pregnancy" onPress={onEdit} className="min-w-6 w-6 h-6">
+              <FaPen size={10} />
+            </Button>
+          </p>
           <p className="font-medium">
             {new Date(`${pregnancy.dueDate}T12:00:00Z`).toLocaleDateString("en-US", {
               timeZone: "UTC",
@@ -582,7 +682,9 @@ function PregnancyHeader({ pregnancy, today }: { pregnancy: Pregnancy; today: st
             })}
           </p>
           {pregnancy.dueDateSource && (
-            <p className="text-xs text-default-400">by {pregnancy.dueDateSource.toLowerCase()}</p>
+            <p className="text-xs text-default-400">
+              {DUE_DATE_SOURCE_LABELS[pregnancy.dueDateSource] ?? pregnancy.dueDateSource.toLowerCase()}
+            </p>
           )}
         </div>
       </div>
@@ -621,22 +723,12 @@ function CreatePregnancy({ personId, onCreated }: { personId: string; onCreated:
         status: "ACTIVE",
       });
       if (errors?.length || !data) throw new Error(errors?.[0]?.message ?? "create failed");
-      // Same seeding the agent's set_pregnancy does.
-      for (const item of buildCareTimeline(effectiveDue)) {
-        await client.models.homeCareItem.create({
-          pregnancyId: data.id,
-          key: item.key,
-          title: item.title,
-          category: item.category,
-          optional: item.optional,
-          windowStart: item.windowStart,
-          windowEnd: item.windowEnd,
-          status: item.status,
-          notes: item.notes,
-          sortOrder: item.sortOrder,
-        });
-      }
-      addToast({ title: "Pregnancy added", color: "success" });
+      const { failed } = await seedCareTimeline(client, data.id, effectiveDue);
+      addToast(
+        failed > 0
+          ? { title: "Pregnancy added", description: `${failed} timeline item(s) failed to save — add them by hand.`, color: "warning" }
+          : { title: "Pregnancy added", color: "success" },
+      );
       onCreated();
     } catch (err: any) {
       addToast({ title: "Save failed", description: err?.message ?? String(err), color: "danger" });
@@ -687,6 +779,7 @@ function VisitModal({
   personId,
   pregnancyId,
   providers,
+  careItems,
   onSaved,
 }: {
   isOpen: boolean;
@@ -695,6 +788,7 @@ function VisitModal({
   personId: string;
   pregnancyId: string | null;
   providers: Provider[];
+  careItems: CareItem[];
   onSaved: () => void;
 }) {
   const [visitAt, setVisitAt] = useState("");
@@ -702,6 +796,7 @@ function VisitModal({
   const [status, setStatus] = useState<string>("PLANNED");
   const [title, setTitle] = useState("");
   const [providerId, setProviderId] = useState("");
+  const [careItemId, setCareItemId] = useState("");
   const [questions, setQuestions] = useState("");
   const [notes, setNotes] = useState("");
   const [followUp, setFollowUp] = useState("");
@@ -718,6 +813,7 @@ function VisitModal({
     setStatus(editing?.status ?? "PLANNED");
     setTitle(editing?.title ?? "");
     setProviderId(editing?.providerId ?? "");
+    setCareItemId(editing?.careItemId ?? "");
     setQuestions(editing?.questions ?? "");
     setNotes(editing?.notes ?? "");
     setFollowUp(editing?.followUp ?? "");
@@ -729,6 +825,11 @@ function VisitModal({
 
   const num = (s: string) => (s.trim() === "" ? null : Number(s));
   const int = (s: string) => (s.trim() === "" ? null : Math.round(Number(s)));
+
+  // Open items, plus whatever this visit is already linked to.
+  const linkableCare = careItems.filter(
+    (c) => c.status === "UPCOMING" || c.status === "SCHEDULED" || c.id === editing?.careItemId,
+  );
 
   async function save(onClose: () => void) {
     if (!visitAt) {
@@ -751,7 +852,7 @@ function VisitModal({
         bpDiastolic: int(bpDia),
         fetalHeartRate: int(fhr),
       };
-      const { errors } = editing
+      const { data: saved, errors } = editing
         ? await client.models.homeMedicalVisit.update({ id: editing.id, ...fields })
         : await client.models.homeMedicalVisit.create({
             personId,
@@ -759,8 +860,33 @@ function VisitModal({
             createdBy: "ui",
             ...fields,
           });
-      if (errors?.length) throw new Error(errors[0].message);
-      addToast({ title: editing ? "Visit updated" : "Visit added", color: "success" });
+      if (errors?.length || !saved) throw new Error(errors?.[0]?.message ?? "save failed");
+
+      // Keep the calendar event (and timeline item) in step. The visit is
+      // already saved, so a failure here is a warning, not a lost edit.
+      try {
+        const provider = providers.find((p) => p.id === saved.providerId);
+        const eventId = await syncVisitEvent(client, saved, {
+          providerName: provider?.name,
+          providerAddress: provider?.address,
+        });
+        if (careItemId) {
+          await linkVisitToCareItem(client, { ...saved, eventId }, careItemId);
+        } else if (saved.careItemId) {
+          await client.models.homeMedicalVisit.update({ id: saved.id, careItemId: null });
+        }
+        addToast({
+          title: editing ? "Visit updated" : "Visit added",
+          description: eventId ? "Calendar updated." : status === "CANCELLED" ? "Removed from the calendar." : undefined,
+          color: "success",
+        });
+      } catch (err: any) {
+        addToast({
+          title: "Visit saved, but the calendar didn't update",
+          description: err?.message ?? String(err),
+          color: "warning",
+        });
+      }
       onClose();
       onSaved();
     } catch (err: any) {
@@ -771,14 +897,14 @@ function VisitModal({
   }
 
   async function remove(onClose: () => void) {
-    if (!editing || !confirm("Delete this visit?")) return;
-    const { errors } = await client.models.homeMedicalVisit.delete({ id: editing.id });
-    if (errors?.length) {
-      addToast({ title: "Delete failed", description: errors[0].message, color: "danger" });
-      return;
+    if (!editing || !confirm("Delete this visit? Its calendar event and notes are deleted too.")) return;
+    try {
+      await deleteVisit(client, editing);
+      onClose();
+      onSaved();
+    } catch (err: any) {
+      addToast({ title: "Delete failed", description: err?.message ?? String(err), color: "danger" });
     }
-    onClose();
-    onSaved();
   }
 
   return (
@@ -829,6 +955,26 @@ function VisitModal({
                 </Select>
               </div>
               <Input label="Title" placeholder="Intake visit, dating ultrasound…" value={title} onValueChange={setTitle} />
+              {linkableCare.length > 0 && (
+                <Select
+                  label="Timeline item this covers"
+                  placeholder="None"
+                  selectedKeys={careItemId ? [careItemId] : []}
+                  onChange={(e) => setCareItemId(e.target.value)}
+                  description="Marks it scheduled (planned visit) or done (completed visit)."
+                >
+                  {linkableCare.map((c) => (
+                    <SelectItem key={c.id}>{c.title}</SelectItem>
+                  ))}
+                </Select>
+              )}
+              <p className="text-xs text-default-400 -mt-1">
+                {status === "CANCELLED"
+                  ? "Cancelled visits are taken off the calendar."
+                  : editing?.eventId
+                    ? "On the calendar — changes here update the event."
+                    : "Saving adds this visit to the calendar."}
+              </p>
               <Textarea
                 label="Questions to ask"
                 placeholder="- Is it OK to keep flying?"
@@ -844,9 +990,16 @@ function VisitModal({
                     <Input label="BP diastolic" inputMode="numeric" value={bpDia} onValueChange={setBpDia} />
                     <Input label="Fetal HR" inputMode="numeric" value={fhr} onValueChange={setFhr} />
                   </div>
-                  <Textarea label="Notes" value={notes} onValueChange={setNotes} minRows={3} />
+                  <Textarea label="Visit summary" value={notes} onValueChange={setNotes} minRows={3} />
                   <Textarea label="Follow-up" value={followUp} onValueChange={setFollowUp} minRows={1} />
                 </>
+              )}
+              {editing ? (
+                <div className="pt-2 border-t border-default-200">
+                  <NotesSection parentType="VISIT" parentId={editing.id} />
+                </div>
+              ) : (
+                <p className="text-xs text-default-400">Save the visit to attach notes.</p>
               )}
             </ModalBody>
             <ModalFooter>
@@ -972,43 +1125,67 @@ function LabModal({
 function ProviderModal({
   isOpen,
   onOpenChange,
+  editing,
   personId,
   onSaved,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
+  editing: Provider | null;
   personId: string;
   onSaved: () => void;
 }) {
   const [name, setName] = useState("");
   const [specialty, setSpecialty] = useState("");
   const [practice, setPractice] = useState("");
-  const [phone, setPhone] = useState("");
+  const [phones, setPhones] = useState<ProviderPhone[]>([]);
+  const [address, setAddress] = useState("");
   const [portalUrl, setPortalUrl] = useState("");
+  const [notes, setNotes] = useState("");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
-    setName("");
-    setSpecialty("");
-    setPractice("");
-    setPhone("");
-    setPortalUrl("");
-  }, [isOpen]);
+    setName(editing?.name ?? "");
+    setSpecialty(editing?.specialty ?? "");
+    setPractice(editing?.practice ?? "");
+    // Folds a legacy single `phone` in as the first (clinic) number.
+    const existing = editing ? providerPhones(editing) : [];
+    setPhones(existing.length > 0 ? existing.map((p) => ({ ...p })) : [{ kind: "CLINIC", number: "", label: "" }]);
+    setAddress(editing?.address ?? "");
+    setPortalUrl(editing?.portalUrl ?? "");
+    setNotes(editing?.notes ?? "");
+  }, [isOpen, editing]);
+
+  function updatePhone(i: number, patch: Partial<ProviderPhone>) {
+    setPhones((prev) => prev.map((p, j) => (j === i ? { ...p, ...patch } : p)));
+  }
 
   async function save(onClose: () => void) {
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const { errors } = await client.models.homeHealthProvider.create({
+      const cleanPhones = phones
+        .filter((p) => p.number.trim())
+        .map((p) => ({ kind: p.kind ?? "OTHER", number: p.number.trim(), label: p.label?.trim() || null }));
+      const fields = {
         name: name.trim(),
         specialty: specialty.trim() || null,
         practice: practice.trim() || null,
-        phone: phone.trim() || null,
+        phones: cleanPhones,
+        // Legacy field now lives in phones; clear it so it isn't shown twice.
+        phone: null,
+        address: address.trim() || null,
         portalUrl: portalUrl.trim() || null,
-        personIds: personId ? [personId] : [],
-        active: true,
-      });
+        notes: notes.trim() || null,
+      };
+      const { errors } = editing
+        ? await client.models.homeHealthProvider.update({ id: editing.id, ...fields })
+        : await client.models.homeHealthProvider.create({
+            ...fields,
+            personIds: personId ? [personId] : [],
+            active: true,
+          });
       if (errors?.length) throw new Error(errors[0].message);
       onClose();
       onSaved();
@@ -1019,26 +1196,418 @@ function ProviderModal({
     }
   }
 
+  // Soft delete, like the agent: visits keep pointing at the row.
+  async function archive(onClose: () => void) {
+    if (!editing || !confirm(`Archive ${editing.name}? Past visits keep the link.`)) return;
+    const { errors } = await client.models.homeHealthProvider.update({ id: editing.id, active: false });
+    if (errors?.length) {
+      addToast({ title: "Archive failed", description: errors[0].message, color: "danger" });
+      return;
+    }
+    onClose();
+    onSaved();
+  }
+
   return (
-    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg">
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="2xl" scrollBehavior="inside">
       <ModalContent>
         {(onClose) => (
           <>
-            <ModalHeader>New provider</ModalHeader>
+            <ModalHeader>{editing ? "Edit provider" : "New provider"}</ModalHeader>
             <ModalBody>
               <Input label="Name" placeholder="Dr. Smith" value={name} onValueChange={setName} isRequired />
               <div className="grid grid-cols-2 gap-2">
                 <Input label="Specialty" placeholder="OB/GYN" value={specialty} onValueChange={setSpecialty} />
                 <Input label="Practice" value={practice} onValueChange={setPractice} />
-                <Input label="Phone" type="tel" value={phone} onValueChange={setPhone} />
-                <Input label="Portal URL" type="url" value={portalUrl} onValueChange={setPortalUrl} />
               </div>
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Phone numbers</p>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    startContent={<FaPlus size={10} />}
+                    onPress={() => setPhones((prev) => [...prev, { kind: "OTHER", number: "", label: "" }])}
+                  >
+                    Number
+                  </Button>
+                </div>
+                {phones.map((ph, i) => (
+                  <div key={i} className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                    <Select
+                      size="sm"
+                      aria-label="Type"
+                      selectedKeys={ph.kind ? [ph.kind] : []}
+                      onChange={(e) => e.target.value && updatePhone(i, { kind: e.target.value as PhoneKind })}
+                      className="sm:max-w-[160px]"
+                    >
+                      {PHONE_KINDS.map((k) => (
+                        <SelectItem key={k}>{PHONE_KIND_LABELS[k]}</SelectItem>
+                      ))}
+                    </Select>
+                    <Input
+                      size="sm"
+                      type="tel"
+                      aria-label="Number"
+                      placeholder="(512) 555-0100"
+                      value={ph.number}
+                      onValueChange={(v) => updatePhone(i, { number: v })}
+                    />
+                    <Input
+                      size="sm"
+                      aria-label="Label"
+                      placeholder="Label (optional)"
+                      value={ph.label ?? ""}
+                      onValueChange={(v) => updatePhone(i, { label: v })}
+                    />
+                    <Button
+                      isIconOnly
+                      size="sm"
+                      variant="light"
+                      aria-label="Remove number"
+                      onPress={() => setPhones((prev) => prev.filter((_, j) => j !== i))}
+                    >
+                      <FaTrash size={11} />
+                    </Button>
+                  </div>
+                ))}
+              </div>
+
+              <Input label="Address" value={address} onValueChange={setAddress} />
+              <Input label="Portal URL" type="url" value={portalUrl} onValueChange={setPortalUrl} />
+              <Textarea
+                label="About"
+                placeholder="Short summary — office hours, who to ask for…"
+                value={notes}
+                onValueChange={setNotes}
+                minRows={2}
+              />
+              {editing ? (
+                <div className="pt-2 border-t border-default-200">
+                  <NotesSection parentType="PROVIDER" parentId={editing.id} />
+                </div>
+              ) : (
+                <p className="text-xs text-default-400">Save the provider to attach notes.</p>
+              )}
+            </ModalBody>
+            <ModalFooter>
+              {editing && (
+                <Button variant="light" color="danger" className="mr-auto" onPress={() => archive(onClose)}>
+                  Archive
+                </Button>
+              )}
+              <Button variant="light" onPress={onClose}>
+                Cancel
+              </Button>
+              <Button color="primary" isDisabled={!name.trim()} isLoading={saving} onPress={() => save(onClose)}>
+                Save
+              </Button>
+            </ModalFooter>
+          </>
+        )}
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Pregnancy modal ──────────────────────────────────────────────────────
+
+function PregnancyModal({
+  isOpen,
+  onOpenChange,
+  pregnancy,
+  providers,
+  onSaved,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  pregnancy: Pregnancy;
+  providers: Provider[];
+  onSaved: () => void;
+}) {
+  const [dueDate, setDueDate] = useState("");
+  const [lmpDate, setLmpDate] = useState("");
+  const [source, setSource] = useState("OTHER");
+  const [providerId, setProviderId] = useState("");
+  const [hospital, setHospital] = useState("");
+  const [status, setStatus] = useState("ACTIVE");
+  const [deliveredAt, setDeliveredAt] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setDueDate(pregnancy.dueDate);
+    setLmpDate(pregnancy.lmpDate ?? "");
+    setSource(pregnancy.dueDateSource ?? "OTHER");
+    setProviderId(pregnancy.providerId ?? "");
+    setHospital(pregnancy.hospitalName ?? "");
+    setStatus(pregnancy.status ?? "ACTIVE");
+    setDeliveredAt(pregnancy.deliveredAt ?? "");
+    setNotes(pregnancy.notes ?? "");
+  }, [isOpen, pregnancy]);
+
+  // Due date and LMP are 280 days apart; editing one moves the other.
+  function onDueChange(v: string) {
+    setDueDate(v);
+    if (v) setLmpDate(lmpFromDueDate(v));
+  }
+  function onLmpChange(v: string) {
+    setLmpDate(v);
+    if (v) {
+      setDueDate(dueDateFromLmp(v));
+      setSource("LMP");
+    }
+  }
+
+  const dueChanged = !!dueDate && dueDate !== pregnancy.dueDate;
+
+  async function save(onClose: () => void) {
+    if (!dueDate) return;
+    setSaving(true);
+    try {
+      const { errors } = await client.models.homePregnancy.update({
+        id: pregnancy.id,
+        dueDate,
+        lmpDate: lmpDate || null,
+        dueDateSource: source as Pregnancy["dueDateSource"],
+        providerId: providerId || null,
+        hospitalName: hospital.trim() || null,
+        status: status as Pregnancy["status"],
+        deliveredAt: status === "DELIVERED" ? deliveredAt || null : null,
+        notes: notes.trim() || null,
+      });
+      if (errors?.length) throw new Error(errors[0].message);
+      const moved = dueChanged ? await shiftCareTimeline(client, pregnancy.id, dueDate) : 0;
+      addToast({
+        title: "Pregnancy updated",
+        description: moved > 0 ? `${moved} timeline item${moved === 1 ? "" : "s"} moved to match the new due date.` : undefined,
+        color: "success",
+      });
+      onClose();
+      onSaved();
+    } catch (err: any) {
+      addToast({ title: "Save failed", description: err?.message ?? String(err), color: "danger" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">
+      <ModalContent>
+        {(onClose) => (
+          <>
+            <ModalHeader>Edit pregnancy</ModalHeader>
+            <ModalBody>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <DateInput label="Due date" value={dueDate} onChange={onDueChange} isRequired />
+                <DateInput label="First day of last period" value={lmpDate} onChange={onLmpChange} />
+              </div>
+              <Select
+                label="Due date set by"
+                selectedKeys={[source]}
+                onChange={(e) => e.target.value && setSource(e.target.value)}
+              >
+                <SelectItem key="LMP">Last period</SelectItem>
+                <SelectItem key="ULTRASOUND">Ultrasound</SelectItem>
+                <SelectItem key="IVF">IVF transfer</SelectItem>
+                <SelectItem key="OTHER">Other / doctor</SelectItem>
+              </Select>
+              {dueChanged && (
+                <p className="text-xs text-warning-600">
+                  Open timeline items will move to match the new due date. Done items and ones you added by hand stay put.
+                </p>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Select
+                  label="OB / midwife"
+                  selectedKeys={providerId ? [providerId] : []}
+                  onChange={(e) => setProviderId(e.target.value)}
+                  isDisabled={providers.length === 0}
+                >
+                  {providers.map((p) => (
+                    <SelectItem key={p.id}>{p.name}</SelectItem>
+                  ))}
+                </Select>
+                <Input label="Hospital" value={hospital} onValueChange={setHospital} />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <Select
+                  label="Status"
+                  selectedKeys={[status]}
+                  onChange={(e) => e.target.value && setStatus(e.target.value)}
+                >
+                  <SelectItem key="ACTIVE">Active</SelectItem>
+                  <SelectItem key="DELIVERED">Delivered</SelectItem>
+                  <SelectItem key="ENDED">Ended</SelectItem>
+                </Select>
+                {status === "DELIVERED" && (
+                  <DateInput label="Birth date" value={deliveredAt} onChange={setDeliveredAt} />
+                )}
+              </div>
+              <Textarea label="Notes" value={notes} onValueChange={setNotes} minRows={2} />
             </ModalBody>
             <ModalFooter>
               <Button variant="light" onPress={onClose}>
                 Cancel
               </Button>
-              <Button color="primary" isDisabled={!name.trim()} isLoading={saving} onPress={() => save(onClose)}>
+              <Button color="primary" isDisabled={!dueDate} isLoading={saving} onPress={() => save(onClose)}>
+                Save
+              </Button>
+            </ModalFooter>
+          </>
+        )}
+      </ModalContent>
+    </Modal>
+  );
+}
+
+// ── Care item modal ──────────────────────────────────────────────────────
+
+function CareItemModal({
+  isOpen,
+  onOpenChange,
+  editing,
+  pregnancyId,
+  today,
+  onSaved,
+}: {
+  isOpen: boolean;
+  onOpenChange: (open: boolean) => void;
+  editing: CareItem | null;
+  pregnancyId: string;
+  today: string;
+  onSaved: () => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [category, setCategory] = useState<string>("VISIT");
+  const [status, setStatus] = useState<string>("UPCOMING");
+  const [windowStart, setWindowStart] = useState("");
+  const [windowEnd, setWindowEnd] = useState("");
+  const [completedAt, setCompletedAt] = useState("");
+  const [optional, setOptional] = useState(false);
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    setTitle(editing?.title ?? "");
+    setCategory(editing?.category ?? "VISIT");
+    setStatus(editing?.status ?? "UPCOMING");
+    setWindowStart(editing?.windowStart ?? today);
+    setWindowEnd(editing?.windowEnd ?? today);
+    setCompletedAt(editing?.completedAt ?? "");
+    setOptional(!!editing?.optional);
+    setNotes(editing?.notes ?? "");
+  }, [isOpen, editing, today]);
+
+  async function save(onClose: () => void) {
+    if (!title.trim() || !windowStart || !windowEnd) return;
+    if (windowEnd < windowStart) {
+      addToast({ title: "The window ends before it starts", color: "warning" });
+      return;
+    }
+    setSaving(true);
+    try {
+      const fields = {
+        title: title.trim(),
+        category: category as CareItem["category"],
+        status: status as CareItem["status"],
+        windowStart,
+        windowEnd,
+        completedAt: status === "DONE" ? completedAt || today : null,
+        optional,
+        notes: notes.trim() || null,
+      };
+      const { errors } = editing
+        ? await client.models.homeCareItem.update({ id: editing.id, ...fields })
+        : await client.models.homeCareItem.create({ pregnancyId, key: null, sortOrder: 999, ...fields });
+      if (errors?.length) throw new Error(errors[0].message);
+      onClose();
+      onSaved();
+    } catch (err: any) {
+      addToast({ title: "Save failed", description: err?.message ?? String(err), color: "danger" });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(onClose: () => void) {
+    if (!editing) return;
+    const msg = editing.key
+      ? `Delete "${editing.title}"? It's part of the standard timeline — marking it Skipped or N/A keeps a record instead.`
+      : `Delete "${editing.title}"?`;
+    if (!confirm(msg)) return;
+    const { errors } = await client.models.homeCareItem.delete({ id: editing.id });
+    if (errors?.length) {
+      addToast({ title: "Delete failed", description: errors[0].message, color: "danger" });
+      return;
+    }
+    onClose();
+    onSaved();
+  }
+
+  return (
+    <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg" scrollBehavior="inside">
+      <ModalContent>
+        {(onClose) => (
+          <>
+            <ModalHeader>{editing ? "Edit timeline item" : "New timeline item"}</ModalHeader>
+            <ModalBody>
+              <Input label="Title" value={title} onValueChange={setTitle} isRequired />
+              <div className="grid grid-cols-2 gap-2">
+                <Select
+                  label="Category"
+                  selectedKeys={[category]}
+                  onChange={(e) => e.target.value && setCategory(e.target.value)}
+                >
+                  {CARE_CATEGORIES.map((c) => (
+                    <SelectItem key={c}>{CARE_CATEGORY_LABELS[c]}</SelectItem>
+                  ))}
+                </Select>
+                <Select
+                  label="Status"
+                  selectedKeys={[status]}
+                  onChange={(e) => e.target.value && setStatus(e.target.value)}
+                >
+                  {CARE_STATUSES.map((st) => (
+                    <SelectItem key={st}>{CARE_STATUS_LABELS[st]}</SelectItem>
+                  ))}
+                </Select>
+                <DateInput label="Window opens" value={windowStart} onChange={setWindowStart} isRequired />
+                <DateInput label="Window closes" value={windowEnd} onChange={setWindowEnd} isRequired />
+                {status === "DONE" && (
+                  <DateInput label="Done on" value={completedAt} onChange={setCompletedAt} />
+                )}
+              </div>
+              {editing?.key && (
+                <p className="text-xs text-default-400">
+                  Standard timeline item — if the due date changes, its window moves too while it&apos;s still open.
+                </p>
+              )}
+              <label className="flex items-center gap-2 text-sm">
+                <input type="checkbox" checked={optional} onChange={(e) => setOptional(e.target.checked)} />
+                Optional
+              </label>
+              <Textarea label="Notes" value={notes} onValueChange={setNotes} minRows={2} />
+            </ModalBody>
+            <ModalFooter>
+              {editing && (
+                <Button variant="light" color="danger" className="mr-auto" onPress={() => remove(onClose)}>
+                  Delete
+                </Button>
+              )}
+              <Button variant="light" onPress={onClose}>
+                Cancel
+              </Button>
+              <Button
+                color="primary"
+                isDisabled={!title.trim() || !windowStart || !windowEnd}
+                isLoading={saving}
+                onPress={() => save(onClose)}
+              >
                 Save
               </Button>
             </ModalFooter>

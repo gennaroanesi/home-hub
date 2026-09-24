@@ -476,3 +476,121 @@ export const CARE_STATUS_LABELS: Record<CareStatus, string> = {
 export const SEASONAL_CARE_KEYS: ReadonlySet<string> = new Set(
   CARE_TIMELINE.filter((t) => t.anchor === "season").map((t) => t.key),
 );
+
+// ── Due-date changes ─────────────────────────────────────────────────────────
+
+export interface ShiftableCareItem {
+  id: string;
+  key?: string | null;
+  status?: string | null;
+  windowStart: string;
+  windowEnd: string;
+}
+
+export interface CareItemShift {
+  id: string;
+  windowStart: string;
+  windowEnd: string;
+  status?: CareStatus;
+}
+
+/**
+ * Which care items move when the due date changes to `newDueDate`.
+ * Only templated items (non-null key) that are still open shift; hand-
+ * added items and closed items keep their dates as a record. Seasonal
+ * vaccines can move in/out of season, so their UPCOMING ⇄ N/A status is
+ * recomputed — any other N/A was a human decision and stays put.
+ */
+export function planCareShift(items: ShiftableCareItem[], newDueDate: string): CareItemShift[] {
+  const fresh = new Map(buildCareTimeline(newDueDate).map((i) => [i.key, i]));
+  const out: CareItemShift[] = [];
+  for (const item of items) {
+    if (!item.key) continue;
+    const next = fresh.get(item.key);
+    if (!next) continue;
+    const isOpen = item.status === "UPCOMING" || item.status === "SCHEDULED";
+    const seasonal = SEASONAL_CARE_KEYS.has(item.key);
+    const autoFlip = seasonal && (item.status === "UPCOMING" || item.status === "NOT_APPLICABLE");
+    if (!isOpen && !autoFlip) continue;
+    if (
+      next.windowStart === item.windowStart &&
+      next.windowEnd === item.windowEnd &&
+      (!autoFlip || next.status === item.status)
+    ) {
+      continue;
+    }
+    out.push({
+      id: item.id,
+      windowStart: next.windowStart,
+      windowEnd: next.windowEnd,
+      ...(autoFlip ? { status: next.status } : {}),
+    });
+  }
+  return out;
+}
+
+// ── Writes (shared by the /health page and the agent) ────────────────────────
+// Take the Amplify data client as `any` so both the browser (userPool)
+// and Lambda (IAM) clients fit — same convention as lib/note-parent.ts.
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DataClient = any;
+
+/** Create the standard care timeline rows for a new pregnancy. */
+export async function seedCareTimeline(
+  client: DataClient,
+  pregnancyId: string,
+  dueDate: string,
+): Promise<{ created: number; failed: number }> {
+  let created = 0;
+  let failed = 0;
+  for (const item of buildCareTimeline(dueDate)) {
+    const { errors } = await client.models.homeCareItem.create({
+      pregnancyId,
+      key: item.key,
+      title: item.title,
+      category: item.category,
+      optional: item.optional,
+      windowStart: item.windowStart,
+      windowEnd: item.windowEnd,
+      status: item.status,
+      notes: item.notes,
+      sortOrder: item.sortOrder,
+    });
+    if (errors?.length) failed++;
+    else created++;
+  }
+  return { created, failed };
+}
+
+/** Apply planCareShift to a pregnancy's care items. Returns how many moved. */
+export async function shiftCareTimeline(
+  client: DataClient,
+  pregnancyId: string,
+  newDueDate: string,
+): Promise<number> {
+  const items: ShiftableCareItem[] = [];
+  let nextToken: string | null = null;
+  do {
+    const res: { data?: ShiftableCareItem[]; nextToken?: string | null } =
+      await client.models.homeCareItem.list({
+        filter: { pregnancyId: { eq: pregnancyId } },
+        limit: 500,
+        nextToken,
+      });
+    items.push(...(res.data ?? []));
+    nextToken = res.nextToken ?? null;
+  } while (nextToken);
+  const shifts = planCareShift(items, newDueDate);
+  for (const s of shifts) {
+    await client.models.homeCareItem.update(s);
+  }
+  return shifts.length;
+}
+
+export const DUE_DATE_SOURCE_LABELS: Record<string, string> = {
+  LMP: "from last period",
+  ULTRASOUND: "from ultrasound",
+  IVF: "from IVF transfer",
+  OTHER: "set manually",
+};

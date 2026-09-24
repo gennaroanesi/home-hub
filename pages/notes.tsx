@@ -44,11 +44,15 @@ const PARENT_LABELS: Record<NoteParentType, string> = {
   TASK: "Task",
   EVENT: "Event",
   TRIP: "Trip",
+  VISIT: "Visit",
+  PROVIDER: "Provider",
 };
-const PARENT_COLORS: Record<NoteParentType, "primary" | "secondary" | "warning"> = {
+const PARENT_COLORS: Record<NoteParentType, "primary" | "secondary" | "warning" | "success" | "default"> = {
   TASK: "primary",
   EVENT: "secondary",
   TRIP: "warning",
+  VISIT: "success",
+  PROVIDER: "default",
 };
 
 interface ParentLookup {
@@ -56,6 +60,8 @@ interface ParentLookup {
   task: Map<string, string>;
   event: Map<string, string>;
   trip: Map<string, string>;
+  visit: Map<string, string>;
+  provider: Map<string, string>;
 }
 
 export default function NotesPage() {
@@ -65,6 +71,8 @@ export default function NotesPage() {
     task: new Map(),
     event: new Map(),
     trip: new Map(),
+    visit: new Map(),
+    provider: new Map(),
   });
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<"ALL" | NoteParentType | "STANDALONE">(
@@ -90,11 +98,13 @@ export default function NotesPage() {
     setLoading(true);
     // Pull notes + the three parent collections in parallel so we can
     // resolve parent labels without N round-trips.
-    const [notesRes, tasksRes, eventsRes, tripsRes] = await Promise.all([
+    const [notesRes, tasksRes, eventsRes, tripsRes, visitsRes, providersRes] = await Promise.all([
       client.models.homeNote.list(),
       client.models.homeTask.list(),
       client.models.homeCalendarEvent.list(),
       client.models.homeTrip.list(),
+      client.models.homeMedicalVisit.list({ limit: 500 }),
+      client.models.homeHealthProvider.list({ limit: 500 }),
     ]);
     const sorted = [...(notesRes.data ?? [])].sort(
       (a, b) =>
@@ -106,6 +116,13 @@ export default function NotesPage() {
       task: new Map((tasksRes.data ?? []).map((t) => [t.id, t.title])),
       event: new Map((eventsRes.data ?? []).map((e) => [e.id, e.title])),
       trip: new Map((tripsRes.data ?? []).map((t) => [t.id, t.name])),
+      visit: new Map(
+        (visitsRes.data ?? []).map((v) => [
+          v.id,
+          `${v.title ?? "Visit"} (${new Date(v.visitAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })})`,
+        ]),
+      ),
+      provider: new Map((providersRes.data ?? []).map((p) => [p.id, p.name])),
     });
     setLoading(false);
   }, []);
@@ -210,6 +227,8 @@ export default function NotesPage() {
             <SelectItem key="TASK">Tasks</SelectItem>
             <SelectItem key="EVENT">Events</SelectItem>
             <SelectItem key="TRIP">Trips</SelectItem>
+            <SelectItem key="VISIT">Visits</SelectItem>
+            <SelectItem key="PROVIDER">Providers</SelectItem>
           </Select>
         </div>
 

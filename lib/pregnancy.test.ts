@@ -7,6 +7,7 @@ import {
   dueDateFromLmp,
   gestationalAge,
   lmpFromDueDate,
+  planCareShift,
 } from "./pregnancy";
 
 // Reference pregnancy: LMP 2026-08-20 → due 2027-05-27.
@@ -101,5 +102,31 @@ describe("careUrgency", () => {
   it("treats closed statuses as CLOSED", () => {
     expect(careUrgency({ ...item, status: "DONE" }, "2027-01-22")).toBe("CLOSED");
     expect(careUrgency({ ...item, status: "NOT_APPLICABLE" }, "2027-01-01")).toBe("CLOSED");
+  });
+});
+
+describe("planCareShift", () => {
+  const due = "2027-05-27";
+  const seeded = buildCareTimeline(due).map((t, i) => ({ ...t, id: `id${i}` }));
+  const byKey = (k: string) => seeded.find((s) => s.key === k)!;
+
+  it("shifts open templated items and leaves closed / hand-added ones", () => {
+    const items = [
+      { ...byKey("anatomy_scan") },
+      { ...byKey("initial_labs"), status: "DONE" },
+      { id: "custom", key: null, status: "UPCOMING", windowStart: "2026-11-01", windowEnd: "2026-11-02" },
+    ];
+    const shifts = planCareShift(items, "2027-05-20"); // a week earlier
+    expect(shifts.map((s) => s.id)).toEqual([byKey("anatomy_scan").id]);
+    expect(shifts[0].windowStart).toBe(addDaysYmd(byKey("anatomy_scan").windowStart, -7));
+  });
+
+  it("keeps a human N/A on a non-seasonal item", () => {
+    const shifts = planCareShift([{ ...byKey("rhogam"), status: "NOT_APPLICABLE" }], "2027-05-20");
+    expect(shifts).toEqual([]);
+  });
+
+  it("is a no-op for the same due date", () => {
+    expect(planCareShift(seeded, due)).toEqual([]);
   });
 });
