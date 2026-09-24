@@ -688,6 +688,16 @@
               "isRequired": false,
               "attributes": []
             },
+            "phones": {
+              "name": "phones",
+              "isArray": true,
+              "type": {
+                "nonModel": "HealthProviderPhone"
+              },
+              "isRequired": false,
+              "attributes": [],
+              "isArrayNullable": true
+            },
             "address": {
               "name": "address",
               "isArray": false,
@@ -6916,7 +6926,9 @@
           "values": [
             "TASK",
             "EVENT",
-            "TRIP"
+            "TRIP",
+            "VISIT",
+            "PROVIDER"
           ]
         },
         "HomeDeviceSensitivity": {
@@ -7086,9 +7098,50 @@
             "user",
             "assistant"
           ]
+        },
+        "HealthProviderPhoneKind": {
+          "name": "HealthProviderPhoneKind",
+          "values": [
+            "CLINIC",
+            "PERSONAL",
+            "AFTER_HOURS",
+            "NURSE_LINE",
+            "SCHEDULING",
+            "BILLING",
+            "FAX",
+            "OTHER"
+          ]
         }
       },
       "nonModels": {
+        "HealthProviderPhone": {
+          "name": "HealthProviderPhone",
+          "fields": {
+            "kind": {
+              "name": "kind",
+              "isArray": false,
+              "type": {
+                "enum": "HealthProviderPhoneKind"
+              },
+              "isRequired": false,
+              "attributes": []
+            },
+            "number": {
+              "name": "number",
+              "isArray": false,
+              "type": "String",
+              "isRequired": true,
+              "attributes": []
+            },
+            "label": {
+              "name": "label",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            }
+          }
+        },
         "homeAgentAction": {
           "name": "homeAgentAction",
           "fields": {
