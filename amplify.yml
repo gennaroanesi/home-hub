@@ -40,6 +40,12 @@ backend:
               echo "WHATSAPP_BOT_CLUSTER_ARN=$CLUSTER_ARN" >> .env.production
             fi
 
+            # /api/muse/* invokes the agent Lambda directly by name
+            AGENT_FN=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='homeAgentFunctionName'].OutputValue" --output text 2>/dev/null)
+            if [ -n "$AGENT_FN" ] && [ "$AGENT_FN" != "None" ]; then
+              echo "HOME_AGENT_FUNCTION_NAME=$AGENT_FN" >> .env.production
+            fi
+
             BUILD_PROJECT=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotBuildProjectName'].OutputValue" --output text 2>/dev/null)
             ARTIFACTS_S3=$(aws cloudformation describe-stacks --stack-name "$STACK_NAME" --query "Stacks[0].Outputs[?OutputKey=='whatsappBotBuildArtifactsPrefix'].OutputValue" --output text 2>/dev/null)
 
@@ -106,6 +112,8 @@ frontend:
           [ -n "$HASS_BASE_URL" ] && echo "HASS_BASE_URL=$HASS_BASE_URL" >> .env.production
           [ -n "$HASS_TOKEN" ] && echo "HASS_TOKEN=$HASS_TOKEN" >> .env.production
           [ -n "$HOME_HUB_BUCKET" ] && echo "HOME_HUB_BUCKET=$HOME_HUB_BUCKET" >> .env.production
+          [ -n "$MUSE_API_KEY" ] && echo "MUSE_API_KEY=$MUSE_API_KEY" >> .env.production
+          [ -n "$MUSE_SENDER" ] && echo "MUSE_SENDER=$MUSE_SENDER" >> .env.production
           true
     build:
       commands:

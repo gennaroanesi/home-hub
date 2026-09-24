@@ -851,4 +851,28 @@ new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
   value: `s3://${HOME_HUB_BUCKET}/${BUILD_ARTIFACTS_PREFIX}`,
 });
 
+// ── Muse API gateway — Next.js SSR → agent Lambda ───────────────────────────
+// pages/api/muse/* invokes the agent Lambda directly from the Hosting
+// compute role. That role is managed in the Amplify console (not this
+// stack), so we import it by name and attach just the invoke grant.
+// The function name is forwarded to the SSR runtime via amplify.yml.
+new CfnOutput(backend.stack, "homeAgentFunctionName", {
+  value: agentLambda.functionName,
+});
+const computeRoleName = process.env.HOME_HUB_COMPUTE_ROLE_NAME;
+if (computeRoleName) {
+  const computeRole = iam.Role.fromRoleName(dataStack, "HostingComputeRole", computeRoleName);
+  computeRole.attachInlinePolicy(
+    new Policy(dataStack, "hostingComputeInvokeAgentPolicy", {
+      statements: [
+        new PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [agentLambda.functionArn],
+        }),
+      ],
+    })
+  );
+}
+
 } // end if (!isSandbox)

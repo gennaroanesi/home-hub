@@ -2069,7 +2069,8 @@ interface Attachment {
 // Chat context passed in by invokeHomeAgent's chatContext arg. Lets
 // tools know whether the request originated from a group chat (where
 // sensitive payloads must be redirected to DM) vs. a DM or the web UI.
-export type AgentChannel = "WA_GROUP" | "WA_DM" | "WEB";
+// API = the Muse REST gateway (pages/api/muse). Runs with API_TOOLS only.
+export type AgentChannel = "WA_GROUP" | "WA_DM" | "WEB" | "API";
 export interface ChatContext {
   channel: AgentChannel;
   chatJid: string | null;
@@ -5292,7 +5293,53 @@ function isAsyncInvoke(event: any): event is AsyncInvokePayload {
   return event && !event.arguments && typeof event.inboundMessageId === "string";
 }
 
-export const handler = async (event: any, context?: any): Promise<AgentResponse | void> => {
+// ── External API gateway (pages/api/muse) ────────────────────────────────────
+// The Next.js gateway invokes this Lambda directly with one of two payloads:
+//   { apiListTools: true }                     → { tools: API_TOOLS }
+//   { apiTool: { name, input, sender } }       → { result } | { error }
+// plus the normal `{ arguments: {...} }` shape with chatContext.channel =
+// "API" for /ask. Tools that need a Duo push on the requester's phone or
+// a WhatsApp chat to deliver into are left out — an API caller can't
+// complete either flow.
+const API_EXCLUDED_TOOLS = new Set([
+  "control_device",
+  "check_device_auth",
+  "request_document_download",
+  "check_document_auth",
+  "send_photos",
+  "attach_file",
+]);
+const API_TOOLS = tools.filter((t) => !API_EXCLUDED_TOOLS.has(t.name));
+
+async function handleApiTool(payload: {
+  name?: string;
+  input?: Record<string, any>;
+  sender?: string;
+}): Promise<{ result?: any; error?: string }> {
+  const name = payload.name ?? "";
+  if (!API_TOOLS.some((t) => t.name === name)) {
+    return { error: `Unknown tool: ${name}` };
+  }
+  const toolCtx: ToolContext = {
+    attachments: [],
+    chatContext: { channel: "API", chatJid: null },
+    sender: payload.sender ?? "unknown",
+  };
+  console.log(
+    `[agent-api] call: ${name} sender=${toolCtx.sender} input=${JSON.stringify(payload.input ?? {}).slice(0, 500)}`
+  );
+  const result = await executeTool(name, payload.input ?? {}, toolCtx);
+  try {
+    return { result: JSON.parse(result) };
+  } catch {
+    return { result };
+  }
+}
+
+export const handler = async (event: any, context?: any): Promise<AgentResponse | object | void> => {
+  if (event?.apiListTools) return { tools: API_TOOLS };
+  if (event?.apiTool) return handleApiTool(event.apiTool);
+
   const isAsync = isAsyncInvoke(event);
 
   // Normalize args from either invocation mode. In async mode, pull the
@@ -5656,6 +5703,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     chatContext: parsedChatContext,
     sender,
   };
+  const activeTools = parsedChatContext.channel === "API" ? API_TOOLS : tools;
 
   try {
     // Agentic loop
@@ -5664,7 +5712,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
       max_tokens: 1024,
       system: systemPrompt,
       messages,
-      tools,
+      tools: activeTools,
     });
 
     while (response.stop_reason === "tool_use") {
@@ -5702,7 +5750,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
         max_tokens: 1024,
         system: systemPrompt,
         messages,
-        tools,
+        tools: activeTools,
       });
     }
 
