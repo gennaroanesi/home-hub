@@ -856,14 +856,18 @@ new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
 // compute role. That role is managed in the Amplify console (not this
 // stack), so we import it by name and attach just the invoke grant.
 // The function name is forwarded to the SSR runtime via amplify.yml.
+// The policy must live in the agent Lambda's own stack: putting it in
+// dataStack (the homeTask nested stack) makes that stack depend on the
+// Lambda, which already depends on it → CFN circular dependency.
 new CfnOutput(backend.stack, "homeAgentFunctionName", {
   value: agentLambda.functionName,
 });
 const computeRoleName = process.env.HOME_HUB_COMPUTE_ROLE_NAME;
 if (computeRoleName) {
-  const computeRole = iam.Role.fromRoleName(dataStack, "HostingComputeRole", computeRoleName);
+  const agentStack = Stack.of(agentLambda);
+  const computeRole = iam.Role.fromRoleName(agentStack, "HostingComputeRole", computeRoleName);
   computeRole.attachInlinePolicy(
-    new Policy(dataStack, "hostingComputeInvokeAgentPolicy", {
+    new Policy(agentStack, "hostingComputeInvokeAgentPolicy", {
       statements: [
         new PolicyStatement({
           effect: Effect.ALLOW,
