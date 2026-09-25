@@ -1,6 +1,6 @@
 # Baby / health tracking — handoff
 
-Status as of 2026-09-24. Everything below is on `main`. Amplify build 161 (`074871d`) deployed all of it except the **real dates on timeline items**, which are committed but not pushed or deployed yet. `main` is also carrying unpushed doc updates and `3aee9cb` (the regenerated `mobile/amplify_outputs.json`).
+Status as of 2026-09-24. Everything below is on `main` and deployed to prod by Amplify build 162 (`1b3ba10`), including the real dates on timeline items. The only unpushed commit regenerates `mobile/amplify_outputs.json` so mobile picks up `homeCareItem.scheduledAt`. It only affects mobile, so it can go out with the next push.
 
 **Keep this doc current.** Update it, and the *Baby / health* section of `ROADMAP.md`, in every commit that touches this work.
 

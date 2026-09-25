@@ -1458,6 +1458,13 @@
               "isRequired": false,
               "attributes": []
             },
+            "scheduledAt": {
+              "name": "scheduledAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": []
+            },
             "completedAt": {
               "name": "completedAt",
               "isArray": false,
