@@ -1,46 +1,85 @@
 # Baby / health tracking — handoff
 
-Status as of 2026-09-23. Phase 1 is committed on branch `baby-health` (not merged, not deployed).
+Status as of 2026-09-24. Everything below is merged to `main` and deployed to prod by Amplify build 161 (`074871d`). One commit is waiting to be pushed: `3aee9cb`, which regenerates `mobile/amplify_outputs.json` so mobile picks up the provider phones and visit/provider notes. It only affects mobile, so it can go out with the next push.
+
+**Keep this doc current.** Update it, and the *Baby / health* section of `ROADMAP.md`, in every commit that touches this work.
 
 ## Context
-- Pregnancy: LMP 2026-08-20 → due **2027-05-27** (LMP + 280d). 4w6d on 2026-09-23.
-- First OB appointments: **Oct 12 (7w4d) and Oct 14 (7w6d)**. Phase 1 needs to be deployed before then.
-- User's priorities: (1) appointments, labs, results per `homePerson`; (2) nutrition and vitamins; (3) finances; (4) shopping list (exists); (5) inventory for clothes, food, etc.
-- Finances **stay in gennaroanesi.com** (its `finance*` models are admin-only there). Don't port them here.
+- **Pregnancy:** the prod record has due date **2027-05-20**, entered by hand on `/health` (source "set manually"). That puts it at 6w1d on 2026-09-24. The earlier estimate from LMP 2026-08-20 was 2027-05-27. The due date can now be edited on `/health`, and changing it moves the open timeline items to match.
+- **Upcoming:**
+  - First OB appointments: **Oct 12 and Oct 14**.
+  - Open enrollment: **November**. Delivery falls in the 2027 plan year.
+- **User's priorities:**
+  1. Appointments, labs and results per `homePerson`.
+  2. Nutrition and vitamins.
+  3. Finances.
+  4. Shopping list.
+  5. Inventory for clothes, food, etc.
+- **Finances stay in gennaroanesi.com,** where the `finance*` models are admin-only and synced from the bank. Don't copy the money side here. Home-hub holds only the *wishlist* side: estimated and paid prices on inventory items.
 
-## What phase 1 added
+## What's built
+
+### Health (`/health`, Janet tools, daily summary)
 | Piece | Where |
 |---|---|
-| Date math + care-timeline template (21 ACOG-based items; flu/COVID/RSV clamped to season) | `lib/pregnancy.ts`, tests in `lib/pregnancy.test.ts` |
-| Models: `homeHealthProvider`, `homeMedicalVisit`, `homeLabResult`, `homePregnancy`, `homeCareItem` | `amplify/data/resource.ts` (after `homePetVaccine`) |
-| Janet tools: `get_pregnancy_status`, `set_pregnancy`, `list_care_items`, `manage_care_item`, `manage_health_provider`, `log_medical_visit`, `list_medical_visits`, `add_visit_question`, `record_lab_results`, `list_lab_results` | `amplify/functions/agent/handler.ts` (tool defs after `list_attachments`; cases before `default`; "Health records & pregnancy" section in the system prompt; the pregnancy status line is injected into the prompt) |
-| *Baby* section in the daily summary (GA, new-week callout, overdue / due-now / soon items) | `amplify/functions/daily-summary/handler.ts` (`gatherPregnancies`) |
-| `/health` web page + "Health" entry in the Life nav menu | `pages/health.tsx`, `components/navbar.tsx` |
-| Roadmap for later phases | `ROADMAP.md` → "Baby / health" |
+| Models: `homeHealthProvider` (with `phones: HealthProviderPhone[]`), `homeMedicalVisit`, `homeLabResult`, `homePregnancy`, `homeCareItem` | `amplify/data/resource.ts` |
+| Due-date math and the 21-item care-timeline template (ACOG-based; flu/COVID/RSV clamped to season) | `lib/pregnancy.ts`, tests in `lib/pregnancy.test.ts` |
+| Shared write helpers used by both the page and Janet: `seedCareTimeline`, `shiftCareTimeline` / `planCareShift` | `lib/pregnancy.ts` |
+| Visit ↔ calendar sync and visit helpers: `syncVisitEvent`, `linkVisitToCareItem`, `deleteVisit`, `providerPhones`, plus visit-kind and phone-kind labels | `lib/health.ts` |
+| Page: edit the pregnancy (due date / LMP / source / OB / hospital / status); edit, add and delete timeline items; visits with a timeline-item link and notes; providers with typed phones, address, notes and archive | `pages/health.tsx` |
+| Janet: `get_pregnancy_status`, `set_pregnancy`, `list_care_items`, `manage_care_item`, `manage_health_provider` (takes a `phones` array), `log_medical_visit` (creates and syncs the calendar event itself), `list_medical_visits`, `add_visit_question`, `record_lab_results`, `list_lab_results` | `amplify/functions/agent/handler.ts` |
+| *Baby* section in the daily summary | `amplify/functions/daily-summary/handler.ts` |
+| Notes on visits and providers: `homeNote.parentType` gained `VISIT` and `PROVIDER`, using the existing `NotesSection` component | `components/notes-section.tsx`, `pages/notes.tsx` |
 
-Design decisions:
-- **Due date is the anchor**, not the LMP. `set_pregnancy` with a new `dueDate` shifts open timeline items that have a template `key`. Hand-added items (null key) and closed items keep their dates. Only the seasonal vaccines have their UPCOMING ⇄ N/A status recomputed; any other N/A was a human decision and stays.
-- **Lab results are one row per value**, so values can be charted and looked up directly. PENDING rows are filled in place, matched by `testName`. A linked care item becomes DONE once none of its results are pending.
-- **Calendar events still own appointment times.** A visit links to the event via `eventId`. PLANNED visits collect questions for the doctor.
-- The RSV vaccine comes out **N/A** for this pregnancy (32–36w falls in April, outside the Sep–Jan season), so the plan is nirsevimab for the baby. The flu vaccine shows "due now".
+### Inventory and wishlist (`/inventory`, Janet tools)
+| Piece | Where |
+|---|---|
+| Base `homeInventoryItem`: category, status `WISHLIST \| OWNED \| SOLD \| GIVEN_AWAY`, owner (`ownerPersonId`, or `pregnancyId` for the baby on the way; neither means household), quantity, estimated and paid price, gift source | `amplify/data/resource.ts` |
+| Detail tables keyed by `itemId`: `homeInventoryClothing` (size/color/type/season) and `homeInventoryConsumable` (unit, low-stock threshold, restock list, expiry) | same |
+| Shared rules: low stock, wishlist and spent totals, size ordering | `lib/inventory.ts`, tests in `lib/inventory.test.ts` |
+| Page with Owned / Wishlist / Past tabs, filters, totals, ± buttons, "Got it" | `pages/inventory.tsx` |
+| Janet: `list_inventory`, `manage_inventory_item`, `adjust_inventory_quantity`. Low consumables go onto the shopping list automatically. | `amplify/functions/agent/handler.ts` |
+
+### App shell (built during this work)
+- **Left sidebar:** collapses to icons, becomes a drawer on mobile. Sections are To-do / Events / People / Home / Files / Media, defined in `config/nav.ts`. Implemented in `components/sidebar.tsx`.
+- **Home dashboard:** tasks, this week's calendar, a Baby card (week of pregnancy, due timeline items, next visit, wishlist total), travel and shopping. Logic in `lib/dashboard.ts`, page in `pages/index.tsx`.
+- **Household membership:** one rule, `lib/household.ts` → `isHouseholdMember()`, which checks that `homePerson.groups` includes `home-users`. Janet's "both" and member list, the calendar stripes, the dashboard, the daily summary and reminder push, and mobile all use it. Never infer membership from `cognitoUsername`.
+
+## Design decisions
+- **The due date is the anchor.** Changing it moves open *standard* items (the ones with a template `key`). Hand-added and closed items keep their dates. Only the seasonal vaccines have their UPCOMING ⇄ N/A status recomputed; any other N/A was a human decision.
+- **Visits own their calendar event.** Every visit that isn't cancelled has an `eventId`:
+  - Saving a visit moves the event's title and start time. The event's duration and description stay as the user left them.
+  - Cancelling a visit deletes the event.
+  - Deleting a visit deletes the event and the visit's notes.
+  - If someone deleted the event from the calendar, the next save recreates it.
+  - Janet should never create a second event for an appointment.
+- **Lab results are one row per value.** Pending rows are filled in place, matched by `testName`. A linked care item becomes DONE once none of its results are pending.
+- **Inventory is modular.** A category gets its own detail table only when it needs extra fields. Owner is a plain id column, like the rest of the schema; formal Amplify relationships on `homePerson` risk TypeScript "type instantiation too deep" errors.
+- **The wishlist is private.** It sits behind the normal login, with no public registry page.
+- **Shared writes live in `lib/`** as functions that take the data client (`any`), so the page and Janet do the same thing. Don't reimplement them in either place.
 
 ## Verified
-- `npx vitest run`: 53/53 passing, including the CDK synth and `next build`.
-- `tsc --noEmit` is clean for the web and `amplify/` projects.
-- ESLint is broken repo-wide (`typescript-eslint` package missing). This predates phase 1.
-- **Not tested against real data.** Nothing has been deployed or invoked yet.
+- The web, `amplify/` and `mobile/` type-checks are clean. `npx vitest run` passes 67/67, including the CDK synth and `next build`. The build now goes to `.next-test`, so running the tests no longer breaks `npm run dev`.
+- Prod deploy succeeded. `/health`, `/inventory` and the dashboard load on localhost against prod. The user created the pregnancy and visits through the web page and confirmed the new health editing works.
+- **Not yet exercised through Janet on WhatsApp,** apart from what the handler type-checks cover.
 
 ## Next steps
-1. Review, then merge `baby-health` → `main` and deploy (Amplify deploys the schema and Lambdas). Regenerate `mobile/amplify_outputs.json` if the mobile app needs the new models.
-2. Smoke test on WhatsApp: *"Track a pregnancy for <her name>, last period Aug 20. OB appointments Oct 12 at <time> and Oct 14 at <time>."* Then check `/health`: 21 care items, 2 planned visits, and the flu vaccine due now.
-3. Next phases, per ROADMAP.md:
-   - File lab PDFs as MEDICAL `homeDocument` (Duo-gated) and link `documentId`.
-   - Person-level medications and supplements (generalize `homePetMedication`), plus curated trimester nutrition notes.
-   - Mobile `more/health` screen. Later: kick counter, contraction timer, and a go-time button.
-   - `PREGNANCY` entity type for checklists (hospital bag, nursery, car seat).
-   - Household inventory: WISHLIST status doubles as the registry; low-stock thresholds add items to the shopping list.
-   - Finance, in the **gennaroanesi.com** repo: a "Baby" spend group, a savings goal targeting the due date, and a "with baby" planning scenario. This is time-sensitive, because open enrollment is in November and delivery falls in the 2027 plan year.
-   - Newborn log (feeds, diapers, sleep) by about 32 weeks.
+Do these first:
+1. **WhatsApp smoke test:** an appointment (check the calendar event appears), "ask the OB about…", a lab value, and "add a car seat to the baby wishlist, ~$350".
+2. **Backfill calendar events** for visits created before `074871d`. They get one the next time they're saved.
+3. **Lab reports as documents:** file lab PDFs/photos as MEDICAL `homeDocument`s (Duo-gated) and set `documentId` on the results. This is needed once the Oct 12 labs come back.
+4. **Finances, in gennaroanesi.com:** a "Baby" spend group, a savings goal targeting the due date, and a "with baby" scenario **before November open enrollment**.
+
+Then:
+
+5. **Person-level medications and supplements** (generalize `homePetMedication`), plus curated trimester nutrition notes.
+6. **`PREGNANCY` entity type for checklists:** hospital bag, nursery, car seat.
+7. **Inventory phase 2:** barcode `pendingScan` flow, photos, and automatic low-stock restock from the web page (it's a manual button there today).
+8. **Mobile:** Health and Inventory screens, and switch the Today screen to `lib/dashboard.ts`. Later a kick counter, contraction timer and "go time" button.
+9. **By ~32 weeks:** create the baby's `homePerson` at delivery, move `pregnancyId` inventory items to their `ownerPersonId`, and build the newborn log (feeds, diapers, sleep).
+
+Small follow-ups:
+- Janet's `_peopleCache` lives as long as the Lambda stays warm, so a newly added person may not be recognized until a cold start. Fix before step 9.
 
 ## Leave alone
-These untracked files in home-hub predate this work and aren't part of it: `1x/`, `app.json`, `eas.json`, `scripts/send-smartthings-test.mjs`.
+These untracked files in home-hub aren't part of this work: `1x/`, `app.json`, `eas.json`, `scripts/send-smartthings-test.mjs`.

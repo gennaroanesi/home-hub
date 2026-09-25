@@ -10,8 +10,9 @@ Ideas for future features. Not committed — just a parking lot for things that 
 
 ## Candidates
 
-### Baby / health (in progress — due 2027-05-27)
-Phase 1 is built: per-person health records (`homeHealthProvider`, `homeMedicalVisit`, `homeLabResult`), `homePregnancy` + a seeded prenatal care timeline (`homeCareItem`, template in `lib/pregnancy.ts`), Janet tools, a *Baby* section in the daily summary, and the `/health` web page. Next, roughly in order:
+### Baby / health (in progress — due 2027-05-20)
+Built and deployed (details and status in `docs/baby-health-handoff.md`): per-person health records (`homeHealthProvider` with typed phone numbers, `homeMedicalVisit`, `homeLabResult`), `homePregnancy` + a seeded prenatal care timeline (`homeCareItem`, template in `lib/pregnancy.ts`), Janet tools, a *Baby* section in the daily summary and the dashboard, and the `/health` page — pregnancy/timeline editing, visits synced to the calendar (`lib/health.ts`), notes on visits and providers. Next, roughly in order:
+- **WhatsApp smoke test + backfill** — exercise the health and inventory tools through Janet; give visits created before calendar sync their event.
 - **Lab report ingestion polish** — when a lab PDF arrives over WhatsApp or the iOS share extension, also file it as a MEDICAL `homeDocument` (Duo-gated) and link `documentId`, instead of only extracting values.
 - **Medications & supplements for people** — generalize `homePetMedication` into a person-level model (prenatal vitamin, DHA, iron) with refill tracking; daily doses stay in `homeReminder` (kind=medication). Trimester nutrition notes (calories, caffeine, foods to avoid) as curated static content, not LLM-generated.
 - **Mobile** — `more/health` screen mirroring `/health`; later a kick counter (from ~28w) and contraction timer (5-1-1) with push to the partner, and a "go time" button (hospital address, triage phone, bag checklist).
