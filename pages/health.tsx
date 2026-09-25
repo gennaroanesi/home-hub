@@ -34,8 +34,10 @@ import {
   PHONE_KIND_LABELS,
   VISIT_KINDS,
   VISIT_KIND_LABELS,
+  completeCareItem,
   deleteVisit,
   linkVisitToCareItem,
+  scheduleCareItem,
   providerPhones,
   syncVisitEvent,
   type PhoneKind,
@@ -77,6 +79,8 @@ const URGENCY_STYLES: Record<CareUrgency, string> = {
   DUE_NOW: "bg-warning-100 text-warning-700",
   SOON: "bg-primary-100 text-primary-700",
   LATER: "bg-default-100 text-default-500",
+  BOOKED: "bg-success-100 text-success-700",
+  CONFIRM: "bg-warning-100 text-warning-700",
   CLOSED: "bg-default-100 text-default-400",
 };
 const URGENCY_LABELS: Record<CareUrgency, string> = {
@@ -84,6 +88,8 @@ const URGENCY_LABELS: Record<CareUrgency, string> = {
   DUE_NOW: "Due now",
   SOON: "Soon",
   LATER: "Later",
+  BOOKED: "Scheduled",
+  CONFIRM: "Done? Confirm",
   CLOSED: "",
 };
 
@@ -146,6 +152,7 @@ export default function HealthPage() {
   const [pregnancyModalOpen, setPregnancyModalOpen] = useState(false);
   const [careModalOpen, setCareModalOpen] = useState(false);
   const [editingCare, setEditingCare] = useState<CareItem | null>(null);
+  const [carePresetStatus, setCarePresetStatus] = useState<CareStatus | null>(null);
 
   const today = ymdInTimezone(TZ);
 
@@ -237,10 +244,18 @@ export default function HealthPage() {
   }, [personLabs]);
 
   async function updateCareStatus(item: CareItem, status: CareStatus) {
+    // Scheduling or completing needs a real date — ask for it.
+    if (status === "SCHEDULED" || status === "DONE") {
+      setEditingCare(item);
+      setCarePresetStatus(status);
+      setCareModalOpen(true);
+      return;
+    }
     const { data, errors } = await client.models.homeCareItem.update({
       id: item.id,
       status,
-      ...(status === "DONE" && !item.completedAt ? { completedAt: today } : {}),
+      scheduledAt: null,
+      completedAt: null,
     });
     if (errors?.length || !data) {
       addToast({ title: "Update failed", description: errors?.[0]?.message, color: "danger" });
@@ -318,6 +333,7 @@ export default function HealthPage() {
                       startContent={<FaPlus size={11} />}
                       onPress={() => {
                         setEditingCare(null);
+                        setCarePresetStatus(null);
                         setCareModalOpen(true);
                       }}
                     >
@@ -330,9 +346,11 @@ export default function HealthPage() {
                     .filter((c) => showClosedCare || c.status === "UPCOMING" || c.status === "SCHEDULED")
                     .map((c) => {
                       const urgency = careUrgency(
-                        { status: c.status, windowStart: c.windowStart, windowEnd: c.windowEnd },
+                        { status: c.status, windowStart: c.windowStart, windowEnd: c.windowEnd, scheduledAt: c.scheduledAt },
                         today,
                       );
+                      const booked = c.status === "SCHEDULED" && c.scheduledAt;
+                      const done = c.status === "DONE" && c.completedAt;
                       const closed = urgency === "CLOSED";
                       return (
                         <div
@@ -345,6 +363,7 @@ export default function HealthPage() {
                               className="min-w-0 text-left flex-1 group"
                               onClick={() => {
                                 setEditingCare(c);
+                                setCarePresetStatus(null);
                                 setCareModalOpen(true);
                               }}
                             >
@@ -364,8 +383,26 @@ export default function HealthPage() {
                               </div>
                               <p className="text-xs text-default-500 mt-0.5">
                                 {c.category ? `${CARE_CATEGORY_LABELS[c.category as CareCategory]} · ` : ""}
-                                {fmtDate(c.windowStart)} – {fmtDate(c.windowEnd)}
-                                {c.completedAt ? ` · done ${fmtDate(c.completedAt)}` : ""}
+                                {booked ? (
+                                  <span className="text-foreground font-medium">{fmtDateTime(c.scheduledAt!)}</span>
+                                ) : done ? (
+                                  <span className="text-foreground">Done {fmtDate(c.completedAt)}</span>
+                                ) : (
+                                  <>
+                                    {fmtDate(c.windowStart)} – {fmtDate(c.windowEnd)}
+                                  </>
+                                )}
+                                {(booked || done) && (
+                                  <span className="text-default-400">
+                                    {" "}
+                                    · window {fmtDate(c.windowStart)} – {fmtDate(c.windowEnd)}
+                                  </span>
+                                )}
+                                {c.visitId && (
+                                  <span title="Linked visit (on the calendar)" className="inline-block ml-1 align-middle text-default-400">
+                                    <FaCalendarCheck size={10} />
+                                  </span>
+                                )}
                               </p>
                               {c.notes && <p className="text-xs text-default-400 mt-1">{c.notes}</p>}
                             </button>
@@ -635,7 +672,9 @@ export default function HealthPage() {
           isOpen={careModalOpen}
           onOpenChange={setCareModalOpen}
           editing={editingCare}
+          presetStatus={carePresetStatus}
           pregnancyId={pregnancy.id}
+          personId={pregnancy.personId}
           today={today}
           onSaved={loadAll}
         />
@@ -1470,14 +1509,19 @@ function CareItemModal({
   isOpen,
   onOpenChange,
   editing,
+  presetStatus,
   pregnancyId,
+  personId,
   today,
   onSaved,
 }: {
   isOpen: boolean;
   onOpenChange: (open: boolean) => void;
   editing: CareItem | null;
+  /** Status picked from the row dropdown that needs a date (Scheduled / Done). */
+  presetStatus: CareStatus | null;
   pregnancyId: string;
+  personId: string;
   today: string;
   onSaved: () => void;
 }) {
@@ -1486,6 +1530,8 @@ function CareItemModal({
   const [status, setStatus] = useState<string>("UPCOMING");
   const [windowStart, setWindowStart] = useState("");
   const [windowEnd, setWindowEnd] = useState("");
+  const [scheduledAt, setScheduledAt] = useState(""); // datetime-local value
+  const [addToCalendar, setAddToCalendar] = useState(true);
   const [completedAt, setCompletedAt] = useState("");
   const [optional, setOptional] = useState(false);
   const [notes, setNotes] = useState("");
@@ -1495,13 +1541,17 @@ function CareItemModal({
     if (!isOpen) return;
     setTitle(editing?.title ?? "");
     setCategory(editing?.category ?? "VISIT");
-    setStatus(editing?.status ?? "UPCOMING");
+    setStatus(presetStatus ?? editing?.status ?? "UPCOMING");
     setWindowStart(editing?.windowStart ?? today);
     setWindowEnd(editing?.windowEnd ?? today);
-    setCompletedAt(editing?.completedAt ?? "");
+    setScheduledAt(toLocalInput(editing?.scheduledAt));
+    setAddToCalendar(true);
+    setCompletedAt(editing?.completedAt ?? (presetStatus === "DONE" ? today : ""));
     setOptional(!!editing?.optional);
     setNotes(editing?.notes ?? "");
-  }, [isOpen, editing, today]);
+  }, [isOpen, editing, presetStatus, today]);
+
+  const hasVisit = !!editing?.visitId;
 
   async function save(onClose: () => void) {
     if (!title.trim() || !windowStart || !windowEnd) return;
@@ -1509,22 +1559,55 @@ function CareItemModal({
       addToast({ title: "The window ends before it starts", color: "warning" });
       return;
     }
+    if (status === "SCHEDULED" && !scheduledAt) {
+      addToast({ title: "Pick the date and time it's booked for", color: "warning" });
+      return;
+    }
     setSaving(true);
     try {
-      const fields = {
+      // 1. Details (status handled below for Scheduled / Done).
+      const details = {
         title: title.trim(),
         category: category as CareItem["category"],
-        status: status as CareItem["status"],
         windowStart,
         windowEnd,
-        completedAt: status === "DONE" ? completedAt || today : null,
         optional,
         notes: notes.trim() || null,
       };
-      const { errors } = editing
-        ? await client.models.homeCareItem.update({ id: editing.id, ...fields })
-        : await client.models.homeCareItem.create({ pregnancyId, key: null, sortOrder: 999, ...fields });
-      if (errors?.length) throw new Error(errors[0].message);
+      const res = editing
+        ? await client.models.homeCareItem.update({ id: editing.id, ...details })
+        : await client.models.homeCareItem.create({
+            pregnancyId,
+            key: null,
+            sortOrder: 999,
+            status: "UPCOMING",
+            ...details,
+          });
+      if (res.errors?.length || !res.data) throw new Error(res.errors?.[0]?.message ?? "save failed");
+      const item = res.data;
+
+      // 2. Status, with its date.
+      let description: string | undefined;
+      if (status === "SCHEDULED") {
+        const { visitId } = await scheduleCareItem(client, item, {
+          scheduledAt: new Date(scheduledAt).toISOString(),
+          personId,
+          pregnancyId,
+          withVisit: addToCalendar,
+        });
+        description = visitId ? "On the calendar as a visit." : undefined;
+      } else if (status === "DONE") {
+        await completeCareItem(client, item, completedAt || today);
+      } else {
+        const { errors } = await client.models.homeCareItem.update({
+          id: item.id,
+          status: status as CareItem["status"],
+          scheduledAt: null,
+          completedAt: null,
+        });
+        if (errors?.length) throw new Error(errors[0].message);
+      }
+      addToast({ title: "Saved", description, color: "success" });
       onClose();
       onSaved();
     } catch (err: any) {
@@ -1576,11 +1659,47 @@ function CareItemModal({
                     <SelectItem key={st}>{CARE_STATUS_LABELS[st]}</SelectItem>
                   ))}
                 </Select>
+              </div>
+
+              {status === "SCHEDULED" && (
+                <div className="border border-success-200 bg-success-50 rounded-md p-3 space-y-2">
+                  <Input
+                    type="datetime-local"
+                    label="Booked for"
+                    placeholder=" "
+                    value={scheduledAt}
+                    onValueChange={setScheduledAt}
+                    isRequired
+                    autoFocus
+                  />
+                  {hasVisit ? (
+                    <p className="text-xs text-default-500">
+                      Linked to a visit — it and its calendar event move to this time.
+                    </p>
+                  ) : (
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={addToCalendar}
+                        onChange={(e) => setAddToCalendar(e.target.checked)}
+                      />
+                      Add to the calendar as a visit
+                    </label>
+                  )}
+                </div>
+              )}
+              {status === "DONE" && (
+                <div className="border border-default-200 rounded-md p-3">
+                  <DateInput label="Done on" value={completedAt} onChange={setCompletedAt} isRequired />
+                  {hasVisit && (
+                    <p className="text-xs text-default-500 mt-2">The linked visit is marked completed too.</p>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 gap-2">
                 <DateInput label="Window opens" value={windowStart} onChange={setWindowStart} isRequired />
                 <DateInput label="Window closes" value={windowEnd} onChange={setWindowEnd} isRequired />
-                {status === "DONE" && (
-                  <DateInput label="Done on" value={completedAt} onChange={setCompletedAt} />
-                )}
               </div>
               {editing?.key && (
                 <p className="text-xs text-default-400">

@@ -10,6 +10,7 @@
 // (userPool) and Lambda (IAM) clients both fit — see lib/note-parent.ts.
 
 import { cascadeDeleteNotesFor } from "./note-parent";
+import { ymdInTimezone } from "./pregnancy";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type DataClient = any;
@@ -199,10 +200,117 @@ export async function linkVisitToCareItem(
     visitId: visit.id,
     ...(status ? { status } : {}),
     ...(visit.eventId ? { eventId: visit.eventId } : {}),
-    ...(status === "DONE" ? { completedAt: visit.visitAt.slice(0, 10) } : {}),
+    // The visit's time is the item's booked date / done date.
+    ...(status === "SCHEDULED" ? { scheduledAt: visit.visitAt } : {}),
+    ...(status === "DONE" ? { completedAt: ymdLocal(visit.visitAt) } : {}),
   });
   if (visit.careItemId !== careItemId) {
     await client.models.homeMedicalVisit.update({ id: visit.id, careItemId });
   }
   return data ? { id: data.id, title: data.title, status: data.status ?? null } : null;
+}
+
+// ── Scheduling / completing care-timeline items ──────────────────────────────
+
+const HOUSEHOLD_TZ = "America/Chicago";
+const ymdLocal = (iso: string) => ymdInTimezone(HOUSEHOLD_TZ, new Date(iso));
+
+// What kind of visit a care item turns into when it's booked.
+const VISIT_KIND_BY_CARE_CATEGORY: Record<string, VisitKind> = {
+  VISIT: "PRENATAL",
+  LAB: "LAB_DRAW",
+  SCREENING: "LAB_DRAW",
+  IMAGING: "ULTRASOUND",
+  VACCINE: "VACCINE",
+};
+
+async function providerContext(client: DataClient, providerId?: string | null): Promise<VisitEventContext> {
+  if (!providerId) return {};
+  const { data } = await client.models.homeHealthProvider.get({ id: providerId });
+  return { providerName: data?.name, providerAddress: data?.address };
+}
+
+export interface CareItemLike {
+  id: string;
+  title: string;
+  category?: string | null;
+  visitId?: string | null;
+}
+
+/**
+ * Book a care item for a specific date/time. If it's linked to a visit,
+ * that visit (and its calendar event) moves to the new time. Otherwise,
+ * with `withVisit`, a PLANNED visit is created for it — which puts it on
+ * the calendar. Without a visit it just records the date.
+ */
+export async function scheduleCareItem(
+  client: DataClient,
+  item: CareItemLike,
+  opts: { scheduledAt: string; personId: string; pregnancyId: string; withVisit: boolean },
+): Promise<{ visitId: string | null; eventId: string | null }> {
+  let visitId: string | null = null;
+  let eventId: string | null = null;
+
+  if (item.visitId) {
+    const { data: visit } = await client.models.homeMedicalVisit.get({ id: item.visitId });
+    if (visit && visit.status !== "CANCELLED") {
+      const { data: moved } = await client.models.homeMedicalVisit.update({
+        id: visit.id,
+        visitAt: opts.scheduledAt,
+        status: "PLANNED",
+      });
+      visitId = visit.id;
+      eventId = await syncVisitEvent(client, moved ?? visit, await providerContext(client, visit.providerId));
+    }
+  }
+
+  if (!visitId && opts.withVisit) {
+    const { data: created, errors } = await client.models.homeMedicalVisit.create({
+      personId: opts.personId,
+      pregnancyId: opts.pregnancyId,
+      careItemId: item.id,
+      visitAt: opts.scheduledAt,
+      kind: VISIT_KIND_BY_CARE_CATEGORY[item.category ?? ""] ?? "OTHER",
+      status: "PLANNED",
+      title: item.title,
+      createdBy: "timeline",
+    });
+    if (errors?.length || !created) throw new Error(errors?.[0]?.message ?? "Couldn't create the visit");
+    visitId = created.id;
+    eventId = await syncVisitEvent(client, created);
+  }
+
+  const { errors } = await client.models.homeCareItem.update({
+    id: item.id,
+    status: "SCHEDULED",
+    scheduledAt: opts.scheduledAt,
+    completedAt: null,
+    ...(visitId ? { visitId } : {}),
+    ...(eventId ? { eventId } : {}),
+  });
+  if (errors?.length) throw new Error(errors[0].message);
+  return { visitId, eventId };
+}
+
+/**
+ * Mark a care item done on `completedAt` (YYYY-MM-DD). A linked visit
+ * that's still PLANNED is marked COMPLETED too; its calendar event stays.
+ */
+export async function completeCareItem(
+  client: DataClient,
+  item: CareItemLike,
+  completedAt: string,
+): Promise<void> {
+  const { errors } = await client.models.homeCareItem.update({
+    id: item.id,
+    status: "DONE",
+    completedAt,
+  });
+  if (errors?.length) throw new Error(errors[0].message);
+  if (item.visitId) {
+    const { data: visit } = await client.models.homeMedicalVisit.get({ id: item.visitId });
+    if (visit?.status === "PLANNED") {
+      await client.models.homeMedicalVisit.update({ id: visit.id, status: "COMPLETED" });
+    }
+  }
 }

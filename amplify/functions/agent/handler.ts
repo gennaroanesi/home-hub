@@ -38,8 +38,10 @@ import {
   ymdInTimezone,
 } from "../../../lib/pregnancy.js";
 import {
+  completeCareItem,
   linkVisitToCareItem,
   providerPhones,
+  scheduleCareItem,
   syncVisitEvent,
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
@@ -1567,7 +1569,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_care_item",
     description:
-      "Update, add, or delete a care-timeline item. Use update to mark something SCHEDULED (optionally with the calendar eventId), DONE, SKIPPED (declined — e.g. opted out of NIPT or a vaccine), or NOT_APPLICABLE (e.g. Rh immune globulin when she's Rh-positive). Identify the item by careItemId or by a fuzzy query on its title/key ('anatomy', 'glucose', 'tdap').",
+      "Update, add, or delete a care-timeline item. Use update to mark something SCHEDULED (pass scheduledAt — the booked date/time; by default this also creates a visit on the calendar), DONE (with completedAt), SKIPPED (declined — e.g. opted out of NIPT or a vaccine), or NOT_APPLICABLE (e.g. Rh immune globulin when she's Rh-positive). Identify the item by careItemId or by a fuzzy query on its title/key ('anatomy', 'glucose', 'tdap').",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1583,6 +1585,11 @@ const tools: Anthropic.Tool[] = [
         windowStart: { type: "string", description: "YYYY-MM-DD. Required for add." },
         windowEnd: { type: "string", description: "YYYY-MM-DD. Required for add." },
         status: { type: "string", enum: ["UPCOMING", "SCHEDULED", "DONE", "SKIPPED", "NOT_APPLICABLE"] },
+        scheduledAt: { type: "string", description: "ISO datetime it's booked for. Required with status=SCHEDULED." },
+        addToCalendar: {
+          type: "boolean",
+          description: "With status=SCHEDULED: create a visit (and calendar event) for it. Default true. False if it's already on the calendar.",
+        },
         eventId: { type: "string", description: "Linked homeCalendarEvent id." },
         completedAt: { type: "string", description: "YYYY-MM-DD. Defaults to today when status=DONE." },
         notes: { type: "string" },
@@ -4483,13 +4490,14 @@ async function executeTool(
       const items = await listCareItems(p.id);
       const bucket = (u: string) =>
         items
-          .filter((i) => careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd }, today) === u)
+          .filter((i) => careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd, scheduledAt: i.scheduledAt }, today) === u)
           .map((i) => ({
             id: i.id,
             title: i.title,
             status: i.status,
             windowStart: i.windowStart,
             windowEnd: i.windowEnd,
+            scheduledAt: i.scheduledAt,
             optional: i.optional,
             notes: i.notes,
           }));
@@ -4513,6 +4521,10 @@ async function executeTool(
         overdue: bucket("OVERDUE"),
         dueNow: bucket("DUE_NOW"),
         comingUp: bucket("SOON"),
+        // Booked for a specific date; needsConfirmation = that date has
+        // passed but it isn't marked done — ask whether it happened.
+        scheduled: bucket("BOOKED"),
+        needsConfirmation: bucket("CONFIRM"),
         nextVisit: nextVisit
           ? {
               id: nextVisit.id,
@@ -4615,7 +4627,9 @@ async function executeTool(
           windowStart: i.windowStart,
           windowEnd: i.windowEnd,
           status: i.status,
-          urgency: careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd }, today),
+          urgency: careUrgency({ status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd, scheduledAt: i.scheduledAt }, today),
+          scheduledAt: i.scheduledAt,
+          completedAt: i.completedAt,
           eventId: i.eventId,
           notes: i.notes,
         })),
@@ -4660,21 +4674,44 @@ async function executeTool(
         return JSON.stringify({ success: true, deleted: item.title });
       }
 
-      const completedAt =
-        input.completedAt ?? (input.status === "DONE" && !item.completedAt ? ymdInTimezone(HOUSEHOLD_TZ) : undefined);
+      if (input.status === "SCHEDULED" && !input.scheduledAt) {
+        return JSON.stringify({ error: "scheduledAt (the booked date/time) is required with status SCHEDULED" });
+      }
+      // Details first; status changes that carry a date go through the
+      // shared helpers so the linked visit / calendar event follow.
       const { data, errors } = await client.models.homeCareItem.update({
         id: item.id,
         ...(input.title ? { title: input.title } : {}),
         ...(input.category ? { category: input.category } : {}),
         ...(input.windowStart ? { windowStart: input.windowStart } : {}),
         ...(input.windowEnd ? { windowEnd: input.windowEnd } : {}),
-        ...(input.status ? { status: input.status } : {}),
         ...(input.eventId ? { eventId: input.eventId } : {}),
-        ...(completedAt ? { completedAt } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
+        ...(input.status && input.status !== "SCHEDULED" && input.status !== "DONE"
+          ? { status: input.status, scheduledAt: null, completedAt: null }
+          : {}),
       });
-      if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, careItemId: data?.id, title: data?.title, status: data?.status });
+      if (errors || !data) return JSON.stringify({ error: errors?.[0]?.message ?? "update failed" });
+
+      let visitId: string | null = data.visitId ?? null;
+      if (input.status === "SCHEDULED") {
+        const r = await scheduleCareItem(client, data, {
+          scheduledAt: input.scheduledAt,
+          personId: res.pregnancy.personId,
+          pregnancyId,
+          withVisit: input.addToCalendar !== false && !input.eventId,
+        });
+        visitId = r.visitId;
+      } else if (input.status === "DONE") {
+        await completeCareItem(client, data, input.completedAt ?? ymdInTimezone(HOUSEHOLD_TZ));
+      }
+      return JSON.stringify({
+        success: true,
+        careItemId: data.id,
+        title: data.title,
+        status: input.status ?? data.status,
+        ...(input.status === "SCHEDULED" ? { scheduledAt: input.scheduledAt, visitId } : {}),
+      });
     }
 
     case "manage_health_provider": {

@@ -284,7 +284,7 @@ async function gatherPregnancies(
         windowStart: i.windowStart,
         windowEnd: i.windowEnd,
         urgency: careUrgency(
-          { status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd },
+          { status: i.status, windowStart: i.windowStart, windowEnd: i.windowEnd, scheduledAt: i.scheduledAt },
           todayStr,
           7,
         ),

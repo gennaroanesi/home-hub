@@ -344,7 +344,10 @@ const schema = a
         status: a.enum(["UPCOMING", "SCHEDULED", "DONE", "SKIPPED", "NOT_APPLICABLE"]),
         eventId: a.id(),
         visitId: a.id(),
-        completedAt: a.date(),
+        // When it's booked (status SCHEDULED). Real UTC, like calendar
+        // events. Kept in step with the linked visit's visitAt.
+        scheduledAt: a.datetime(),
+        completedAt: a.date(), // when it was done (status DONE)
         notes: a.string(),
         sortOrder: a.integer().default(0),
       })

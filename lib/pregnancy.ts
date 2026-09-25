@@ -435,7 +435,9 @@ export function buildCareTimeline(dueDate: string): ResolvedCareItem[] {
 
 // ── Timeline state helpers ───────────────────────────────────────────────────
 
-export type CareUrgency = "OVERDUE" | "DUE_NOW" | "SOON" | "LATER" | "CLOSED";
+// BOOKED = scheduled for a date that hasn't passed; CONFIRM = scheduled
+// date has passed but the item isn't marked done yet.
+export type CareUrgency = "OVERDUE" | "DUE_NOW" | "SOON" | "LATER" | "BOOKED" | "CONFIRM" | "CLOSED";
 
 /**
  * Where an item sits relative to `today`. Only open items (UPCOMING /
@@ -443,11 +445,22 @@ export type CareUrgency = "OVERDUE" | "DUE_NOW" | "SOON" | "LATER" | "CLOSED";
  * SOON = window opens within `soonDays`.
  */
 export function careUrgency(
-  item: { status: CareStatus | string | null | undefined; windowStart: string; windowEnd: string },
+  item: {
+    status: CareStatus | string | null | undefined;
+    windowStart: string;
+    windowEnd: string;
+    scheduledAt?: string | null;
+  },
   today: string,
   soonDays = 21,
+  timeZone = "America/Chicago",
 ): CareUrgency {
   if (item.status !== "UPCOMING" && item.status !== "SCHEDULED") return "CLOSED";
+  // A booked date replaces the window: no "due now" / "overdue" nagging.
+  if (item.status === "SCHEDULED" && item.scheduledAt) {
+    const day = ymdInTimezone(timeZone, new Date(item.scheduledAt));
+    return day >= today ? "BOOKED" : "CONFIRM";
+  }
   if (today > item.windowEnd) return "OVERDUE";
   if (today >= item.windowStart) return "DUE_NOW";
   if (daysBetween(today, item.windowStart) <= soonDays) return "SOON";

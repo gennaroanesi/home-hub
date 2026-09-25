@@ -501,7 +501,7 @@ function BabyCard({ data, now }: { data: BabyData; now: Date }) {
   const urgent = data.careItems
     .map((c) => ({
       item: c,
-      urgency: careUrgency({ status: c.status, windowStart: c.windowStart, windowEnd: c.windowEnd }, today),
+      urgency: careUrgency({ status: c.status, windowStart: c.windowStart, windowEnd: c.windowEnd, scheduledAt: c.scheduledAt }, today),
     }))
     .filter((c) => c.urgency === "OVERDUE" || c.urgency === "DUE_NOW" || c.urgency === "SOON")
     .sort((a, b) => a.item.windowStart.localeCompare(b.item.windowStart));

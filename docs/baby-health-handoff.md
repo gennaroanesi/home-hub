@@ -1,6 +1,6 @@
 # Baby / health tracking — handoff
 
-Status as of 2026-09-24. Everything below is merged to `main` and deployed to prod by Amplify build 161 (`074871d`). One commit is waiting to be pushed: `3aee9cb`, which regenerates `mobile/amplify_outputs.json` so mobile picks up the provider phones and visit/provider notes. It only affects mobile, so it can go out with the next push.
+Status as of 2026-09-24. Everything below is on `main`. Amplify build 161 (`074871d`) deployed all of it except the **real dates on timeline items**, which are committed but not pushed or deployed yet. `main` is also carrying unpushed doc updates and `3aee9cb` (the regenerated `mobile/amplify_outputs.json`).
 
 **Keep this doc current.** Update it, and the *Baby / health* section of `ROADMAP.md`, in every commit that touches this work.
 
@@ -26,7 +26,8 @@ Status as of 2026-09-24. Everything below is merged to `main` and deployed to pr
 | Due-date math and the 21-item care-timeline template (ACOG-based; flu/COVID/RSV clamped to season) | `lib/pregnancy.ts`, tests in `lib/pregnancy.test.ts` |
 | Shared write helpers used by both the page and Janet: `seedCareTimeline`, `shiftCareTimeline` / `planCareShift` | `lib/pregnancy.ts` |
 | Visit ↔ calendar sync and visit helpers: `syncVisitEvent`, `linkVisitToCareItem`, `deleteVisit`, `providerPhones`, plus visit-kind and phone-kind labels | `lib/health.ts` |
-| Page: edit the pregnancy (due date / LMP / source / OB / hospital / status); edit, add and delete timeline items; visits with a timeline-item link and notes; providers with typed phones, address, notes and archive | `pages/health.tsx` |
+| Real dates on timeline items: `homeCareItem.scheduledAt` (datetime, real UTC) for SCHEDULED, `completedAt` for DONE. `scheduleCareItem` moves the linked visit and its event, or creates a PLANNED visit, which puts it on the calendar. `completeCareItem` also marks a planned linked visit COMPLETED. | `lib/health.ts`, `lib/pregnancy.ts` (`careUrgency` → `BOOKED` / `CONFIRM`) |
+| Page: edit the pregnancy (due date / LMP / source / OB / hospital / status); edit, add and delete timeline items; visits with a timeline-item link and notes; providers with typed phones, address, notes and archive. Picking Scheduled or Done asks for the actual date; rows then show that date instead of the window. | `pages/health.tsx` |
 | Janet: `get_pregnancy_status`, `set_pregnancy`, `list_care_items`, `manage_care_item`, `manage_health_provider` (takes a `phones` array), `log_medical_visit` (creates and syncs the calendar event itself), `list_medical_visits`, `add_visit_question`, `record_lab_results`, `list_lab_results` | `amplify/functions/agent/handler.ts` |
 | *Baby* section in the daily summary | `amplify/functions/daily-summary/handler.ts` |
 | Notes on visits and providers: `homeNote.parentType` gained `VISIT` and `PROVIDER`, using the existing `NotesSection` component | `components/notes-section.tsx`, `pages/notes.tsx` |
@@ -47,6 +48,7 @@ Status as of 2026-09-24. Everything below is merged to `main` and deployed to pr
 
 ## Design decisions
 - **The due date is the anchor.** Changing it moves open *standard* items (the ones with a template `key`). Hand-added and closed items keep their dates. Only the seasonal vaccines have their UPCOMING ⇄ N/A status recomputed; any other N/A was a human decision.
+- **Once booked, a timeline item is judged by its date, not its window.** A SCHEDULED item with `scheduledAt` is `BOOKED` (no "due now" or "overdue") until that date passes, then `CONFIRM` ("did it happen?"). A linked visit and the item share one date: saving either one updates the other.
 - **Visits own their calendar event.** Every visit that isn't cancelled has an `eventId`:
   - Saving a visit moves the event's title and start time. The event's duration and description stay as the user left them.
   - Cancelling a visit deletes the event.
@@ -59,7 +61,7 @@ Status as of 2026-09-24. Everything below is merged to `main` and deployed to pr
 - **Shared writes live in `lib/`** as functions that take the data client (`any`), so the page and Janet do the same thing. Don't reimplement them in either place.
 
 ## Verified
-- The web, `amplify/` and `mobile/` type-checks are clean. `npx vitest run` passes 67/67, including the CDK synth and `next build`. The build now goes to `.next-test`, so running the tests no longer breaks `npm run dev`.
+- The web, `amplify/` and `mobile/` type-checks are clean. `npx vitest run` passes 68/68, including the CDK synth and `next build`. The build now goes to `.next-test`, so running the tests no longer breaks `npm run dev`.
 - Prod deploy succeeded. `/health`, `/inventory` and the dashboard load on localhost against prod. The user created the pregnancy and visits through the web page and confirmed the new health editing works.
 - **Not yet exercised through Janet on WhatsApp,** apart from what the handler type-checks cover.
 

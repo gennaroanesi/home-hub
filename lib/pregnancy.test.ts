@@ -92,6 +92,16 @@ describe("buildCareTimeline", () => {
 describe("careUrgency", () => {
   const item = { status: "UPCOMING", windowStart: "2026-12-24", windowEnd: "2027-01-21" };
 
+  it("uses the booked date instead of the window once scheduled", () => {
+    // 9am Central on Jan 30 — after the window closed, so it'd otherwise be OVERDUE.
+    const booked = { ...item, status: "SCHEDULED", scheduledAt: "2027-01-30T15:00:00.000Z" };
+    expect(careUrgency(booked, "2027-01-25")).toBe("BOOKED");
+    expect(careUrgency(booked, "2027-01-30")).toBe("BOOKED");
+    expect(careUrgency(booked, "2027-01-31")).toBe("CONFIRM");
+    // Scheduled without a date still follows the window.
+    expect(careUrgency({ ...item, status: "SCHEDULED" }, "2027-01-25")).toBe("OVERDUE");
+  });
+
   it("classifies relative to today", () => {
     expect(careUrgency(item, "2026-10-01")).toBe("LATER");
     expect(careUrgency(item, "2026-12-10")).toBe("SOON");
