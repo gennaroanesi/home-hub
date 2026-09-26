@@ -33,6 +33,7 @@ import DefaultLayout from "@/layouts/default";
 import { Markdown } from "@/components/markdown";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
+import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -154,6 +155,21 @@ function docToForm(doc: HomeDocument): FormState {
   };
 }
 
+// The download route answers JSON, but if it runs past the hosting
+// timeout the platform returns an HTML error page instead.
+async function readDownloadResponse(res: Response): Promise<{ url?: string; documentNumber?: string; expiresAt?: string; error?: string }> {
+  try {
+    return await res.json();
+  } catch {
+    return {
+      error:
+        res.status === 504 || res.status === 502
+          ? "Timed out waiting for Duo approval — try again and approve the push within ~20 seconds."
+          : `Unexpected response (${res.status})`,
+    };
+  }
+}
+
 export default function DocumentsPage() {
   const router = useRouter();
   const [documents, setDocuments] = useState<HomeDocument[]>([]);
@@ -212,22 +228,13 @@ export default function DocumentsPage() {
       const activePeople = allPeople.filter((p) => p.active).sort((a, b) => a.name.localeCompare(b.name));
       setPeople(activePeople);
 
-      // Any household member with a linked Duo account can download any
-      // document — the Duo push is the real auth gate, not person matching.
-      // Find the first auth row that belongs to a person whose name matches
-      // the Cognito login, falling back to the first auth row if the match
-      // fails (household trust boundary — both members are admins).
-      const loginLower = uploadedBy?.toLowerCase() ?? "";
-      const myPerson = activePeople.find(
-        (p) => loginLower && (
-          loginLower === p.name.toLowerCase() ||
-          loginLower.includes(p.name.toLowerCase()) ||
-          p.name.toLowerCase().includes(loginLower.split("@")[0])
-        )
-      );
-      const myAuth = myPerson
-        ? allAuths.find((a: any) => a.personId === myPerson.id)
-        : allAuths[0]; // fallback: any enrolled person
+      // The Duo push goes to the SIGNED-IN person's phone. Resolve them
+      // via the cognitoUsername join (lib/current-person.ts), like
+      // /devices does. No fallback to someone else's Duo account: that
+      // used to pick allAuths[0] (the name match ran before uploadedBy
+      // was set), so pushes could land on the other person's phone.
+      const me = await resolveCurrentPerson<Person>(client);
+      const myAuth = me ? allAuths.find((a: any) => a.personId === me.id) : undefined;
       setMyDuoUsername(myAuth?.duoUsername ?? null);
     } catch (err) {
       console.error("loadAll failed", err);
@@ -235,7 +242,7 @@ export default function DocumentsPage() {
     } finally {
       setLoading(false);
     }
-  }, [uploadedBy]);
+  }, []);
 
   const handleDownload = useCallback(async (doc: HomeDocument) => {
     if (!myDuoUsername) {
@@ -247,7 +254,7 @@ export default function DocumentsPage() {
       return;
     }
     setDownloading(true);
-    addToast({ title: "Duo push sent", description: "Approve on your phone…", color: "primary" });
+    addToast({ title: "Sending Duo push", description: `To ${myDuoUsername}'s phone — approve it there…`, color: "primary" });
     try {
       const res = await fetch("/api/documents/download", {
         method: "POST",
@@ -260,14 +267,17 @@ export default function DocumentsPage() {
           documentNumber: doc.s3Key ? undefined : (doc.documentNumber ?? undefined),
         }),
       });
-      const data = await res.json();
+      const data = await readDownloadResponse(res);
       if (!res.ok) {
         addToast({ title: "Download denied", description: data.error ?? "Unknown error", color: "danger" });
         return;
       }
       if (data.url) {
         window.open(data.url, "_blank");
-        addToast({ title: "Download started", description: `Link expires at ${new Date(data.expiresAt).toLocaleTimeString()}` });
+        addToast({
+          title: "Download started",
+          description: data.expiresAt ? `Link expires at ${new Date(data.expiresAt).toLocaleTimeString()}` : undefined,
+        });
       } else if (data.documentNumber) {
         addToast({ title: doc.title, description: `Number: ${data.documentNumber}`, color: "primary" });
       }
@@ -288,7 +298,7 @@ export default function DocumentsPage() {
       return;
     }
     setViewing(true);
-    addToast({ title: "Duo push sent", description: "Approve on your phone…", color: "primary" });
+    addToast({ title: "Sending Duo push", description: `To ${myDuoUsername}'s phone — approve it there…`, color: "primary" });
     try {
       const res = await fetch("/api/documents/download", {
         method: "POST",
@@ -300,7 +310,7 @@ export default function DocumentsPage() {
           originalFilename: doc.originalFilename ?? undefined,
         }),
       });
-      const data = await res.json();
+      const data = await readDownloadResponse(res);
       if (!res.ok) {
         addToast({ title: "View denied", description: data.error ?? "Unknown error", color: "danger" });
         return;

@@ -39,11 +39,20 @@ async function handler(
     }
 
     // 2. Fire Duo push async + poll so we don't race Amplify's 30s SSR cap.
+    // 20s leaves room for the secret read + preauth + push call inside
+    // Amplify's ~28s SSR limit, so a slow approval gets a clean 403
+    // instead of the platform killing the request.
     const authResult = await pushAndWait({
       username: duoUsername,
       pushinfo: { Action: "Document download", Source: "Home Hub web" },
+      maxWaitMs: 20_000,
     });
 
+    if (authResult.result === "waiting") {
+      return res.status(403).json({
+        error: `No approval from ${duoUsername}'s phone within 20 seconds — try again.`,
+      });
+    }
     if (authResult.result !== "allow") {
       return res.status(403).json({ error: `Duo push ${authResult.result}: ${authResult.status_msg}` });
     }

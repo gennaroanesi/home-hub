@@ -111,7 +111,7 @@ Optional. See [docs/lightroom-import.md](docs/lightroom-import.md). The script-b
 
 - All `homeXxx` GraphQL models gate on `allow.group("home-users")` — Cognito group membership is the universal access check
 - All `pages/api/**` routes (except `whatsapp-qr`, `lightroom/callback`, `d/[key]`) require a Cognito session in the `home-users` group via `lib/api-auth.ts`
-- HIGH-sensitivity device actions and document downloads require Duo Push approval
+- HIGH-sensitivity device actions and document downloads require Duo Push approval — sent to the **signed-in** person's own Duo account (their `homePersonAuth`, found via `lib/current-person.ts`), never another household member's
 - Cognito self-signup is disabled; accounts are admin-only
 - Secrets: `ANTHROPIC_API_KEY` from env, Duo Auth API key from Secrets Manager (`home-hub/duo-auth-api`), `HASS_TOKEN` from env
 
