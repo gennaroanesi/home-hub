@@ -7,6 +7,7 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - Tasks (with recurring)
 - Bills
 - Calendar
+- Checklists (templates, per-entity lists, archive per checklist or per trip/event/document card, Active / Archived / All filter)
 
 ## Candidates
 

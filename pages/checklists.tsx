@@ -8,7 +8,14 @@ import { Spinner } from "@heroui/react";
 // Progress bar removed — ChecklistPanel handles its own display
 import { Link } from "@heroui/link";
 import NextLink from "next/link";
-import { FaCheckSquare, FaPlus } from "react-icons/fa";
+import {
+  FaArchive,
+  FaBoxOpen,
+  FaCheckSquare,
+  FaChevronDown,
+  FaChevronRight,
+  FaPlus,
+} from "react-icons/fa";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
@@ -20,6 +27,7 @@ import {
   ARCHIVE_FILTERS,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
+  isArchived,
   matchesArchiveFilter,
   type ArchiveFilter,
   type Checklist,
@@ -56,6 +64,11 @@ export default function ChecklistsPage() {
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
   const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("ACTIVE");
+  // Bumped per entity after a group archive so that entity's
+  // ChecklistPanel remounts and re-fetches (it keeps its own state).
+  const [panelVersion, setPanelVersion] = useState<Record<string, number>>({});
+  const [archivingEntity, setArchivingEntity] = useState<string | null>(null);
+  const [showTemplates, setShowTemplates] = useState(false);
 
   // Create checklist flow
   const [showCreate, setShowCreate] = useState(false);
@@ -175,6 +188,35 @@ export default function ChecklistsPage() {
     }
   }
 
+  // Archive (or unarchive) every checklist attached to one entity. If
+  // any are still active the action archives; once all are archived it
+  // flips to unarchive.
+  async function toggleArchiveEntity(entityId: string) {
+    const group = checklists.filter((c) => c.entityId === entityId);
+    const archive = group.some((c) => !isArchived(c));
+    const now = new Date().toISOString();
+    setArchivingEntity(entityId);
+    try {
+      await Promise.all(
+        group
+          .filter((c) => isArchived(c) !== archive)
+          .map((c) =>
+            client.models.homeChecklist.update({
+              id: c.id,
+              isArchived: archive,
+              archivedAt: archive ? now : null,
+            }),
+          ),
+      );
+      setPanelVersion((v) => ({ ...v, [entityId]: (v[entityId] ?? 0) + 1 }));
+      await loadAll();
+    } catch (err) {
+      console.error("Failed to archive checklists:", err);
+    } finally {
+      setArchivingEntity(null);
+    }
+  }
+
   const filtered = checklists.filter((c) =>
     matchesArchiveFilter(c, archiveFilter),
   );
@@ -198,8 +240,23 @@ export default function ChecklistsPage() {
             <h1 className="text-2xl font-bold">Checklists</h1>
           </div>
 
-          <h2 className="text-lg font-semibold mb-3">Templates</h2>
-          <ChecklistPanel entityType="TEMPLATE" entityId="templates" />
+          <button
+            type="button"
+            onClick={() => setShowTemplates((v) => !v)}
+            className="flex items-center gap-2 mb-3 text-lg font-semibold"
+            aria-expanded={showTemplates}
+          >
+            {showTemplates ? (
+              <FaChevronDown size={12} className="text-default-500" />
+            ) : (
+              <FaChevronRight size={12} className="text-default-500" />
+            )}
+            Templates
+          </button>
+          {/* Not mounted while collapsed, so templates are only fetched on expand. */}
+          {showTemplates && (
+            <ChecklistPanel entityType="TEMPLATE" entityId="templates" />
+          )}
         </div>
 
         {/* ── Create checklist on entity ──────────────────────────────── */}
@@ -335,10 +392,13 @@ export default function ChecklistsPage() {
                       {uniqueEntities.map((cl) => {
                         const href = entityDetailHref(cl.entityType ?? "OTHER", cl.entityId);
                         const eName = entityNames[cl.entityId] ?? cl.entityId;
+                        const allArchived = checklists
+                          .filter((c) => c.entityId === cl.entityId)
+                          .every(isArchived);
 
                         return (
                           <div key={cl.entityId} className="border border-default-200 rounded-md p-4 bg-default-50">
-                            <div className="mb-2">
+                            <div className="mb-2 flex items-center justify-between gap-2">
                               {href ? (
                                 <Link
                                   as={NextLink}
@@ -352,10 +412,28 @@ export default function ChecklistsPage() {
                                   {eName}
                                 </p>
                               )}
+                              <Button
+                                size="sm"
+                                variant="light"
+                                isLoading={archivingEntity === cl.entityId}
+                                startContent={
+                                  archivingEntity === cl.entityId ? null : allArchived ? (
+                                    <FaBoxOpen size={12} />
+                                  ) : (
+                                    <FaArchive size={12} />
+                                  )
+                                }
+                                onPress={() => toggleArchiveEntity(cl.entityId)}
+                              >
+                                {allArchived ? "Unarchive all" : "Archive all"}
+                              </Button>
                             </div>
                             <ChecklistPanel
+                              key={panelVersion[cl.entityId] ?? 0}
                               entityType={cl.entityType as any ?? "OTHER"}
                               entityId={cl.entityId}
+                              archiveFilter={archiveFilter}
+                              onArchiveChange={loadAll}
                             />
                           </div>
                         );

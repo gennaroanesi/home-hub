@@ -36,6 +36,8 @@ import {
   UNGROUPED,
   buildSectionGroups,
   deriveSectionOrder,
+  matchesArchiveFilter,
+  type ArchiveFilter,
   type Checklist,
   type ChecklistItem,
   type EntityType,
@@ -47,6 +49,12 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 interface ChecklistPanelProps {
   entityType: EntityType;
   entityId: string;
+  // Which checklists to render. Detail pages omit it and see everything;
+  // the Checklists page passes its Active / Archived / All pill.
+  archiveFilter?: ArchiveFilter;
+  // Fired after a checklist is archived/unarchived so a parent list can
+  // re-derive which entities belong under the current filter.
+  onArchiveChange?: () => void;
 }
 
 // ── Sortable Item ────────────────────────────────────────────────────
@@ -284,7 +292,12 @@ function DragOverlayItem({ item }: { item: ChecklistItem }) {
 
 // ── Main Component ───────────────────────────────────────────────────
 
-export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
+export function ChecklistPanel({
+  entityType,
+  entityId,
+  archiveFilter = "ALL",
+  onArchiveChange,
+}: ChecklistPanelProps) {
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [itemsByChecklist, setItemsByChecklist] = useState<Record<string, ChecklistItem[]>>({});
@@ -439,6 +452,7 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
       archivedAt: nextArchived ? new Date().toISOString() : null,
     });
     await loadData();
+    onArchiveChange?.();
   }
 
   async function duplicateChecklist(source: Checklist, targetEntityType?: EntityType, targetEntityId?: string) {
@@ -862,6 +876,10 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
 
   // ── Render ─────────────────────────────────────────────────────────
 
+  const visibleChecklists = checklists.filter((cl) =>
+    matchesArchiveFilter(cl, archiveFilter),
+  );
+
   if (loading) {
     return (
       <div className="py-4 flex justify-center">
@@ -946,10 +964,15 @@ export function ChecklistPanel({ entityType, entityId }: ChecklistPanelProps) {
           No checklists yet. Add one{templates.length > 0 ? " or import from a template" : ""} to get started.
         </p>
       )}
+      {checklists.length > 0 && visibleChecklists.length === 0 && !showNewChecklist && (
+        <p className="text-xs text-default-400 py-2">
+          No {archiveFilter === "ARCHIVED" ? "archived" : "active"} checklists here.
+        </p>
+      )}
 
       {/* Checklists */}
       <div className="space-y-3">
-        {checklists.map((cl) => {
+        {visibleChecklists.map((cl) => {
           const items = itemsByChecklist[cl.id] ?? [];
           const order = sectionOrders[cl.id] ?? [];
           const groups = buildSectionGroups(items, order);
