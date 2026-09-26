@@ -20,6 +20,7 @@ import { FaPlus, FaTrash, FaPen, FaArrowLeft, FaArchive, FaBoxOpen } from "react
 
 import DefaultLayout from "@/layouts/default";
 import { Markdown } from "@/components/markdown";
+import { ShoppingListModal } from "@/components/shopping-list-modal";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -39,8 +40,6 @@ export default function ShoppingPage() {
   // List modal (create/edit)
   const listModal = useDisclosure();
   const [editingList, setEditingList] = useState<ShoppingList | null>(null);
-  const [formListName, setFormListName] = useState("");
-  const [formListEmoji, setFormListEmoji] = useState("");
 
   // Item edit modal
   const itemModal = useDisclosure();
@@ -88,35 +87,12 @@ export default function ShoppingPage() {
   // ── List CRUD ──────────────────────────────────────────────────────────
   function openCreateList() {
     setEditingList(null);
-    setFormListName("");
-    setFormListEmoji("");
     listModal.onOpen();
   }
 
   function openEditList(list: ShoppingList) {
     setEditingList(list);
-    setFormListName(list.name);
-    setFormListEmoji(list.emoji ?? "");
     listModal.onOpen();
-  }
-
-  async function saveList(onClose: () => void) {
-    if (!formListName.trim()) return;
-    if (editingList) {
-      await client.models.homeShoppingList.update({
-        id: editingList.id,
-        name: formListName,
-        emoji: formListEmoji || null,
-      });
-    } else {
-      await client.models.homeShoppingList.create({
-        name: formListName,
-        emoji: formListEmoji || null,
-        sortOrder: lists.length,
-      });
-    }
-    onClose();
-    await loadAll();
   }
 
   async function deleteList(list: ShoppingList) {
@@ -355,37 +331,13 @@ export default function ShoppingPage() {
           })}
         </div>
 
-        {/* List modal */}
-        <Modal isOpen={listModal.isOpen} onOpenChange={listModal.onOpenChange}>
-          <ModalContent>
-            {(onClose) => (
-              <>
-                <ModalHeader>{editingList ? "Edit List" : "New List"}</ModalHeader>
-                <ModalBody>
-                  <Input
-                    label="Name"
-                    value={formListName}
-                    onValueChange={setFormListName}
-                    isRequired
-                    placeholder="Supermarket, Home Depot, …"
-                  />
-                  <Input
-                    label="Emoji (optional)"
-                    value={formListEmoji}
-                    onValueChange={setFormListEmoji}
-                    placeholder="🛒"
-                  />
-                </ModalBody>
-                <ModalFooter>
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => saveList(onClose)}>
-                    {editingList ? "Save" : "Create"}
-                  </Button>
-                </ModalFooter>
-              </>
-            )}
-          </ModalContent>
-        </Modal>
+        <ShoppingListModal
+          isOpen={listModal.isOpen}
+          onOpenChange={listModal.onOpenChange}
+          list={editingList}
+          nextSortOrder={lists.length}
+          onSaved={loadAll}
+        />
 
         {/* Item edit modal */}
         <Modal isOpen={itemModal.isOpen} onOpenChange={itemModal.onOpenChange}>

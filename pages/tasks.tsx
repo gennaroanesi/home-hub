@@ -9,31 +9,16 @@ import { addToast, Spinner } from "@heroui/react";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
 import { Checkbox } from "@heroui/checkbox";
-import {
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-  useDisclosure,
-} from "@heroui/modal";
+import { useDisclosure } from "@heroui/modal";
 import { Select, SelectItem } from "@heroui/select";
 import { FaPlus, FaTrash, FaPen, FaSync, FaArrowLeft } from "react-icons/fa";
 import { RRule } from "rrule";
-import dayjs from "dayjs";
 
 import DefaultLayout from "@/layouts/default";
-import { AttachmentSection } from "@/components/attachment-section";
-import { RemindersSection } from "@/components/reminders-section";
-import { NotesSection } from "@/components/notes-section";
-import { buildReminderDefaultsForTask } from "@/lib/reminder-defaults";
-import {
-  cascadeDeleteRemindersFor,
-  pauseRemindersFor,
-  resumeRemindersFor,
-} from "@/lib/reminder-parent";
+import { TaskModal } from "@/components/task-modal";
+import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
-import { resolveCurrentPerson } from "@/lib/current-person";
+import { toggleTaskCompleted } from "@/lib/task-actions";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -53,14 +38,6 @@ export default function TasksPage() {
   const [filterStatus, setFilterStatus] = useState<FilterStatus>("open");
   const [editingTask, setEditingTask] = useState<Task | null>(null);
   const { isOpen, onOpen, onOpenChange } = useDisclosure();
-
-  // Form state
-  const [formTitle, setFormTitle] = useState("");
-  const [formDescription, setFormDescription] = useState("");
-  const [formAssignedIds, setFormAssignedIds] = useState<string[]>([]);
-  const [formDueDate, setFormDueDate] = useState("");
-  const [formRecurrence, setFormRecurrence] = useState("");
-  const [isCustomRecurrence, setIsCustomRecurrence] = useState(false);
 
   useEffect(() => {
     checkAuth();
@@ -116,103 +93,20 @@ export default function TasksPage() {
 
   function openCreateModal() {
     setEditingTask(null);
-    setFormTitle("");
-    setFormDescription("");
-    setFormAssignedIds([]);
-    setFormDueDate("");
-    setFormRecurrence("");
-    setIsCustomRecurrence(false);
     onOpen();
   }
 
   function openEditModal(task: Task) {
     setEditingTask(task);
-    setFormTitle(task.title);
-    setFormDescription(task.description ?? "");
-    setFormAssignedIds(getAssignedIds(task));
-    setFormDueDate(task.dueDate ? dayjs(task.dueDate).format("YYYY-MM-DDTHH:mm") : "");
-    setFormRecurrence(task.recurrence ?? "");
-    setIsCustomRecurrence(task.recurrence ? !RECURRENCE_PRESETS.some((p) => p.value === task.recurrence) : false);
     onOpen();
-  }
-
-  // Save the current form state as a task, promoting the modal from
-  // create-mode to edit-mode if it wasn't already. Returns the saved
-  // task's id. Used by saveTask (the main Save/Create button) and by
-  // RemindersSection's onBeforeAdd so the user can add a reminder
-  // without first saving manually.
-  async function saveTaskDraft(): Promise<string | null> {
-    if (!formTitle.trim()) return null;
-
-    if (editingTask) {
-      await client.models.homeTask.update({
-        id: editingTask.id,
-        title: formTitle,
-        description: formDescription || null,
-        assignedPersonIds: formAssignedIds,
-        dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
-        recurrence: formRecurrence || null,
-      });
-      return editingTask.id;
-    }
-    const { data } = await client.models.homeTask.create({
-      title: formTitle,
-      description: formDescription || null,
-      assignedPersonIds: formAssignedIds,
-      dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
-      recurrence: formRecurrence || null,
-      isCompleted: false,
-      createdBy: "ui",
-    });
-    if (data) setEditingTask(data);
-    return data?.id ?? null;
-  }
-
-  async function saveTask(onClose: () => void) {
-    const id = await saveTaskDraft();
-    if (!id) return;
-    onClose();
-    await loadTasks();
   }
 
   async function toggleComplete(task: Task) {
     if (pendingIds[task.id]) return;
     setPendingIds((prev) => ({ ...prev, [task.id]: true }));
     try {
-      if (task.isCompleted) {
-        await client.models.homeTask.update({
-          id: task.id,
-          isCompleted: false,
-          completedAt: null,
-        });
-        await resumeRemindersFor(client, task.id);
-        addToast({ title: "Task reopened" });
-      } else if (task.recurrence) {
-        const me = await resolveCurrentPerson(client);
-        const { data: result, errors } =
-          await client.mutations.taskOccurrenceAction({
-            action: "COMPLETE",
-            taskId: task.id,
-            byPersonId: me?.id ?? null,
-          });
-        if (errors?.length) throw new Error(errors[0].message);
-        if (result && !result.ok) {
-          throw new Error(result.message ?? "rejected");
-        }
-        addToast({
-          title: "Marked done",
-          description: "Next cycle scheduled",
-          color: "success",
-        });
-      } else {
-        await client.models.homeTask.update({
-          id: task.id,
-          isCompleted: true,
-          completedAt: new Date().toISOString(),
-        });
-        await pauseRemindersFor(client, task.id);
-        addToast({ title: "Task completed", color: "success" });
-      }
+      const { title, description } = await toggleTaskCompleted(client, task);
+      addToast({ title, description, color: task.isCompleted ? "default" : "success" });
       await loadTasks();
     } catch (err: any) {
       addToast({
@@ -224,35 +118,6 @@ export default function TasksPage() {
       setPendingIds((prev) => {
         const { [task.id]: _gone, ...rest } = prev;
         return rest;
-      });
-    }
-  }
-
-  async function skipOccurrence(task: Task, onClose: () => void) {
-    try {
-      const me = await resolveCurrentPerson(client);
-      const { data: result, errors } =
-        await client.mutations.taskOccurrenceAction({
-          action: "SKIP",
-          taskId: task.id,
-          byPersonId: me?.id ?? null,
-        });
-      if (errors?.length) throw new Error(errors[0].message);
-      if (result && !result.ok) {
-        throw new Error(result.message ?? "rejected");
-      }
-      addToast({
-        title: "Occurrence skipped",
-        description: "Next cycle scheduled",
-        color: "default",
-      });
-      await loadTasks();
-      onClose();
-    } catch (err: any) {
-      addToast({
-        title: "Skip failed",
-        description: err?.message ?? String(err),
-        color: "danger",
       });
     }
   }
@@ -314,20 +179,6 @@ export default function TasksPage() {
     if (diffDays < 7) return `${diffDays}d ago`;
     return d.toLocaleDateString();
   }
-
-  const RECURRENCE_PRESETS = [
-    { label: "None", value: "" },
-    { label: "Daily", value: "RRULE:FREQ=DAILY" },
-    { label: "Every weekday", value: "RRULE:FREQ=WEEKLY;BYDAY=MO,TU,WE,TH,FR" },
-    { label: "Weekly", value: "RRULE:FREQ=WEEKLY" },
-    { label: "Biweekly", value: "RRULE:FREQ=WEEKLY;INTERVAL=2" },
-    { label: "Monthly (same date)", value: "RRULE:FREQ=MONTHLY" },
-    { label: "Monthly (1st)", value: "RRULE:FREQ=MONTHLY;BYMONTHDAY=1" },
-    { label: "Monthly (15th)", value: "RRULE:FREQ=MONTHLY;BYMONTHDAY=15" },
-    { label: "Quarterly", value: "RRULE:FREQ=MONTHLY;INTERVAL=3" },
-    { label: "Yearly", value: "RRULE:FREQ=YEARLY" },
-    { label: "Custom...", value: "__custom__" },
-  ];
 
   return (
     <DefaultLayout>
@@ -436,118 +287,13 @@ export default function TasksPage() {
           })}
         </div>
 
-        {/* Create/Edit Modal */}
-        <Modal isOpen={isOpen} onOpenChange={onOpenChange}>
-          <ModalContent>
-            {(onClose) => (
-              <>
-                <ModalHeader>{editingTask ? "Edit Task" : "New Task"}</ModalHeader>
-                <ModalBody>
-                  <Input
-                    label="Title"
-                    value={formTitle}
-                    onValueChange={setFormTitle}
-                    isRequired
-                  />
-                  <Input
-                    label="Description"
-                    value={formDescription}
-                    onValueChange={setFormDescription}
-                  />
-                  <Select
-                    label="Assigned to"
-                    selectionMode="multiple"
-                    selectedKeys={new Set(formAssignedIds)}
-                    onSelectionChange={(keys) => setFormAssignedIds(Array.from(keys as Set<string>))}
-                    description="Leave empty for household"
-                  >
-                    {people.map((p) => (
-                      <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
-                    ))}
-                  </Select>
-                  <Input
-                    label="Due date"
-                    type="datetime-local"
-                    placeholder=" "
-                    value={formDueDate}
-                    onValueChange={setFormDueDate}
-                  />
-                  <Select
-                    label="Recurrence"
-                    selectedKeys={[isCustomRecurrence ? "__custom__" : formRecurrence]}
-                    onChange={(e) => {
-                      if (e.target.value === "__custom__") {
-                        setIsCustomRecurrence(true);
-                        setFormRecurrence("RRULE:FREQ=MONTHLY;BYMONTHDAY=");
-                      } else {
-                        setIsCustomRecurrence(false);
-                        setFormRecurrence(e.target.value);
-                      }
-                    }}
-                  >
-                    {RECURRENCE_PRESETS.map((p) => (
-                      <SelectItem key={p.value} textValue={p.label}>{p.label}</SelectItem>
-                    ))}
-                  </Select>
-                  {isCustomRecurrence && (
-                    <Input
-                      label="Custom RRULE"
-                      value={formRecurrence}
-                      onValueChange={setFormRecurrence}
-                      placeholder="RRULE:FREQ=MONTHLY;BYMONTHDAY=1"
-                      description="e.g. BYMONTHDAY=1 for 1st of month, BYDAY=MO for every Monday"
-                    />
-                  )}
-                  {editingTask && (
-                    <div className="mt-2">
-                      <p className="text-xs font-semibold text-default-500 uppercase tracking-wide mb-1.5">
-                        Attachments
-                      </p>
-                      <AttachmentSection
-                        parentType="TASK"
-                        parentId={editingTask.id}
-                      />
-                    </div>
-                  )}
-                  <div className="mt-2">
-                    <RemindersSection
-                      parentType="TASK"
-                      parentId={editingTask?.id}
-                      people={people}
-                      defaults={buildReminderDefaultsForTask({
-                        title: formTitle || editingTask?.title || "",
-                        dueDate: formDueDate || editingTask?.dueDate,
-                        assignedPersonIds: formAssignedIds,
-                      })}
-                      onBeforeAdd={editingTask ? undefined : saveTaskDraft}
-                    />
-                  </div>
-                  <div className="mt-2">
-                    <NotesSection
-                      parentType="TASK"
-                      parentId={editingTask?.id}
-                      onBeforeAdd={editingTask ? undefined : saveTaskDraft}
-                    />
-                  </div>
-                </ModalBody>
-                <ModalFooter>
-                  {editingTask?.recurrence && !editingTask.isCompleted && (
-                    <Button
-                      variant="light"
-                      onPress={() => skipOccurrence(editingTask, onClose)}
-                    >
-                      Skip occurrence
-                    </Button>
-                  )}
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
-                  <Button color="primary" onPress={() => saveTask(onClose)}>
-                    {editingTask ? "Save" : "Create"}
-                  </Button>
-                </ModalFooter>
-              </>
-            )}
-          </ModalContent>
-        </Modal>
+        <TaskModal
+          isOpen={isOpen}
+          onOpenChange={onOpenChange}
+          task={editingTask}
+          people={people}
+          onSaved={loadTasks}
+        />
       </div>
     </DefaultLayout>
   );

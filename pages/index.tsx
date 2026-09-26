@@ -2,8 +2,11 @@
 
 // Home dashboard: the most important things across the app on one
 // screen — tasks that need attention, this week's calendar, the baby
-// timeline, upcoming travel, and open shopping lists. Navigation lives
-// in the sidebar; this page is for "what's going on".
+// timeline, upcoming travel, open shopping lists and checklists in
+// progress. Navigation lives in the sidebar; this page is for "what's
+// going on" plus the quick actions (tick off a task, add a task / event
+// / list) that don't need the full page. The modals are the same
+// components the Tasks, Calendar and Shopping pages use.
 //
 // Each section loads independently, so one failing query (or a model
 // the current backend doesn't have yet) doesn't blank the whole page.
@@ -14,7 +17,10 @@ import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Card, CardBody, CardHeader } from "@heroui/card";
-import { Spinner } from "@heroui/react";
+import { Button } from "@heroui/button";
+import { Checkbox } from "@heroui/checkbox";
+import { useDisclosure } from "@heroui/modal";
+import { Spinner, addToast } from "@heroui/react";
 import {
   FaTasks,
   FaCalendarAlt,
@@ -22,10 +28,25 @@ import {
   FaShoppingCart,
   FaHeartbeat,
   FaExclamationTriangle,
+  FaCheckSquare,
+  FaPlus,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { TaskModal } from "@/components/task-modal";
+import { EventModal } from "@/components/event-modal";
+import { ShoppingListModal } from "@/components/shopping-list-modal";
 import { listAllPages } from "@/lib/list-all";
+import {
+  ENTITY_TYPE_SINGULAR,
+  isArchived,
+  progress,
+  type Checklist,
+  type ChecklistItem,
+  type ChecklistProgress,
+  type EntityType,
+} from "@/lib/checklist";
+import { toggleTaskCompleted } from "@/lib/task-actions";
 import {
   addLocalDays,
   bucketTasks,
@@ -79,6 +100,11 @@ interface ShoppingSummary {
   open: ShoppingItem[];
 }
 
+interface ChecklistSummary {
+  checklist: Checklist;
+  progress: ChecklistProgress;
+}
+
 export default function HomeDashboard() {
   const router = useRouter();
   const [fullName, setFullName] = useState("");
@@ -89,7 +115,20 @@ export default function HomeDashboard() {
   const [events, setEvents] = useState<Loadable<EventOccurrence<CalEvent>[]>>(undefined);
   const [trips, setTrips] = useState<Loadable<UpcomingTrip<Trip>[]>>(undefined);
   const [shopping, setShopping] = useState<Loadable<ShoppingSummary[]>>(undefined);
+  const [shoppingListCount, setShoppingListCount] = useState(0);
+  const [checklists, setChecklists] = useState<Loadable<ChecklistSummary[]>>(undefined);
   const [baby, setBaby] = useState<Loadable<BabyData[]>>(undefined);
+  // Every trip, not just upcoming ones: the event modal's trip picker
+  // and the checklist card's trip names both need them.
+  const [allTrips, setAllTrips] = useState<Trip[]>([]);
+
+  // Quick-action modals
+  const taskModal = useDisclosure();
+  const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  const [completingIds, setCompletingIds] = useState<Set<string>>(new Set());
+  const eventModal = useDisclosure();
+  const [selectedEvent, setSelectedEvent] = useState<CalEvent | null>(null);
+  const listModal = useDisclosure();
 
   useEffect(() => {
     (async () => {
@@ -107,14 +146,20 @@ export default function HomeDashboard() {
   }, []);
 
   function loadAll() {
-    const todayStart = startOfLocalDay(now);
-    const todayYmd = localYmd(now);
-
     const peopleP = listAllPages<Person>(client.models.homePerson).then((rows) => {
       setPeople(householdMembers(rows));
       return rows;
     });
 
+    loadTasks();
+    loadEvents();
+    loadTrips();
+    loadShopping();
+    loadChecklists();
+    loadBaby(peopleP);
+  }
+
+  function loadTasks() {
     guard(setTasks, async () =>
       bucketTasks(
         await listAllPages<Task>(client.models.homeTask, {
@@ -124,7 +169,10 @@ export default function HomeDashboard() {
         TASK_DAYS,
       ),
     );
+  }
 
+  function loadEvents() {
+    const todayStart = startOfLocalDay(now);
     guard(setEvents, async () =>
       eventOccurrences(
         await listAllPages<CalEvent>(client.models.homeCalendarEvent),
@@ -132,15 +180,17 @@ export default function HomeDashboard() {
         addLocalDays(todayStart, EVENT_DAYS),
       ),
     );
+  }
 
-    guard(setTrips, async () =>
-      upcomingTrips(
-        await listAllPages<Trip>(client.models.homeTrip),
-        todayYmd,
-        TRIP_HORIZON_DAYS,
-      ),
-    );
+  function loadTrips() {
+    guard(setTrips, async () => {
+      const rows = await listAllPages<Trip>(client.models.homeTrip);
+      setAllTrips(rows);
+      return upcomingTrips(rows, localYmd(now), TRIP_HORIZON_DAYS);
+    });
+  }
 
+  function loadShopping() {
     guard(setShopping, async () => {
       const [lists, items] = await Promise.all([
         listAllPages<ShoppingList>(client.models.homeShoppingList),
@@ -148,6 +198,7 @@ export default function HomeDashboard() {
           filter: { isChecked: { eq: false } },
         }),
       ]);
+      setShoppingListCount(lists.length);
       return lists
         .filter((l) => !l.isArchived)
         .map((list) => ({
@@ -159,7 +210,38 @@ export default function HomeDashboard() {
         .filter((s) => s.open.length > 0)
         .sort((a, b) => (a.list.sortOrder ?? 0) - (b.list.sortOrder ?? 0));
     });
+  }
 
+  // Checklists still in progress: not archived, not templates, and not
+  // fully ticked off (an empty list counts as in progress).
+  function loadChecklists() {
+    guard(setChecklists, async () => {
+      const [lists, items] = await Promise.all([
+        listAllPages<Checklist>(client.models.homeChecklist),
+        listAllPages<ChecklistItem>(client.models.homeChecklistItem),
+      ]);
+      const itemsByList = new Map<string, ChecklistItem[]>();
+      for (const item of items) {
+        const bucket = itemsByList.get(item.checklistId) ?? [];
+        bucket.push(item);
+        itemsByList.set(item.checklistId, bucket);
+      }
+      return lists
+        .filter((c) => (c.entityType as string) !== "TEMPLATE" && !isArchived(c))
+        .map((checklist) => ({
+          checklist,
+          progress: progress(itemsByList.get(checklist.id) ?? []),
+        }))
+        .filter((c) => c.progress.total === 0 || c.progress.done < c.progress.total)
+        .sort(
+          (a, b) =>
+            b.progress.total - b.progress.done - (a.progress.total - a.progress.done) ||
+            a.checklist.name.localeCompare(b.checklist.name),
+        );
+    });
+  }
+
+  function loadBaby(peopleP: Promise<Person[]>) {
     guard(setBaby, async () => {
       // The health models only exist once the backend is deployed with
       // them; an older amplify_outputs.json simply has no such model.
@@ -198,9 +280,58 @@ export default function HomeDashboard() {
     });
   }
 
+  // ── Quick actions ──────────────────────────────────────────────────────────
+
+  function openNewTask() {
+    setSelectedTask(null);
+    taskModal.onOpen();
+  }
+
+  function openTask(task: Task) {
+    setSelectedTask(task);
+    taskModal.onOpen();
+  }
+
+  async function completeTask(task: Task) {
+    if (completingIds.has(task.id)) return;
+    setCompletingIds((prev) => new Set(prev).add(task.id));
+    try {
+      const { title, description } = await toggleTaskCompleted(client, task);
+      addToast({ title, description, color: "success" });
+      loadTasks();
+    } catch (err: any) {
+      addToast({
+        title: "Update failed",
+        description: err?.message ?? String(err),
+        color: "danger",
+      });
+    } finally {
+      setCompletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(task.id);
+        return next;
+      });
+    }
+  }
+
+  function openNewEvent() {
+    setSelectedEvent(null);
+    eventModal.onOpen();
+  }
+
+  function openEvent(event: CalEvent) {
+    setSelectedEvent(event);
+    eventModal.onOpen();
+  }
+
   const peopleById = useMemo(
     () => new Map(people.map((p) => [p.id, p])),
     [people],
+  );
+
+  const tripNames = useMemo(
+    () => new Map(allTrips.map((t) => [t.id, t.name])),
+    [allTrips],
   );
 
   const dateLine = now.toLocaleDateString("en-US", {
@@ -221,8 +352,23 @@ export default function HomeDashboard() {
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
           <div className="flex flex-col gap-4">
-            <TasksCard data={tasks} now={now} peopleById={peopleById} />
-            <EventsCard data={events} now={now} peopleById={peopleById} />
+            <TasksCard
+              data={tasks}
+              now={now}
+              peopleById={peopleById}
+              completingIds={completingIds}
+              onComplete={completeTask}
+              onOpen={openTask}
+              onNew={openNewTask}
+            />
+            <EventsCard
+              data={events}
+              now={now}
+              peopleById={peopleById}
+              onOpen={openEvent}
+              onNew={openNewEvent}
+            />
+            <ChecklistsCard data={checklists} tripNames={tripNames} />
           </div>
           <div className="flex flex-col gap-4">
             {baby && baby.length > 0 && baby.map((b) => (
@@ -230,9 +376,32 @@ export default function HomeDashboard() {
             ))}
             {baby === null && <FailedCard title="Baby" icon={<FaHeartbeat />} href="/health" />}
             <TripsCard data={trips} />
-            <ShoppingCard data={shopping} />
+            <ShoppingCard data={shopping} onNew={listModal.onOpen} />
           </div>
         </div>
+
+        <TaskModal
+          isOpen={taskModal.isOpen}
+          onOpenChange={taskModal.onOpenChange}
+          task={selectedTask}
+          people={people}
+          onSaved={loadTasks}
+        />
+        <EventModal
+          isOpen={eventModal.isOpen}
+          onOpenChange={eventModal.onOpenChange}
+          event={selectedEvent}
+          people={people}
+          trips={allTrips}
+          onSaved={loadEvents}
+        />
+        <ShoppingListModal
+          isOpen={listModal.isOpen}
+          onOpenChange={listModal.onOpenChange}
+          list={null}
+          nextSortOrder={shoppingListCount}
+          onSaved={loadShopping}
+        />
       </div>
     </DefaultLayout>
   );
@@ -254,6 +423,7 @@ function Section({
   href,
   hrefLabel = "View all",
   badge,
+  action,
   children,
 }: {
   title: string;
@@ -261,6 +431,8 @@ function Section({
   href: string;
   hrefLabel?: string;
   badge?: React.ReactNode;
+  // Quick action shown in the header next to the page link.
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
@@ -269,9 +441,12 @@ function Section({
         <span className="text-default-500">{icon}</span>
         <h2 className="font-semibold text-foreground">{title}</h2>
         {badge}
-        <NextLink href={href} className="ml-auto text-xs text-primary hover:underline">
-          {hrefLabel}
-        </NextLink>
+        <span className="ml-auto flex items-center gap-2">
+          {action}
+          <NextLink href={href} className="text-xs text-primary hover:underline">
+            {hrefLabel}
+          </NextLink>
+        </span>
       </CardHeader>
       <CardBody className="pt-1">{children}</CardBody>
     </Card>
@@ -343,26 +518,59 @@ function PersonDots({ ids, peopleById }: { ids: (string | null)[] | null | undef
   );
 }
 
+function NewButton({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Button
+      size="sm"
+      variant="flat"
+      className="h-6 min-w-0 px-2 text-xs"
+      startContent={<FaPlus size={9} />}
+      onPress={onPress}
+    >
+      {label}
+    </Button>
+  );
+}
+
+// A row either links to a page (`href`) or runs an action (`onPress`,
+// e.g. open the edit modal). `leading` sits outside the clickable area
+// — the task checkbox lives there.
 function Row({
   href,
+  onPress,
+  leading,
   left,
   title,
   right,
 }: {
-  href: string;
+  href?: string;
+  onPress?: () => void;
+  leading?: React.ReactNode;
   left?: React.ReactNode;
   title: React.ReactNode;
   right?: React.ReactNode;
 }) {
-  return (
-    <NextLink
-      href={href}
-      className="flex items-center gap-3 rounded-md px-2 -mx-2 py-1.5 hover:bg-default-100"
-    >
+  const content = (
+    <>
       {left && <span className="w-16 shrink-0 text-xs text-default-500">{left}</span>}
       <span className="flex-1 min-w-0 truncate text-sm text-foreground">{title}</span>
       {right}
-    </NextLink>
+    </>
+  );
+  const cls = "flex flex-1 min-w-0 items-center gap-3 text-left";
+  return (
+    <div className="flex items-center gap-2 rounded-md px-2 -mx-2 py-1.5 hover:bg-default-100">
+      {leading}
+      {onPress ? (
+        <button type="button" onClick={onPress} className={cls}>
+          {content}
+        </button>
+      ) : (
+        <NextLink href={href ?? "#"} className={cls}>
+          {content}
+        </NextLink>
+      )}
+    </div>
   );
 }
 
@@ -381,10 +589,18 @@ function TasksCard({
   data,
   now,
   peopleById,
+  completingIds,
+  onComplete,
+  onOpen,
+  onNew,
 }: {
   data: Loadable<TaskBuckets<Task>>;
   now: Date;
   peopleById: Map<string, Person>;
+  completingIds: Set<string>;
+  onComplete: (task: Task) => void;
+  onOpen: (task: Task) => void;
+  onNew: () => void;
 }) {
   const overdueCount = data?.overdue.length ?? 0;
   return (
@@ -392,6 +608,7 @@ function TasksCard({
       title="Tasks"
       icon={<FaTasks />}
       href="/tasks"
+      action={<NewButton label="Task" onPress={onNew} />}
       badge={
         overdueCount > 0 ? (
           <span className="text-xs font-medium text-danger">{overdueCount} overdue</span>
@@ -430,7 +647,21 @@ function TasksCard({
                 {g.rows.map(({ task, date }) => (
                   <Row
                     key={task.id}
-                    href="/tasks"
+                    onPress={() => onOpen(task)}
+                    leading={
+                      completingIds.has(task.id) ? (
+                        <span className="w-5 flex justify-center">
+                          <Spinner size="sm" />
+                        </span>
+                      ) : (
+                        <Checkbox
+                          size="sm"
+                          isSelected={false}
+                          onValueChange={() => onComplete(task)}
+                          aria-label={`Mark "${task.title}" done`}
+                        />
+                      )
+                    }
                     left={date ? relativeDayLabel(date, now) : task.recurrence ? "Repeats" : "—"}
                     title={task.title}
                     right={<PersonDots ids={task.assignedPersonIds} peopleById={peopleById} />}
@@ -453,13 +684,23 @@ function EventsCard({
   data,
   now,
   peopleById,
+  onOpen,
+  onNew,
 }: {
   data: Loadable<EventOccurrence<CalEvent>[]>;
   now: Date;
   peopleById: Map<string, Person>;
+  onOpen: (event: CalEvent) => void;
+  onNew: () => void;
 }) {
   return (
-    <Section title="This week" icon={<FaCalendarAlt />} href="/calendar" hrefLabel="Calendar">
+    <Section
+      title="This week"
+      icon={<FaCalendarAlt />}
+      href="/calendar"
+      hrefLabel="Calendar"
+      action={<NewButton label="Event" onPress={onNew} />}
+    >
       <SectionBody data={data} empty={(d) => (d.length === 0 ? "Nothing on the calendar this week." : null)}>
         {(d) => {
           // Group by local day; an occurrence already in progress shows under today.
@@ -477,7 +718,7 @@ function EventsCard({
               {rows.map((occ) => (
                 <Row
                   key={`${occ.event.id}-${occ.start.getTime()}`}
-                  href="/calendar"
+                  onPress={() => onOpen(occ.event)}
                   left={occ.allDay ? "All day" : fmtTime(occ.start)}
                   title={occ.event.title}
                   right={<PersonDots ids={occ.event.assignedPersonIds} peopleById={peopleById} />}
@@ -591,7 +832,23 @@ function BabyCard({ data, now }: { data: BabyData; now: Date }) {
 
 function TripsCard({ data }: { data: Loadable<UpcomingTrip<Trip>[]> }) {
   return (
-    <Section title="Travel" icon={<FaPlane />} href="/trips">
+    <Section
+      title="Travel"
+      icon={<FaPlane />}
+      href="/trips"
+      action={
+        <Button
+          as={NextLink}
+          href="/trips/new"
+          size="sm"
+          variant="flat"
+          className="h-6 min-w-0 px-2 text-xs"
+          startContent={<FaPlus size={9} />}
+        >
+          Trip
+        </Button>
+      }
+    >
       <SectionBody
         data={data}
         empty={(d) => (d.length === 0 ? `No trips in the next ${TRIP_HORIZON_DAYS} days.` : null)}
@@ -626,9 +883,14 @@ function TripsCard({ data }: { data: Loadable<UpcomingTrip<Trip>[]> }) {
 
 // ── Shopping ─────────────────────────────────────────────────────────────────
 
-function ShoppingCard({ data }: { data: Loadable<ShoppingSummary[]> }) {
+function ShoppingCard({ data, onNew }: { data: Loadable<ShoppingSummary[]>; onNew: () => void }) {
   return (
-    <Section title="Shopping" icon={<FaShoppingCart />} href="/shopping">
+    <Section
+      title="Shopping"
+      icon={<FaShoppingCart />}
+      href="/shopping"
+      action={<NewButton label="List" onPress={onNew} />}
+    >
       <SectionBody data={data} empty={(d) => (d.length === 0 ? "All lists are clear." : null)}>
         {(d) =>
           d.map(({ list, open }) => (
@@ -649,6 +911,66 @@ function ShoppingCard({ data }: { data: Loadable<ShoppingSummary[]> }) {
             </NextLink>
           ))
         }
+      </SectionBody>
+    </Section>
+  );
+}
+
+// ── Checklists ───────────────────────────────────────────────────────────────
+
+function checklistHref(entityType: EntityType, entityId: string): string {
+  if (entityType === "TRIP") return `/trips/${entityId}`;
+  return "/checklists";
+}
+
+function ChecklistsCard({
+  data,
+  tripNames,
+}: {
+  data: Loadable<ChecklistSummary[]>;
+  tripNames: Map<string, string>;
+}) {
+  return (
+    <Section title="Checklists" icon={<FaCheckSquare />} href="/checklists">
+      <SectionBody data={data} empty={(d) => (d.length === 0 ? "No checklists in progress." : null)}>
+        {(d) => (
+          <>
+            {d.slice(0, MAX_ROWS).map(({ checklist, progress: p }) => {
+              const type = (checklist.entityType ?? "OTHER") as EntityType;
+              const tripName = type === "TRIP" ? tripNames.get(checklist.entityId) : undefined;
+              return (
+                <Row
+                  key={checklist.id}
+                  href={checklistHref(type, checklist.entityId)}
+                  left={ENTITY_TYPE_SINGULAR[type]}
+                  title={
+                    tripName ? (
+                      <>
+                        {checklist.name}
+                        <span className="text-default-400"> · {tripName}</span>
+                      </>
+                    ) : (
+                      checklist.name
+                    )
+                  }
+                  right={
+                    <span className="flex items-center gap-2 shrink-0">
+                      <span className="w-12 h-1.5 rounded-full bg-default-200 overflow-hidden">
+                        <span className="block h-full bg-primary" style={{ width: `${p.pct}%` }} />
+                      </span>
+                      <span className="text-xs text-default-400 w-10 text-right">
+                        {p.done}/{p.total}
+                      </span>
+                    </span>
+                  }
+                />
+              );
+            })}
+            {d.length > MAX_ROWS && (
+              <p className="text-xs text-default-400 px-2">+{d.length - MAX_ROWS} more</p>
+            )}
+          </>
+        )}
       </SectionBody>
     </Section>
   );

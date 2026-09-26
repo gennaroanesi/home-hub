@@ -8,6 +8,7 @@ Ideas for future features. Not committed — just a parking lot for things that 
 - Bills
 - Calendar
 - Checklists (templates, per-entity lists, archive per checklist or per trip/event/document card, Active / Archived / All filter)
+- Home dashboard quick actions (tick off / add / edit tasks, add / edit events, new shopping list, new trip, checklists in progress) — web only; mobile Today screen not yet
 
 ## Candidates
 
