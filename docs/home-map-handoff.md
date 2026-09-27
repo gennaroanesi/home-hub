@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: the code is committed on `main` but **not pushed or deployed**. The **lot and the first floor are traced** and ready to import once the backend is deployed. The combined file was handed to the user as `~/Downloads/house-map.json`. The **second floor** is next; its plan and DWG are in hand.
+Status as of 2026-09-26: deployed to prod by Amplify build 165 (`f11032b`). The **lot and the first floor are traced** and waiting to be imported on `/map` from `~/Downloads/house-map.json`, which was handed to the user. The **second floor** is next; its plan and DWG are in hand. `mobile/amplify_outputs.json` is regenerated, but that commit isn't pushed yet (it only affects mobile).
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
@@ -75,7 +75,7 @@ Source: Meritage's marketing plan "The Reynolds / Plan 890", first floor (REV 01
 - **Not yet run against a deployed backend.** The pages weren't loaded in a browser; the dev server was down, so only `next build` compiled them.
 
 ## Next steps
-1. **Deploy** after the user OKs the push, then regenerate `amplify_outputs.json` for localhost and mobile.
+1. ~~Deploy~~ Done: build 165.
 2. **Import** `house-map.json` on `/map` after the deploy, and upload the PDFs to Documents as Property.
 3. **Trace the second floor** from `…890_WB-page_02.pdf`, using that DWG's 14 dimensions for scale.
 4. **Earlier plan for tracing floor plans:** the user sends images of both floors and the garage plus known room dimensions. Trace the outlines in feet, using the given measurements as the scale (they win over the drawing). Render a preview for the user to check, then hand over the JSON to import on `/map`.

@@ -1558,6 +1558,256 @@
             "sortKeyFieldNames": []
           }
         },
+        "homeFloor": {
+          "name": "homeFloor",
+          "fields": {
+            "id": {
+              "name": "id",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "name": {
+              "name": "name",
+              "isArray": false,
+              "type": "String",
+              "isRequired": true,
+              "attributes": []
+            },
+            "level": {
+              "name": "level",
+              "isArray": false,
+              "type": "Int",
+              "isRequired": true,
+              "attributes": []
+            },
+            "notes": {
+              "name": "notes",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "createdAt": {
+              "name": "createdAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            },
+            "updatedAt": {
+              "name": "updatedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            }
+          },
+          "syncable": true,
+          "pluralName": "homeFloors",
+          "attributes": [
+            {
+              "type": "model",
+              "properties": {}
+            },
+            {
+              "type": "auth",
+              "properties": {
+                "rules": [
+                  {
+                    "groupClaim": "cognito:groups",
+                    "provider": "userPools",
+                    "allow": "groups",
+                    "groups": [
+                      "home-users"
+                    ],
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  },
+                  {
+                    "allow": "private",
+                    "provider": "iam",
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "primaryKeyInfo": {
+            "isCustomPrimaryKey": false,
+            "primaryKeyFieldName": "id",
+            "sortKeyFieldNames": []
+          }
+        },
+        "homeRoom": {
+          "name": "homeRoom",
+          "fields": {
+            "id": {
+              "name": "id",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "floorId": {
+              "name": "floorId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "name": {
+              "name": "name",
+              "isArray": false,
+              "type": "String",
+              "isRequired": true,
+              "attributes": []
+            },
+            "kind": {
+              "name": "kind",
+              "isArray": false,
+              "type": {
+                "enum": "HomeRoomKind"
+              },
+              "isRequired": false,
+              "attributes": []
+            },
+            "parentRoomId": {
+              "name": "parentRoomId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "points": {
+              "name": "points",
+              "isArray": true,
+              "type": {
+                "nonModel": "RoomPoint"
+              },
+              "isRequired": false,
+              "attributes": [],
+              "isArrayNullable": false
+            },
+            "labelX": {
+              "name": "labelX",
+              "isArray": false,
+              "type": "Float",
+              "isRequired": false,
+              "attributes": []
+            },
+            "labelY": {
+              "name": "labelY",
+              "isArray": false,
+              "type": "Float",
+              "isRequired": false,
+              "attributes": []
+            },
+            "haArea": {
+              "name": "haArea",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "notes": {
+              "name": "notes",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "sortOrder": {
+              "name": "sortOrder",
+              "isArray": false,
+              "type": "Int",
+              "isRequired": false,
+              "attributes": []
+            },
+            "createdAt": {
+              "name": "createdAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            },
+            "updatedAt": {
+              "name": "updatedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            }
+          },
+          "syncable": true,
+          "pluralName": "homeRooms",
+          "attributes": [
+            {
+              "type": "model",
+              "properties": {}
+            },
+            {
+              "type": "key",
+              "properties": {
+                "name": "homeRoomsByFloorId",
+                "queryField": "listHomeRoomByFloorId",
+                "fields": [
+                  "floorId"
+                ]
+              }
+            },
+            {
+              "type": "auth",
+              "properties": {
+                "rules": [
+                  {
+                    "groupClaim": "cognito:groups",
+                    "provider": "userPools",
+                    "allow": "groups",
+                    "groups": [
+                      "home-users"
+                    ],
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  },
+                  {
+                    "allow": "private",
+                    "provider": "iam",
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "primaryKeyInfo": {
+            "isCustomPrimaryKey": false,
+            "primaryKeyFieldName": "id",
+            "sortKeyFieldNames": []
+          }
+        },
         "homeInventoryItem": {
           "name": "homeInventoryItem",
           "fields": {
@@ -1618,6 +1868,13 @@
               "name": "quantity",
               "isArray": false,
               "type": "Int",
+              "isRequired": false,
+              "attributes": []
+            },
+            "roomId": {
+              "name": "roomId",
+              "isArray": false,
+              "type": "ID",
               "isRequired": false,
               "attributes": []
             },
@@ -1787,6 +2044,16 @@
                 "queryField": "listHomeInventoryItemByPregnancyId",
                 "fields": [
                   "pregnancyId"
+                ]
+              }
+            },
+            {
+              "type": "key",
+              "properties": {
+                "name": "homeInventoryItemsByRoomId",
+                "queryField": "listHomeInventoryItemByRoomId",
+                "fields": [
+                  "roomId"
                 ]
               }
             },
@@ -6836,6 +7103,29 @@
             "NOT_APPLICABLE"
           ]
         },
+        "HomeRoomKind": {
+          "name": "HomeRoomKind",
+          "values": [
+            "ROOM",
+            "BEDROOM",
+            "BATHROOM",
+            "KITCHEN",
+            "LIVING",
+            "DINING",
+            "OFFICE",
+            "LAUNDRY",
+            "HALLWAY",
+            "STAIRS",
+            "CLOSET",
+            "STORAGE",
+            "GARAGE",
+            "LOT",
+            "FOOTPRINT",
+            "YARD",
+            "HARDSCAPE",
+            "OTHER"
+          ]
+        },
         "HomeInventoryItemCategory": {
           "name": "HomeInventoryItemCategory",
           "values": [
@@ -6956,6 +7246,7 @@
             "MEDICAL",
             "TRAVEL",
             "FINANCIAL",
+            "PROPERTY",
             "OTHER"
           ]
         },
@@ -7145,6 +7436,25 @@
               "isArray": false,
               "type": "String",
               "isRequired": false,
+              "attributes": []
+            }
+          }
+        },
+        "RoomPoint": {
+          "name": "RoomPoint",
+          "fields": {
+            "x": {
+              "name": "x",
+              "isArray": false,
+              "type": "Float",
+              "isRequired": true,
+              "attributes": []
+            },
+            "y": {
+              "name": "y",
+              "isArray": false,
+              "type": "Float",
+              "isRequired": true,
               "attributes": []
             }
           }
