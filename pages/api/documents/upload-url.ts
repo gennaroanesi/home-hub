@@ -58,7 +58,7 @@ function extensionFor(contentType: string): string {
 // Allow-listed prefixes the caller can land their upload in. Keeps
 // callers from picking arbitrary paths under home/ via the body —
 // each surface that needs presigned uploads gets a known sub-prefix.
-const ALLOWED_PREFIXES = new Set(["documents", "pets"]);
+const ALLOWED_PREFIXES = new Set(["documents", "pets", "inventory"]);
 
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method === "POST") {

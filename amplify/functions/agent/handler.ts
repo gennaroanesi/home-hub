@@ -4,7 +4,7 @@ import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
-import { S3Client, GetObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 // Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
 // direct S3 public paths (bucket allows public reads on home/*, UUID is
 // the unguessability gate). A future session should restrict home/documents/
@@ -48,6 +48,13 @@ import {
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
+import {
+  MAX_INVENTORY_IMAGE_BYTES,
+  checkImage,
+  decodeBase64Image,
+  extensionForImage,
+  type ImageBytes,
+} from "../../../lib/inventory-images.js";
 import { matchRoom, roomAndDescendants, roomLabel } from "../../../lib/floorplan.js";
 
 const anthropic = new Anthropic();
@@ -1923,6 +1930,22 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "add_inventory_photo",
+    description:
+      "Attach a photo to an existing inventory item (appends; replace=true swaps out the old ones). The image can come from the photo(s) sent with this message ('add this photo to the stroller'), an https imageUrl, or imageBase64 + contentType (up to ~4 MB of image data). Identify the item by itemId or a fuzzy name query.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        itemId: { type: "string" },
+        query: { type: "string", description: "Fuzzy item name when itemId isn't known." },
+        imageBase64: { type: "string", description: "Base64 image data (a data: URL is fine too)." },
+        contentType: { type: "string", enum: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/gif"], description: "With imageBase64 (optional for data: URLs)." },
+        imageUrl: { type: "string", description: "https URL of an image to fetch." },
+        replace: { type: "boolean", description: "Replace the item's existing photos instead of adding. Default false." },
+      },
+    },
+  },
+  {
     name: "review_inventory_drafts",
     description:
       "Approve or discard DRAFT inventory items (created from a photo by add_inventory_items). 'Looks good' / 'approve' → action approve with the item ids you just created (or all=true for every draft). 'Drop 3' → action discard with that id. Approved items become OWNED (or WISHLIST if that's what they were drafted as). Call with action list to see what's pending.",
@@ -2135,6 +2158,34 @@ async function restockIfLow(
     sortOrder: 0,
   });
   return { lowStock: true, addedToList: list.name, alreadyOnList: false };
+}
+
+// ── Inventory photos ─────────────────────────────────────────────────────────
+// Images for add_inventory_photo land under home/inventory/ (same prefix the
+// web uploader uses), served through CloudFront like every other home/* key.
+
+async function fetchImageUrl(url: string): Promise<ImageBytes> {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error("imageUrl isn't a valid URL");
+  }
+  if (parsed.protocol !== "https:") throw new Error("imageUrl must be https");
+  const res = await fetch(parsed, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
+  if (!res.ok) throw new Error(`Couldn't fetch the image (HTTP ${res.status})`);
+  const declared = Number(res.headers.get("content-length") ?? 0);
+  if (declared > MAX_INVENTORY_IMAGE_BYTES) throw new Error("Image is larger than 10 MB");
+  const data = Buffer.from(await res.arrayBuffer());
+  return checkImage({ data, contentType: res.headers.get("content-type") ?? "" });
+}
+
+async function storeInventoryImage(img: ImageBytes): Promise<string> {
+  const bucket = process.env.HOME_HUB_BUCKET;
+  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
+  const key = `home/inventory/${randomUUID()}.${extensionForImage(img.contentType)}`;
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: img.data, ContentType: img.contentType }));
+  return key;
 }
 
 // ── Shopping list resolution ─────────────────────────────────────────────────
@@ -5514,6 +5565,34 @@ async function executeTool(
       });
     }
 
+    case "add_inventory_photo": {
+      const { items } = await loadInventory();
+      const item = matchInventoryItem(items, input.itemId, input.query);
+      if (!item) return JSON.stringify({ error: `No inventory item matching "${input.itemId ?? input.query ?? ""}"` });
+
+      let newKeys: string[];
+      try {
+        if (input.imageBase64) {
+          newKeys = [await storeInventoryImage(decodeBase64Image(input.imageBase64, input.contentType))];
+        } else if (input.imageUrl) {
+          newKeys = [await storeInventoryImage(await fetchImageUrl(input.imageUrl))];
+        } else if (ctx.currentImageKeys.length > 0) {
+          // Photos sent with this chat message are already in S3.
+          newKeys = ctx.currentImageKeys;
+        } else {
+          return JSON.stringify({ error: "No image given — send a photo, or pass imageUrl or imageBase64" });
+        }
+      } catch (err: any) {
+        return JSON.stringify({ error: err?.message ?? String(err) });
+      }
+
+      const existing = (item.imageKeys ?? []).filter((k): k is string => !!k);
+      const imageKeys = input.replace ? newKeys : Array.from(new Set([...existing, ...newKeys]));
+      const { errors } = await client.models.homeInventoryItem.update({ id: item.id, imageKeys });
+      if (errors?.length) return JSON.stringify({ error: errors[0].message });
+      return JSON.stringify({ success: true, itemId: item.id, name: item.name, added: newKeys.length, photos: imageKeys.length });
+    }
+
     case "review_inventory_drafts": {
       const { data: draftRows } = await client.models.homeInventoryItem.list({
         filter: { status: { eq: "DRAFT" } },
@@ -5925,6 +6004,8 @@ CONSUMABLE carries unit + a low-stock threshold.
   review_inventory_drafts list first and approve the ones from that photo.
   If they didn't say where, ask before adding.
   Pets are owners too: "Dolce's stuff" → ownerName "Dolce".
+- "Add this photo to the stroller" (photo attached) → add_inventory_photo for
+  that item; the photo from the message is used automatically.
 - "Where is X?" → list_inventory with query X and answer with its room +
   location. "Put the stroller in the garage" → manage_inventory_item update
   with roomName (location is the detail within the room, e.g. "top shelf").

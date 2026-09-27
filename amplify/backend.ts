@@ -193,6 +193,16 @@ agentLambda.addToRolePolicy(
   })
 );
 
+// add_inventory_photo stores images sent via URL / base64 (API, chat)
+// under home/inventory/ — the same prefix the web uploader uses.
+agentLambda.addToRolePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    actions: ["s3:PutObject"],
+    resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/inventory/*`],
+  })
+);
+
 // Agent Lambda reads the Duo Auth API integration key/secret from
 // Secrets Manager for wave 2's Duo Push flow. The -* suffix matches
 // the 6-char random version suffix Secrets Manager appends to every

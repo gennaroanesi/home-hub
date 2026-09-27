@@ -89,6 +89,16 @@ Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, sec
 - **Guardrails:** if she doesn't know the room she asks first, since the prompt says to. If the room or owner doesn't resolve, nothing is created. Max 60 items per call.
 - **Photos in the app:** a thumbnail on inventory rows and in the map's room panel; full photos in the item dialog, where one can be removed. URLs come from `lib/image-loader` (`photoUrl`).
 
+### Adding photos to existing items
+- **Web:** **Add photo** in the item dialog (works for new items too; on phones it offers the camera). It presigns via `/api/documents/upload-url` (prefix `inventory` → `home/inventory/<uuid>.<ext>`), PUTs straight to S3, and saves the keys on Save.
+- **Janet / API:** **`add_inventory_photo`** takes an item (`itemId` or a fuzzy `query`) and an image, appending to the item's photos (or replacing them with `replace`). The image comes from one of:
+  - the photo sent with the chat message (no copy needed; it's already in S3)
+  - an https `imageUrl` that the Lambda fetches (15 s timeout, 10 MB cap)
+  - `imageBase64` + `contentType`, or a `data:` URL
+
+  Allowed types are JPEG, PNG, WebP, HEIC and GIF (`lib/inventory-images.ts`, tested). Fetched and base64 images are stored under `home/inventory/`; Janet's role gained `s3:PutObject` on that prefix (`amplify/backend.ts`).
+- **Over the bearer-key API:** it's exposed automatically as `POST /api/muse/tools/add_inventory_photo`. That route's body limit is raised to 6 MB for base64, but the Lambda's 6 MB synchronous-invoke payload makes about 4 MB of image the real ceiling; use `imageUrl` above that.
+
 ## Pets as owners
 `homeInventoryItem.petId` (indexed). The web owner picker/filter lists active pets ("🐶 Dolce"). Janet resolves pet names in `ownerName` (`resolveInventoryOwner` → exactly one of `ownerPersonId` / `pregnancyId` / `petId`), and `list_inventory` shows the pet as the owner.
 

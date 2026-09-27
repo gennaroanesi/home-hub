@@ -7,6 +7,11 @@
  */
 import { invokeAgent, listTools, missingRequired, withMuseAuth } from "@/lib/muse-api";
 
+// Room for base64 images (add_inventory_photo). The request is forwarded
+// to the agent Lambda, whose synchronous invoke payload caps out at 6 MB,
+// so ~4 MB of image data is the practical limit — use imageUrl beyond that.
+export const config = { api: { bodyParser: { sizeLimit: "6mb" } } };
+
 export default withMuseAuth(async (req, res, { sender }) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });

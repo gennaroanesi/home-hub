@@ -11,7 +11,7 @@
 // low consumables onto the shopping list automatically; here that's a
 // manual "Add to list" button.
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -26,7 +26,7 @@ import {
   ModalBody,
   ModalFooter,
 } from "@heroui/modal";
-import { FaBoxOpen, FaPlus, FaMinus, FaExternalLinkAlt } from "react-icons/fa";
+import { FaBoxOpen, FaCamera, FaPlus, FaMinus, FaExternalLinkAlt } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
@@ -736,6 +736,36 @@ function ItemModal({
   const [f, setF] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const photoInputRef = useRef<HTMLInputElement>(null);
+
+  // Presign → PUT straight to S3 (home/inventory/) → keep the key. The
+  // item row gets the keys on Save, so this works for new items too.
+  async function uploadPhotos(files: FileList) {
+    setUploading(true);
+    try {
+      for (const file of Array.from(files)) {
+        const contentType = file.type || "image/jpeg";
+        const urlRes = await fetch("/api/documents/upload-url", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ contentType, prefix: "inventory" }),
+        });
+        if (!urlRes.ok) {
+          const err = await urlRes.json().catch(() => ({}));
+          throw new Error(err.error ?? `Upload URL failed: ${urlRes.status}`);
+        }
+        const { uploadUrl, s3key } = await urlRes.json();
+        const putRes = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
+        if (!putRes.ok) throw new Error(`Upload failed: ${putRes.status}`);
+        setPhotos((prev) => [...prev, s3key]);
+      }
+    } catch (err: any) {
+      addToast({ title: "Photo upload failed", description: err?.message ?? String(err), color: "danger" });
+    } finally {
+      setUploading(false);
+    }
+  }
   const set = (k: string) => (v: string) => setF((prev) => ({ ...prev, [k]: v }));
 
   useEffect(() => {
@@ -1045,9 +1075,31 @@ function ItemModal({
             />
           )}
 
-          {photos.length > 0 && (
-            <div>
-              <p className="text-xs text-default-500 mb-1">Photos</p>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-xs text-default-500">Photos</p>
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                multiple
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files?.length) void uploadPhotos(e.target.files);
+                  e.target.value = ""; // picking the same file again still fires
+                }}
+              />
+              <Button
+                size="sm"
+                variant="flat"
+                startContent={<FaCamera size={11} />}
+                isLoading={uploading}
+                onPress={() => photoInputRef.current?.click()}
+              >
+                Add photo
+              </Button>
+            </div>
+            {photos.length > 0 && (
               <div className="flex flex-wrap gap-2">
                 {photos.map((k) => (
                   <div key={k} className="relative">
@@ -1066,8 +1118,8 @@ function ItemModal({
                   </div>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
           <Input label="Link" type="url" placeholder="https://" value={f.url ?? ""} onValueChange={set("url")} />
           <Input label="Tags" placeholder="nursery, feeding" value={f.tags ?? ""} onValueChange={set("tags")} />
           <Textarea label="Notes" minRows={2} value={f.notes ?? ""} onValueChange={set("notes")} />
