@@ -511,3 +511,60 @@ export function matchRoom<R extends RoomRef>(rooms: R[], query: string): R | nul
     null
   );
 }
+
+// ── Zoom / pan (viewBox math) ────────────────────────────────────────────────
+
+export interface ViewBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function parseViewBox(attr: string | null | undefined): ViewBox | null {
+  const n = (attr ?? "").trim().split(/[\s,]+/).map(Number);
+  if (n.length !== 4 || n.some((v) => !Number.isFinite(v)) || n[2] <= 0 || n[3] <= 0) return null;
+  return { x: n[0], y: n[1], w: n[2], h: n[3] };
+}
+
+export function formatViewBox(v: ViewBox): string {
+  return [v.x, v.y, v.w, v.h].map((n) => Math.round(n * 1000) / 1000).join(" ");
+}
+
+/**
+ * Zoom by `factor` (>1 = in) keeping the point `at` (in drawing units)
+ * fixed on screen. Clamped between `maxZoom`× the full view and the full
+ * view itself.
+ */
+export function zoomViewBox(v: ViewBox, factor: number, at: Point, full: ViewBox, maxZoom = 12): ViewBox {
+  const minW = full.w / maxZoom;
+  const w = Math.min(full.w, Math.max(minW, v.w / factor));
+  const k = w / v.w;
+  const h = v.h * k;
+  return clampViewBox({ x: at.x - (at.x - v.x) * k, y: at.y - (at.y - v.y) * k, w, h }, full);
+}
+
+/** Keep a zoomed view from drifting off the drawing. */
+export function clampViewBox(v: ViewBox, full: ViewBox): ViewBox {
+  if (v.w >= full.w && v.h >= full.h) return { ...full };
+  const x = v.w >= full.w ? full.x + (full.w - v.w) / 2 : Math.min(Math.max(v.x, full.x), full.x + full.w - v.w);
+  const y = v.h >= full.h ? full.y + (full.h - v.h) / 2 : Math.min(Math.max(v.y, full.y), full.y + full.h - v.h);
+  return { x, y, w: v.w, h: v.h };
+}
+
+/**
+ * A view framing `points` with some breathing room, in the full view's
+ * aspect ratio so the zoom doesn't distort. Never smaller than `minSize`
+ * feet across, so a closet doesn't fill the whole screen.
+ */
+export function fitViewBox(points: Point[], full: ViewBox, pad = 0.35, minSize = 12): ViewBox {
+  const b = bounds(points);
+  const aspect = full.w / full.h;
+  let w = Math.max(b.width * (1 + pad * 2), minSize);
+  let h = Math.max(b.depth * (1 + pad * 2), minSize);
+  if (w / h > aspect) h = w / aspect;
+  else w = h * aspect;
+  const cx = b.minX + b.width / 2;
+  const cy = b.minY + b.depth / 2;
+  return clampViewBox({ x: cx - w / 2, y: cy - h / 2, w: Math.min(w, full.w), h: Math.min(h, full.h) }, full);
+}

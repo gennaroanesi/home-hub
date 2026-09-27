@@ -13,6 +13,10 @@ import {
   matchRoom,
   roomAndDescendants,
   roomLabel,
+  fitViewBox,
+  formatViewBox,
+  parseViewBox,
+  zoomViewBox,
 } from "./floorplan";
 
 describe("parseFeetInches", () => {
@@ -156,5 +160,38 @@ describe("room names", () => {
     expect(matchRoom(rooms, "Primary bedroom › Closet")?.id).toBe("cl");
     expect(matchRoom(rooms, "in the garage by the door")?.id).toBe("gar");
     expect(matchRoom(rooms, "attic")).toBeNull();
+  });
+});
+
+describe("zoom math", () => {
+  const full = { x: -2, y: -2, w: 40, h: 60 };
+
+  it("parses and formats viewBoxes", () => {
+    expect(parseViewBox("-2 -2 40 60")).toEqual(full);
+    expect(parseViewBox("1 2 0 3")).toBeNull();
+    expect(formatViewBox({ x: 1.23456, y: 0, w: 10, h: 5 })).toBe("1.235 0 10 5");
+  });
+
+  it("zooms around a fixed point and clamps", () => {
+    const z = zoomViewBox(full, 2, { x: 18, y: 28 }, full);
+    expect(z.w).toBe(20);
+    expect(z.h).toBe(30);
+    expect(z.x).toBe(8); // 18 - (18 - -2) / 2
+    expect(z.y).toBe(13);
+    // Zooming out past the full view snaps back to it.
+    expect(zoomViewBox(z, 0.1, { x: 0, y: 0 }, full)).toEqual(full);
+    // Max zoom.
+    expect(zoomViewBox(full, 1000, { x: 18, y: 28 }, full).w).toBeCloseTo(40 / 12);
+  });
+
+  it("frames a room in the drawing's aspect ratio", () => {
+    const v = fitViewBox(rectPoints(20, 30, 10, 8), full);
+    expect(v.w / v.h).toBeCloseTo(40 / 60);
+    expect(v.x).toBeLessThan(20);
+    expect(v.x + v.w).toBeGreaterThan(30);
+    expect(v.y).toBeLessThan(30);
+    expect(v.y + v.h).toBeGreaterThan(38);
+    // A tiny closet still gets at least minSize feet of context.
+    expect(fitViewBox(rectPoints(5, 5, 2, 2), full).w).toBeGreaterThanOrEqual(12);
   });
 });

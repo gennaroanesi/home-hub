@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: deployed to prod by Amplify build 165 (`f11032b`). The **lot and the first floor are traced** and waiting to be imported on `/map` from `~/Downloads/house-map.json`, which was handed to the user. The **second floor** is next; its plan and DWG are in hand. `mobile/amplify_outputs.json` is regenerated, but that commit isn't pushed yet (it only affects mobile).
+Status as of 2026-09-26: deployed to prod by build 165 (`f11032b`), and the user has imported the lot and first floor. **Committed but not pushed:** zoom and pan on the map (`components/floor-map.tsx`). **The second floor is traced** and handed over as `~/Downloads/house-map-second-floor.json`, to import once. `~/Downloads/house-map.json` now holds all three levels and serves as a backup.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
@@ -66,6 +66,23 @@ Source: Meritage's marketing plan "The Reynolds / Plan 890", first floor (REV 01
 - **Lot kept in step:** the lot's house footprint now uses the floor plan's front bump (Bedroom 5 + foyer, 15'-5" wide), with the porch and walk in front of it.
 - **Covered patio:** the user confirmed the larger, "optional" covered patio from the plot plan (about 28' × 7') was built. Both the lot and the first floor use it; the marketing plan shows the standard 18'-5" × 6'-4".
 
+## The second floor (traced 2026-09-26)
+Source: the Plan 890 second-floor marketing plan, at the same scale as the first floor (the house's 34'-11" width).
+- **Placement:** the rear wall sits over the first floor's Family / Primary suite front wall (y = 16'), so the load-bearing walls stack. That also puts the upper stair flight over the first-floor stairs, within about 0.5'. The game room ends about 5' behind the garage face. Bedroom 5 and the porch are one-story.
+- **Rejected alternative:** front flush with the garage. That puts the stairs across the primary closet.
+- **13 spaces:** Bedrooms 2, 3 and 4 (each with a closet), Bath 2, Upstairs hall (+ Linen), Storage, Stairs, Study, Game room.
+- **Floor-2 DWG:** its 14 dimensions use a different underlay scale from floor 1 (interior width 413" vs 398"), so they're only proportions. They weren't used as measurements.
+
+## Zoom and pan
+`components/floor-map.tsx` wraps the generated SVG and drives its `viewBox`:
+- **Controls:** + / − / Fit buttons; pinch or ⌘/Ctrl + scroll zooms around the cursor; drag pans; two-finger scroll pans only once zoomed in, otherwise the page scrolls.
+- **Rooms:** tapping a room selects it and eases the view to frame it (`fitViewBox`: the drawing's aspect ratio, at least 12' across). Selecting from the side panel does the same.
+- **State:** the view survives re-renders (selection, badges) and resets when switching floors. The math is in `lib/floorplan.ts` (`zoomViewBox`, `clampViewBox`, `fitViewBox`), with tests.
+- **Not yet tried in a real browser;** it needs a human with a mouse and trackpad.
+
+## Storage
+Importing writes floors and rooms into the database (`homeFloor` / `homeRoom`). The JSON file is only a way in, so nothing needs re-uploading. Re-importing is only for corrections: it upserts by floor + room name, so inventory links survive.
+
 ## Documents
 `homeDocument.type` gained **PROPERTY** for house papers, with labels on web and mobile and in Janet's filter. The Documents page is how files get stored: it creates the S3 object and the record together. This environment has no write access to the database, so the user uploads the plot plan and both floor-plan PDFs there. The DWGs can't be uploaded: Documents accepts PDF and images only, and the DWGs add nothing beyond the dimensions already used.
 
@@ -77,7 +94,7 @@ Source: Meritage's marketing plan "The Reynolds / Plan 890", first floor (REV 01
 ## Next steps
 1. ~~Deploy~~ Done: build 165.
 2. **Import** `house-map.json` on `/map` after the deploy, and upload the PDFs to Documents as Property.
-3. **Trace the second floor** from `…890_WB-page_02.pdf`, using that DWG's 14 dimensions for scale.
+3. ~~Trace the second floor~~ Done. **Import** `house-map-second-floor.json`.
 4. **Earlier plan for tracing floor plans:** the user sends images of both floors and the garage plus known room dimensions. Trace the outlines in feet, using the given measurements as the scale (they win over the drawing). Render a preview for the user to check, then hand over the JSON to import on `/map`.
 5. **Later:**
    - Show Home Assistant devices in their room (match `homeRoom.haArea` to `homeDevice.area`).
