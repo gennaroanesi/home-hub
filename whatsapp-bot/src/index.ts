@@ -32,7 +32,58 @@ const GROUP_JID = process.env.WHATSAPP_GROUP_JID;
 // Short interval because agent responses arrive via this queue — user is
 // actively waiting for them. 5s is the minimum that keeps cost trivial
 // (~12 AppSync list calls / min against an indexed status filter).
-const OUTBOUND_POLL_MS = 5_000;
+// 1s so agent replies (and their chunks — see "agent_reply_partial")
+// land quickly. pollOutbound skips a tick while the previous one is still
+// delivering, so a slow send can't let a later chunk overtake it.
+const OUTBOUND_POLL_MS = 1_000;
+
+// ── "typing…" indicator ─────────────────────────────────────────────────────
+// Shown from the moment a message is handed to Janet until her final
+// reply (kind "agent_reply") is delivered; re-sent after each partial
+// chunk, since sending a message clears it. Keyed by reply target (group
+// jid, or the DM person's id) because a DM's inbound jid (@lid) can
+// differ from the phone jid replies go to. WhatsApp drops "composing"
+// after ~25s, so it's refreshed every 10s; entries expire after 2 min in
+// case a reply never comes.
+const TYPING_REFRESH_MS = 10_000;
+const TYPING_MAX_MS = 120_000;
+const typing = new Map<string, { jid: string; expiresAt: number }>();
+
+function typingKey(t: { target: "PERSON" | "GROUP" | string; personId?: string | null; groupJid?: string | null }): string {
+  return t.target === "PERSON" ? `p:${t.personId ?? ""}` : `g:${t.groupJid ?? GROUP_JID ?? ""}`;
+}
+
+async function sendTyping(socket: ReturnType<typeof makeWASocket>, jid: string, state: "composing" | "paused") {
+  try {
+    await socket.sendPresenceUpdate(state, jid);
+  } catch (err) {
+    logger.debug({ err, jid, state }, "Presence update failed");
+  }
+}
+
+function startTyping(socket: ReturnType<typeof makeWASocket>, key: string, jid: string) {
+  typing.set(key, { jid, expiresAt: Date.now() + TYPING_MAX_MS });
+  void sendTyping(socket, jid, "composing");
+}
+
+function stopTyping(socket: ReturnType<typeof makeWASocket>, key: string) {
+  const t = typing.get(key);
+  if (!t) return;
+  typing.delete(key);
+  void sendTyping(socket, t.jid, "paused");
+}
+
+function refreshTyping(socket: ReturnType<typeof makeWASocket>) {
+  const now = Date.now();
+  for (const [key, t] of Array.from(typing.entries())) {
+    if (now > t.expiresAt) {
+      typing.delete(key);
+      void sendTyping(socket, t.jid, "paused");
+    } else {
+      void sendTyping(socket, t.jid, "composing");
+    }
+  }
+}
 
 // Agent Lambda ARN (set by backend.ts). The bot invokes the Lambda with
 // InvocationType="Event" (fire-and-forget) to sidestep AppSync's 30s
@@ -203,8 +254,12 @@ async function deliverOutboundMessage(
   }
 
   // Send text first so the agent's narrative lands before any attachments.
-  const sent = await socket.sendMessage(toJid, { text: msg.text });
-  if (sent?.key?.id) sentMessageIds.add(sent.key.id);
+  // A final agent chunk can be attachment-only (its text already went out
+  // as partials), so skip empty text.
+  if (msg.text?.trim()) {
+    const sent = await socket.sendMessage(toJid, { text: msg.text });
+    if (sent?.key?.id) sentMessageIds.add(sent.key.id);
+  }
 
   // Pull attachments linked to this outbound message (agent_reply with
   // photos from send_photos, future scheduler-generated documents, etc.)
@@ -252,11 +307,20 @@ async function deliverOutboundMessage(
   // If this is an agent reply, append the assistant turn to in-memory
   // history so the next user message sees it. See historyKey() for why
   // DMs key by personId rather than chatJid.
-  if (msg.kind === "agent_reply") {
+  // Janet's error reply ends the turn too.
+  if (msg.kind === "agent_error") stopTyping(socket, typingKey(msg));
+
+  // Chunks ("agent_reply_partial") are part of the same answer, so they
+  // go into history too.
+  if (msg.kind === "agent_reply" || msg.kind === "agent_reply_partial") {
     const isDm = msg.target === "PERSON";
     const keyJid = isDm ? toJid : (msg.groupJid ?? toJid);
     const hKey = historyKey(keyJid, isDm, msg.personId);
-    appendHistory(hKey, "assistant", msg.text);
+    if (msg.text?.trim()) appendHistory(hKey, "assistant", msg.text);
+    // Keep "typing…" up between chunks; clear it after the final reply.
+    const key = typingKey(msg);
+    if (msg.kind === "agent_reply") stopTyping(socket, key);
+    else if (typing.has(key)) void sendTyping(socket, typing.get(key)!.jid, "composing");
   }
 
   logger.info({ id: msg.id, kind: msg.kind, toJid }, "Outbound message sent");
@@ -326,7 +390,14 @@ const deliveringIds = new Set<string>();
 // as a safety net if the bot poller ever silently misses rows again.
 const STALE_PENDING_MS = 12 * 60 * 60 * 1000;
 
+let pollInFlight = false;
+
 async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<void> {
+  // One poll at a time: with a 1s interval a slow delivery (photos) would
+  // otherwise overlap the next tick, and a later chunk could be sent
+  // before an earlier one finishes.
+  if (pollInFlight) return;
+  pollInFlight = true;
   try {
     const pending = await listPendingOutboundMessages();
     if (pending.length === 0) return;
@@ -359,6 +430,9 @@ async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<vo
     }
 
     if (fresh.length === 0) return;
+    // The status index has no sort key, so order explicitly — an agent
+    // reply's chunks must arrive in the order they were written.
+    fresh.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     logger.info(
       { count: fresh.length, inFlight: deliveringIds.size, staled: stale.length },
       "Processing pending outbound messages"
@@ -380,6 +454,8 @@ async function pollOutbound(socket: ReturnType<typeof makeWASocket>): Promise<vo
     }
   } catch (err) {
     logger.error({ err }, "Outbound poll failed");
+  } finally {
+    pollInFlight = false;
   }
 }
 
@@ -434,6 +510,7 @@ async function startBot() {
 
   // Outbound message poller handle — reset on each connection cycle
   let outboundPollHandle: NodeJS.Timeout | null = null;
+  let typingHandle: NodeJS.Timeout | null = null;
   let phoneCacheHandle: NodeJS.Timeout | null = null;
 
   // Log history sync events — this confirms whether the linked device
@@ -467,6 +544,11 @@ async function startBot() {
         clearInterval(outboundPollHandle);
         outboundPollHandle = null;
       }
+      if (typingHandle) {
+        clearInterval(typingHandle);
+        typingHandle = null;
+      }
+      typing.clear();
       if (phoneCacheHandle) {
         clearInterval(phoneCacheHandle);
         phoneCacheHandle = null;
@@ -503,6 +585,8 @@ async function startBot() {
       if (!outboundPollHandle) {
         pollOutbound(socket);
         outboundPollHandle = setInterval(() => pollOutbound(socket), OUTBOUND_POLL_MS);
+        if (typingHandle) clearInterval(typingHandle);
+        typingHandle = setInterval(() => refreshTyping(socket), TYPING_REFRESH_MS);
         logger.info({ intervalMs: OUTBOUND_POLL_MS }, "Outbound message poller started");
       }
 
@@ -879,6 +963,8 @@ async function startBot() {
             ),
           })
         );
+
+        startTyping(socket, typingKey(replyTarget), chatJid);
 
         logger.info(
           { inboundMessageId, sender, chatJid, attachments: uploadedAttachments.length },

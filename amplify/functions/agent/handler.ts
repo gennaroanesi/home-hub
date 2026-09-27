@@ -1,4 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
+import { randomUUID } from "node:crypto";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
@@ -46,6 +47,7 @@ import {
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
+import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import { matchRoom, roomAndDescendants, roomLabel } from "../../../lib/floorplan.js";
 
 const anthropic = new Anthropic();
@@ -180,12 +182,14 @@ const FALLBACK_BETA = "server-side-fallback-2026-07-01";
 // One place for the Messages API call. output_config and fallbacks are
 // newer than the pinned @anthropic-ai/sdk typings, so the body is cast;
 // the fallback beta goes in as a header.
-function callClaude(params: {
+interface ClaudeTurn {
   system: string;
   messages: Anthropic.MessageParam[];
   tools: Anthropic.Tool[];
-}): Promise<Anthropic.Message> {
-  const body = {
+}
+
+function claudeBody(params: ClaudeTurn) {
+  return {
     model: MODEL_ID,
     max_tokens: MAX_TOKENS,
     system: params.system,
@@ -194,9 +198,22 @@ function callClaude(params: {
     output_config: { effort: EFFORT },
     fallbacks: "default",
   };
-  return anthropic.messages.create(body as unknown as Anthropic.MessageCreateParamsNonStreaming, {
+}
+
+function callClaude(params: ClaudeTurn): Promise<Anthropic.Message> {
+  return anthropic.messages.create(claudeBody(params) as unknown as Anthropic.MessageCreateParamsNonStreaming, {
     headers: { "anthropic-beta": FALLBACK_BETA },
   }) as Promise<Anthropic.Message>;
+}
+
+// Same request, streamed: text deltas go to onText as they arrive (used
+// to send WhatsApp replies in chunks); resolves with the full message.
+async function streamClaude(params: ClaudeTurn, onText: (delta: string) => void): Promise<Anthropic.Message> {
+  const stream = anthropic.messages.stream(claudeBody(params) as unknown as Anthropic.MessageStreamParams, {
+    headers: { "anthropic-beta": FALLBACK_BETA },
+  });
+  stream.on("text", onText);
+  return (await stream.finalMessage()) as Anthropic.Message;
 }
 
 const SCHEDULER_LAMBDA_ARN = process.env.SCHEDULER_LAMBDA_ARN!;
@@ -5914,6 +5931,8 @@ CONSUMABLE carries unit + a low-stock threshold.
 - Items for the baby on the way use forBaby / ownerName "baby"; shared
   household items have no owner.
 
+Latency-sensitive: begin your visible answer immediately. When a request needs tools, start with one short line saying what you're doing (on WhatsApp it's sent right away while you work). Put a blank line between paragraphs — long replies are delivered paragraph by paragraph. Formatting is WhatsApp-style plain text: *single asterisks* for bold (sparingly) and "• " for bullets — no Markdown headings, tables, or **double asterisks**.
+
 Be concise and friendly. When creating items, confirm what you did. If the user's request is ambiguous, ask for clarification. Use the tools available to take actions — don't just describe what you would do.`;
 
   // Build messages for Anthropic API format
@@ -6021,11 +6040,45 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
   };
   const activeTools = parsedChatContext.channel === "API" ? API_TOOLS : tools;
 
+  // WhatsApp: stream each model turn and send the reply in chunks
+  // (lib/reply-chunker.ts) — the opening line lands in a couple of
+  // seconds, long answers arrive in parts, and "what I'm doing" text
+  // before a tool call goes out while the tools run. The final chunk is
+  // written after the loop as the "agent_reply" row (it carries photos
+  // and tells the bot to stop "typing…"). Web chat keeps a single call.
+  const waTarget = isAsync && replyTarget && inboundMessageId ? replyTarget : null;
+  const writeOutbound = async (text: string, kind: "agent_reply" | "agent_reply_partial", id?: string) => {
+    const client = await getDataClient();
+    const { data, errors } = await client.models.homeOutboundMessage.create({
+      ...(id ? { id } : {}),
+      channel: "WHATSAPP",
+      target: waTarget!.target,
+      groupJid: waTarget!.groupJid ?? null,
+      personId: waTarget!.personId ?? null,
+      text,
+      status: "PENDING",
+      kind,
+    });
+    if (errors?.length) console.error(`[agent] failed to create ${kind} for ${inboundMessageId}:`, errors);
+    return data;
+  };
+  const chunker = waTarget
+    ? new ReplyChunker(async (text) => {
+        await writeOutbound(text, "agent_reply_partial");
+      })
+    : null;
+  const runTurn = () =>
+    chunker
+      ? streamClaude({ system: systemPrompt, messages, tools: activeTools }, (d) => chunker.push(d))
+      : callClaude({ system: systemPrompt, messages, tools: activeTools });
+
   try {
     // Agentic loop
-    let response = await callClaude({ system: systemPrompt, messages, tools: activeTools });
+    let response = await runTurn();
 
     while (response.stop_reason === "tool_use") {
+      // Text before the tool call ("Let me check…") goes out now.
+      chunker?.flush();
       messages.push({ role: "assistant", content: response.content });
 
       const toolResults: Anthropic.ToolResultBlockParam[] = [];
@@ -6055,7 +6108,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
 
       messages.push({ role: "user", content: toolResults });
 
-      response = await callClaude({ system: systemPrompt, messages, tools: activeTools });
+      response = await runTurn();
     }
 
     // Extract final text response. A refusal (even after the server-side
@@ -6066,48 +6119,50 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)
       .join("\n");
+    let overridden = false;
     if (stopReason === "refusal") {
       const details = (response as unknown as { stop_details?: { category?: string | null } }).stop_details;
       console.warn(`[agent] refusal (category=${details?.category ?? "none"}) for sender=${sender}`);
       assistantText = "Sorry — I can't help with that one. Try rephrasing, or ask me something else.";
+      overridden = true;
     } else if (stopReason === "max_tokens" && !assistantText.trim()) {
       console.warn(`[agent] hit max_tokens with no text for sender=${sender}`);
       assistantText = "Sorry — that took more than I can handle in one go. Could you split it into smaller asks?";
+      overridden = true;
+    }
+
+    // WhatsApp final message: whatever the chunker hasn't sent yet. Wait
+    // for queued chunks first so the final row is written (and ordered)
+    // after them.
+    let finalWaText = assistantText || "(no response)";
+    if (chunker) {
+      const rest = chunker.takeRemainder();
+      await chunker.drain();
+      finalWaText = overridden ? assistantText : rest || (chunker.sent > 0 ? "" : "(no response)");
     }
 
     if (isAsync && replyTarget && inboundMessageId) {
       const client = await getDataClient();
 
-      // Write the main text response to the outbound queue. The bot's
-      // 5s poller picks it up and delivers via WhatsApp.
-      const { data: outbound, errors: outboundErrors } =
-        await client.models.homeOutboundMessage.create({
-          channel: "WHATSAPP",
-          target: replyTarget.target,
-          groupJid: replyTarget.groupJid ?? null,
-          personId: replyTarget.personId ?? null,
-          text: assistantText || "(no response)",
-          status: "PENDING",
-          kind: "agent_reply",
-        });
-      if (outboundErrors?.length) {
-        console.error(`[agent] failed to create outbound for ${inboundMessageId}:`, outboundErrors);
-      }
+      // The final reply's id is chosen up front so its attachments can be
+      // written BEFORE the outbound row exists: the bot polls every second
+      // and would otherwise deliver the reply before its photos are linked.
+      const outboundId = randomUUID();
 
       // Write each tool-generated attachment (currently all from
-      // send_photos) as a homeAttachment row pointed at the new outbound
+      // send_photos) as a homeAttachment row pointed at the outbound
       // message. Using s3Key to store the full CloudFront URL when the
       // URL isn't a direct S3 path — the bot detects this at delivery
       // time and passes the URL straight to Baileys. A future session
       // should add a proper `sourceUrl` field to homeAttachment to avoid
       // this overload.
-      if (outbound?.id) {
+      {
         for (const att of toolCtx.attachments) {
           if (!att.url) continue;
           try {
             await client.models.homeAttachment.create({
               parentType: "OUTBOUND_MESSAGE",
-              parentId: outbound.id,
+              parentId: outboundId,
               s3Key: att.url, // URL or S3 key; bot checks with looksLikeUrl
               filename: att.caption?.split(" · ")[2] ?? `${att.type}.jpg`,
               contentType: att.type === "image" ? "image/jpeg" : att.type,
@@ -6115,10 +6170,13 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
               uploadedBy: "agent",
             });
           } catch (err) {
-            console.warn(`[agent] Failed to write outbound attachment for ${outbound.id}:`, err);
+            console.warn(`[agent] Failed to write outbound attachment for ${outboundId}:`, err);
           }
         }
       }
+
+      // Now the final reply itself — the bot's 1s poller picks it up.
+      const outbound = await writeOutbound(finalWaText, "agent_reply", outboundId);
 
       // Close out the inbound message row.
       await client.models.homeInboundMessage.update({

@@ -87,6 +87,8 @@ npm run create-user -- --env dev --email you@example.com --name "Your Name"
 
 `whatsapp-bot/` is an ECS Fargate service that runs Baileys to pair with a WhatsApp account as a linked device. The container image is built by an in-stack CodeBuild project triggered from `amplify.yml`'s postBuild step. The service starts at `desiredCount: 0` until you push the first image, then ramp it to 1.
 
+Replies: the bot shows "typing…" while Janet works and polls the reply queue (`homeOutboundMessage`) every second. On WhatsApp, Janet streams her answer and sends it in chunks (`lib/reply-chunker.ts`): her opening line first, then paragraph batches (`kind: "agent_reply_partial"`), then the final `agent_reply`, which carries any photos and clears "typing…". The bot delivers a chat's rows in creation order, one poll at a time.
+
 Pairing flow: deploy → bump `desiredCount: 1` → wait for the task to start → open `https://your-app/api/whatsapp-qr?token=$QR_ACCESS_TOKEN` in a browser to render the QR → scan from your phone's WhatsApp (Settings → Linked Devices → Link Device) → bot stores the auth state in S3 (`s3://$HOME_HUB_BUCKET/whatsapp-bot/auth/`) and reuses it on every restart. The `?token=` query string is required — the route 401s without it.
 
 ## Home Assistant integration
