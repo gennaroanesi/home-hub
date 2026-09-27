@@ -5,7 +5,7 @@ import { getCurrentUser, fetchUserAttributes } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
-import { Input } from "@heroui/input";
+import { Textarea } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
 import { Spinner, addToast } from "@heroui/react";
 import { FaPaperPlane, FaChevronDown, FaChevronUp, FaPlus, FaEllipsisV, FaPaperclip, FaTimes } from "react-icons/fa";
@@ -470,11 +470,14 @@ export default function HomeAgent() {
     }
   }
 
+  // Enter sends, Shift+Enter breaks the line. On touch devices (no easy
+  // Shift) Enter always breaks the line and the send button sends. Never
+  // send mid-IME-composition (Enter confirms the composed text there).
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
-    }
+    if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+    if (typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)").matches) return;
+    e.preventDefault();
+    sendMessage();
   }
 
   return (
@@ -686,7 +689,7 @@ export default function HomeAgent() {
               className="hidden"
               onChange={handleFilePick}
             />
-            <div className="flex gap-2">
+            <div className="flex items-end gap-2">
               <Button
                 isIconOnly
                 variant="flat"
@@ -696,12 +699,15 @@ export default function HomeAgent() {
               >
                 <FaPaperclip />
               </Button>
-              <Input
-                placeholder="Ask me to create a task, add a bill, schedule a reminder..."
+              <Textarea
+                aria-label="Message Janet"
+                placeholder="Ask me to create a task, add a bill, schedule a reminder… (Shift+Enter for a new line)"
                 value={input}
                 onValueChange={setInput}
                 onKeyDown={handleKeyDown}
                 isDisabled={isLoading}
+                minRows={1}
+                maxRows={6}
                 classNames={{
                   inputWrapper: "bg-default-100",
                 }}
