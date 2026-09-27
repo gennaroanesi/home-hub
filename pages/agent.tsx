@@ -701,7 +701,7 @@ export default function HomeAgent() {
               </Button>
               <Textarea
                 aria-label="Message Janet"
-                placeholder="Ask me to create a task, add a bill, schedule a reminder… (Shift+Enter for a new line)"
+                placeholder="Ask me to create a task, add a bill, schedule a reminder..."
                 value={input}
                 onValueChange={setInput}
                 onKeyDown={handleKeyDown}
