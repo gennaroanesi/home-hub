@@ -97,7 +97,12 @@ Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, sec
   - `imageBase64` + `contentType`, or a `data:` URL
 
   Allowed types are JPEG, PNG, WebP, HEIC and GIF (`lib/inventory-images.ts`, tested). Fetched and base64 images are stored under `home/inventory/`; Janet's role gained `s3:PutObject` on that prefix (`amplify/backend.ts`).
-- **Over the bearer-key API:** it's exposed automatically as `POST /api/muse/tools/add_inventory_photo`. That route's body limit is raised to 6 MB for base64, but the Lambda's 6 MB synchronous-invoke payload makes about 4 MB of image the real ceiling; use `imageUrl` above that.
+- **Over the bearer-key API:** it's exposed automatically as `POST /api/muse/tools/add_inventory_photo`. **Image bytes don't go in the JSON body:** the app has an Amplify-created AWS WAF attached (`CreatedByAmplify-dkiwlyw3k1yfi-…`). Its Core rule set blocks request bodies over about 8 KB with a CloudFront 403 "Request blocked", and larger bodies had the connection dropped. The Muse client found this on 2026-09-27. The supported flow is:
+  1. `POST /api/muse/uploads { contentType }` returns `{ uploadUrl, headers, s3Key }`: a presigned S3 PUT, 15 minutes, with `Content-Type` signed in so another type gets a 403.
+  2. PUT the bytes straight to S3; the WAF doesn't apply there.
+  3. `add_inventory_photo { itemId | query, s3Key }`. Janet checks the key's format, then HEADs it to confirm it exists and is an allowed type; her role gained `s3:GetObject` on `home/inventory/*`.
+
+  `imageUrl` also works (the client found this workaround), and `imageBase64` is fine only for tiny images. The alternative, relaxing `SizeRestrictions_BODY` in the WAF for `/api/muse/*`, is a console-only security decision that wasn't taken.
 
 ## Pets as owners
 `homeInventoryItem.petId` (indexed). The web owner picker/filter lists active pets ("🐶 Dolce"). Janet resolves pet names in `ownerName` (`resolveInventoryOwner` → exactly one of `ownerPersonId` / `pregnancyId` / `petId`), and `list_inventory` shows the pet as the owner.

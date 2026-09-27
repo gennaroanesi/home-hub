@@ -194,11 +194,13 @@ agentLambda.addToRolePolicy(
 );
 
 // add_inventory_photo stores images sent via URL / base64 (API, chat)
-// under home/inventory/ — the same prefix the web uploader uses.
+// under home/inventory/ — the same prefix the web uploader uses — and
+// checks (HeadObject → GetObject permission) images API clients uploaded
+// there through a presigned URL.
 agentLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
-    actions: ["s3:PutObject"],
+    actions: ["s3:PutObject", "s3:GetObject"],
     resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/inventory/*`],
   })
 );

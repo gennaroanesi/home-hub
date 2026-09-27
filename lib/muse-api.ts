@@ -155,6 +155,56 @@ export function buildOpenApiSpec(tools: MuseTool[], baseUrl: string) {
     },
   };
 
+  paths["/uploads"] = {
+    post: {
+      operationId: "createUpload",
+      summary: "Get a presigned URL to upload an image",
+      description:
+        "Send images this way, not as base64 in a JSON body (request bodies over ~8 KB are " +
+        "blocked by the firewall). 1) POST here with the image's contentType. 2) PUT the raw " +
+        "bytes to uploadUrl with the returned headers — directly to S3, no bearer key, valid 15 " +
+        "minutes. 3) Call add_inventory_photo with the returned s3Key.",
+      requestBody: {
+        required: true,
+        content: {
+          "application/json": {
+            schema: {
+              type: "object",
+              properties: {
+                contentType: {
+                  type: "string",
+                  enum: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/gif"],
+                },
+              },
+              required: ["contentType"],
+            },
+          },
+        },
+      },
+      responses: {
+        "200": {
+          description: "Upload target",
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  uploadUrl: { type: "string" },
+                  method: { type: "string", enum: ["PUT"] },
+                  headers: { type: "object", additionalProperties: { type: "string" } },
+                  s3Key: { type: "string" },
+                  expiresIn: { type: "integer" },
+                },
+              },
+            },
+          },
+        },
+        "400": { $ref: "#/components/responses/BadRequest" },
+        "401": { $ref: "#/components/responses/Unauthorized" },
+      },
+    },
+  };
+
   for (const t of tools) {
     paths[`/tools/${t.name}`] = {
       post: {

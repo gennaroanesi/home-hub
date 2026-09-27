@@ -4,7 +4,7 @@ import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
-import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 // Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
 // direct S3 public paths (bucket allows public reads on home/*, UUID is
 // the unguessability gate). A future session should restrict home/documents/
@@ -1932,13 +1932,14 @@ const tools: Anthropic.Tool[] = [
   {
     name: "add_inventory_photo",
     description:
-      "Attach a photo to an existing inventory item (appends; replace=true swaps out the old ones). The image can come from the photo(s) sent with this message ('add this photo to the stroller'), an https imageUrl, or imageBase64 + contentType (up to ~4 MB of image data). Identify the item by itemId or a fuzzy name query.",
+      "Attach a photo to an existing inventory item (appends; replace=true swaps out the old ones). The image can come from: the photo(s) sent with this message ('add this photo to the stroller'); s3Key from POST /uploads (API clients — the recommended way to send image bytes); an https imageUrl to fetch; or imageBase64 for tiny images only (API request bodies over ~8 KB are blocked by the firewall). Identify the item by itemId or a fuzzy name query.",
     input_schema: {
       type: "object" as const,
       properties: {
         itemId: { type: "string" },
         query: { type: "string", description: "Fuzzy item name when itemId isn't known." },
-        imageBase64: { type: "string", description: "Base64 image data (a data: URL is fine too)." },
+        s3Key: { type: "string", description: "Key returned by POST /uploads after you PUT the image there (home/inventory/…)." },
+        imageBase64: { type: "string", description: "Base64 image data or a data: URL — tiny images only via the API (bodies over ~8 KB are blocked); prefer s3Key." },
         contentType: { type: "string", enum: ["image/jpeg", "image/png", "image/webp", "image/heic", "image/gif"], description: "With imageBase64 (optional for data: URLs)." },
         imageUrl: { type: "string", description: "https URL of an image to fetch." },
         replace: { type: "boolean", description: "Replace the item's existing photos instead of adding. Default false." },
@@ -2178,6 +2179,24 @@ async function fetchImageUrl(url: string): Promise<ImageBytes> {
   if (declared > MAX_INVENTORY_IMAGE_BYTES) throw new Error("Image is larger than 10 MB");
   const data = Buffer.from(await res.arrayBuffer());
   return checkImage({ data, contentType: res.headers.get("content-type") ?? "" });
+}
+
+// An API client uploaded straight to S3 via a presigned URL (POST /uploads):
+// make sure the key is ours, exists, and is an allowed image type.
+async function verifyUploadedInventoryImage(key: string): Promise<string> {
+  const bucket = process.env.HOME_HUB_BUCKET;
+  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
+  if (!/^home\/inventory\/[0-9a-f-]{36}\.[a-z]+$/.test(key)) {
+    throw new Error("s3Key must be a key returned by POST /uploads (home/inventory/…)");
+  }
+  let head;
+  try {
+    head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
+  } catch {
+    throw new Error("Nothing uploaded at that s3Key yet — PUT the image to the uploadUrl first");
+  }
+  checkImage({ data: Buffer.alloc(Math.max(1, head.ContentLength ?? 0)), contentType: head.ContentType ?? "" });
+  return key;
 }
 
 async function storeInventoryImage(img: ImageBytes): Promise<string> {
@@ -5572,7 +5591,9 @@ async function executeTool(
 
       let newKeys: string[];
       try {
-        if (input.imageBase64) {
+        if (input.s3Key) {
+          newKeys = [await verifyUploadedInventoryImage(String(input.s3Key))];
+        } else if (input.imageBase64) {
           newKeys = [await storeInventoryImage(decodeBase64Image(input.imageBase64, input.contentType))];
         } else if (input.imageUrl) {
           newKeys = [await storeInventoryImage(await fetchImageUrl(input.imageUrl))];
@@ -5580,7 +5601,7 @@ async function executeTool(
           // Photos sent with this chat message are already in S3.
           newKeys = ctx.currentImageKeys;
         } else {
-          return JSON.stringify({ error: "No image given — send a photo, or pass imageUrl or imageBase64" });
+          return JSON.stringify({ error: "No image given — send a photo, or pass s3Key (from POST /uploads), imageUrl or imageBase64" });
         }
       } catch (err: any) {
         return JSON.stringify({ error: err?.message ?? String(err) });
