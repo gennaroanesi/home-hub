@@ -145,7 +145,7 @@ function esc(s: string): string {
 
 const r2 = (n: number) => Math.round(n * 100) / 100;
 
-const SMALL_KINDS = new Set(["CLOSET", "STORAGE", "STAIRS", "HALLWAY"]);
+const SMALL_KINDS = new Set(["CLOSET", "STORAGE", "STAIRS", "HALLWAY", "HARDSCAPE"]);
 
 /**
  * Standalone, to-scale SVG for one floor (1 user unit = 1 foot). Rooms
@@ -166,30 +166,45 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
   // Bigger rooms first so closets draw on top.
   const ordered = [...drawable].sort((a, c) => polygonArea(c.points) - polygonArea(a.points));
 
-  const roomEls = ordered
-    .map((room) => {
-      const pts = room.points.map((p) => `${r2(p.x)},${r2(p.y)}`).join(" ");
-      const c = room.labelX != null && room.labelY != null ? { x: room.labelX, y: room.labelY } : centroid(room.points);
-      const rb = bounds(room.points);
-      const small = SMALL_KINDS.has(room.kind ?? "") || Math.min(rb.width, rb.depth) < 6;
-      const fs = small ? 0.55 : 0.8;
-      const classes = ["room", `kind-${(room.kind ?? "ROOM").toLowerCase()}`];
-      if (room.id === opts.selectedRoomId) classes.push("selected");
-      const badge = opts.badges?.[room.id];
-      const size = showSizes && !small ? describeSize(room.points) : "";
-      return [
+  // Two passes: shapes first (big → small, so closets sit on top), then
+  // every label above all shapes so nothing hides a name. Narrow, tall
+  // spaces (side yards, hallways) get vertical labels.
+  const shapeEls: string[] = [];
+  const labelEls: string[] = [];
+  for (const room of ordered) {
+    const pts = room.points.map((p) => `${r2(p.x)},${r2(p.y)}`).join(" ");
+    const c = room.labelX != null && room.labelY != null ? { x: room.labelX, y: room.labelY } : centroid(room.points);
+    const rb = bounds(room.points);
+    const kindClass = `kind-${(room.kind ?? "ROOM").toLowerCase()}`;
+    const small = SMALL_KINDS.has(room.kind ?? "") || Math.min(rb.width, rb.depth) < 6;
+    const fs = small ? 0.55 : 0.8;
+    const classes = ["room", kindClass];
+    if (room.id === opts.selectedRoomId) classes.push("selected");
+    const badge = opts.badges?.[room.id];
+    const size = showSizes && !small ? describeSize(room.points) : "";
+    shapeEls.push(
+      [
         `<g class="${classes.join(" ")}" data-room-id="${esc(room.id)}">`,
         `<title>${esc(room.name)}${size ? ` — ${esc(size)}` : ""}</title>`,
         `<polygon points="${pts}"/>`,
-        `<text class="label" x="${r2(c.x)}" y="${r2(c.y - (size ? fs * 0.35 : -fs * 0.35))}" font-size="${fs}">${esc(room.name)}</text>`,
-        size ? `<text class="size" x="${r2(c.x)}" y="${r2(c.y + fs * 0.85)}" font-size="${r2(fs * 0.75)}">${esc(size)}</text>` : "",
-        badge
-          ? `<g class="badge"><circle cx="${r2(rb.maxX - 0.8)}" cy="${r2(rb.minY + 0.8)}" r="0.6"/><text x="${r2(rb.maxX - 0.8)}" y="${r2(rb.minY + 1)}" font-size="0.6">${badge}</text></g>`
-          : "",
         `</g>`,
-      ].join("");
-    })
-    .join("\n");
+      ].join(""),
+    );
+
+    // Vertical when the name wouldn't fit across but would fit down.
+    const approxWidth = room.name.length * fs * 0.62; // ~0.6em per character
+    const vertical = approxWidth > rb.width * 0.9 && rb.depth > rb.width;
+    const rotate = vertical ? ` transform="rotate(-90 ${r2(c.x)} ${r2(c.y)})"` : "";
+    const lines = [
+      `<text class="label ${kindClass}" x="${r2(c.x)}" y="${r2(c.y - (size ? fs * 0.35 : -fs * 0.35))}" font-size="${fs}"${rotate}>${esc(room.name)}</text>`,
+      size ? `<text class="size" x="${r2(c.x)}" y="${r2(c.y + fs * 0.85)}" font-size="${r2(fs * 0.75)}"${rotate}>${esc(size)}</text>` : "",
+      badge
+        ? `<g class="badge"><circle cx="${r2(rb.maxX - 0.8)}" cy="${r2(rb.minY + 0.8)}" r="0.6"/><text x="${r2(rb.maxX - 0.8)}" y="${r2(rb.minY + 1)}" font-size="0.6">${badge}</text></g>`
+        : "",
+    ];
+    labelEls.push(lines.join(""));
+  }
+  const roomEls = [...shapeEls, `<g class="labels">`, ...labelEls, `</g>`].join("\n");
 
   // 10-foot scale bar under the drawing.
   const sbY = r2(b.maxY + 1.8);
@@ -209,6 +224,12 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
     .room.kind-bathroom polygon { fill: #e9f3f5; }
     .room.kind-garage polygon { fill: #efefef; }
     .room.kind-hallway polygon, .room.kind-stairs polygon { fill: #f7f7f8; }
+    .room.kind-lot polygon { fill: none; stroke: #6b7280; stroke-width: 0.18; stroke-dasharray: 1 0.6; }
+    .label.kind-lot { fill: #6b7280; font-weight: 500; }
+    .labels { pointer-events: none; }
+    .room.kind-footprint polygon { fill: #e5e7eb; stroke: #374151; stroke-width: 0.2; }
+    .room.kind-yard polygon { fill: #e3f1dc; stroke: #7aa66a; stroke-width: 0.1; }
+    .room.kind-hardscape polygon { fill: #e7e5e4; stroke: #a8a29e; stroke-width: 0.1; }
     .room:hover polygon { fill: #dde7f3; cursor: pointer; }
     .room.selected polygon { fill: #cfe0f7; stroke: #2563eb; stroke-width: 0.2; }
     .label, .size, .scale text, .badge text { font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; }
@@ -223,6 +244,10 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
       .room.kind-closet polygon, .room.kind-storage polygon { fill: #2a2620; }
       .room.kind-bathroom polygon { fill: #1c2a2e; }
       .room.kind-garage polygon, .room.kind-hallway polygon, .room.kind-stairs polygon { fill: #232323; }
+      .room.kind-lot polygon { fill: none; stroke: #9ca3af; }
+      .room.kind-footprint polygon { fill: #2b2f36; stroke: #d1d5db; }
+      .room.kind-yard polygon { fill: #1e2b1a; stroke: #4d7a40; }
+      .room.kind-hardscape polygon { fill: #292524; stroke: #57534e; }
       .room:hover polygon { fill: #26344a; }
       .room.selected polygon { fill: #1e3a5f; stroke: #60a5fa; }
       .label { fill: #f3f4f6; }
@@ -275,6 +300,10 @@ export const ROOM_KINDS = [
   "CLOSET",
   "STORAGE",
   "GARAGE",
+  "LOT",
+  "FOOTPRINT",
+  "YARD",
+  "HARDSCAPE",
   "OTHER",
 ] as const;
 export type RoomKind = (typeof ROOM_KINDS)[number];
@@ -293,14 +322,28 @@ export const ROOM_KIND_LABELS: Record<RoomKind, string> = {
   CLOSET: "Closet",
   STORAGE: "Storage",
   GARAGE: "Garage",
+  LOT: "Lot boundary",
+  FOOTPRINT: "House footprint",
+  YARD: "Yard / lawn",
+  HARDSCAPE: "Paved (drive, walk, patio)",
   OTHER: "Other",
 };
+
+/** Kinds that describe the site plan rather than rooms inside the house. */
+export const SITE_KINDS: ReadonlySet<string> = new Set(["LOT", "FOOTPRINT", "YARD", "HARDSCAPE"]);
+
+/** Square yards — how sod and some flooring are sold. */
+export function squareYards(points: Point[]): number {
+  return polygonArea(points) / 9;
+}
 
 export interface ImportRoom {
   name: string;
   kind: RoomKind;
   parent: string | null;
   points: Point[];
+  /** Where the name is drawn; defaults to the outline's center. */
+  label: Point | null;
   haArea: string | null;
   notes: string | null;
 }
@@ -356,11 +399,19 @@ export function parseFloorplanImport(doc: unknown): ImportFloor[] {
       } else if (points.length > 0 && points.length < 3) {
         errors.push(`${rw}: an outline needs at least 3 points`);
       }
+      let label: Point | null = null;
+      if (Array.isArray(r.label)) {
+        const lx = parseFeetInches(r.label[0]);
+        const ly = parseFeetInches(r.label[1]);
+        if (lx == null || ly == null) errors.push(`${rw}: label must be [x, y]`);
+        else label = { x: lx, y: ly };
+      }
       rooms.push({
         name: r.name,
         kind: kind as RoomKind,
         parent: r.parent ?? null,
         points,
+        label,
         haArea: r.haArea ?? null,
         notes: r.notes ?? null,
       });
@@ -381,6 +432,7 @@ export interface ExportRoomRow {
   kind?: string | null;
   parentName?: string | null;
   points: Point[];
+  label?: Point | null;
   haArea?: string | null;
   notes?: string | null;
 }
@@ -400,6 +452,7 @@ export function buildFloorplanExport(
           kind: r.kind ?? "ROOM",
           ...(r.parentName ? { parent: r.parentName } : {}),
           points: r.points.map((p) => [r2(p.x), r2(p.y)]),
+          ...(r.label ? { label: [r2(r.label.x), r2(r.label.y)] } : {}),
           ...(r.haArea ? { haArea: r.haArea } : {}),
           ...(r.notes ? { notes: r.notes } : {}),
         })),

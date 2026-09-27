@@ -398,6 +398,12 @@ const schema = a
           "CLOSET",
           "STORAGE",
           "GARAGE",
+          // Site plan ("Lot" level): boundary, house footprint, lawn,
+          // and paved areas (drive, walks, patio, A/C pad).
+          "LOT",
+          "FOOTPRINT",
+          "YARD",
+          "HARDSCAPE",
           "OTHER",
         ]),
         // Closet → the bedroom it belongs to, etc.

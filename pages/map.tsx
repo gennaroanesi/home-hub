@@ -35,6 +35,7 @@ import {
   rectPoints,
   roomAndDescendants,
   roomLabel,
+  squareYards,
   type Point,
   type RoomKind,
 } from "@/lib/floorplan";
@@ -173,6 +174,7 @@ export default function MapPage() {
             kind: r.kind,
             parentName: r.parentRoomId ? roomsById.get(r.parentRoomId)?.name ?? null : null,
             points: roomPoints(r),
+            label: r.labelX != null && r.labelY != null ? { x: r.labelX, y: r.labelY } : null,
             haArea: r.haArea,
             notes: r.notes,
           })),
@@ -391,7 +393,8 @@ function RoomPanel({
           <p className="text-xs text-default-500">
             {room.kind ? ROOM_KIND_LABELS[room.kind as RoomKind] : "Room"}
             {pts.length >= 3 && ` · ${describeSize(pts)}`}
-            {pts.length >= 3 && isRectangle(pts) && ` · ${Math.round(polygonArea(pts))} sq ft`}
+            {pts.length >= 3 && isRectangle(pts) && ` · ${Math.round(polygonArea(pts)).toLocaleString()} sq ft`}
+            {pts.length >= 3 && room.kind === "YARD" && ` · ≈ ${Math.round(squareYards(pts))} sq yd`}
           </p>
           {parent && (
             <button type="button" className="text-xs text-primary" onClick={() => onSelect(parent.id)}>
@@ -751,7 +754,7 @@ function FloorModal({
             <ModalHeader>{editing ? "Edit floor" : "New floor"}</ModalHeader>
             <ModalBody>
               <Input label="Name" placeholder="First floor" value={name} onValueChange={setName} isRequired autoFocus />
-              <Input label="Level" type="number" value={level} onValueChange={setLevel} description="Sort order; 0 = basement." />
+              <Input label="Level" type="number" value={level} onValueChange={setLevel} description="Sort order — 0 for the lot / site plan, 1+ for floors." />
             </ModalBody>
             <ModalFooter>
               {editing && (
@@ -839,6 +842,8 @@ function ImportModal({
             name: r.name,
             kind: r.kind,
             points: r.points,
+            labelX: r.label?.x ?? null,
+            labelY: r.label?.y ?? null,
             haArea: r.haArea,
             notes: r.notes,
             sortOrder: i,
