@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: the code is committed on `main` but **not pushed or deployed**. The **lot is traced**; that file is ready to import once the backend is deployed. Both floors are waiting on the floor plans.
+Status as of 2026-09-26: the code is committed on `main` but **not pushed or deployed**. The **lot and the first floor are traced** and ready to import once the backend is deployed. The combined file was handed to the user as `~/Downloads/house-map.json`. The **second floor** is next; its plan and DWG are in hand.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
@@ -55,6 +55,20 @@ Source: the builder's plot plan (ATS, 2021-08-13, scale 1" = 20'). North is up a
 - **Open question:** the covered patio is marked "optional" on the plan. Delete it if it wasn't built.
 - The import file is not in the repo, because it holds the address. It was handed to the user directly.
 
+## The first floor (traced 2026-09-26)
+Source: Meritage's marketing plan "The Reynolds / Plan 890", first floor (REV 01/21). It isn't dimensioned and says it may not be to scale.
+- **Scale:** the house's outside width (34'-11" from the plot plan) spread across the drawing's outside walls.
+- **Cross-checks:** the garage face lands 58' from the rear wall, which the plot plan matches exactly. The porch front is about 1' from the plot plan's figure.
+- **Rooms are measured to wall centers,** so they tile the footprint. Stated sizes run about half a wall thicker than the rooms really are.
+- **Origin:** the house's back-left outside corner. The covered outdoor living sits at negative y.
+- **18 spaces:** Family, Dining, Kitchen (+ Pantry), Primary suite (+ Primary bath (+ Linen), + Primary closet), Laundry, Foyer (+ Coats), Stairs, Bath 3, Bedroom 5 (+ closet), Garage, Porch, Covered outdoor living.
+- **What the DWGs contain:** the Meritage DWGs, one per floor, aren't vector plans. Each holds the plan as a raster image, with a few hand-drawn items on top (appliances, and 5 dimensions on floor 1, 14 on floor 2) in real inches (`INSUNITS=1`). The floor-1 dimensions confirmed the scale to within about 2%: family 17'-4" wide, primary suite 15'-6" × 15'-6", family + dining 30'-11" deep, all interior. Read with `@mlightcad/libredwg-web` (WASM), installed only in the scratchpad; Homebrew's libredwg was blocked by an unaccepted Xcode license.
+- **Lot kept in step:** the lot's house footprint now uses the floor plan's front bump (Bedroom 5 + foyer, 15'-5" wide), with the porch and walk in front of it.
+- **Open question:** the lot shows the plot plan's larger "optional" covered patio (about 28' × 7'), but the floor plan shows the standard 18'-5" × 6'-4". Keep whichever was built.
+
+## Documents
+`homeDocument.type` gained **PROPERTY** for house papers, with labels on web and mobile and in Janet's filter. The Documents page is how files get stored: it creates the S3 object and the record together. This environment has no write access to the database, so the user uploads the plot plan and both floor-plan PDFs there. The DWGs can't be uploaded: Documents accepts PDF and images only, and the DWGs add nothing beyond the dimensions already used.
+
 ## Verified
 - The web, `amplify/` and `mobile/` type-checks are clean. `npx vitest run` passes 89/89, including 21 floor-plan tests, the CDK synth and `next build`.
 - The lot SVG was rendered with headless Chrome and checked by eye: every label is readable (vertical labels in the side strips) and the pieces add up to the lot area.
@@ -62,9 +76,10 @@ Source: the builder's plot plan (ATS, 2021-08-13, scale 1" = 20'). North is up a
 
 ## Next steps
 1. **Deploy** after the user OKs the push, then regenerate `amplify_outputs.json` for localhost and mobile.
-2. **Import the lot** on `/map` after the deploy.
-3. **Trace the floor plans:** the user sends images of both floors and the garage plus known room dimensions. Trace the outlines in feet, using the given measurements as the scale (they win over the drawing). Render a preview for the user to check, then hand over the JSON to import on `/map`.
-4. **Later:**
+2. **Import** `house-map.json` on `/map` after the deploy, and upload the PDFs to Documents as Property.
+3. **Trace the second floor** from `…890_WB-page_02.pdf`, using that DWG's 14 dimensions for scale.
+4. **Earlier plan for tracing floor plans:** the user sends images of both floors and the garage plus known room dimensions. Trace the outlines in feet, using the given measurements as the scale (they win over the drawing). Render a preview for the user to check, then hand over the JSON to import on `/map`.
+5. **Later:**
    - Show Home Assistant devices in their room (match `homeRoom.haArea` to `homeDevice.area`).
    - Color rooms by what they contain.
    - A mobile map screen.

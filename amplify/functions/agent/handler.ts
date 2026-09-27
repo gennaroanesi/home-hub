@@ -1262,6 +1262,7 @@ const tools: Anthropic.Tool[] = [
             "MEDICAL",
             "TRAVEL",
             "FINANCIAL",
+            "PROPERTY",
             "OTHER",
           ],
           description: "Filter to a specific document type.",

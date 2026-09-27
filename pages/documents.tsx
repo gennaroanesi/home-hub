@@ -53,6 +53,7 @@ const DOC_TYPE_LABEL: Record<DocType, string> = {
   MEDICAL: "Medical",
   TRAVEL: "Travel",
   FINANCIAL: "Financial",
+  PROPERTY: "Property",
   OTHER: "Other",
 };
 
@@ -63,6 +64,7 @@ const DOC_TYPE_EMOJI: Record<DocType, string> = {
   MEDICAL: "💊",
   TRAVEL: "✈️",
   FINANCIAL: "💰",
+  PROPERTY: "🏠",
   OTHER: "📄",
 };
 
@@ -73,6 +75,7 @@ const DOC_TYPES: DocType[] = [
   "MEDICAL",
   "TRAVEL",
   "FINANCIAL",
+  "PROPERTY",
   "OTHER",
 ];
 

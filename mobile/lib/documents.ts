@@ -17,6 +17,7 @@ export type DocumentType =
   | "MEDICAL"
   | "TRAVEL"
   | "FINANCIAL"
+  | "PROPERTY"
   | "OTHER";
 
 export const DOCUMENT_TYPE_LABEL: Record<DocumentType, string> = {
@@ -26,6 +27,7 @@ export const DOCUMENT_TYPE_LABEL: Record<DocumentType, string> = {
   MEDICAL: "Medical",
   TRAVEL: "Travel",
   FINANCIAL: "Financial",
+  PROPERTY: "Property",
   OTHER: "Other",
 };
 
@@ -36,6 +38,7 @@ export const DOCUMENT_TYPE_EMOJI: Record<DocumentType, string> = {
   MEDICAL: "💊",
   TRAVEL: "✈️",
   FINANCIAL: "💰",
+  PROPERTY: "🏠",
   OTHER: "📄",
 };
 
@@ -47,6 +50,7 @@ export const DOCUMENT_TYPES: DocumentType[] = [
   "MEDICAL",
   "TRAVEL",
   "FINANCIAL",
+  "PROPERTY",
   "OTHER",
 ];
 

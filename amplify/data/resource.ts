@@ -946,6 +946,7 @@ const schema = a
           "MEDICAL",
           "TRAVEL",
           "FINANCIAL",
+          "PROPERTY", // house papers: plot plan, floor plans, deed, survey, warranty
           "OTHER",
         ]),
         // PERSONAL → ownerPersonId must be set. HOUSEHOLD → shared among all
