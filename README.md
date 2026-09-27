@@ -101,7 +101,7 @@ Optional. See [docs/lightroom-import.md](docs/lightroom-import.md). The script-b
 
 - [amplify/data/resource.ts](amplify/data/resource.ts) — full GraphQL schema (every model, every auth rule)
 - [amplify/backend.ts](amplify/backend.ts) — IAM, env vars, ECS bot stack, EventBridge schedules
-- [amplify/functions/agent/handler.ts](amplify/functions/agent/handler.ts) — the Claude agent and all its tools (~4000 lines, the heart of the app)
+- [amplify/functions/agent/handler.ts](amplify/functions/agent/handler.ts) — the Claude agent (Janet, on `claude-opus-5` at medium effort with server-side refusal fallback) and all its tools (~6000 lines, the heart of the app)
 - [amplify/functions/daily-summary/handler.ts](amplify/functions/daily-summary/handler.ts) — Haiku-composed morning briefing
 - [amplify/functions/reminder-sweep/handler.ts](amplify/functions/reminder-sweep/handler.ts) — every-5-min reminder dispatcher
 - [whatsapp-bot/src/index.ts](whatsapp-bot/src/index.ts) — Baileys glue + agent invocation pipeline

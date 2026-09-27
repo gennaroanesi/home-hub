@@ -162,7 +162,42 @@ function buildUserContent(
   return blocks;
 }
 
-const MODEL_ID = "claude-sonnet-4-20250514";
+// Claude Opus 5. Notes for this model (see the claude-api migration guide):
+//  - Thinking is on by default and counts against max_tokens, so the cap
+//    is sized for thinking + reply, not just the reply.
+//  - effort "medium": Janet answers over WhatsApp and through AppSync's
+//    30s limit, so latency matters; low/medium are strong on this model.
+//  - Its safety classifiers can decline a request (HTTP 200,
+//    stop_reason "refusal"). fallbacks: "default" re-runs a declined
+//    request server-side on Anthropic's recommended model for that
+//    refusal category; anything still refused is handled after the loop.
+//  - No temperature / top_p / prefill / budget_tokens — all rejected.
+const MODEL_ID = "claude-opus-5";
+const MAX_TOKENS = 16000;
+const EFFORT = "medium";
+const FALLBACK_BETA = "server-side-fallback-2026-07-01";
+
+// One place for the Messages API call. output_config and fallbacks are
+// newer than the pinned @anthropic-ai/sdk typings, so the body is cast;
+// the fallback beta goes in as a header.
+function callClaude(params: {
+  system: string;
+  messages: Anthropic.MessageParam[];
+  tools: Anthropic.Tool[];
+}): Promise<Anthropic.Message> {
+  const body = {
+    model: MODEL_ID,
+    max_tokens: MAX_TOKENS,
+    system: params.system,
+    messages: params.messages,
+    tools: params.tools,
+    output_config: { effort: EFFORT },
+    fallbacks: "default",
+  };
+  return anthropic.messages.create(body as unknown as Anthropic.MessageCreateParamsNonStreaming, {
+    headers: { "anthropic-beta": FALLBACK_BETA },
+  }) as Promise<Anthropic.Message>;
+}
 
 const SCHEDULER_LAMBDA_ARN = process.env.SCHEDULER_LAMBDA_ARN!;
 const SCHEDULER_ROLE_ARN = process.env.SCHEDULER_ROLE_ARN!;
@@ -5988,13 +6023,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
 
   try {
     // Agentic loop
-    let response = await anthropic.messages.create({
-      model: MODEL_ID,
-      max_tokens: 1024,
-      system: systemPrompt,
-      messages,
-      tools: activeTools,
-    });
+    let response = await callClaude({ system: systemPrompt, messages, tools: activeTools });
 
     while (response.stop_reason === "tool_use") {
       messages.push({ role: "assistant", content: response.content });
@@ -6026,20 +6055,25 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
 
       messages.push({ role: "user", content: toolResults });
 
-      response = await anthropic.messages.create({
-        model: MODEL_ID,
-        max_tokens: 1024,
-        system: systemPrompt,
-        messages,
-        tools: activeTools,
-      });
+      response = await callClaude({ system: systemPrompt, messages, tools: activeTools });
     }
 
-    // Extract final text response
-    const assistantText = response.content
+    // Extract final text response. A refusal (even after the server-side
+    // fallback) or a truncated turn comes back without usable text —
+    // say so instead of replying with nothing.
+    const stopReason = response.stop_reason as string;
+    let assistantText = response.content
       .filter((b): b is Anthropic.TextBlock => b.type === "text")
       .map((b) => b.text)
       .join("\n");
+    if (stopReason === "refusal") {
+      const details = (response as unknown as { stop_details?: { category?: string | null } }).stop_details;
+      console.warn(`[agent] refusal (category=${details?.category ?? "none"}) for sender=${sender}`);
+      assistantText = "Sorry — I can't help with that one. Try rephrasing, or ask me something else.";
+    } else if (stopReason === "max_tokens" && !assistantText.trim()) {
+      console.warn(`[agent] hit max_tokens with no text for sender=${sender}`);
+      assistantText = "Sorry — that took more than I can handle in one go. Could you split it into smaller asks?";
+    }
 
     if (isAsync && replyTarget && inboundMessageId) {
       const client = await getDataClient();
