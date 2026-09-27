@@ -1762,7 +1762,7 @@ const tools: Anthropic.Tool[] = [
         },
         ownerName: {
           type: "string",
-          description: "Person's name, 'household' for shared items, or 'baby' for items for the baby on the way.",
+          description: "Person's name, a pet's name (e.g. 'Dolce'), 'household' for shared items, or 'baby' for items for the baby on the way.",
         },
         query: { type: "string", description: "Fuzzy match on name, brand, notes, tags, clothing type/color, room and location." },
         roomName: {
@@ -1791,7 +1791,7 @@ const tools: Anthropic.Tool[] = [
           description: "Required for create.",
         },
         status: { type: "string", enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"], description: "Default OWNED on create." },
-        ownerName: { type: "string", description: "Whose item. Omit or 'household' for shared." },
+        ownerName: { type: "string", description: "Whose item: a person, a pet (e.g. 'Dolce'), or omit / 'household' for shared." },
         forBaby: { type: "boolean", description: "Item is for the baby on the way (links it to the active pregnancy)." },
         brand: { type: "string" },
         quantity: { type: "integer" },
@@ -1822,6 +1822,48 @@ const tools: Anthropic.Tool[] = [
         expiresOn: { type: "string", description: "YYYY-MM-DD" },
       },
       required: ["action"],
+    },
+  },
+  {
+    name: "add_inventory_items",
+    description:
+      "Create several inventory items at once — typically from a photo: the user sends a picture of a shelf/closet/drawer and says where it is; identify each distinct item you can see and add them all in one call, in that room, with the photo attached. Use one entry per distinct item (group identical ones with quantity). Only include things you can actually make out; don't guess brands you can't read. Afterwards reply with a numbered list so they can correct it ('drop 3', 'make 5 two boxes').",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        roomName: { type: "string", description: "Room from the house map ('garage', 'primary closet'). Applies to every item." },
+        location: { type: "string", description: "Spot within the room ('top shelf', 'gray bin by the door'). Applies to every item unless an item sets its own." },
+        ownerName: { type: "string", description: "Whose they are: a person, a pet (e.g. 'Dolce'), or omit for the household." },
+        forBaby: { type: "boolean", description: "Items for the baby on the way." },
+        status: { type: "string", enum: ["OWNED", "WISHLIST"], description: "Default OWNED." },
+        attachPhoto: {
+          type: "boolean",
+          description: "Attach the photo(s) from this message to every created item. Default true when the message has a photo.",
+        },
+        items: {
+          type: "array",
+          items: {
+            type: "object",
+            properties: {
+              name: { type: "string" },
+              category: {
+                type: "string",
+                enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
+              },
+              quantity: { type: "integer" },
+              brand: { type: "string" },
+              location: { type: "string", description: "Overrides the shared location for this item." },
+              notes: { type: "string" },
+              size: { type: "string", description: "Clothing only." },
+              color: { type: "string" },
+              clothingType: { type: "string", description: "Clothing only." },
+              unit: { type: "string", description: "Consumables only: pack, box, can…" },
+            },
+            required: ["name", "category"],
+          },
+        },
+      },
+      required: ["items"],
     },
   },
   {
@@ -1962,24 +2004,36 @@ function matchInventoryItem<T extends { id: string; name: string; status?: strin
 
 // ownerName → { ownerPersonId, pregnancyId }. "household"/empty = shared,
 // "baby" (or forBaby) = the active pregnancy.
+type InventoryOwner = { ownerPersonId: string | null; pregnancyId: string | null; petId: string | null };
+
+async function listPets() {
+  const client = await getDataClient();
+  const { data } = await client.models.homePet.list({ limit: 100 });
+  return (data ?? []).filter((p) => p.active !== false);
+}
+
+// ownerName → who an item belongs to: a person, the baby on the way
+// ("baby" / forBaby), a pet (by name, e.g. "Dolce"), or the household
+// (empty / "household"). Exactly one of the ids is set, or none.
 async function resolveInventoryOwner(
   ownerName?: string | null,
   forBaby?: boolean,
-): Promise<{ ownerPersonId: string | null; pregnancyId: string | null } | { error: string }> {
+): Promise<InventoryOwner | { error: string }> {
+  const none: InventoryOwner = { ownerPersonId: null, pregnancyId: null, petId: null };
   const name = (ownerName ?? "").toLowerCase().trim();
   if (forBaby || name === "baby") {
     const active = await listActivePregnancies();
     if (active.length !== 1) {
       return { error: active.length === 0 ? "No active pregnancy to link baby items to" : "Multiple active pregnancies — say whose" };
     }
-    return { ownerPersonId: null, pregnancyId: active[0].id };
+    return { ...none, pregnancyId: active[0].id };
   }
-  if (!name || ["household", "both", "shared", "us"].includes(name)) {
-    return { ownerPersonId: null, pregnancyId: null };
-  }
+  if (!name || ["household", "both", "shared", "us"].includes(name)) return none;
+  const pet = (await listPets()).find((p) => p.name.toLowerCase() === name || name.startsWith(p.name.toLowerCase()));
+  if (pet) return { ...none, petId: pet.id };
   const id = await resolveSinglePersonId(ownerName);
-  if (!id) return { error: `No person named "${ownerName}"` };
-  return { ownerPersonId: id, pregnancyId: null };
+  if (!id) return { error: `No person or pet named "${ownerName}"` };
+  return { ...none, ownerPersonId: id };
 }
 
 // If a consumable is at/below its threshold, put it on the shopping list
@@ -2125,6 +2179,8 @@ interface ToolContext {
   attachments: Attachment[];
   chatContext: ChatContext;
   sender: string;
+  /** S3 keys of images sent with THIS message (WhatsApp attachments or web uploads). */
+  currentImageKeys: string[];
 }
 
 async function executeTool(
@@ -5074,7 +5130,7 @@ async function executeTool(
         }
         roomIds = roomAndDescendants(room.id, rooms);
       }
-      let owner: { ownerPersonId: string | null; pregnancyId: string | null } | null = null;
+      let owner: InventoryOwner | null = null;
       if (input.ownerName) {
         const r = await resolveInventoryOwner(input.ownerName);
         if ("error" in r) return JSON.stringify({ error: r.error });
@@ -5083,6 +5139,7 @@ async function executeTool(
       const q = (input.query ?? "").toLowerCase().trim();
       const size = (input.size ?? "").toLowerCase().trim();
       const people = await getPeople();
+      const pets = await listPets();
 
       const rows = items
         .filter((i) => status === "ALL" || i.status === status)
@@ -5091,8 +5148,9 @@ async function executeTool(
         .filter((i) => {
           if (!owner) return true;
           if (owner.pregnancyId) return i.pregnancyId === owner.pregnancyId;
+          if (owner.petId) return i.petId === owner.petId;
           if (owner.ownerPersonId) return i.ownerPersonId === owner.ownerPersonId;
-          return !i.ownerPersonId && !i.pregnancyId; // household
+          return !i.ownerPersonId && !i.pregnancyId && !i.petId; // household
         })
         .filter((i) => {
           if (!q) return true;
@@ -5129,9 +5187,12 @@ async function executeTool(
             status: i.status,
             owner: i.pregnancyId
               ? "baby (on the way)"
-              : i.ownerPersonId
-                ? people.find((p) => p.id === i.ownerPersonId)?.name ?? "?"
-                : "household",
+              : i.petId
+                ? pets.find((p) => p.id === i.petId)?.name ?? "pet"
+                : i.ownerPersonId
+                  ? people.find((p) => p.id === i.ownerPersonId)?.name ?? "?"
+                  : "household",
+            photos: (i.imageKeys ?? []).length,
             brand: i.brand,
             quantity: i.quantity,
             room: roomName(i.roomId),
@@ -5218,7 +5279,7 @@ async function executeTool(
           roomFields = { roomId: room.id };
         }
       }
-      let ownerFields: { ownerPersonId: string | null; pregnancyId: string | null } | undefined;
+      let ownerFields: InventoryOwner | undefined;
       if (input.ownerName !== undefined || input.forBaby) {
         const r = await resolveInventoryOwner(input.ownerName, input.forBaby);
         if ("error" in r) return JSON.stringify({ error: r.error });
@@ -5307,6 +5368,79 @@ async function executeTool(
           ? await restockIfLow(updated, { ...(consumableByItem.get(item.id) ?? {}), ...consumableFields })
           : null;
       return JSON.stringify({ success: true, itemId: updated.id, name: updated.name, status: updated.status, restock });
+    }
+
+    case "add_inventory_items": {
+      const list: any[] = Array.isArray(input.items) ? input.items : [];
+      if (list.length === 0) return JSON.stringify({ error: "items is empty" });
+      if (list.length > 60) return JSON.stringify({ error: "Too many items in one call (max 60) — split it up" });
+
+      let roomId: string | null = null;
+      let roomLabelText: string | null = null;
+      if (input.roomName) {
+        const { data: roomRows } = await client.models.homeRoom.list({ limit: 500 });
+        const room = matchRoom(roomRows ?? [], input.roomName);
+        const byId = new Map((roomRows ?? []).map((r) => [r.id, r]));
+        if (!room) {
+          return JSON.stringify({
+            error: `No room matching "${input.roomName}" — nothing was created`,
+            rooms: (roomRows ?? []).map((r) => roomLabel(r, byId)),
+          });
+        }
+        roomId = room.id;
+        roomLabelText = roomLabel(room, byId);
+      }
+      let ownerFields: InventoryOwner = { ownerPersonId: null, pregnancyId: null, petId: null };
+      if (input.ownerName || input.forBaby) {
+        const r = await resolveInventoryOwner(input.ownerName, input.forBaby);
+        if ("error" in r) return JSON.stringify({ error: `${r.error} — nothing was created` });
+        ownerFields = r;
+      }
+      const photos = input.attachPhoto === false ? [] : ctx.currentImageKeys;
+      const status = input.status ?? "OWNED";
+      const today = ymdInTimezone(HOUSEHOLD_TZ);
+
+      const created: { n: number; id: string; name: string; quantity: number }[] = [];
+      const failed: { name: string; error: string }[] = [];
+      for (const it of list) {
+        const { data: item, errors } = await client.models.homeInventoryItem.create({
+          name: String(it.name).trim(),
+          category: it.category ?? "OTHER",
+          status,
+          quantity: Number.isInteger(it.quantity) && it.quantity > 0 ? it.quantity : 1,
+          brand: it.brand ?? null,
+          notes: it.notes ?? null,
+          roomId,
+          location: it.location ?? input.location ?? null,
+          ...ownerFields,
+          imageKeys: photos,
+          acquiredAt: status === "OWNED" ? today : null,
+          createdBy: "agent",
+        });
+        if (errors?.length || !item) {
+          failed.push({ name: it.name, error: errors?.[0]?.message ?? "create failed" });
+          continue;
+        }
+        if (item.category === "CLOTHING") {
+          await client.models.homeInventoryClothing.create({
+            itemId: item.id,
+            size: it.size ?? null,
+            color: it.color ?? null,
+            type: it.clothingType ?? null,
+          });
+        } else if (item.category === "CONSUMABLE") {
+          await client.models.homeInventoryConsumable.create({ itemId: item.id, unit: it.unit ?? null });
+        }
+        created.push({ n: created.length + 1, id: item.id, name: item.name, quantity: item.quantity ?? 1 });
+      }
+      return JSON.stringify({
+        success: failed.length === 0,
+        room: roomLabelText,
+        location: input.location ?? null,
+        photoAttached: photos.length > 0,
+        created,
+        ...(failed.length ? { failed } : {}),
+      });
     }
 
     case "adjust_inventory_quantity": {
@@ -5405,6 +5539,7 @@ async function handleApiTool(payload: {
     attachments: [],
     chatContext: { channel: "API", chatJid: null },
     sender: payload.sender ?? "unknown",
+    currentImageKeys: [],
   };
   console.log(
     `[agent-api] call: ${name} sender=${toolCtx.sender} input=${JSON.stringify(payload.input ?? {}).slice(0, 500)}`
@@ -5431,6 +5566,7 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
   let replyTarget: AsyncInvokePayload["replyTarget"] | null = null;
   let inboundMessageId: string | null = null;
   const preloadedMedia: MediaPayload[] = [];
+  const preloadedImageKeys: string[] = [];
 
   if (isAsync) {
     inboundMessageId = event.inboundMessageId;
@@ -5483,6 +5619,7 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
     });
     for (const att of atts ?? []) {
       if (!att.s3Key) continue;
+      if ((att.contentType ?? "").startsWith("image/")) preloadedImageKeys.push(att.s3Key);
       try {
         const m = await fetchAttachmentAsMedia(att.s3Key, att.contentType ?? "");
         if (m) preloadedMedia.push(m);
@@ -5677,6 +5814,13 @@ CONSUMABLE carries unit + a low-stock threshold.
   back with restock.addedToList, mention it went on that shopping list.
 - "How much is left on the wishlist?" → list_inventory status WISHLIST and
   read back wishlist.estimatedTotal (and how many items have no price).
+- Photo of stuff + where it is ("this is the garage, second shelf") →
+  identify each distinct item in the photo and call add_inventory_items once
+  with roomName / location (the photo is attached to each item
+  automatically). Then reply with a short numbered list (name ×qty) and
+  invite corrections — "remove 3" → manage_inventory_item delete, "4 is
+  two boxes" → update quantity. If they didn't say where, ask before adding.
+  Pets are owners too: "Dolce's stuff" → ownerName "Dolce".
 - "Where is X?" → list_inventory with query X and answer with its room +
   location. "Put the stroller in the garage" → manage_inventory_item update
   with roomName (location is the detail within the room, e.g. "top shelf").
@@ -5786,6 +5930,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     attachments: [],
     chatContext: parsedChatContext,
     sender,
+    currentImageKeys: isAsync ? preloadedImageKeys : (imageS3Keys ?? []).filter(Boolean),
   };
   const activeTools = parsedChatContext.channel === "API" ? API_TOOLS : tools;
 

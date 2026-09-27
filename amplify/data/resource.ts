@@ -456,6 +456,8 @@ const schema = a
         ownerPersonId: a.id(),
         // For the baby on the way (FK → homePregnancy.id).
         pregnancyId: a.id(),
+        // A pet's things — food, meds, toys, crate (FK → homePet.id).
+        petId: a.id(),
         brand: a.string(),
         quantity: a.integer().default(1),
         // Which room it's in (FK → homeRoom.id); `location` is the
@@ -480,10 +482,12 @@ const schema = a
         disposedAt: a.date(),
         priceSold: a.float(),
         barcode: a.string(),
+        // Photos (S3 keys) — e.g. the WhatsApp photo the item was
+        // identified from. Rendered via lib/image-loader photoUrl().
         imageKeys: a.string().array(),
         createdBy: a.string(),
       })
-      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId"), index("roomId")])
+      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId"), index("petId"), index("roomId")])
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),

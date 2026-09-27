@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: deployed to prod by build 165 (`f11032b`), and the user has imported the lot and first floor. **Committed but not pushed:** zoom and pan on the map (`components/floor-map.tsx`). **The second floor is traced** and handed over as `~/Downloads/house-map-second-floor.json`, to import once. `~/Downloads/house-map.json` now holds all three levels and serves as a backup.
+Status as of 2026-09-26: zoom and pan are deployed (build 166, `419a087`). The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. **Committed but not pushed:** photo → inventory through Janet, and pets as item owners.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
@@ -79,6 +79,16 @@ Source: the Plan 890 second-floor marketing plan, at the same scale as the first
 - **Rooms:** tapping a room selects it and eases the view to frame it (`fitViewBox`: the drawing's aspect ratio, at least 12' across). Selecting from the side panel does the same. Deselecting (tap the room again, or tap empty space) eases back to the whole floor.
 - **State:** the view survives re-renders (selection, badges) and resets when switching floors. The math is in `lib/floorplan.ts` (`zoomViewBox`, `clampViewBox`, `fitViewBox`), with tests.
 - **Not yet tried in a real browser;** it needs a human with a mouse and trackpad.
+
+## Photo → inventory (Janet)
+Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, second shelf"). She identifies each distinct item and calls **`add_inventory_items`** once. That creates every item in the room at the given location, with this message's photo attached (`homeInventoryItem.imageKeys`), plus clothing/consumable detail rows. She replies with a numbered list, and corrections go through the existing tools (delete, update quantity).
+- **One step on purpose:** the WhatsApp history doesn't carry photos into later turns, so a "yes, add them" confirmation couldn't attach the photo. Items are created right away and fixed by chat.
+- **How the photo reaches the tool:** `ToolContext.currentImageKeys`, filled from the inbound message's image attachments (async/WhatsApp) or `imageS3Keys` (web).
+- **Guardrails:** if she doesn't know the room she asks first, since the prompt says to. If the room or owner doesn't resolve, nothing is created. Max 60 items per call.
+- **Photos in the app:** a thumbnail on inventory rows and in the map's room panel; full photos in the item dialog, where one can be removed. URLs come from `lib/image-loader` (`photoUrl`).
+
+## Pets as owners
+`homeInventoryItem.petId` (indexed). The web owner picker/filter lists active pets ("🐶 Dolce"). Janet resolves pet names in `ownerName` (`resolveInventoryOwner` → exactly one of `ownerPersonId` / `pregnancyId` / `petId`), and `list_inventory` shows the pet as the owner.
 
 ## Storage
 Importing writes floors and rooms into the database (`homeFloor` / `homeRoom`). The JSON file is only a way in, so nothing needs re-uploading. Re-importing is only for corrections: it upserts by floor + room name, so inventory links survive.

@@ -49,6 +49,7 @@ import {
   type InventoryStatus,
 } from "@/lib/inventory";
 import { roomAndDescendants, roomLabel } from "@/lib/floorplan";
+import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -60,6 +61,7 @@ type Clothing = Schema["homeInventoryClothing"]["type"];
 type Consumable = Schema["homeInventoryConsumable"]["type"];
 type ShoppingList = Schema["homeShoppingList"]["type"];
 type Room = Schema["homeRoom"]["type"];
+type Pet = Schema["homePet"]["type"];
 type Floor = Schema["homeFloor"]["type"];
 
 interface RoomOption {
@@ -80,16 +82,24 @@ const TABS: { key: Tab; label: string }[] = [
 const HOUSEHOLD = "household";
 const babyKey = (pregnancyId: string) => `baby:${pregnancyId}`;
 
+const petKey = (petId: string) => `pet:${petId}`;
+
 function ownerKeyOf(i: Item): string {
   if (i.pregnancyId) return babyKey(i.pregnancyId);
+  if (i.petId) return petKey(i.petId);
   return i.ownerPersonId ?? HOUSEHOLD;
 }
 
-function ownerFieldsFromKey(key: string): { ownerPersonId: string | null; pregnancyId: string | null } {
-  if (key.startsWith("baby:")) return { ownerPersonId: null, pregnancyId: key.slice(5) };
-  if (!key || key === HOUSEHOLD) return { ownerPersonId: null, pregnancyId: null };
-  return { ownerPersonId: key, pregnancyId: null };
+// Exactly one owner id is set (or none = household).
+function ownerFieldsFromKey(key: string): { ownerPersonId: string | null; pregnancyId: string | null; petId: string | null } {
+  const none = { ownerPersonId: null, pregnancyId: null, petId: null };
+  if (key.startsWith("baby:")) return { ...none, pregnancyId: key.slice(5) };
+  if (key.startsWith("pet:")) return { ...none, petId: key.slice(4) };
+  if (!key || key === HOUSEHOLD) return none;
+  return { ...none, ownerPersonId: key };
 }
+
+const PET_EMOJI: Record<string, string> = { DOG: "🐶", CAT: "🐱" };
 
 function todayYmd(): string {
   const d = new Date();
@@ -109,6 +119,7 @@ export default function InventoryPage() {
   const [pregnancies, setPregnancies] = useState<Pregnancy[]>([]);
   const [lists, setLists] = useState<ShoppingList[]>([]);
   const [rooms, setRooms] = useState<Room[]>([]);
+  const [pets, setPets] = useState<Pet[]>([]);
   const [floors, setFloors] = useState<Floor[]>([]);
   const [roomFilter, setRoomFilter] = useState("");
   const [defaultRoom, setDefaultRoom] = useState("");
@@ -162,6 +173,8 @@ export default function InventoryPage() {
         models.homeRoom ? listAllPages<Room>(models.homeRoom) : Promise.resolve([] as Room[]),
         models.homeFloor ? listAllPages<Floor>(models.homeFloor) : Promise.resolve([] as Floor[]),
       ]);
+      // Separate so an older backend without petId doesn't block the page.
+      listAllPages<Pet>(client.models.homePet).then(setPets, () => setPets([]));
       setRooms(rm);
       setFloors(fl);
       setItems(it);
@@ -194,12 +207,17 @@ export default function InventoryPage() {
     for (const p of [...members, ...others]) {
       opts.push({ key: p.id, label: `${p.emoji ? `${p.emoji} ` : ""}${p.name}` });
     }
+    // Pets: active ones, plus any retired pet that still owns something.
+    const petOwnerIds = new Set(items.map((i) => i.petId).filter(Boolean));
+    for (const p of pets.filter((p) => p.active !== false || petOwnerIds.has(p.id))) {
+      opts.push({ key: petKey(p.id), label: `${PET_EMOJI[p.species ?? ""] ?? "🐾"} ${p.name}` });
+    }
     // Items linked to a pregnancy that's no longer active still need a label.
     for (const p of pregnancies.filter((p) => p.status !== "ACTIVE")) {
       if (items.some((i) => i.pregnancyId === p.id)) opts.push({ key: babyKey(p.id), label: "👶 Baby (past pregnancy)" });
     }
     return opts;
-  }, [people, pregnancies, items]);
+  }, [people, pregnancies, pets, items]);
 
   const ownerLabel = (i: Item) => ownerOptions.find((o) => o.key === ownerKeyOf(i))?.label ?? "Unknown";
 
@@ -557,6 +575,17 @@ function ItemRow({
 
   return (
     <div className="flex items-center gap-3 px-3 py-2">
+      {item.imageKeys?.[0] ? (
+        <button type="button" onClick={onEdit} className="shrink-0" aria-label="Open photo">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={photoUrl(item.imageKeys[0], 96)}
+            alt=""
+            loading="lazy"
+            className="w-10 h-10 rounded object-cover bg-default-100"
+          />
+        </button>
+      ) : null}
       <button type="button" onClick={onEdit} className="flex-1 min-w-0 text-left">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-foreground truncate">{item.name}</span>
@@ -654,12 +683,14 @@ function ItemModal({
 }) {
   const [f, setF] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [photos, setPhotos] = useState<string[]>([]);
   const set = (k: string) => (v: string) => setF((prev) => ({ ...prev, [k]: v }));
 
   useEffect(() => {
     if (!isOpen) return;
     const e = editing;
     const s = (v: unknown) => (v == null ? "" : String(v));
+    setPhotos((e?.imageKeys ?? []).filter((k): k is string => !!k));
     setF({
       name: s(e?.name),
       category: s(e?.category ?? defaultCategory ?? "OTHER"),
@@ -709,6 +740,7 @@ function ItemModal({
         category: f.category as InventoryCategory,
         status,
         ...ownerFieldsFromKey(f.owner),
+        imageKeys: photos,
         brand: str("brand"),
         quantity: int("quantity") ?? 1,
         roomId: str("roomId"),
@@ -961,6 +993,29 @@ function ItemModal({
             />
           )}
 
+          {photos.length > 0 && (
+            <div>
+              <p className="text-xs text-default-500 mb-1">Photos</p>
+              <div className="flex flex-wrap gap-2">
+                {photos.map((k) => (
+                  <div key={k} className="relative">
+                    <a href={originalPhotoUrl(k)} target="_blank" rel="noreferrer">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={photoUrl(k, 320)} alt="" className="h-28 rounded object-cover bg-default-100" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => setPhotos((prev) => prev.filter((x) => x !== k))}
+                      className="absolute top-1 right-1 text-[10px] px-1.5 py-0.5 rounded bg-black/60 text-white"
+                      aria-label="Remove photo from this item"
+                    >
+                      Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           <Input label="Link" type="url" placeholder="https://" value={f.url ?? ""} onValueChange={set("url")} />
           <Input label="Tags" placeholder="nursery, feeding" value={f.tags ?? ""} onValueChange={set("tags")} />
           <Textarea label="Notes" minRows={2} value={f.notes ?? ""} onValueChange={set("notes")} />

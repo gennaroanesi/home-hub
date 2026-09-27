@@ -21,6 +21,7 @@ import { FaMap, FaPlus, FaPen, FaFileImport, FaDownload } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { FloorMap } from "@/components/floor-map";
 import { listAllPages } from "@/lib/list-all";
+import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import {
   ROOM_KINDS,
   ROOM_KIND_LABELS,
@@ -439,7 +440,14 @@ function RoomPanel({
             {here
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((i) => (
-                <li key={i.id} className="text-sm">
+                <li key={i.id} className="text-sm flex gap-2">
+                  {i.imageKeys?.[0] ? (
+                    <a href={originalPhotoUrl(i.imageKeys[0])} target="_blank" rel="noreferrer" className="shrink-0">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={photoUrl(i.imageKeys[0], 80)} alt="" loading="lazy" className="w-8 h-8 rounded object-cover bg-default-100" />
+                    </a>
+                  ) : null}
+                  <span className="min-w-0">
                   <span className="text-foreground">{i.name}</span>
                   {(i.quantity ?? 1) > 1 && <span className="text-default-400"> ×{i.quantity}</span>}
                   {i.status === "WISHLIST" && (
@@ -450,6 +458,7 @@ function RoomPanel({
                       {[i.roomId !== room.id ? roomsById.get(i.roomId!)?.name : null, i.location].filter(Boolean).join(" · ")}
                     </span>
                   )}
+                  </span>
                 </li>
               ))}
           </ul>
