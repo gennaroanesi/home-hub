@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: everything below is deployed (build 167, `1476951`): photo → inventory through Janet as drafts, pets as owners, and the Drafts review. The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. `mobile/amplify_outputs.json` is regenerated but not pushed (it only affects mobile). **Not yet tried:** Janet on a real photo.
+Status as of 2026-09-27: everything below is deployed. Amplify build 169 (`d682e82`) shipped photo → inventory drafts, pets as owners, the Drafts review, adding photos to existing items (web plus `add_inventory_photo` on the API), and the WhatsApp chunked replies. The bot image was rebuilt and ECS redeployed it. Janet runs on `claude-opus-5`. The second floor (`~/Downloads/house-map-second-floor.json`) is still to import. **Not yet tried with real traffic:** Janet on a real photo, and `add_inventory_photo` over the API.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
