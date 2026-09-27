@@ -102,11 +102,21 @@ export function FloorMap({
     apply(clampViewBox(viewRef.current, full));
   }, [svg, resetKey, apply]);
 
-  // Selecting a room (here or from the side panel) frames it.
+  // Selecting a room (here or from the side panel) frames it; clearing the
+  // selection (tap it again, or tap empty space) eases back to the whole
+  // floor.
+  const prevSelectedRef = useRef<string | null>(null);
   useEffect(() => {
     const full = fullRef.current;
-    const pts = selectedRoomId ? roomPoints.get(selectedRoomId) : undefined;
-    if (full && pts && pts.length >= 3) animateTo(fitViewBox(pts, full));
+    const prev = prevSelectedRef.current;
+    prevSelectedRef.current = selectedRoomId;
+    if (!full) return;
+    if (!selectedRoomId) {
+      if (prev) animateTo(full);
+      return;
+    }
+    const pts = roomPoints.get(selectedRoomId);
+    if (pts && pts.length >= 3) animateTo(fitViewBox(pts, full));
   }, [selectedRoomId, roomPoints, animateTo]);
 
   useEffect(() => stopAnim, []);

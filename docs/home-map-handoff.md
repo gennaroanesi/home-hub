@@ -76,7 +76,7 @@ Source: the Plan 890 second-floor marketing plan, at the same scale as the first
 ## Zoom and pan
 `components/floor-map.tsx` wraps the generated SVG and drives its `viewBox`:
 - **Controls:** + / − / Fit buttons; pinch or ⌘/Ctrl + scroll zooms around the cursor; drag pans; two-finger scroll pans only once zoomed in, otherwise the page scrolls.
-- **Rooms:** tapping a room selects it and eases the view to frame it (`fitViewBox`: the drawing's aspect ratio, at least 12' across). Selecting from the side panel does the same.
+- **Rooms:** tapping a room selects it and eases the view to frame it (`fitViewBox`: the drawing's aspect ratio, at least 12' across). Selecting from the side panel does the same. Deselecting (tap the room again, or tap empty space) eases back to the whole floor.
 - **State:** the view survives re-renders (selection, badges) and resets when switching floors. The math is in `lib/floorplan.ts` (`zoomViewBox`, `clampViewBox`, `fitViewBox`), with tests.
 - **Not yet tried in a real browser;** it needs a human with a mouse and trackpad.
 
