@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: zoom and pan are deployed (build 166, `419a087`). The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. **Committed but not pushed:** photo → inventory through Janet (as drafts), pets as item owners, and the Drafts review.
+Status as of 2026-09-26: everything below is deployed (build 167, `1476951`): photo → inventory through Janet as drafts, pets as owners, and the Drafts review. The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. `mobile/amplify_outputs.json` is regenerated but not pushed (it only affects mobile). **Not yet tried:** Janet on a real photo.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 

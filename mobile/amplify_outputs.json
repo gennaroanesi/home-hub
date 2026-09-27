@@ -1843,6 +1843,15 @@
               "isRequired": false,
               "attributes": []
             },
+            "draftStatus": {
+              "name": "draftStatus",
+              "isArray": false,
+              "type": {
+                "enum": "HomeInventoryItemDraftStatus"
+              },
+              "isRequired": false,
+              "attributes": []
+            },
             "ownerPersonId": {
               "name": "ownerPersonId",
               "isArray": false,
@@ -1852,6 +1861,13 @@
             },
             "pregnancyId": {
               "name": "pregnancyId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "petId": {
+              "name": "petId",
               "isArray": false,
               "type": "ID",
               "isRequired": false,
@@ -2044,6 +2060,16 @@
                 "queryField": "listHomeInventoryItemByPregnancyId",
                 "fields": [
                   "pregnancyId"
+                ]
+              }
+            },
+            {
+              "type": "key",
+              "properties": {
+                "name": "homeInventoryItemsByPetId",
+                "queryField": "listHomeInventoryItemByPetId",
+                "fields": [
+                  "petId"
                 ]
               }
             },
@@ -7144,10 +7170,18 @@
         "HomeInventoryItemStatus": {
           "name": "HomeInventoryItemStatus",
           "values": [
+            "DRAFT",
             "WISHLIST",
             "OWNED",
             "SOLD",
             "GIVEN_AWAY"
+          ]
+        },
+        "HomeInventoryItemDraftStatus": {
+          "name": "HomeInventoryItemDraftStatus",
+          "values": [
+            "OWNED",
+            "WISHLIST"
           ]
         },
         "HomeInventoryItemPriority": {
