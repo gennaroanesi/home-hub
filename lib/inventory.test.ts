@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  approveDrafts,
+  deleteInventoryItems,
   hasDetailModel,
   isLowStock,
   sizeRank,
@@ -57,5 +59,55 @@ describe("hasDetailModel", () => {
     expect(hasDetailModel("CONSUMABLE")).toBe(true);
     expect(hasDetailModel("GEAR")).toBe(false);
     expect(hasDetailModel(null)).toBe(false);
+  });
+});
+
+describe("drafts", () => {
+  function fakeClient() {
+    const calls: { model: string; op: string; arg: any }[] = [];
+    const rows: Record<string, any[]> = {
+      homeInventoryClothing: [{ id: "c1", itemId: "a" }],
+      homeInventoryConsumable: [],
+    };
+    const model = (name: string) => ({
+      update: async (arg: any) => (calls.push({ model: name, op: "update", arg }), { data: arg }),
+      delete: async (arg: any) => (calls.push({ model: name, op: "delete", arg }), { data: arg }),
+      list: async ({ filter }: any) => ({ data: (rows[name] ?? []).filter((r) => r.itemId === filter.itemId.eq) }),
+    });
+    const client = {
+      models: {
+        homeInventoryItem: model("homeInventoryItem"),
+        homeInventoryClothing: model("homeInventoryClothing"),
+        homeInventoryConsumable: model("homeInventoryConsumable"),
+      },
+    };
+    return { client, calls };
+  }
+
+  it("approves only drafts, to their draftStatus", async () => {
+    const { client, calls } = fakeClient();
+    const n = await approveDrafts(
+      client,
+      [
+        { id: "a", status: "DRAFT" },
+        { id: "b", status: "DRAFT", draftStatus: "WISHLIST" },
+        { id: "c", status: "OWNED" },
+      ],
+      "2026-09-26",
+    );
+    expect(n).toBe(2);
+    expect(calls.map((c) => c.arg)).toEqual([
+      { id: "a", status: "OWNED", draftStatus: null, acquiredAt: "2026-09-26" },
+      { id: "b", status: "WISHLIST", draftStatus: null },
+    ]);
+  });
+
+  it("deletes detail rows with the item", async () => {
+    const { client, calls } = fakeClient();
+    expect(await deleteInventoryItems(client, ["a"])).toBe(1);
+    expect(calls.map((c) => `${c.op} ${c.model} ${c.arg.id}`)).toEqual([
+      "delete homeInventoryClothing c1",
+      "delete homeInventoryItem a",
+    ]);
   });
 });

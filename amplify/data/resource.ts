@@ -451,7 +451,10 @@ const schema = a
           "TOOLS",
           "OTHER",
         ]),
-        status: a.enum(["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]),
+        // DRAFT = identified (e.g. by Janet from a photo) but not yet
+        // confirmed; approving moves it to draftStatus (default OWNED).
+        status: a.enum(["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]),
+        draftStatus: a.enum(["OWNED", "WISHLIST"]),
         // Whose it is (FK → homePerson.id). Null = shared by the household.
         ownerPersonId: a.id(),
         // For the baby on the way (FK → homePregnancy.id).

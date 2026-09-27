@@ -43,10 +43,11 @@ export function hasDetailModel(
   return !!category && category in DETAIL_MODEL_BY_CATEGORY;
 }
 
-export const INVENTORY_STATUSES = ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"] as const;
+export const INVENTORY_STATUSES = ["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"] as const;
 export type InventoryStatus = (typeof INVENTORY_STATUSES)[number];
 
 export const INVENTORY_STATUS_LABELS: Record<InventoryStatus, string> = {
+  DRAFT: "Draft",
   WISHLIST: "Wishlist",
   OWNED: "Owned",
   SOLD: "Sold",
@@ -147,4 +148,50 @@ export function formatUsd(n: number): string {
     currency: "USD",
     maximumFractionDigits: n % 1 === 0 ? 0 : 2,
   });
+}
+
+// ── Drafts (shared by the /inventory page and the agent) ─────────────────────
+// Janet creates photo-identified items as DRAFT; a person approves them
+// (→ draftStatus, default OWNED) or discards them. Takes the Amplify data
+// client as `any` so browser and Lambda clients both fit.
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DataClient = any;
+
+export interface DraftLike {
+  id: string;
+  status?: string | null;
+  draftStatus?: string | null;
+  acquiredAt?: string | null;
+}
+
+/** Approve drafts. Non-draft ids are skipped. Returns how many changed. */
+export async function approveDrafts(client: DataClient, items: DraftLike[], today: string): Promise<number> {
+  let n = 0;
+  for (const item of items) {
+    if (item.status !== "DRAFT") continue;
+    const status = item.draftStatus === "WISHLIST" ? "WISHLIST" : "OWNED";
+    const { errors } = await client.models.homeInventoryItem.update({
+      id: item.id,
+      status,
+      draftStatus: null,
+      ...(status === "OWNED" && !item.acquiredAt ? { acquiredAt: today } : {}),
+    });
+    if (!errors?.length) n++;
+  }
+  return n;
+}
+
+/** Delete items along with their clothing / consumable detail rows. */
+export async function deleteInventoryItems(client: DataClient, itemIds: string[]): Promise<number> {
+  let n = 0;
+  for (const id of itemIds) {
+    for (const model of ["homeInventoryClothing", "homeInventoryConsumable"]) {
+      const { data } = await client.models[model].list({ filter: { itemId: { eq: id } }, limit: 100 });
+      for (const row of data ?? []) await client.models[model].delete({ id: row.id });
+    }
+    const { errors } = await client.models.homeInventoryItem.delete({ id });
+    if (!errors?.length) n++;
+  }
+  return n;
 }

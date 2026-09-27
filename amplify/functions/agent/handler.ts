@@ -45,7 +45,7 @@ import {
   syncVisitEvent,
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
-import { isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
+import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { matchRoom, roomAndDescendants, roomLabel } from "../../../lib/floorplan.js";
 
 const anthropic = new Anthropic();
@@ -1753,8 +1753,8 @@ const tools: Anthropic.Tool[] = [
       properties: {
         status: {
           type: "string",
-          enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY", "ALL"],
-          description: "Default OWNED. WISHLIST = things we want to get.",
+          enum: ["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY", "ALL"],
+          description: "Default OWNED. WISHLIST = things we want to get. DRAFT = identified from a photo but not approved yet.",
         },
         category: {
           type: "string",
@@ -1827,7 +1827,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "add_inventory_items",
     description:
-      "Create several inventory items at once — typically from a photo: the user sends a picture of a shelf/closet/drawer and says where it is; identify each distinct item you can see and add them all in one call, in that room, with the photo attached. Use one entry per distinct item (group identical ones with quantity). Only include things you can actually make out; don't guess brands you can't read. Afterwards reply with a numbered list so they can correct it ('drop 3', 'make 5 two boxes').",
+      "Create several inventory items at once — typically from a photo: the user sends a picture of a shelf/closet/drawer and says where it is; identify each distinct item you can see and add them all in one call, in that room, with the photo attached. Use one entry per distinct item (group identical ones with quantity). Only include things you can actually make out; don't guess brands you can't read. Items are created as DRAFT (not counted anywhere until approved). Afterwards reply with a numbered list and ask them to approve or correct it ('drop 3', 'make 5 two boxes'); then call review_inventory_drafts.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1835,7 +1835,11 @@ const tools: Anthropic.Tool[] = [
         location: { type: "string", description: "Spot within the room ('top shelf', 'gray bin by the door'). Applies to every item unless an item sets its own." },
         ownerName: { type: "string", description: "Whose they are: a person, a pet (e.g. 'Dolce'), or omit for the household." },
         forBaby: { type: "boolean", description: "Items for the baby on the way." },
-        status: { type: "string", enum: ["OWNED", "WISHLIST"], description: "Default OWNED." },
+        status: {
+          type: "string",
+          enum: ["OWNED", "WISHLIST"],
+          description: "What the items become once approved. Default OWNED; WISHLIST for things to buy.",
+        },
         attachPhoto: {
           type: "boolean",
           description: "Attach the photo(s) from this message to every created item. Default true when the message has a photo.",
@@ -1864,6 +1868,20 @@ const tools: Anthropic.Tool[] = [
         },
       },
       required: ["items"],
+    },
+  },
+  {
+    name: "review_inventory_drafts",
+    description:
+      "Approve or discard DRAFT inventory items (created from a photo by add_inventory_items). 'Looks good' / 'approve' → action approve with the item ids you just created (or all=true for every draft). 'Drop 3' → action discard with that id. Approved items become OWNED (or WISHLIST if that's what they were drafted as). Call with action list to see what's pending.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        action: { type: "string", enum: ["approve", "discard", "list"] },
+        itemIds: { type: "array", items: { type: "string" }, description: "Draft item ids." },
+        all: { type: "boolean", description: "Every current draft (approve/discard)." },
+      },
+      required: ["action"],
     },
   },
   {
@@ -5397,8 +5415,7 @@ async function executeTool(
         ownerFields = r;
       }
       const photos = input.attachPhoto === false ? [] : ctx.currentImageKeys;
-      const status = input.status ?? "OWNED";
-      const today = ymdInTimezone(HOUSEHOLD_TZ);
+      const draftStatus = input.status === "WISHLIST" ? "WISHLIST" : "OWNED";
 
       const created: { n: number; id: string; name: string; quantity: number }[] = [];
       const failed: { name: string; error: string }[] = [];
@@ -5406,7 +5423,8 @@ async function executeTool(
         const { data: item, errors } = await client.models.homeInventoryItem.create({
           name: String(it.name).trim(),
           category: it.category ?? "OTHER",
-          status,
+          status: "DRAFT",
+          draftStatus,
           quantity: Number.isInteger(it.quantity) && it.quantity > 0 ? it.quantity : 1,
           brand: it.brand ?? null,
           notes: it.notes ?? null,
@@ -5414,7 +5432,6 @@ async function executeTool(
           location: it.location ?? input.location ?? null,
           ...ownerFields,
           imageKeys: photos,
-          acquiredAt: status === "OWNED" ? today : null,
           createdBy: "agent",
         });
         if (errors?.length || !item) {
@@ -5435,12 +5452,43 @@ async function executeTool(
       }
       return JSON.stringify({
         success: failed.length === 0,
+        status: "DRAFT",
+        becomesOnApproval: draftStatus,
         room: roomLabelText,
         location: input.location ?? null,
         photoAttached: photos.length > 0,
         created,
         ...(failed.length ? { failed } : {}),
       });
+    }
+
+    case "review_inventory_drafts": {
+      const { data: draftRows } = await client.models.homeInventoryItem.list({
+        filter: { status: { eq: "DRAFT" } },
+        limit: 1000,
+      });
+      const drafts = draftRows ?? [];
+      if (input.action === "list") {
+        return JSON.stringify({
+          count: drafts.length,
+          drafts: drafts.map((d) => ({ id: d.id, name: d.name, quantity: d.quantity, becomes: d.draftStatus ?? "OWNED", createdAt: d.createdAt })),
+        });
+      }
+      const ids: string[] = Array.isArray(input.itemIds) ? input.itemIds : [];
+      const targets = input.all ? drafts : drafts.filter((d) => ids.includes(d.id));
+      const notDraft = input.all ? [] : ids.filter((id) => !drafts.some((d) => d.id === id));
+      if (targets.length === 0) {
+        return JSON.stringify({ error: "No matching drafts", ...(notDraft.length ? { notDrafts: notDraft } : {}) });
+      }
+      if (input.action === "approve") {
+        const n = await approveDrafts(client, targets, ymdInTimezone(HOUSEHOLD_TZ));
+        return JSON.stringify({ success: true, approved: n, names: targets.map((t) => t.name), ...(notDraft.length ? { skippedNotDrafts: notDraft } : {}) });
+      }
+      if (input.action === "discard") {
+        const n = await deleteInventoryItems(client, targets.map((t) => t.id));
+        return JSON.stringify({ success: true, discarded: n, names: targets.map((t) => t.name) });
+      }
+      return JSON.stringify({ error: `Unknown action ${input.action}` });
     }
 
     case "adjust_inventory_quantity": {
@@ -5817,9 +5865,13 @@ CONSUMABLE carries unit + a low-stock threshold.
 - Photo of stuff + where it is ("this is the garage, second shelf") →
   identify each distinct item in the photo and call add_inventory_items once
   with roomName / location (the photo is attached to each item
-  automatically). Then reply with a short numbered list (name ×qty) and
-  invite corrections — "remove 3" → manage_inventory_item delete, "4 is
-  two boxes" → update quantity. If they didn't say where, ask before adding.
+  automatically). They're created as DRAFTS. Reply with a short numbered
+  list (name ×qty) and ask them to approve or correct: "remove 3" →
+  review_inventory_drafts discard; "4 is two boxes" → manage_inventory_item
+  update; "looks good" / "approve" → review_inventory_drafts approve with the
+  ids you created. On a later message you won't have those ids — call
+  review_inventory_drafts list first and approve the ones from that photo.
+  If they didn't say where, ask before adding.
   Pets are owners too: "Dolce's stuff" → ownerName "Dolce".
 - "Where is X?" → list_inventory with query X and answer with its room +
   location. "Put the stroller in the garage" → manage_inventory_item update

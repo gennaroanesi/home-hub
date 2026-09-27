@@ -118,7 +118,12 @@ export default function MapPage() {
   const roomsById = useMemo(() => new Map(rooms.map((r) => [r.id, r])), [rooms]);
 
   // Items still in the house, counted per room including its closets.
-  const liveItems = useMemo(() => items.filter((i) => i.status === "OWNED" || i.status === "WISHLIST"), [items]);
+  // Drafts show in the room panel (tagged) so they can be reviewed in place;
+  // badges below count only OWNED.
+  const liveItems = useMemo(
+    () => items.filter((i) => i.status === "OWNED" || i.status === "WISHLIST" || i.status === "DRAFT"),
+    [items],
+  );
   const badges = useMemo(() => {
     const out: Record<string, number> = {};
     for (const r of floorRooms) {
@@ -450,7 +455,7 @@ function RoomPanel({
                   <span className="min-w-0">
                   <span className="text-foreground">{i.name}</span>
                   {(i.quantity ?? 1) > 1 && <span className="text-default-400"> ×{i.quantity}</span>}
-                  {i.status === "WISHLIST" && (
+                  {(i.status === "WISHLIST" || i.status === "DRAFT") && (
                     <span className="text-[10px] ml-1 text-default-400">({INVENTORY_STATUS_LABELS[i.status as InventoryStatus]})</span>
                   )}
                   {(i.roomId !== room.id || i.location) && (

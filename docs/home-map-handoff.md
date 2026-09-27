@@ -1,6 +1,6 @@
 # House map — handoff
 
-Status as of 2026-09-26: zoom and pan are deployed (build 166, `419a087`). The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. **Committed but not pushed:** photo → inventory through Janet, and pets as item owners.
+Status as of 2026-09-26: zoom and pan are deployed (build 166, `419a087`). The user has imported the lot and first floor; the second floor (`~/Downloads/house-map-second-floor.json`) is ready to import. **Committed but not pushed:** photo → inventory through Janet (as drafts), pets as item owners, and the Drafts review.
 
 **Keep this doc current.** Update it, and the *House map* entry in `ROADMAP.md`, in every commit that touches this work.
 
@@ -81,8 +81,10 @@ Source: the Plan 890 second-floor marketing plan, at the same scale as the first
 - **Not yet tried in a real browser;** it needs a human with a mouse and trackpad.
 
 ## Photo → inventory (Janet)
-Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, second shelf"). She identifies each distinct item and calls **`add_inventory_items`** once. That creates every item in the room at the given location, with this message's photo attached (`homeInventoryItem.imageKeys`), plus clothing/consumable detail rows. She replies with a numbered list, and corrections go through the existing tools (delete, update quantity).
-- **One step on purpose:** the WhatsApp history doesn't carry photos into later turns, so a "yes, add them" confirmation couldn't attach the photo. Items are created right away and fixed by chat.
+Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, second shelf"). She identifies each distinct item and calls **`add_inventory_items`** once. That creates every item in the room at the given location, with this message's photo attached (`homeInventoryItem.imageKeys`), plus clothing/consumable detail rows. Items are created as **DRAFT**, with `draftStatus` = what they become (OWNED, or WISHLIST for things to buy). She replies with a numbered list. You approve ("looks good") or correct: `review_inventory_drafts` approves or discards by id or `all`, and quantity/owner fixes go through `manage_inventory_item`. On a later WhatsApp turn she no longer has the ids (the history holds text only), so she lists the pending drafts first.
+- **Drafts don't count anywhere:** not in totals, wishlist sums, map badges, low-stock refills, or `list_inventory`'s default (OWNED). The web **Drafts** tab (shown only when there are drafts; the page lands on it) has Approve / Discard per item and Approve all / Discard all. The map's room panel lists drafts tagged "(Draft)".
+- **Shared helpers:** `approveDrafts` / `deleteInventoryItems` in `lib/inventory.ts` (tested with a fake client), used by both the page and Janet.
+- **Created right away, as drafts:** the WhatsApp history doesn't carry photos into later turns, so waiting for a "yes, add them" before creating anything would lose the photo. The draft status is the approval step instead.
 - **How the photo reaches the tool:** `ToolContext.currentImageKeys`, filled from the inbound message's image attachments (async/WhatsApp) or `imageS3Keys` (web).
 - **Guardrails:** if she doesn't know the room she asks first, since the prompt says to. If the room or owner doesn't resolve, nothing is created. Max 60 items per call.
 - **Photos in the app:** a thumbnail on inventory rows and in the map's room panel; full photos in the item dialog, where one can be removed. URLs come from `lib/image-loader` (`photoUrl`).

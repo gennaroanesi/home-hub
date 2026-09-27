@@ -49,6 +49,7 @@ import {
   type InventoryStatus,
 } from "@/lib/inventory";
 import { roomAndDescendants, roomLabel } from "@/lib/floorplan";
+import { approveDrafts, deleteInventoryItems } from "@/lib/inventory";
 import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -70,8 +71,10 @@ interface RoomOption {
   floor: string;
 }
 
-type Tab = "OWNED" | "WISHLIST" | "PAST";
+type Tab = "DRAFT" | "OWNED" | "WISHLIST" | "PAST";
+// Drafts (from Janet's photo intake) only get a tab while there are some.
 const TABS: { key: Tab; label: string }[] = [
+  { key: "DRAFT", label: "Drafts" },
   { key: "OWNED", label: "Owned" },
   { key: "WISHLIST", label: "Wishlist" },
   { key: "PAST", label: "Sold / given away" },
@@ -177,6 +180,7 @@ export default function InventoryPage() {
       listAllPages<Pet>(client.models.homePet).then(setPets, () => setPets([]));
       setRooms(rm);
       setFloors(fl);
+      if (it.some((i) => i.status === "DRAFT")) setTab((cur) => (cur === "OWNED" ? "DRAFT" : cur));
       setItems(it);
       setClothing(cl);
       setConsumables(co);
@@ -305,6 +309,19 @@ export default function InventoryPage() {
     upsertLocal(data);
   }
 
+  async function approve(list: Item[]) {
+    const n = await approveDrafts(client, list, todayYmd());
+    addToast({ title: `Approved ${n} item${n === 1 ? "" : "s"}`, color: "success" });
+    await loadAll();
+  }
+
+  async function discard(list: Item[]) {
+    if (list.length > 1 && !confirm(`Discard ${list.length} drafts?`)) return;
+    const n = await deleteInventoryItems(client, list.map((i) => i.id));
+    addToast({ title: `Discarded ${n} draft${n === 1 ? "" : "s"}` });
+    await loadAll();
+  }
+
   async function markOwned(item: Item) {
     const { data, errors } = await client.models.homeInventoryItem.update({
       id: item.id,
@@ -373,13 +390,18 @@ export default function InventoryPage() {
             const count = items.filter((i) =>
               t.key === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === t.key,
             ).length;
+            if (t.key === "DRAFT" && count === 0 && tab !== "DRAFT") return null;
             return (
               <button
                 key={t.key}
                 type="button"
                 onClick={() => setTab(t.key)}
                 className={`px-3 py-1 rounded-full text-sm ${
-                  tab === t.key ? "bg-primary text-primary-foreground" : "bg-default-100 text-default-600"
+                  tab === t.key
+                    ? "bg-primary text-primary-foreground"
+                    : t.key === "DRAFT"
+                      ? "bg-warning-100 text-warning-700"
+                      : "bg-default-100 text-default-600"
                 }`}
               >
                 {t.label} <span className="opacity-70">{count}</span>
@@ -448,6 +470,20 @@ export default function InventoryPage() {
         </div>
 
         {/* Totals */}
+        {!loading && tab === "DRAFT" && visible.length > 0 && (
+          <div className="mb-6 flex flex-wrap items-center gap-2 rounded-md border border-warning-200 bg-warning-50 px-3 py-2">
+            <p className="text-sm text-warning-800 flex-1 min-w-[200px]">
+              {visible.length} item{visible.length === 1 ? "" : "s"} identified by Janet — check them, then approve.
+              Drafts don&apos;t count in totals, the map or low-stock refills.
+            </p>
+            <Button size="sm" color="success" variant="flat" onPress={() => approve(visible)}>
+              Approve all
+            </Button>
+            <Button size="sm" color="danger" variant="light" onPress={() => discard(visible)}>
+              Discard all
+            </Button>
+          </div>
+        )}
         {!loading && tab === "WISHLIST" && wish.count > 0 && (
           <div className="mb-6 grid grid-cols-2 sm:grid-cols-4 gap-2">
             <Stat label="Items" value={String(wish.count)} />
@@ -498,6 +534,8 @@ export default function InventoryPage() {
                       }}
                       onAdjust={(d) => adjustQuantity(i, d)}
                       onMarkOwned={() => markOwned(i)}
+                      onApprove={() => approve([i])}
+                      onDiscard={() => discard([i])}
                       onAddToList={() => addToShoppingList(i)}
                     />
                   ))}
@@ -548,6 +586,8 @@ function ItemRow({
   onAdjust,
   onMarkOwned,
   onAddToList,
+  onApprove,
+  onDiscard,
 }: {
   item: Item;
   clothing?: Clothing;
@@ -557,6 +597,8 @@ function ItemRow({
   onEdit: () => void;
   onAdjust: (delta: number) => void;
   onMarkOwned: () => void;
+  onApprove: () => void;
+  onDiscard: () => void;
   onAddToList: () => void;
 }) {
   const low = item.status === "OWNED" && !!consumable && isLowStock(item.quantity, consumable.lowStockThreshold);
@@ -645,6 +687,16 @@ function ItemRow({
         <Button size="sm" variant="flat" color="success" onPress={onMarkOwned} className="shrink-0">
           Got it
         </Button>
+      )}
+      {item.status === "DRAFT" && (
+        <div className="flex gap-1 shrink-0">
+          <Button size="sm" variant="flat" color="success" onPress={onApprove}>
+            Approve
+          </Button>
+          <Button size="sm" variant="light" color="danger" onPress={onDiscard}>
+            Discard
+          </Button>
+        </div>
       )}
     </div>
   );
