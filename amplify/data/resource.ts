@@ -357,6 +357,67 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── House map ──────────────────────────────────────────────────────
+    // Floors and rooms of the house, drawn to scale. Geometry is data
+    // (points in FEET from the floor's top-left corner), and the SVG is
+    // generated from it (lib/floorplan.ts) — so it stays measurement-
+    // accurate, clickable, and exportable. Closets and storage spaces
+    // are rooms of kind CLOSET/STORAGE with parentRoomId pointing at the
+    // room they open off. Inventory items link here via roomId.
+    RoomPoint: a.customType({
+      x: a.float().required(), // feet, left → right
+      y: a.float().required(), // feet, top → bottom
+    }),
+
+    homeFloor: a
+      .model({
+        name: a.string().required(), // "First floor", "Second floor"
+        level: a.integer().required(), // 1, 2… (0 = basement)
+        notes: a.string(),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeRoom: a
+      .model({
+        floorId: a.id().required(),
+        name: a.string().required(),
+        kind: a.enum([
+          "ROOM",
+          "BEDROOM",
+          "BATHROOM",
+          "KITCHEN",
+          "LIVING",
+          "DINING",
+          "OFFICE",
+          "LAUNDRY",
+          "HALLWAY",
+          "STAIRS",
+          "CLOSET",
+          "STORAGE",
+          "GARAGE",
+          "OTHER",
+        ]),
+        // Closet → the bedroom it belongs to, etc.
+        parentRoomId: a.id(),
+        // Outline, clockwise, in feet. A rectangle is 4 points.
+        points: a.ref("RoomPoint").array().required(),
+        // Optional label anchor (feet); defaults to the outline's center.
+        labelX: a.float(),
+        labelY: a.float(),
+        // Home Assistant area name, so devices can be placed on the map.
+        haArea: a.string(),
+        notes: a.string(),
+        sortOrder: a.integer().default(0),
+      })
+      .secondaryIndexes((index) => [index("floorId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Inventory ───────────────────────────────────────────────────────
     // Modular: one base row per item (what it is, whose it is, whether we
     // own it or want it, what it cost) plus an optional detail row for
@@ -391,7 +452,10 @@ const schema = a
         pregnancyId: a.id(),
         brand: a.string(),
         quantity: a.integer().default(1),
-        location: a.string(), // "Nursery closet", "Garage shelf 2"
+        // Which room it's in (FK → homeRoom.id); `location` is the
+        // free-text detail within it ("top shelf, gray box").
+        roomId: a.id(),
+        location: a.string(),
         // Free-form grouping across categories: "nursery", "feeding", "bath".
         tags: a.string().array(),
         notes: a.string(),
@@ -413,7 +477,7 @@ const schema = a
         imageKeys: a.string().array(),
         createdBy: a.string(),
       })
-      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId")])
+      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId"), index("roomId")])
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),

@@ -46,6 +46,7 @@ import {
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
 import { isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
+import { matchRoom, roomAndDescendants, roomLabel } from "../../../lib/floorplan.js";
 
 const anthropic = new Anthropic();
 const scheduler = new SchedulerClient({});
@@ -1745,7 +1746,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "list_inventory",
     description:
-      "Search household inventory: things we own, the wishlist (also the private baby registry), and sold/given-away items. Answers 'do we have any size 0-3M sleepers?', 'what's left on the baby wishlist and how much will it cost?', 'how many diapers do we have?', 'what's running low?'. Returns items with their clothing/consumable details, plus wishlist totals when listing the wishlist.",
+      "Search household inventory: things we own, the wishlist (also the private baby registry), and sold/given-away items. Each item has a room (from the house map) plus a free-text location within it, so this answers 'where is the breast pump?' and 'what's in the garage?'. Also answers 'do we have any size 0-3M sleepers?', 'what's left on the baby wishlist and how much will it cost?', 'how many diapers do we have?', 'what's running low?'. Returns items with their clothing/consumable details, plus wishlist totals when listing the wishlist.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1762,7 +1763,11 @@ const tools: Anthropic.Tool[] = [
           type: "string",
           description: "Person's name, 'household' for shared items, or 'baby' for items for the baby on the way.",
         },
-        query: { type: "string", description: "Fuzzy match on name, brand, notes, tags, clothing type/color." },
+        query: { type: "string", description: "Fuzzy match on name, brand, notes, tags, clothing type/color, room and location." },
+        roomName: {
+          type: "string",
+          description: "Only items in this room (from the house map), including closets inside it — e.g. 'garage', 'primary bedroom closet'.",
+        },
         size: { type: "string", description: "Clothing size, e.g. 'NB', '0-3M', '3T', 'M'." },
         lowStockOnly: { type: "boolean", description: "Only consumables at or below their low-stock threshold." },
       },
@@ -1789,7 +1794,11 @@ const tools: Anthropic.Tool[] = [
         forBaby: { type: "boolean", description: "Item is for the baby on the way (links it to the active pregnancy)." },
         brand: { type: "string" },
         quantity: { type: "integer" },
-        location: { type: "string" },
+        roomName: {
+          type: "string",
+          description: "Room it's kept in, from the house map ('garage', 'primary bedroom closet'). Pass an empty string to clear.",
+        },
+        location: { type: "string", description: "Where within the room: 'top shelf, gray box'." },
         tags: { type: "array", items: { type: "string" }, description: "e.g. ['nursery'], ['feeding']" },
         notes: { type: "string" },
         url: { type: "string" },
@@ -1910,13 +1919,21 @@ async function resolveProviderId(name?: string | null): Promise<string | null> {
 
 async function loadInventory() {
   const client = await getDataClient();
-  const [items, clothing, consumables] = await Promise.all([
+  const [items, clothing, consumables, rooms] = await Promise.all([
     client.models.homeInventoryItem.list({ limit: 1000 }),
     client.models.homeInventoryClothing.list({ limit: 1000 }),
     client.models.homeInventoryConsumable.list({ limit: 1000 }),
+    client.models.homeRoom.list({ limit: 500 }),
   ]);
+  const roomRows = rooms.data ?? [];
+  const roomsById = new Map(roomRows.map((r) => [r.id, r]));
   return {
     items: items.data ?? [],
+    rooms: roomRows,
+    roomName: (id: string | null | undefined) => {
+      const r = id ? roomsById.get(id) : undefined;
+      return r ? roomLabel(r, roomsById) : null;
+    },
     clothingByItem: new Map((clothing.data ?? []).map((c) => [c.itemId, c])),
     consumableByItem: new Map((consumables.data ?? []).map((c) => [c.itemId, c])),
   };
@@ -5043,8 +5060,19 @@ async function executeTool(
     // ── Inventory ──────────────────────────────────────────────────────────
 
     case "list_inventory": {
-      const { items, clothingByItem, consumableByItem } = await loadInventory();
+      const { items, clothingByItem, consumableByItem, rooms, roomName } = await loadInventory();
       const status: string = input.status ?? "OWNED";
+      let roomIds: Set<string> | null = null;
+      if (input.roomName) {
+        const room = matchRoom(rooms, input.roomName);
+        if (!room) {
+          return JSON.stringify({
+            error: `No room matching "${input.roomName}"`,
+            rooms: rooms.map((r) => roomName(r.id)),
+          });
+        }
+        roomIds = roomAndDescendants(room.id, rooms);
+      }
       let owner: { ownerPersonId: string | null; pregnancyId: string | null } | null = null;
       if (input.ownerName) {
         const r = await resolveInventoryOwner(input.ownerName);
@@ -5058,6 +5086,7 @@ async function executeTool(
       const rows = items
         .filter((i) => status === "ALL" || i.status === status)
         .filter((i) => !input.category || i.category === input.category)
+        .filter((i) => !roomIds || (!!i.roomId && roomIds.has(i.roomId)))
         .filter((i) => {
           if (!owner) return true;
           if (owner.pregnancyId) return i.pregnancyId === owner.pregnancyId;
@@ -5067,7 +5096,7 @@ async function executeTool(
         .filter((i) => {
           if (!q) return true;
           const c = clothingByItem.get(i.id);
-          const hay = [i.name, i.brand, i.notes, ...(i.tags ?? []), c?.type, c?.color]
+          const hay = [i.name, i.brand, i.notes, roomName(i.roomId), i.location, ...(i.tags ?? []), c?.type, c?.color]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
@@ -5104,6 +5133,7 @@ async function executeTool(
                 : "household",
             brand: i.brand,
             quantity: i.quantity,
+            room: roomName(i.roomId),
             location: i.location,
             tags: i.tags,
             priority: i.priority,
@@ -5171,6 +5201,22 @@ async function executeTool(
         pricePaid: input.pricePaid,
         priceSold: input.priceSold,
       });
+      let roomFields: { roomId: string | null } | undefined;
+      if (input.roomName !== undefined) {
+        if (!input.roomName) roomFields = { roomId: null };
+        else {
+          const { data: roomRows } = await client.models.homeRoom.list({ limit: 500 });
+          const room = matchRoom(roomRows ?? [], input.roomName);
+          if (!room) {
+            const byId = new Map((roomRows ?? []).map((r) => [r.id, r]));
+            return JSON.stringify({
+              error: `No room matching "${input.roomName}"`,
+              rooms: (roomRows ?? []).map((r) => roomLabel(r, byId)),
+            });
+          }
+          roomFields = { roomId: room.id };
+        }
+      }
       let ownerFields: { ownerPersonId: string | null; pregnancyId: string | null } | undefined;
       if (input.ownerName !== undefined || input.forBaby) {
         const r = await resolveInventoryOwner(input.ownerName, input.forBaby);
@@ -5201,6 +5247,7 @@ async function executeTool(
           category: input.category,
           status,
           ...(ownerFields ?? {}),
+          ...(roomFields ?? {}),
           ...(status === "OWNED" && !input.acquiredAt ? { acquiredAt: today } : {}),
           createdBy: "agent",
         });
@@ -5244,6 +5291,7 @@ async function executeTool(
         id: item.id,
         ...baseFields,
         ...(ownerFields ?? {}),
+        ...(roomFields ?? {}),
         ...markOwned,
         ...((input.status === "SOLD" || input.status === "GIVEN_AWAY") ? { disposedAt: today } : {}),
       });
@@ -5628,6 +5676,9 @@ CONSUMABLE carries unit + a low-stock threshold.
   back with restock.addedToList, mention it went on that shopping list.
 - "How much is left on the wishlist?" → list_inventory status WISHLIST and
   read back wishlist.estimatedTotal (and how many items have no price).
+- "Where is X?" → list_inventory with query X and answer with its room +
+  location. "Put the stroller in the garage" → manage_inventory_item update
+  with roomName (location is the detail within the room, e.g. "top shelf").
 - Items for the baby on the way use forBaby / ownerName "baby"; shared
   household items have no owner.
 

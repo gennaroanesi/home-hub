@@ -48,6 +48,7 @@ import {
   type InventoryCategory,
   type InventoryStatus,
 } from "@/lib/inventory";
+import { roomAndDescendants, roomLabel } from "@/lib/floorplan";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -58,6 +59,14 @@ type Item = Schema["homeInventoryItem"]["type"];
 type Clothing = Schema["homeInventoryClothing"]["type"];
 type Consumable = Schema["homeInventoryConsumable"]["type"];
 type ShoppingList = Schema["homeShoppingList"]["type"];
+type Room = Schema["homeRoom"]["type"];
+type Floor = Schema["homeFloor"]["type"];
+
+interface RoomOption {
+  key: string;
+  label: string; // "Primary bedroom › Closet"
+  floor: string;
+}
 
 type Tab = "OWNED" | "WISHLIST" | "PAST";
 const TABS: { key: Tab; label: string }[] = [
@@ -99,6 +108,10 @@ export default function InventoryPage() {
   const [people, setPeople] = useState<Person[]>([]);
   const [pregnancies, setPregnancies] = useState<Pregnancy[]>([]);
   const [lists, setLists] = useState<ShoppingList[]>([]);
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [floors, setFloors] = useState<Floor[]>([]);
+  const [roomFilter, setRoomFilter] = useState("");
+  const [defaultRoom, setDefaultRoom] = useState("");
 
   const [tab, setTab] = useState<Tab>("OWNED");
   const [category, setCategory] = useState<InventoryCategory | "">("");
@@ -120,16 +133,37 @@ export default function InventoryPage() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Deep links from the map: ?roomId=… filters to that room (and its
+  // closets); &new=1 opens "Add item" with the room preselected.
+  useEffect(() => {
+    if (!router.isReady) return;
+    const roomId = typeof router.query.roomId === "string" ? router.query.roomId : "";
+    if (!roomId) return;
+    setRoomFilter(roomId);
+    if (router.query.new === "1") {
+      setEditing(null);
+      setDefaultRoom(roomId);
+      setModalOpen(true);
+    }
+  }, [router.isReady, router.query.roomId, router.query.new]);
+
   async function loadAll() {
     try {
-      const [it, cl, co, ppl, preg, sl] = await Promise.all([
+      // Rooms/floors are optional: an older amplify_outputs.json (before
+      // the house map was deployed) simply doesn't have those models.
+      const models = client.models as Partial<typeof client.models>;
+      const [it, cl, co, ppl, preg, sl, rm, fl] = await Promise.all([
         listAllPages<Item>(client.models.homeInventoryItem),
         listAllPages<Clothing>(client.models.homeInventoryClothing),
         listAllPages<Consumable>(client.models.homeInventoryConsumable),
         listAllPages<Person>(client.models.homePerson),
         listAllPages<Pregnancy>(client.models.homePregnancy),
         listAllPages<ShoppingList>(client.models.homeShoppingList),
+        models.homeRoom ? listAllPages<Room>(models.homeRoom) : Promise.resolve([] as Room[]),
+        models.homeFloor ? listAllPages<Floor>(models.homeFloor) : Promise.resolve([] as Floor[]),
       ]);
+      setRooms(rm);
+      setFloors(fl);
       setItems(it);
       setClothing(cl);
       setConsumables(co);
@@ -169,6 +203,18 @@ export default function InventoryPage() {
 
   const ownerLabel = (i: Item) => ownerOptions.find((o) => o.key === ownerKeyOf(i))?.label ?? "Unknown";
 
+  // Rooms by floor, then name, labelled "Room › Closet".
+  const roomOptions = useMemo<RoomOption[]>(() => {
+    const byId = new Map(rooms.map((r) => [r.id, r]));
+    const floorOf = new Map(floors.map((f) => [f.id, f]));
+    return rooms
+      .map((r) => ({ key: r.id, label: roomLabel(r, byId), floor: floorOf.get(r.floorId)?.name ?? "", level: floorOf.get(r.floorId)?.level ?? 0 }))
+      .sort((a, b) => a.level - b.level || a.label.localeCompare(b.label))
+      .map(({ key, label, floor }) => ({ key, label, floor }));
+  }, [rooms, floors]);
+  const roomLabelById = useMemo(() => new Map(roomOptions.map((o) => [o.key, o.label])), [roomOptions]);
+  const roomFilterIds = useMemo(() => (roomFilter ? roomAndDescendants(roomFilter, rooms) : null), [roomFilter, rooms]);
+
   const tabItems = useMemo(
     () =>
       items.filter((i) =>
@@ -182,16 +228,18 @@ export default function InventoryPage() {
     return tabItems
       .filter((i) => !category || i.category === category)
       .filter((i) => !owner || ownerKeyOf(i) === owner)
+      .filter((i) => !roomFilterIds || (!!i.roomId && roomFilterIds.has(i.roomId)))
       .filter((i) => {
         if (!q) return true;
         const c = clothingByItem.get(i.id);
-        return [i.name, i.brand, i.notes, i.location, ...(i.tags ?? []), c?.type, c?.color, c?.size]
+        const room = i.roomId ? roomLabelById.get(i.roomId) : null;
+        return [i.name, i.brand, i.notes, room, i.location, ...(i.tags ?? []), c?.type, c?.color, c?.size]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()
           .includes(q);
       });
-  }, [tabItems, category, owner, search, clothingByItem]);
+  }, [tabItems, category, owner, roomFilterIds, roomLabelById, search, clothingByItem]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Item[]>();
@@ -284,6 +332,7 @@ export default function InventoryPage() {
 
   function openNew() {
     setEditing(null);
+    setDefaultRoom(roomFilter);
     setModalOpen(true);
   }
 
@@ -361,6 +410,23 @@ export default function InventoryPage() {
               <SelectItem key={o.key}>{o.label}</SelectItem>
             ))}
           </Select>
+          {roomOptions.length > 0 && (
+            <Select
+              size="sm"
+              aria-label="Room"
+              placeholder="Any room"
+              selectedKeys={roomFilter ? [roomFilter] : []}
+              onChange={(e) => setRoomFilter(e.target.value)}
+              className="sm:max-w-[220px]"
+            >
+              {roomOptions.map((o) => (
+                <SelectItem key={o.key} textValue={o.label}>
+                  {o.label}
+                  <span className="text-default-400 text-xs"> · {o.floor}</span>
+                </SelectItem>
+              ))}
+            </Select>
+          )}
         </div>
 
         {/* Totals */}
@@ -407,6 +473,7 @@ export default function InventoryPage() {
                       clothing={clothingByItem.get(i.id)}
                       consumable={consumableByItem.get(i.id)}
                       ownerLabel={ownerLabel(i)}
+                      roomLabel={i.roomId ? roomLabelById.get(i.roomId) : undefined}
                       onEdit={() => {
                         setEditing(i);
                         setModalOpen(true);
@@ -433,6 +500,8 @@ export default function InventoryPage() {
         clothing={editing ? clothingByItem.get(editing.id) : undefined}
         consumable={editing ? consumableByItem.get(editing.id) : undefined}
         ownerOptions={ownerOptions}
+        roomOptions={roomOptions}
+        defaultRoom={defaultRoom}
         lists={lists}
         onSaved={loadAll}
       />
@@ -456,6 +525,7 @@ function ItemRow({
   clothing,
   consumable,
   ownerLabel,
+  roomLabel: roomName,
   onEdit,
   onAdjust,
   onMarkOwned,
@@ -465,6 +535,7 @@ function ItemRow({
   clothing?: Clothing;
   consumable?: Consumable;
   ownerLabel: string;
+  roomLabel?: string;
   onEdit: () => void;
   onAdjust: (delta: number) => void;
   onMarkOwned: () => void;
@@ -507,7 +578,7 @@ function ItemRow({
           )}
         </div>
         <p className="text-xs text-default-500 truncate">
-          {[ownerLabel, ...chips, item.location].filter(Boolean).join(" · ")}
+          {[ownerLabel, ...chips, [roomName, item.location].filter(Boolean).join(": ")].filter(Boolean).join(" · ")}
           {item.status === "WISHLIST" && item.neededBy && ` · by ${item.neededBy}`}
         </p>
       </button>
@@ -562,6 +633,8 @@ function ItemModal({
   clothing,
   consumable,
   ownerOptions,
+  roomOptions,
+  defaultRoom,
   lists,
   onSaved,
 }: {
@@ -574,6 +647,8 @@ function ItemModal({
   clothing?: Clothing;
   consumable?: Consumable;
   ownerOptions: { key: string; label: string }[];
+  roomOptions: RoomOption[];
+  defaultRoom: string;
   lists: ShoppingList[];
   onSaved: () => void;
 }) {
@@ -590,6 +665,7 @@ function ItemModal({
       category: s(e?.category ?? defaultCategory ?? "OTHER"),
       status: s(e?.status ?? defaultStatus),
       owner: e ? ownerKeyOf(e) : defaultOwner,
+      roomId: e ? s(e.roomId) : defaultRoom,
       brand: s(e?.brand),
       quantity: s(e?.quantity ?? 1),
       location: s(e?.location),
@@ -614,7 +690,7 @@ function ItemModal({
       shoppingListId: s(consumable?.shoppingListId),
       expiresOn: s(consumable?.expiresOn),
     });
-  }, [isOpen, editing, clothing, consumable, defaultStatus, defaultCategory, defaultOwner]);
+  }, [isOpen, editing, clothing, consumable, defaultStatus, defaultCategory, defaultOwner, defaultRoom]);
 
   const str = (k: string) => (f[k]?.trim() ? f[k].trim() : null);
   const num = (k: string) => (f[k]?.trim() && !Number.isNaN(Number(f[k])) ? Number(f[k]) : null);
@@ -635,6 +711,7 @@ function ItemModal({
         ...ownerFieldsFromKey(f.owner),
         brand: str("brand"),
         quantity: int("quantity") ?? 1,
+        roomId: str("roomId"),
         location: str("location"),
         tags: f.tags ? f.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
         notes: str("notes"),
@@ -791,10 +868,32 @@ function ItemModal({
             </div>
           )}
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 gap-2">
             <Input label="Brand" value={f.brand ?? ""} onValueChange={set("brand")} />
             <Input label="Quantity" type="number" min={0} value={f.quantity ?? ""} onValueChange={set("quantity")} />
-            <Input label="Location" placeholder="Nursery closet" value={f.location ?? ""} onValueChange={set("location")} />
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {roomOptions.length > 0 ? (
+              <Select
+                label="Room"
+                placeholder="Not set"
+                selectedKeys={f.roomId ? [f.roomId] : []}
+                onChange={(e) => set("roomId")(e.target.value)}
+              >
+                {roomOptions.map((o) => (
+                  <SelectItem key={o.key} textValue={o.label}>
+                    {o.label}
+                    <span className="text-default-400 text-xs"> · {o.floor}</span>
+                  </SelectItem>
+                ))}
+              </Select>
+            ) : null}
+            <Input
+              label={roomOptions.length > 0 ? "Where in the room" : "Location"}
+              placeholder={roomOptions.length > 0 ? "Over the closet, gray box" : "Nursery closet"}
+              value={f.location ?? ""}
+              onValueChange={set("location")}
+            />
           </div>
 
           {isWishlist ? (
