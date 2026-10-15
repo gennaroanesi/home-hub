@@ -920,6 +920,7 @@ function ShoppingCard({ data, onNew }: { data: Loadable<ShoppingSummary[]>; onNe
 
 function checklistHref(entityType: EntityType, entityId: string): string {
   if (entityType === "TRIP") return `/trips/${entityId}`;
+  if (entityType === "PREGNANCY") return "/health";
   return "/checklists";
 }
 

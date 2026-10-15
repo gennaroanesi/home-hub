@@ -1438,7 +1438,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_checklist",
     description:
-      "Create, rename, delete, duplicate, or save-as-template a checklist. Checklists attach to entities (trip, event, bill, document, task). 'duplicate' copies all items (unchecked) to the same or a different entity. 'save_as_template' saves a copy as a reusable template. 'from_template' creates a checklist from an existing template.",
+      "Create, rename, delete, duplicate, or save-as-template a checklist. Checklists attach to entities (trip, event, bill, document, task, pregnancy). For a pregnancy checklist (e.g. hospital bag, nursery prep) pass entityType=PREGNANCY and omit entityId — the active pregnancy is used (pass personName if there are several). 'duplicate' copies all items (unchecked) to the same or a different entity. 'save_as_template' saves a copy as a reusable template. 'from_template' creates a checklist from an existing template.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1448,12 +1448,16 @@ const tools: Anthropic.Tool[] = [
         },
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "TEMPLATE", "OTHER"],
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
           description: "Required for create/duplicate/from_template. The type of entity this checklist belongs to.",
         },
         entityId: {
           type: "string",
-          description: "Required for create/duplicate/from_template. The ID of the entity this checklist belongs to.",
+          description: "Required for create/duplicate/from_template, except with entityType=PREGNANCY (defaults to the active pregnancy). The ID of the entity this checklist belongs to.",
+        },
+        personName: {
+          type: "string",
+          description: "With entityType=PREGNANCY and no entityId: whose pregnancy. Omit when there's only one active pregnancy.",
         },
         checklistId: {
           type: "string",
@@ -1525,12 +1529,16 @@ const tools: Anthropic.Tool[] = [
       properties: {
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "TEMPLATE", "OTHER"],
+          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
           description: "Optional. Filter by entity type. Use TEMPLATE to list saved templates.",
         },
         entityId: {
           type: "string",
-          description: "Optional. If provided, returns checklists for this specific entity. If only entityType is given, returns all checklists of that type.",
+          description: "Optional. If provided, returns checklists for this specific entity. If only entityType is given, returns all checklists of that type (entityType=PREGNANCY alone returns the active pregnancy's checklists).",
+        },
+        personName: {
+          type: "string",
+          description: "With entityType=PREGNANCY and no entityId: whose pregnancy. Omit when there's only one active pregnancy.",
         },
       },
     },
@@ -1630,7 +1638,7 @@ const tools: Anthropic.Tool[] = [
   {
     name: "manage_care_item",
     description:
-      "Update, add, or delete a care-timeline item. Use update to mark something SCHEDULED (pass scheduledAt — the booked date/time; by default this also creates a visit on the calendar), DONE (with completedAt), SKIPPED (declined — e.g. opted out of NIPT or a vaccine), or NOT_APPLICABLE (e.g. Rh immune globulin when she's Rh-positive). Identify the item by careItemId or by a fuzzy query on its title/key ('anatomy', 'glucose', 'tdap').",
+      "Update, add, or delete a care-timeline item. add and update both accept a status (with its date) in the same call. Use update to mark something SCHEDULED (pass scheduledAt — the booked date/time; by default this also creates a visit on the calendar), DONE (with completedAt), SKIPPED (declined — e.g. opted out of NIPT or a vaccine), or NOT_APPLICABLE (e.g. Rh immune globulin when she's Rh-positive). Identify the item by careItemId or by a fuzzy query on its title/key ('anatomy', 'glucose', 'tdap').",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1654,6 +1662,11 @@ const tools: Anthropic.Tool[] = [
         eventId: { type: "string", description: "Linked homeCalendarEvent id." },
         completedAt: { type: "string", description: "YYYY-MM-DD. Defaults to today when status=DONE." },
         notes: { type: "string" },
+        optional: { type: "boolean", description: "Nice-to-have rather than standard care (e.g. an elective 3D scan)." },
+        sortOrder: {
+          type: "integer",
+          description: "Tie-breaker among items with the same windowStart (lower first). The timeline is ordered by windowStart, so move an item by changing its window. Hand-added items default to 999.",
+        },
       },
       required: ["action"],
     },
@@ -4388,6 +4401,11 @@ async function executeTool(
 
     case "manage_checklist": {
       const { action } = input;
+      if (input.entityType === "PREGNANCY" && !input.entityId && action !== "save_as_template") {
+        const res = await resolveActivePregnancy(input.personName);
+        if ("error" in res) return JSON.stringify({ error: res.error });
+        input.entityId = res.pregnancy.id;
+      }
 
       if (action === "create") {
         if (!input.entityType || !input.entityId || !input.name) {
@@ -4604,6 +4622,11 @@ async function executeTool(
 
     case "list_checklists": {
       let checklists: Schema["homeChecklist"]["type"][];
+      if (input.entityType === "PREGNANCY" && !input.entityId) {
+        const res = await resolveActivePregnancy(input.personName);
+        if ("error" in res) return JSON.stringify({ error: res.error });
+        input.entityId = res.pregnancy.id;
+      }
 
       if (input.entityId) {
         const { data } = await client.models.homeChecklist.list({
@@ -4846,6 +4869,7 @@ async function executeTool(
           completedAt: i.completedAt,
           eventId: i.eventId,
           notes: i.notes,
+          sortOrder: i.sortOrder,
         })),
         count: items.length,
       });
@@ -4856,56 +4880,64 @@ async function executeTool(
       if ("error" in res) return JSON.stringify({ error: res.error });
       const pregnancyId = res.pregnancy.id;
 
-      if (input.action === "add") {
-        if (!input.title || !input.windowStart || !input.windowEnd) {
-          return JSON.stringify({ error: "title, windowStart and windowEnd are required for add" });
+      let existing: Awaited<ReturnType<typeof listCareItems>>[number] | null = null;
+      if (input.action !== "add") {
+        const items = await listCareItems(pregnancyId);
+        existing = (input.careItemId
+          ? items.find((i) => i.id === input.careItemId)
+          : input.query ? matchCareItem(items, input.query) : null) ?? null;
+        if (!existing) return JSON.stringify({ error: `No care item matching "${input.careItemId ?? input.query ?? ""}"` });
+
+        if (input.action === "delete") {
+          const { errors } = await client.models.homeCareItem.delete({ id: existing.id });
+          if (errors) return JSON.stringify({ error: errors[0].message });
+          return JSON.stringify({ success: true, deleted: existing.title });
         }
-        const { data, errors } = await client.models.homeCareItem.create({
-          pregnancyId,
-          key: null,
-          title: input.title,
-          category: input.category ?? "VISIT",
-          windowStart: input.windowStart,
-          windowEnd: input.windowEnd,
-          status: input.status ?? "UPCOMING",
-          eventId: input.eventId ?? null,
-          notes: input.notes ?? null,
-          sortOrder: 999,
-        });
-        if (errors) return JSON.stringify({ error: errors[0].message });
-        return JSON.stringify({ success: true, careItemId: data?.id, title: input.title });
-      }
-
-      const items = await listCareItems(pregnancyId);
-      const item = input.careItemId
-        ? items.find((i) => i.id === input.careItemId)
-        : input.query ? matchCareItem(items, input.query) : null;
-      if (!item) return JSON.stringify({ error: `No care item matching "${input.careItemId ?? input.query ?? ""}"` });
-
-      if (input.action === "delete") {
-        const { errors } = await client.models.homeCareItem.delete({ id: item.id });
-        if (errors) return JSON.stringify({ error: errors[0].message });
-        return JSON.stringify({ success: true, deleted: item.title });
+      } else if (!input.title || !input.windowStart || !input.windowEnd) {
+        return JSON.stringify({ error: "title, windowStart and windowEnd are required for add" });
       }
 
       if (input.status === "SCHEDULED" && !input.scheduledAt) {
         return JSON.stringify({ error: "scheduledAt (the booked date/time) is required with status SCHEDULED" });
       }
+      const windowStart = input.windowStart ?? existing?.windowStart;
+      const windowEnd = input.windowEnd ?? existing?.windowEnd;
+      if (windowStart && windowEnd && windowEnd < windowStart) {
+        return JSON.stringify({ error: "windowEnd is before windowStart" });
+      }
+
       // Details first; status changes that carry a date go through the
-      // shared helpers so the linked visit / calendar event follow.
-      const { data, errors } = await client.models.homeCareItem.update({
-        id: item.id,
+      // shared helpers so the linked visit / calendar event follow — same
+      // two-step save as the /health CareItemModal, for add and update.
+      const details = {
         ...(input.title ? { title: input.title } : {}),
         ...(input.category ? { category: input.category } : {}),
         ...(input.windowStart ? { windowStart: input.windowStart } : {}),
         ...(input.windowEnd ? { windowEnd: input.windowEnd } : {}),
         ...(input.eventId ? { eventId: input.eventId } : {}),
         ...(input.notes !== undefined ? { notes: input.notes } : {}),
-        ...(input.status && input.status !== "SCHEDULED" && input.status !== "DONE"
+        ...(typeof input.optional === "boolean" ? { optional: input.optional } : {}),
+        ...(Number.isInteger(input.sortOrder) ? { sortOrder: input.sortOrder } : {}),
+      };
+      const plainStatus =
+        input.status && input.status !== "SCHEDULED" && input.status !== "DONE"
           ? { status: input.status, scheduledAt: null, completedAt: null }
-          : {}),
-      });
-      if (errors || !data) return JSON.stringify({ error: errors?.[0]?.message ?? "update failed" });
+          : {};
+      const { data, errors } = existing
+        ? await client.models.homeCareItem.update({ id: existing.id, ...details, ...plainStatus })
+        : await client.models.homeCareItem.create({
+            pregnancyId,
+            key: null,
+            title: input.title,
+            category: "VISIT",
+            windowStart: input.windowStart,
+            windowEnd: input.windowEnd,
+            sortOrder: 999,
+            status: "UPCOMING",
+            ...details,
+            ...plainStatus,
+          });
+      if (errors || !data) return JSON.stringify({ error: errors?.[0]?.message ?? `${input.action} failed` });
 
       let visitId: string | null = data.visitId ?? null;
       if (input.status === "SCHEDULED") {

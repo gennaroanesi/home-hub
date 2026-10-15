@@ -49,6 +49,8 @@ function entityDetailHref(entityType: string, entityId: string): string | null {
       return `/bills`;
     case "DOCUMENT":
       return `/documents`;
+    case "PREGNANCY":
+      return `/health`;
     default:
       return null;
   }
@@ -114,6 +116,7 @@ export default function ChecklistsPage() {
         resolveNames(idsByType["TASK"], "homeTask", "title", names),
         resolveNames(idsByType["BILL"], "homeBill", "name", names),
         resolveNames(idsByType["DOCUMENT"], "homeDocument", "title", names),
+        resolveNames(idsByType["PREGNANCY"], "homePregnancy", "dueDate", names),
       ]);
       setEntityNames(names);
     } catch (err) {
@@ -154,6 +157,7 @@ export default function ChecklistsPage() {
         TASK: { model: "homeTask", field: "title" },
         BILL: { model: "homeBill", field: "name" },
         DOCUMENT: { model: "homeDocument", field: "title" },
+        PREGNANCY: { model: "homePregnancy", field: "dueDate" },
       };
       const cfg = modelMap[type];
       if (!cfg) { setLoadingEntities(false); return; }

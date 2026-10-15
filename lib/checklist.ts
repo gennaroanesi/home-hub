@@ -18,6 +18,7 @@ export type EntityType =
   | "BILL"
   | "DOCUMENT"
   | "TASK"
+  | "PREGNANCY"
   | "TEMPLATE"
   | "OTHER";
 
@@ -29,6 +30,7 @@ export const ENTITY_TYPE_ORDER: EntityType[] = [
   "TASK",
   "BILL",
   "DOCUMENT",
+  "PREGNANCY",
   "OTHER",
 ];
 
@@ -38,6 +40,7 @@ export const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   TASK: "Tasks",
   BILL: "Bills",
   DOCUMENT: "Documents",
+  PREGNANCY: "Pregnancy",
   TEMPLATE: "Templates",
   OTHER: "Other",
 };
@@ -49,6 +52,7 @@ export const ENTITY_TYPE_SINGULAR: Record<EntityType, string> = {
   TASK: "Task",
   BILL: "Bill",
   DOCUMENT: "Document",
+  PREGNANCY: "Pregnancy",
   TEMPLATE: "Template",
   OTHER: "Other",
 };

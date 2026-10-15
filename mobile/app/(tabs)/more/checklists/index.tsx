@@ -53,6 +53,7 @@ const CREATABLE_TYPES: EntityType[] = [
   "TASK",
   "BILL",
   "DOCUMENT",
+  "PREGNANCY",
   "OTHER",
 ];
 
@@ -67,6 +68,7 @@ const ENTITY_LOOKUP: Record<
   TASK: { model: "homeTask", field: "title" },
   BILL: { model: "homeBill", field: "name" },
   DOCUMENT: { model: "homeDocument", field: "title" },
+  PREGNANCY: { model: "homePregnancy", field: "dueDate" },
 };
 
 interface ChecklistRow extends Checklist {

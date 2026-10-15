@@ -1195,6 +1195,7 @@ const schema = a
           "BILL",
           "DOCUMENT",
           "TASK",
+          "PREGNANCY",
           "TEMPLATE",
           "OTHER",
         ]),

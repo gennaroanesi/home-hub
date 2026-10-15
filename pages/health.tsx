@@ -28,6 +28,7 @@ import { FaCalendarCheck, FaHeartbeat, FaPen, FaPlus, FaTrash } from "react-icon
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
+import { ChecklistPanel } from "@/components/checklist-panel";
 import { NotesSection } from "@/components/notes-section";
 import {
   PHONE_KINDS,
@@ -424,6 +425,13 @@ export default function HealthPage() {
                       );
                     })}
                 </div>
+              </section>
+            )}
+
+            {pregnancy && (
+              <section className="mb-10">
+                <h2 className="text-lg font-semibold mb-3">Checklists</h2>
+                <ChecklistPanel entityType="PREGNANCY" entityId={pregnancy.id} />
               </section>
             )}
 
