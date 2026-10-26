@@ -146,7 +146,7 @@ export function ItemModal({
   const cats = categories.includes(f.category) || !f.category ? categories : [...categories, f.category];
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside">
+    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}>
       <ModalContent>
         <ModalHeader>{editing ? "Edit item" : "Add item"}</ModalHeader>
         <ModalBody className="gap-3">

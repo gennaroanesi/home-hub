@@ -82,7 +82,7 @@ export function ProfileModal({
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside">
+    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}>
       <ModalContent>
         <ModalHeader>{personName}&apos;s closet settings</ModalHeader>
         <ModalBody className="gap-4">

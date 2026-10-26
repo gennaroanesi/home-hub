@@ -12,7 +12,7 @@ import { useRouter } from "next/router";
 import { Spinner, addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
-import { FaCog, FaMagic, FaPlus, FaTshirt } from "react-icons/fa";
+import { FaChevronDown, FaCog, FaMagic, FaPlus, FaTshirt } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
@@ -60,6 +60,15 @@ interface Suggestion {
   wishlistItemIds?: (string | null)[] | null;
 }
 
+// Every word must appear somewhere in the haystack: "navy wool" matches a
+// navy merino-wool sweater, not just the literal phrase.
+function matchesSearch(q: string, parts: (string | null | undefined)[]): boolean {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = parts.filter(Boolean).join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
 function todayYmd(): string {
   const d = new Date();
   const pad = (n: number) => String(n).padStart(2, "0");
@@ -79,6 +88,10 @@ export default function WardrobePage() {
   const [category, setCategory] = useState("");
   const [status, setStatus] = useState<WardrobeStatus | "OWNED" | "">("OWNED");
   const [search, setSearch] = useState("");
+  const [inLook, setInLook] = useState<"" | "YES" | "NO">("");
+  const [lookSearch, setLookSearch] = useState("");
+  const [lookOccasion, setLookOccasion] = useState("");
+  const [lookTryOn, setLookTryOn] = useState(false);
 
   const [itemOpen, setItemOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<WardrobeItem | null>(null);
@@ -142,23 +155,50 @@ export default function WardrobePage() {
   const categories = useMemo(() => categoriesFor(profile?.categories, mine), [profile, mine]);
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
+  // Pieces used by at least one of this person's saved looks.
+  const inLooks = useMemo(() => new Set(myLooks.flatMap((l) => (l.itemIds ?? []).filter((x): x is string => !!x))), [myLooks]);
+
   const shown = mine.filter((i) => {
     if (category && i.category !== category) return false;
     const s = i.status ?? "KEEP";
     if (status === "OWNED" && (s === "WISHLIST" || s === "RETIRE")) return false;
     if (status && status !== "OWNED" && s !== status) return false;
-    if (search.trim()) {
-      const q = search.toLowerCase();
-      const hay = [i.name, i.brand, i.color, i.fabric, i.notes, i.category].filter(Boolean).join(" ").toLowerCase();
-      if (!hay.includes(q)) return false;
+    if (inLook === "YES" && !inLooks.has(i.id)) return false;
+    if (inLook === "NO" && inLooks.has(i.id)) return false;
+    return matchesSearch(search, [i.name, i.brand, i.color, i.fabric, i.fit, i.size, i.styleCode, i.notes, i.category]);
+  });
+
+  // Occasion chips: distinct occasions across the looks, case-insensitive,
+  // shown with the first spelling seen.
+  const occasions = useMemo(() => {
+    const m = new Map<string, { label: string; count: number }>();
+    for (const l of myLooks) {
+      const o = l.occasion?.trim();
+      if (!o) continue;
+      const k = o.toLowerCase();
+      const e = m.get(k);
+      if (e) e.count++;
+      else m.set(k, { label: o, count: 1 });
     }
-    return true;
+    return Array.from(m.entries()).sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label));
+  }, [myLooks]);
+
+  const shownLooks = myLooks.filter((l) => {
+    if (lookOccasion && (l.occasion ?? "").trim().toLowerCase() !== lookOccasion) return false;
+    if (lookTryOn && !l.previewImageKey) return false;
+    const pieces = (l.itemIds ?? []).map((id) => (id ? byId.get(id) : undefined));
+    return matchesSearch(lookSearch, [
+      l.title, l.occasion, l.palette, l.note, l.stylingInstructions,
+      ...pieces.flatMap((p) => (p ? [p.brand, p.name, p.color, p.category] : [])),
+    ]);
   });
   const groups = categories.map((c) => [c, shown.filter((i) => i.category === c)] as const).filter(([, l]) => l.length);
 
   function pickPerson(id: string) {
     setPersonId(id);
     setCategory("");
+    setInLook("");
+    setLookOccasion("");
     router.replace({ pathname: "/wardrobe", query: { person: id } }, undefined, { shallow: true });
   }
 
@@ -193,7 +233,7 @@ export default function WardrobePage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-6xl mx-auto px-4 py-10">
+      <div className="max-w-6xl mx-auto px-4 py-6 sm:py-10">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
           <div className="flex items-center gap-2">
             <FaTshirt className="text-default-500" />
@@ -235,7 +275,7 @@ export default function WardrobePage() {
         </div>
 
         {/* View tabs */}
-        <div className="flex gap-1 mb-5 border-b border-default-200">
+        <div className="flex gap-1 mb-5 border-b border-default-200 overflow-x-auto">
           {(
             [
               ["CLOSET", `Closet · ${counts.owned}`],
@@ -247,7 +287,7 @@ export default function WardrobePage() {
               key={k}
               type="button"
               onClick={() => setView(k)}
-              className={`px-3 py-2 text-sm -mb-px border-b-2 ${view === k ? "border-primary text-foreground font-medium" : "border-transparent text-default-500"}`}
+              className={`shrink-0 whitespace-nowrap px-3 py-2 text-sm -mb-px border-b-2 ${view === k ? "border-primary text-foreground font-medium" : "border-transparent text-default-500"}`}
             >
               {k === "SUGGEST" && <FaMagic className="inline mr-1" size={11} />}
               {label}
@@ -280,12 +320,16 @@ export default function WardrobePage() {
                 <Chip key={c} on={category === c} onClick={() => setCategory(c)} label={c} count={mine.filter((i) => i.category === c).length} />
               ))}
             </div>
-            <div className="flex flex-wrap gap-1.5 mb-6">
+            <div className="flex flex-wrap gap-1.5 mb-2">
               <Chip on={status === "OWNED"} onClick={() => setStatus("OWNED")} label="Wearing" />
               <Chip on={status === ""} onClick={() => setStatus("")} label="Everything" />
               {WARDROBE_STATUSES.map((s) => (
                 <Chip key={s} on={status === s} onClick={() => setStatus(s)} label={WARDROBE_STATUS_LABELS[s]} count={mine.filter((i) => (i.status ?? "KEEP") === s).length} />
               ))}
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-6">
+              <Chip on={inLook === "YES"} onClick={() => setInLook(inLook === "YES" ? "" : "YES")} label="In a look" count={mine.filter((i) => inLooks.has(i.id)).length} />
+              <Chip on={inLook === "NO"} onClick={() => setInLook(inLook === "NO" ? "" : "NO")} label="Not in a look" count={mine.filter((i) => !inLooks.has(i.id)).length} />
             </div>
             <p className="text-xs text-default-400 mb-4">
               {counts.owned} owned · {counts.wish} on the wishlist · {counts.photos} of {mine.length} have photos
@@ -315,12 +359,35 @@ export default function WardrobePage() {
           </>
         ) : view === "LOOKS" ? (
           myLooks.length ? (
+            <>
+            <div className="flex flex-col sm:flex-row gap-2 mb-3">
+              <Input
+                size="sm"
+                aria-label="Search looks"
+                placeholder="Search title, occasion, palette, pieces…"
+                value={lookSearch}
+                onValueChange={setLookSearch}
+                isClearable
+                onClear={() => setLookSearch("")}
+              />
+            </div>
+            <div className="flex flex-wrap gap-1.5 mb-6">
+              <Chip on={!lookOccasion} onClick={() => setLookOccasion("")} label="Any occasion" count={myLooks.length} />
+              {occasions.map(([k, o]) => (
+                <Chip key={k} on={lookOccasion === k} onClick={() => setLookOccasion(lookOccasion === k ? "" : k)} label={o.label} count={o.count} />
+              ))}
+              <Chip on={lookTryOn} onClick={() => setLookTryOn((v) => !v)} label="Has try-on" count={myLooks.filter((l) => l.previewImageKey).length} />
+            </div>
+            {!shownLooks.length && (
+              <div className="border border-dashed border-default-300 rounded-lg p-10 text-center text-default-500">Nothing matches these filters.</div>
+            )}
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-              {myLooks.map((l) => (
+              {shownLooks.map((l) => (
                 <LookCard
                   key={l.id}
                   title={l.title}
                   previewImageKey={l.previewImageKey}
+                  previewCollapsible
                   occasion={l.occasion}
                   palette={l.palette}
                   note={l.note}
@@ -340,6 +407,7 @@ export default function WardrobePage() {
                 />
               ))}
             </div>
+            </>
           ) : (
             <div className="border border-dashed border-default-300 rounded-lg p-10 text-center text-default-500">
               No looks yet. Build one with New look, or save one from the suggester.
@@ -418,18 +486,21 @@ function ItemCard({ item, onOpen }: { item: WardrobeItem; onOpen: () => void }) 
     <button
       type="button"
       onClick={onOpen}
-      className="text-left rounded-lg border border-default-200 bg-content1 overflow-hidden hover:border-primary transition-colors flex flex-col"
+      className="h-full text-left rounded-lg border border-default-200 bg-content1 overflow-hidden hover:border-primary transition-colors flex flex-col"
     >
       <PhotoCarousel item={item} className="aspect-[4/3]" width={480} />
+      {/* Every line reserves its space (brand, two name lines, footer) so all
+          cards come out the same height whatever they contain. */}
       <div className="p-3 flex flex-col gap-1 min-w-0">
-        {item.brand && <span className="text-[10px] uppercase tracking-wider text-default-400 truncate">{item.brand}</span>}
-        <span className="text-sm font-medium leading-snug line-clamp-2">{item.name}</span>
+        <span className="h-4 text-[10px] uppercase tracking-wider text-default-400 truncate">{item.brand ?? ""}</span>
+        <span className="min-h-[2.75em] text-sm font-medium leading-snug line-clamp-2">{item.name}</span>
         <span className="flex items-center gap-1.5 text-xs text-default-500 min-w-0">
           <Swatch hex={item.colorHex} />
           <span className="truncate">{[item.color, item.size].filter(Boolean).join(" · ") || "No color set"}</span>
         </span>
-        <span className="flex items-center gap-1.5 mt-1">
-          <StatusChip status={item.status} />
+        <span className="h-5 flex items-center gap-1.5 mt-1">
+          {/* KEEP is the default — only call out the exceptions. */}
+          {item.status && item.status !== "KEEP" && <StatusChip status={item.status} />}
           {item.lastWornOn && <span className="text-[10px] text-default-400">worn {item.lastWornOn}</span>}
         </span>
       </div>
@@ -439,6 +510,7 @@ function ItemCard({ item, onOpen }: { item: WardrobeItem; onOpen: () => void }) 
 
 function LookCard({
   previewImageKey,
+  previewCollapsible,
   preview,
   title,
   occasion,
@@ -451,6 +523,8 @@ function LookCard({
   actions,
 }: {
   previewImageKey?: string | null;
+  /** Hide the try-on behind a chevron toggle (saved looks list). */
+  previewCollapsible?: boolean;
   preview?: React.ReactNode;
   title: string;
   occasion?: string | null;
@@ -465,8 +539,9 @@ function LookCard({
   const pieces = (itemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
   const wish = (wishlistItemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
   const future = pieces.some((p) => p.status === "WISHLIST");
+  const [showPreview, setShowPreview] = useState(!previewCollapsible);
   return (
-    <article className="rounded-xl border border-default-200 bg-content1 p-4 flex flex-col gap-3">
+    <article className="rounded-xl border border-default-200 bg-content1 p-3 sm:p-4 flex flex-col gap-3 min-w-0">
       <div className="flex items-baseline justify-between gap-2 flex-wrap">
         <h3 className="text-lg font-semibold">{title}</h3>
         <span
@@ -489,12 +564,23 @@ function LookCard({
         </span>
         {palette}
       </div>
-      {previewImageKey && (
+      {previewImageKey && previewCollapsible && (
+        <button
+          type="button"
+          onClick={() => setShowPreview((v) => !v)}
+          aria-expanded={showPreview}
+          className="flex items-center justify-between gap-2 rounded-lg bg-default-100 px-3 py-2 text-sm text-default-600 hover:bg-default-200"
+        >
+          <span>{showPreview ? "Hide try-on" : "Show try-on"}</span>
+          <FaChevronDown size={12} className={`transition-transform ${showPreview ? "rotate-180" : ""}`} />
+        </button>
+      )}
+      {previewImageKey && showPreview && (
         // eslint-disable-next-line @next/next/no-img-element
-        <img src={photoUrl(previewImageKey, 800)} alt={`AI-generated preview of ${title}`} loading="lazy" className="w-full max-h-[600px] object-contain rounded-lg" />
+        <img src={photoUrl(previewImageKey, 800)} alt={`AI-generated preview of ${title}`} loading="lazy" className="w-full max-h-[70vh] sm:max-h-[600px] object-contain rounded-lg bg-default-50" />
       )}
       {preview}
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
         {pieces.map((p) => {
           const k = mainImage(p);
           return (

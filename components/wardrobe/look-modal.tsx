@@ -143,7 +143,13 @@ export function LookModal({
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="3xl" scrollBehavior="inside">
+    <Modal
+      isOpen={isOpen}
+      onClose={onClose}
+      size="3xl"
+      scrollBehavior="inside"
+      classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}
+    >
       <ModalContent>
         <ModalHeader>{editing ? "Edit look" : "New look"}</ModalHeader>
         <ModalBody className="gap-3">
@@ -233,7 +239,7 @@ export function LookModal({
             })}
           </div>
         </ModalBody>
-        <ModalFooter className="justify-between">
+        <ModalFooter className="justify-between flex-wrap gap-2">
           {editing ? (
             <Button color="danger" variant="light" onPress={remove}>
               Delete
@@ -285,7 +291,7 @@ function TryOnSection({
             alt="AI-generated try-on of this look"
             className={`max-h-96 w-full object-contain rounded-lg bg-default-50 ${stale ? "opacity-40" : ""}`}
           />
-          <div className="flex items-center justify-between gap-2 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 text-xs">
             <span className={stale ? "text-warning-600" : unsaved ? "text-primary-600" : "text-default-500"}>
               {stale
                 ? "Pieces changed — regenerate, or this image is dropped on save."
