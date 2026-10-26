@@ -5427,7 +5427,7 @@ async function executeTool(
           palette: o.palette,
           pieces: o.itemIds.map((id) => names.get(id) ?? id),
           why: o.why,
-          couldAdd: o.wishlistItemIds.map((id) => names.get(id) ?? id),
+          notOwnedYet: o.wishlistItemIds.map((id) => names.get(id) ?? id),
         })),
         note: "Saved looks and the full closet with photos are on the Wardrobe page.",
       });

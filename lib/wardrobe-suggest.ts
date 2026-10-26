@@ -3,8 +3,8 @@
 //
 // Flow: loadSuggestContext() pulls one person's wardrobe, profile, recent
 // wears, the day's calendar and a weather forecast; suggestOutfits() hands
-// that to Claude with a forced tool call and validates the answer so only
-// real item ids come back.
+// that to Claude with the propose_outfits tool and validates the answer so
+// only real item ids come back (wishlist pieces allowed, flagged as such).
 
 import type Anthropic from "@anthropic-ai/sdk";
 import {
@@ -223,16 +223,16 @@ export function buildSuggestPrompt(
   opts: { occasion?: string | null; request?: string | null; count: number },
 ): { system: string; user: string } {
   const system = [
-    `You are a personal stylist putting together outfits for ${ctx.person.name} from clothes they already own.`,
+    `You are a personal stylist putting together outfits for ${ctx.person.name}, mostly from clothes they already own.`,
     "Rules:",
-    "- Use only item ids from the wardrobe list. Never invent items.",
+    "- Use only item ids from the wardrobe and wishlist lists. Never invent items.",
     "- Each outfit is complete for the occasion: a top (or dress), a bottom unless it's a dress, and shoes. Add a layer, outerwear or accessory when the weather or occasion calls for it.",
     "- Dress for the weather: no heavy knits or wool above ~80°F, add a layer below ~60°F, and avoid suede if rain is likely.",
     "- Match formality to the calendar and occasion.",
     "- Avoid items in the recently-worn list unless nothing else works.",
     "- Make the options genuinely different from each other (different palette or key piece).",
     "- Lean on color harmony: tonal or two-color palettes, with earthy neutrals over high contrast.",
-    "- If a wishlist item would clearly improve an outfit, mention its id in wishlistItemIds, but build the outfit from owned items.",
+    "- Wishlist items aren't owned yet, but you may put them in itemIds when they make a look clearly better, so the person can see how a new piece would work. Build around at least one owned piece, and keep the other options owned-only unless asked.",
     "- Keep `why` to one or two sentences that name the specific pieces.",
     ctx.styleNotes ? `\nThis person's style brief (follow it):\n${ctx.styleNotes}` : "",
   ]
@@ -270,9 +270,8 @@ export const PROPOSE_OUTFITS_TOOL: Anthropic.Tool = {
             title: { type: "string", description: "Short name, e.g. 'Navy over grey'" },
             palette: { type: "string", description: "e.g. 'Navy + grey'" },
             occasion: { type: "string" },
-            itemIds: { type: "array", items: { type: "string" }, description: "Owned wardrobe item ids" },
+            itemIds: { type: "array", items: { type: "string" }, description: "Wardrobe item ids; wishlist ids allowed" },
             why: { type: "string" },
-            wishlistItemIds: { type: "array", items: { type: "string" } },
           },
           required: ["title", "itemIds", "why"],
         },
@@ -284,7 +283,11 @@ export const PROPOSE_OUTFITS_TOOL: Anthropic.Tool = {
 
 // ── Validation ─────────────────────────────────────────────────────────────
 
-/** Drops unknown/duplicate ids and outfits with fewer than two real pieces. */
+/**
+ * Drops unknown/duplicate ids and outfits with fewer than two real pieces or
+ * no owned piece. Wishlist pieces stay in itemIds and are also listed in
+ * wishlistItemIds so callers can flag them as not owned yet.
+ */
 export function parseSuggestions(raw: unknown, ctx: Pick<SuggestContext, "items" | "wishlist">, count: number): Suggestion[] {
   const owned = new Set(ctx.items.map((i) => i.id));
   const wish = new Set(ctx.wishlist.map((i) => i.id));
@@ -293,16 +296,15 @@ export function parseSuggestions(raw: unknown, ctx: Pick<SuggestContext, "items"
   const out: Suggestion[] = [];
   for (const o of outfits as Record<string, unknown>[]) {
     const ids = Array.isArray(o.itemIds) ? (o.itemIds as unknown[]).map(String) : [];
-    const itemIds = ids.filter((id, n) => owned.has(id) && ids.indexOf(id) === n);
-    if (itemIds.length < 2) continue;
-    const wids = Array.isArray(o.wishlistItemIds) ? (o.wishlistItemIds as unknown[]).map(String) : [];
+    const itemIds = ids.filter((id, n) => (owned.has(id) || wish.has(id)) && ids.indexOf(id) === n);
+    if (itemIds.length < 2 || !itemIds.some((id) => owned.has(id))) continue;
     out.push({
       title: typeof o.title === "string" && o.title.trim() ? o.title.trim() : "Outfit",
       palette: typeof o.palette === "string" ? o.palette : null,
       occasion: typeof o.occasion === "string" ? o.occasion : null,
       itemIds,
       why: typeof o.why === "string" ? o.why : null,
-      wishlistItemIds: wids.filter((id, n) => wish.has(id) && wids.indexOf(id) === n),
+      wishlistItemIds: itemIds.filter((id) => wish.has(id)),
     });
     if (out.length >= count) break;
   }
@@ -332,7 +334,9 @@ export async function suggestOutfits(
     system,
     messages: [{ role: "user", content: user }],
     tools: [PROPOSE_OUTFITS_TOOL],
-    tool_choice: { type: "tool", name: PROPOSE_OUTFITS_TOOL.name },
+    // Sonnet 5.5 rejects forced tool_choice ("tool"/"any") with a 400; the
+    // prompt's last line names the tool, so "auto" still lands on it.
+    tool_choice: { type: "auto", disable_parallel_tool_use: true },
   });
   const block = msg.content.find((b) => b.type === "tool_use");
   const suggestions = parseSuggestions(block && "input" in block ? block.input : null, ctx, count);

@@ -537,7 +537,11 @@ function LookCard({
   actions?: React.ReactNode;
 }) {
   const pieces = (itemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
-  const wish = (wishlistItemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
+  // Older suggestions listed wishlist extras separately; skip ones already shown as pieces.
+  const wish = (wishlistItemIds ?? [])
+    .filter((id) => id && !(itemIds ?? []).includes(id))
+    .map((id) => (id ? byId.get(id) : undefined))
+    .filter((x): x is WardrobeItem => !!x);
   const future = pieces.some((p) => p.status === "WISHLIST");
   const [showPreview, setShowPreview] = useState(!previewCollapsible);
   return (
@@ -546,10 +550,10 @@ function LookCard({
         <h3 className="text-lg font-semibold">{title}</h3>
         <span
           className={`text-[11px] font-semibold px-2 py-0.5 rounded-full ${
-            future ? "border border-dashed border-primary-400 text-primary-600" : "bg-primary-100 text-primary-700"
+            future ? "bg-warning-100 text-warning-700 border border-warning-300" : "bg-primary-100 text-primary-700"
           }`}
         >
-          {future ? "After shopping" : occasion || "Any time"}
+          {future ? "⚠ Includes pieces you don't own" : occasion || "Any time"}
         </span>
       </div>
       <div className="flex items-center gap-2 text-[11px] uppercase tracking-wider text-default-400">
@@ -585,7 +589,11 @@ function LookCard({
           const k = mainImage(p);
           return (
             <button key={p.id} type="button" onClick={() => onOpenItem(p)} className="text-left min-w-0">
-              <div className="relative aspect-[3/4] rounded-md overflow-hidden border border-default-200 bg-white">
+              <div
+                className={`relative aspect-[3/4] rounded-md overflow-hidden bg-white ${
+                  p.status === "WISHLIST" ? "border-2 border-dashed border-warning-400" : "border border-default-200"
+                }`}
+              >
                 {k ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img src={photoUrl(k, 240)} alt={p.name} loading="lazy" className="w-full h-full object-contain" />
@@ -593,8 +601,8 @@ function LookCard({
                   <div className="w-full h-full" style={{ background: p.colorHex ?? undefined }} />
                 )}
                 {p.status === "WISHLIST" && (
-                  <span className="absolute left-1 top-1 text-[9px] font-semibold bg-content1 text-primary-600 border border-dashed border-primary-400 rounded-full px-1.5">
-                    To buy
+                  <span className="absolute left-1 top-1 text-[9px] font-semibold bg-warning-100 text-warning-700 border border-warning-300 rounded-full px-1.5">
+                    Not owned
                   </span>
                 )}
               </div>

@@ -103,16 +103,18 @@ describe("suggester prompt + parsing", () => {
   it("drops invented ids, duplicates and outfits that end up too small", () => {
     const raw = {
       outfits: [
-        { title: "Navy over grey", itemIds: ["top", "pant", "shoe", "top", "ghost"], why: "x", wishlistItemIds: ["wish", "nope"] },
+        { title: "Navy over grey", itemIds: ["top", "pant", "wish", "shoe", "top", "ghost"], why: "x" },
         { title: "Too small", itemIds: ["top", "ghost"], why: "y" },
+        { title: "Nothing owned", itemIds: ["wish", "ghost", "wish"], why: "z" },
         { title: "", itemIds: ["pant", "shoe"] },
       ],
     };
     const out = parseSuggestions(raw, ctx, 5);
     expect(out).toHaveLength(2);
-    expect(out[0].itemIds).toEqual(["top", "pant", "shoe"]);
+    expect(out[0].itemIds).toEqual(["top", "pant", "wish", "shoe"]);
     expect(out[0].wishlistItemIds).toEqual(["wish"]);
     expect(out[1].title).toBe("Outfit");
+    expect(out[1].wishlistItemIds).toEqual([]);
   });
 
   it("caps at the requested count and tolerates garbage", () => {
