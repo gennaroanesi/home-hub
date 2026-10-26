@@ -10,6 +10,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "create-user": "node scripts/create-user.mjs",
+    "seed:dev": "tsx scripts/seed-dev.ts",
     "prepare": "husky"
   },
   "dependencies": {

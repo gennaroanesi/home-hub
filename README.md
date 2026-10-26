@@ -75,7 +75,16 @@ The sandbox writes `amplify_outputs.json` (gitignored) which the frontend reads.
 
 ## First user
 
-Cognito self-signup is **disabled** — accounts are admin-only. Use the included script:
+For a fresh **sandbox**, one command creates your login, the household (both members, in the `home-users` group), settings and some sample data (pet, provider, pregnancy + care timeline, a visit, a shopping list). It's idempotent and refuses to run against a non-sandbox pool:
+
+```bash
+npm run seed:dev                     # gennaroanesi@gmail.com / Rustic91!
+npm run seed:dev -- --email you@example.com --password '…' --name "You" --partner-name "Partner"
+```
+
+All flags (`--partner-email`, `--no-sample`, `--timezone`, `--profile`…) are listed at the top of `scripts/seed-dev.ts`.
+
+Cognito self-signup is **disabled** — accounts are admin-only. To add a single user (e.g. in prod), use:
 
 ```bash
 npm run create-user -- --env dev --email you@example.com --name "Your Name"
