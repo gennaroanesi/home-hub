@@ -1137,11 +1137,22 @@ const schema = a
           "BILL",
           "INBOUND_MESSAGE",
           "OUTBOUND_MESSAGE",
+          // Health records: ultrasound clips/stills, scans, recordings,
+          // lab report PDFs. A LAB_RESULT attachment hangs off one row of
+          // the panel; the /health page lists it for the whole panel.
+          "VISIT",
+          "LAB_RESULT",
+          "CARE_ITEM",
+          "PREGNANCY",
+          "PERSON",
+          "PET",
+          "PET_MEDICATION",
+          "PET_VACCINE",
         ]),
         parentId: a.id().required(),
         s3Key: a.string().required(),
         filename: a.string().required(),
-        contentType: a.string(), // e.g. "image/jpeg", "application/pdf"
+        contentType: a.string(), // e.g. "image/jpeg", "application/pdf", "video/mp4", "audio/mpeg"
         sizeBytes: a.integer(),
         caption: a.string(),
         uploadedBy: a.string(), // "ui" | "agent" | person name

@@ -24,28 +24,48 @@ const ALLOWED_IMAGE_MIMETYPES = new Set([
   "image/webp",
 ]);
 
-// Claude's document-block API accepts application/pdf (up to 32MB).
-// Other document types (doc, docx, txt) are not supported as inline
-// Claude inputs — those would require OCR or text extraction first.
-const ALLOWED_DOCUMENT_MIMETYPES = new Set([
-  "application/pdf",
-]);
+// Inbound attachments beyond what Claude can read: PDFs go to Claude as
+// document blocks; video/audio (ultrasound clips, voice notes) and other
+// files are stored so the agent can attach_file them to a record. Keep in
+// step with lib/attachment-types.ts in the web app.
+const INBOUND_MIMETYPE_EXT: Record<string, string> = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/gif": "gif",
+  "image/webp": "webp",
+  "application/pdf": "pdf",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
+  "video/3gpp": "3gp",
+  "audio/mpeg": "mp3",
+  "audio/mp4": "m4a",
+  "audio/x-m4a": "m4a",
+  "audio/aac": "aac",
+  "audio/wav": "wav",
+  "audio/x-wav": "wav",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/webm": "weba",
+  "audio/flac": "flac",
+  "audio/amr": "amr",
+  "application/dicom": "dcm",
+  "application/zip": "zip",
+};
 
-function extFromMimetype(mimetype: string): string {
-  switch (mimetype) {
-    case "image/jpeg":
-      return "jpg";
-    case "image/png":
-      return "png";
-    case "image/gif":
-      return "gif";
-    case "image/webp":
-      return "webp";
-    case "application/pdf":
-      return "pdf";
-    default:
-      throw new Error(`Unsupported mimetype for S3 upload: ${mimetype}`);
-  }
+/** "audio/ogg; codecs=opus" → "audio/ogg". */
+export function normalizeMimetype(mimetype: string): string {
+  return (mimetype ?? "").split(";")[0].trim().toLowerCase();
+}
+
+export function isSupportedInboundMimetype(mimetype: string): boolean {
+  return normalizeMimetype(mimetype) in INBOUND_MIMETYPE_EXT;
+}
+
+export function extFromMimetype(mimetype: string): string {
+  const ext = INBOUND_MIMETYPE_EXT[normalizeMimetype(mimetype)];
+  if (!ext) throw new Error(`Unsupported mimetype for S3 upload: ${mimetype}`);
+  return ext;
 }
 
 /**
@@ -80,32 +100,30 @@ export async function uploadAgentImage(
 }
 
 /**
- * Uploads an attachment (image or PDF) from an inbound WhatsApp message
- * to `home/messages/inbound/<uuid>.<ext>`. Returns the full S3 key. Used
- * by the async pipeline — the bot writes the bytes here, creates a
- * homeAttachment row pointing to the key, then invokes the agent.
+ * Uploads an attachment (image, PDF, video, audio…) from an inbound
+ * WhatsApp message to `home/messages/inbound/<uuid>.<ext>`. Returns the
+ * full S3 key. Used by the async pipeline — the bot writes the bytes
+ * here, creates a homeAttachment row pointing to the key, then invokes
+ * the agent.
  */
 export async function uploadInboundAttachment(
   buffer: Buffer,
   mimetype: string
 ): Promise<string> {
-  const isImage = ALLOWED_IMAGE_MIMETYPES.has(mimetype);
-  const isDocument = ALLOWED_DOCUMENT_MIMETYPES.has(mimetype);
-  if (!isImage && !isDocument) {
+  const type = normalizeMimetype(mimetype);
+  if (!isSupportedInboundMimetype(type)) {
     throw new Error(
-      `Unsupported attachment mimetype ${mimetype} ` +
-        `(images: ${[...ALLOWED_IMAGE_MIMETYPES].join(",")}; ` +
-        `documents: ${[...ALLOWED_DOCUMENT_MIMETYPES].join(",")})`
+      `Unsupported attachment mimetype ${mimetype} (allowed: ${Object.keys(INBOUND_MIMETYPE_EXT).join(", ")})`
     );
   }
-  const ext = extFromMimetype(mimetype);
+  const ext = extFromMimetype(type);
   const key = `${MESSAGES_INBOUND_PREFIX}/${randomUUID()}.${ext}`;
   await s3.send(
     new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
       Body: buffer,
-      ContentType: mimetype,
+      ContentType: type,
     })
   );
   return key;

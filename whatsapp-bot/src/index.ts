@@ -24,7 +24,12 @@ import {
   type HistoryAttachment,
   type ChatContext,
 } from "./appsync.js";
-import { uploadInboundAttachment } from "./s3-upload.js";
+import {
+  uploadInboundAttachment,
+  isSupportedInboundMimetype,
+  normalizeMimetype,
+  extFromMimetype,
+} from "./s3-upload.js";
 import { startServer, updateQR, updateStatus } from "./qr-server.js";
 
 const logger = pino({ level: "info" });
@@ -36,6 +41,61 @@ const GROUP_JID = process.env.WHATSAPP_GROUP_JID;
 // land quickly. pollOutbound skips a tick while the previous one is still
 // delivering, so a slow send can't let a later chunk overtake it.
 const OUTBOUND_POLL_MS = 1_000;
+
+// ── Inbound media ───────────────────────────────────────────────────────────
+// WhatsApp media arrives as one of several message shapes. Documents
+// sent with a caption are wrapped in documentWithCaptionMessage. Audio
+// covers both attached audio files and voice notes (ptt).
+// Larger files are skipped (the bot buffers in memory — 512 MB task)
+// and the agent is told so it can point the user at the web upload.
+const MAX_INBOUND_MEDIA_BYTES = 100 * 1024 * 1024;
+
+type InboundMedia = {
+  /** Message object containing the media node, for downloadMediaMessage. */
+  message: Record<string, any>;
+  kind: "image" | "video" | "audio" | "document";
+  mimetype: string;
+  filename: string;
+  caption: string;
+  contextInfo: any;
+  fileLength: number | null;
+  isVoiceNote: boolean;
+};
+
+function extractInboundMedia(message: Record<string, any> | null | undefined): InboundMedia | null {
+  if (!message) return null;
+  const docWrapped = message.documentWithCaptionMessage?.message?.documentMessage;
+  const candidates: [InboundMedia["kind"], any, Record<string, any>][] = [
+    ["image", message.imageMessage, message],
+    ["video", message.videoMessage, message],
+    ["audio", message.audioMessage, message],
+    ["document", message.documentMessage, message],
+    ["document", docWrapped, docWrapped ? { documentMessage: docWrapped } : message],
+  ];
+  for (const [kind, node, container] of candidates) {
+    if (!node) continue;
+    const fallback = kind === "image" ? "image/jpeg" : kind === "video" ? "video/mp4" : kind === "audio" ? "audio/ogg" : "";
+    const mimetype = normalizeMimetype(node.mimetype || fallback);
+    const isVoiceNote = kind === "audio" && !!node.ptt;
+    const ext = isSupportedInboundMimetype(mimetype) ? extFromMimetype(mimetype) : "bin";
+    const filename =
+      node.fileName ||
+      node.title ||
+      (isVoiceNote ? `voice-note.${ext}` : `${kind}.${ext}`);
+    const len = node.fileLength;
+    return {
+      message: container,
+      kind,
+      mimetype,
+      filename,
+      caption: node.caption ?? "",
+      contextInfo: node.contextInfo,
+      fileLength: len == null ? null : Number(len),
+      isVoiceNote,
+    };
+  }
+  return null;
+}
 
 // ── "typing…" indicator ─────────────────────────────────────────────────────
 // Shown from the moment a message is handed to Janet until her final
@@ -688,18 +748,18 @@ async function startBot() {
 
       // Unified view over the message types that can carry text + a
       // contextInfo block (mentions, quoted replies). WA puts the caption
-      // on the media block itself for photo/doc messages rather than on a
-      // sibling text block, so we surface all of these uniformly.
-      const docMsg = msg.message?.documentMessage;
-      // PDF-only for now. The agent handler supports Claude's document
-      // content-block which is PDF-only; other doc types would need OCR
-      // or text extraction upstream.
-      const isPdfDoc = !!docMsg && docMsg.mimetype === "application/pdf";
+      // on the media block itself for photo/video/doc messages rather than
+      // on a sibling text block, so we surface all of these uniformly.
+      // Unsupported media (stickers, odd document types) falls through to
+      // the text branches and is dropped if there's no text.
+      const directMediaRaw = imageMsg ? null : extractInboundMedia(msg.message);
+      const directMedia =
+        directMediaRaw && isSupportedInboundMimetype(directMediaRaw.mimetype) ? directMediaRaw : null;
 
       const ext = imageMsg
         ? { text: imageMsg.caption ?? "", contextInfo: imageMsg.contextInfo }
-        : isPdfDoc
-          ? { text: docMsg?.caption ?? "", contextInfo: docMsg?.contextInfo }
+        : directMedia
+          ? { text: directMedia.caption, contextInfo: directMedia.contextInfo }
           : extText
             ? { text: extText.text ?? "", contextInfo: extText.contextInfo }
             : isDm && plainText
@@ -739,8 +799,9 @@ async function startBot() {
       }
       // DMs from known members always pass through — no mention needed.
 
-      // Collect attachments (images + PDFs). Three shapes:
-      //   a) direct image/pdf → msg.message.imageMessage / .documentMessage
+      // Collect attachments (images, PDFs, video, audio/voice notes,
+      // other supported documents). Two shapes:
+      //   a) direct media → msg.message.*
       //   b) quoted media on a reply → contextInfo.quotedMessage.*
       // For (b) we build a synthetic WAMessage so downloadMediaMessage has
       // the right .message shape to operate on.
@@ -750,69 +811,44 @@ async function startBot() {
         filename: string;
       };
       const pendingAttachments: PendingAttachment[] = [];
+      // Notes for the agent about media we couldn't save (too large).
+      const mediaNotes: string[] = [];
+
+      const collect = async (media: InboundMedia, source: WAMessage, label: string) => {
+        if (media.fileLength != null && media.fileLength > MAX_INBOUND_MEDIA_BYTES) {
+          const mb = Math.round(media.fileLength / 1024 / 1024);
+          mediaNotes.push(
+            `[${media.filename} (${mb} MB) was too large to save from WhatsApp (max ${MAX_INBOUND_MEDIA_BYTES / 1024 / 1024} MB) — it can be uploaded on the web app instead.]`,
+          );
+          return;
+        }
+        try {
+          const buffer = (await downloadMediaMessage(source, "buffer", {})) as Buffer;
+          pendingAttachments.push({ buffer, mimetype: media.mimetype, filename: media.filename });
+        } catch (err) {
+          logger.error({ err, mimetype: media.mimetype }, `Failed to download ${label}`);
+        }
+      };
 
       if (imageMsg) {
-        try {
-          const buffer = (await downloadMediaMessage(msg, "buffer", {})) as Buffer;
-          const mimetype = imageMsg.mimetype ?? "image/jpeg";
-          pendingAttachments.push({
-            buffer,
-            mimetype,
-            filename: `image.${mimetype.split("/")[1] ?? "jpg"}`,
-          });
-        } catch (err) {
-          logger.error({ err }, "Failed to download direct image");
-        }
+        const media = extractInboundMedia(msg.message);
+        if (media) await collect(media, msg, "direct image");
+      }
+      if (directMedia) {
+        // documentWithCaption wraps the node — download against the unwrapped shape.
+        const source = directMedia.message === msg.message
+          ? msg
+          : ({ key: msg.key, message: directMedia.message } as unknown as WAMessage);
+        await collect(directMedia, source, `direct ${directMedia.kind}`);
       }
 
-      if (isPdfDoc) {
-        try {
-          const buffer = (await downloadMediaMessage(msg, "buffer", {})) as Buffer;
-          pendingAttachments.push({
-            buffer,
-            mimetype: "application/pdf",
-            filename: docMsg?.fileName ?? docMsg?.title ?? "document.pdf",
-          });
-        } catch (err) {
-          logger.error({ err }, "Failed to download direct PDF");
-        }
-      }
-
-      const quotedImage = ext.contextInfo?.quotedMessage?.imageMessage;
-      if (quotedImage) {
-        try {
-          const syntheticMsg = {
-            key: msg.key,
-            message: ext.contextInfo?.quotedMessage,
-          } as unknown as WAMessage;
-          const buffer = (await downloadMediaMessage(syntheticMsg, "buffer", {})) as Buffer;
-          const mimetype = quotedImage.mimetype ?? "image/jpeg";
-          pendingAttachments.push({
-            buffer,
-            mimetype,
-            filename: `image.${mimetype.split("/")[1] ?? "jpg"}`,
-          });
-        } catch (err) {
-          logger.error({ err }, "Failed to download quoted image");
-        }
-      }
-
-      const quotedDoc = ext.contextInfo?.quotedMessage?.documentMessage;
-      if (quotedDoc && quotedDoc.mimetype === "application/pdf") {
-        try {
-          const syntheticMsg = {
-            key: msg.key,
-            message: ext.contextInfo?.quotedMessage,
-          } as unknown as WAMessage;
-          const buffer = (await downloadMediaMessage(syntheticMsg, "buffer", {})) as Buffer;
-          pendingAttachments.push({
-            buffer,
-            mimetype: "application/pdf",
-            filename: quotedDoc.fileName ?? quotedDoc.title ?? "document.pdf",
-          });
-        } catch (err) {
-          logger.error({ err }, "Failed to download quoted PDF");
-        }
+      const quotedMedia = extractInboundMedia(ext.contextInfo?.quotedMessage);
+      if (quotedMedia && isSupportedInboundMimetype(quotedMedia.mimetype)) {
+        const syntheticMsg = {
+          key: msg.key,
+          message: quotedMedia.message,
+        } as unknown as WAMessage;
+        await collect(quotedMedia, syntheticMsg, `quoted ${quotedMedia.kind}`);
       }
 
       // Upload buffers to S3. One failure shouldn't abort — log and move on.
@@ -855,14 +891,28 @@ async function startBot() {
       // so the agent has something to act on.
       if (!text) {
         if (uploadedAttachments.length > 0) {
-          const hasPdf = uploadedAttachments.some((a) => a.contentType === "application/pdf");
-          text = hasPdf ? "What's in this document?" : "What's in this image?";
+          const types = uploadedAttachments.map((a) => a.contentType);
+          const isVoiceNote = !!(directMedia?.isVoiceNote || quotedMedia?.isVoiceNote);
+          text = types.includes("application/pdf")
+            ? "What's in this document?"
+            : types.every((t) => t.startsWith("image/"))
+              ? "What's in this image?"
+              : isVoiceNote
+                ? "(sent a voice note)"
+                : types.some((t) => t.startsWith("video/"))
+                  ? "(sent a video)"
+                  : types.some((t) => t.startsWith("audio/"))
+                    ? "(sent an audio file)"
+                    : "(sent a file)";
+        } else if (mediaNotes.length > 0) {
+          text = "(sent a file)";
         } else {
           // No text AND no attachments — nothing to respond to. This also
           // covers reply-to-bot triggers that were just a sticker/react.
           continue;
         }
       }
+      if (mediaNotes.length > 0) text = `${text}\n\n${mediaNotes.join("\n")}`;
 
       // Get sender name. In DMs use the known-person name from our cache
       // (more reliable than pushName which can be empty or mismatched).
@@ -939,10 +989,14 @@ async function startBot() {
         // (while the agent is still working on this one) see the full
         // context. The assistant turn is appended when the response
         // arrives via the outbound poller (see deliverOutboundMessage).
-        const userAttachments: HistoryAttachment[] = uploadedAttachments.map((a) => ({
-          type: a.contentType === "application/pdf" ? "pdf" : "image",
-          s3Key: a.s3Key,
-        }));
+        // Only images/PDFs — history rehydration feeds these back to Claude,
+        // which can't take video/audio.
+        const userAttachments: HistoryAttachment[] = uploadedAttachments
+          .filter((a) => a.contentType.startsWith("image/") || a.contentType === "application/pdf")
+          .map((a) => ({
+            type: a.contentType === "application/pdf" ? "pdf" : "image",
+            s3Key: a.s3Key,
+          }));
         appendHistory(hKey, "user", messageForAgent, userAttachments);
 
         // Fire-and-forget async invoke. 202 returns immediately; the

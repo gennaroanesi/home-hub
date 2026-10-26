@@ -1,6 +1,6 @@
 // Attachment file upload from the mobile app. Mirrors documents-upload
 // against the attachments endpoint, which scopes uploads to a parent
-// entity (task / event / trip / trip_leg / reservation / bill).
+// entity (task / event / trip / visit / pet / …).
 //
 //   1. POST /api/attachments/upload-url with { parentType, parentId,
 //      filename, contentType } → returns { uploadUrl, s3key, filename }.
@@ -20,7 +20,15 @@ export type AttachmentParentType =
   | "RESERVATION"
   | "EVENT"
   | "TASK"
-  | "BILL";
+  | "BILL"
+  | "VISIT"
+  | "LAB_RESULT"
+  | "CARE_ITEM"
+  | "PREGNANCY"
+  | "PERSON"
+  | "PET"
+  | "PET_MEDICATION"
+  | "PET_VACCINE";
 
 interface PresignResponse {
   // The attachments endpoint returns capital `s3Key` (mismatching the
@@ -29,6 +37,9 @@ interface PresignResponse {
   uploadUrl: string;
   s3Key: string;
   filename: string;
+  // Normalised type (codec params stripped) — the PUT must send exactly
+  // this, since it's what was signed.
+  contentType?: string;
   expiresIn: number;
 }
 
@@ -60,8 +71,9 @@ export async function uploadAttachmentFile(args: {
     const text = await presignRes.text().catch(() => "");
     throw new Error(`Attachment presign failed (${presignRes.status}): ${text}`);
   }
-  const { uploadUrl, s3Key, filename: serverFilename } =
+  const { uploadUrl, s3Key, filename: serverFilename, contentType: signedType } =
     (await presignRes.json()) as PresignResponse;
+  const putType = signedType ?? contentType;
 
   const fileRes = await fetch(uri);
   if (!fileRes.ok) {
@@ -71,7 +83,7 @@ export async function uploadAttachmentFile(args: {
 
   const putRes = await fetch(uploadUrl, {
     method: "PUT",
-    headers: { "Content-Type": contentType },
+    headers: { "Content-Type": putType },
     body: blob,
   });
   if (!putRes.ok) {
@@ -81,7 +93,7 @@ export async function uploadAttachmentFile(args: {
 
   return {
     s3Key,
-    contentType,
+    contentType: putType,
     sizeBytes: blob.size,
     filename: serverFilename,
   };

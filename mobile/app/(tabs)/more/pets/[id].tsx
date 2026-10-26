@@ -37,6 +37,7 @@ import {
 import { PetFormModal } from "../../../../components/PetFormModal";
 import { PetMedicationFormModal } from "../../../../components/PetMedicationFormModal";
 import { PetVaccineFormModal } from "../../../../components/PetVaccineFormModal";
+import { AttachmentSection } from "../../../../components/AttachmentSection";
 
 interface PetData {
   pet: Pet;
@@ -214,6 +215,11 @@ export default function PetDetail() {
               </View>
             </>
           )}
+
+          <SectionHeader title="Files" />
+          <View style={styles.infoCard}>
+            <AttachmentSection parentType="PET" parentId={data.pet.id} />
+          </View>
         </ScrollView>
       )}
 

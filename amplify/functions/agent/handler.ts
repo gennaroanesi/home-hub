@@ -67,6 +67,25 @@ const s3 = new S3Client({});
 // env var, set in backend.ts). The agent Lambda has s3:GetObject scoped to
 // both prefixes.
 
+// Parents a homeAttachment can hang off (agent-facing subset — message
+// parents are internal). Mirrors lib/attachment-types.ts.
+const ATTACHMENT_PARENT_TYPES = [
+  "TRIP",
+  "TRIP_LEG",
+  "RESERVATION",
+  "EVENT",
+  "TASK",
+  "BILL",
+  "VISIT",
+  "LAB_RESULT",
+  "CARE_ITEM",
+  "PREGNANCY",
+  "PERSON",
+  "PET",
+  "PET_MEDICATION",
+  "PET_VACCINE",
+] as const;
+
 type MediaPayload = {
   kind: "image" | "pdf";
   mediaType: string;
@@ -122,6 +141,12 @@ async function fetchImageAsBase64(s3Key: string): Promise<MediaPayload> {
 // Dispatch by content type. Used when loading homeAttachment rows whose
 // contentType is authoritative (WA bot sets it from the actual mimetype).
 async function fetchAttachmentAsMedia(s3Key: string, contentType: string): Promise<MediaPayload | null> {
+  // Video/audio/zip can't go to Claude — skip before pulling a possibly
+  // huge object into memory. The model still learns the file exists via
+  // describeCurrentFiles, so it can file it with attach_file.
+  if (contentType && !contentType.startsWith("image/") && contentType !== "application/pdf") {
+    return null;
+  }
   const { data, contentType: s3ContentType } = await fetchS3AsBase64(s3Key);
   const finalType = contentType || s3ContentType;
   if (finalType.startsWith("image/")) {
@@ -1546,33 +1571,35 @@ const tools: Anthropic.Tool[] = [
   {
     name: "attach_file",
     description:
-      "Create an attachment record linking an already-uploaded S3 object to a parent entity (trip, trip leg, event, task, or bill). Used after the WA bot uploads a file to the inbox, or after a web upload completes. The s3Key should be the full S3 key relative to the bucket root.",
+      "Attach a file the user sent with THIS message (image, PDF, video, audio) to a record so it's kept there: a medical visit (ultrasound stills/clips, recordings), lab result (the report), care item, pregnancy, person, pet / pet medication / pet vaccine, trip, trip leg, reservation, event, task, or bill. Pick files by fileIndex from the '[Files sent with this message]' list; omit fileIndex to attach all of them. For a lab panel, attach to one of its lab result rows. If the user sends a scan or clip from an appointment, find the visit (get_medical_history) and attach it there; log the visit first if it doesn't exist.",
     input_schema: {
       type: "object" as const,
       properties: {
         parentType: {
           type: "string",
-          enum: ["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"],
+          enum: [...ATTACHMENT_PARENT_TYPES],
         },
         parentId: { type: "string" },
-        s3Key: { type: "string" },
-        filename: { type: "string" },
-        contentType: { type: "string" },
-        caption: { type: "string", description: "Human-readable label, e.g. 'Hotel Confirmation', 'Boarding Pass'. Inferred from the user's message." },
+        fileIndex: {
+          type: "array",
+          items: { type: "integer" },
+          description: "1-based indexes into the files sent with this message. Omit to attach every file.",
+        },
+        caption: { type: "string", description: "Human-readable label, e.g. '20-week anatomy scan', 'Heartbeat recording', 'Boarding Pass'. Inferred from the user's message. Applied to every attached file." },
       },
-      required: ["parentType", "parentId", "s3Key", "filename"],
+      required: ["parentType", "parentId"],
     },
   },
   {
     name: "list_attachments",
     description:
-      "List file attachments for a parent entity. Returns filename, caption, content type, and size for each. Use when the user asks 'what files are attached to the Chicago trip' or 'show me the boarding pass'.",
+      "List file attachments for a parent entity (trip, visit, care item, pet…). Returns filename, caption, content type, and size for each. Use when the user asks 'what files are attached to the Chicago trip' or 'do we have the anatomy scan video'.",
     input_schema: {
       type: "object" as const,
       properties: {
         parentType: {
           type: "string",
-          enum: ["TRIP", "TRIP_LEG", "RESERVATION", "EVENT", "TASK", "BILL"],
+          enum: [...ATTACHMENT_PARENT_TYPES],
           description: "Optional filter by parent type.",
         },
         parentId: {
@@ -2334,6 +2361,37 @@ interface ToolContext {
   sender: string;
   /** S3 keys of images sent with THIS message (WhatsApp attachments or web uploads). */
   currentImageKeys: string[];
+  /**
+   * Every file sent with THIS message — images, PDFs, video, audio — in
+   * the order listed to the model (attach_file's fileIndex is 1-based
+   * into this).
+   */
+  currentFiles: CurrentFile[];
+}
+
+interface CurrentFile {
+  s3Key: string;
+  filename: string;
+  contentType: string | null;
+  sizeBytes: number | null;
+}
+
+
+// Appended to the user's text so the model knows what came with the
+// message — including video/audio it can't perceive — and can file them.
+function describeCurrentFiles(files: CurrentFile[]): string {
+  if (files.length === 0) return "";
+  const fmtSize = (b: number | null) =>
+    b == null ? "" : b < 1024 * 1024 ? `, ${Math.max(1, Math.round(b / 1024))} KB` : `, ${(b / 1024 / 1024).toFixed(1)} MB`;
+  const lines = files.map((f, i) => `${i + 1}. ${f.filename} (${f.contentType ?? "unknown type"}${fmtSize(f.sizeBytes)})`);
+  const unseen = files.some(
+    (f) => !(f.contentType ?? "").startsWith("image/") && f.contentType !== "application/pdf",
+  );
+  return (
+    `\n\n[Files sent with this message:\n${lines.join("\n")}\n` +
+    (unseen ? "You can't see or hear video/audio files — ask what they are if it isn't clear, don't guess their contents. " : "") +
+    "To keep a file on a record (visit, care item, pet, trip…), call attach_file with its fileIndex.]"
+  );
 }
 
 async function executeTool(
@@ -4672,34 +4730,63 @@ async function executeTool(
     }
 
     case "attach_file": {
-      const { data, errors } = await client.models.homeAttachment.create({
-        parentType: input.parentType,
-        parentId: input.parentId,
-        s3Key: input.s3Key,
-        filename: input.filename,
-        contentType: input.contentType ?? null,
-        caption: input.caption ?? null,
-        uploadedBy: "agent",
-      });
-      if (errors?.length) return JSON.stringify({ error: errors[0].message });
+      // Files come from the current message only — never a model-supplied
+      // S3 key, which it would have to invent.
+      if (ctx.currentFiles.length === 0) {
+        return JSON.stringify({ error: "No files came with this message. Ask the user to send the file along with the request (or reply to it)." });
+      }
+      if (!ATTACHMENT_PARENT_TYPES.includes(input.parentType)) {
+        return JSON.stringify({ error: `parentType must be one of ${ATTACHMENT_PARENT_TYPES.join(", ")}` });
+      }
+      const indexes: number[] = Array.isArray(input.fileIndex) && input.fileIndex.length > 0
+        ? input.fileIndex
+        : ctx.currentFiles.map((_, i) => i + 1);
+      const bad = indexes.filter((i) => !Number.isInteger(i) || i < 1 || i > ctx.currentFiles.length);
+      if (bad.length) {
+        return JSON.stringify({ error: `fileIndex out of range: ${bad.join(", ")} (this message has ${ctx.currentFiles.length} file(s))` });
+      }
+      const attached: { attachmentId?: string; filename: string }[] = [];
+      for (const i of indexes) {
+        const f = ctx.currentFiles[i - 1];
+        const { data, errors } = await client.models.homeAttachment.create({
+          parentType: input.parentType,
+          parentId: input.parentId,
+          s3Key: f.s3Key,
+          filename: f.filename,
+          contentType: f.contentType,
+          sizeBytes: f.sizeBytes,
+          caption: input.caption ?? null,
+          uploadedBy: ctx.sender || "agent",
+        });
+        if (errors?.length) return JSON.stringify({ error: errors[0].message, attachedSoFar: attached });
+        attached.push({ attachmentId: data?.id, filename: f.filename });
+      }
       return JSON.stringify({
         success: true,
-        attachmentId: data?.id,
-        caption: input.caption ?? input.filename,
+        attached,
+        caption: input.caption ?? null,
         parentType: input.parentType,
         parentId: input.parentId,
       });
     }
 
     case "list_attachments": {
-      const { data: attachments } = await client.models.homeAttachment.list({
-        filter: {
-          parentId: { eq: input.parentId },
-          ...(input.parentType ? { parentType: { eq: input.parentType } } : {}),
-        },
-        limit: 100,
-      });
-      const sorted = (attachments ?? []).sort(
+      // Paged: `limit` is the scan page size, so a single filtered call
+      // misses rows once the table (every WA message attachment) grows.
+      const attachments: Schema["homeAttachment"]["type"][] = [];
+      let nextToken: string | null | undefined = null;
+      do {
+        const page: any = await client.models.homeAttachment.list({
+          filter: {
+            parentId: { eq: input.parentId },
+            ...(input.parentType ? { parentType: { eq: input.parentType } } : {}),
+          },
+          nextToken,
+        });
+        attachments.push(...(page.data ?? []));
+        nextToken = page.nextToken;
+      } while (nextToken);
+      const sorted = attachments.sort(
         (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
       return JSON.stringify({
@@ -5772,6 +5859,7 @@ async function handleApiTool(payload: {
     chatContext: { channel: "API", chatJid: null },
     sender: payload.sender ?? "unknown",
     currentImageKeys: [],
+    currentFiles: [],
   };
   console.log(
     `[agent-api] call: ${name} sender=${toolCtx.sender} input=${JSON.stringify(payload.input ?? {}).slice(0, 500)}`
@@ -5799,6 +5887,7 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
   let inboundMessageId: string | null = null;
   const preloadedMedia: MediaPayload[] = [];
   const preloadedImageKeys: string[] = [];
+  const preloadedFiles: CurrentFile[] = [];
 
   if (isAsync) {
     inboundMessageId = event.inboundMessageId;
@@ -5851,6 +5940,12 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
     });
     for (const att of atts ?? []) {
       if (!att.s3Key) continue;
+      preloadedFiles.push({
+        s3Key: att.s3Key,
+        filename: att.filename,
+        contentType: att.contentType ?? null,
+        sizeBytes: att.sizeBytes ?? null,
+      });
       if ((att.contentType ?? "").startsWith("image/")) preloadedImageKeys.push(att.s3Key);
       try {
         const m = await fetchAttachmentAsMedia(att.s3Key, att.contentType ?? "");
@@ -6022,7 +6117,14 @@ manage_care_item).
   record_lab_results — testName, value as printed, numeric value, unit,
   reference range, and the flag the report prints. Include collected/resulted
   dates and the lab name when shown. Read back a compact summary, calling out
-  anything the report itself flags.
+  anything the report itself flags. Also attach_file the report to one of
+  the lab result rows you just created so the original stays with them.
+- Ultrasound pictures/clips, exam videos, heartbeat recordings, scans →
+  attach_file to the visit they came from (find it with
+  list_medical_visits; log it as COMPLETED first if it isn't there). No
+  visit in play → the care item (e.g. anatomy scan) or the pregnancy.
+  Vet records go on the pet / pet vaccine / pet medication. Don't describe
+  what's in a video or audio file — you can't perceive them.
 - Don't diagnose or interpret results beyond what the report states, and
   don't give medical advice. For "is X normal?" / "can she eat or take X?",
   share general, widely-accepted guidance briefly and point them to the OB
@@ -6141,9 +6243,21 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     }
   }
 
+  const currentFiles: CurrentFile[] = isAsync
+    ? preloadedFiles
+    : (imageS3Keys ?? []).filter(Boolean).map((key: string) => ({
+        s3Key: key,
+        filename: key.split("/").pop() ?? key,
+        contentType: inferImageMediaType(key),
+        sizeBytes: null,
+      }));
+
   const messages: Anthropic.MessageParam[] = [
     ...validHistory,
-    { role: "user" as const, content: buildUserContent(currentMedia, userMessage) },
+    {
+      role: "user" as const,
+      content: buildUserContent(currentMedia, userMessage + describeCurrentFiles(currentFiles)),
+    },
   ];
 
   const actionsTaken: { tool: string; result: any }[] = [];
@@ -6171,6 +6285,7 @@ Be concise and friendly. When creating items, confirm what you did. If the user'
     chatContext: parsedChatContext,
     sender,
     currentImageKeys: isAsync ? preloadedImageKeys : (imageS3Keys ?? []).filter(Boolean),
+    currentFiles,
   };
   const activeTools = parsedChatContext.channel === "API" ? API_TOOLS : tools;
 

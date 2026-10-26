@@ -1,8 +1,8 @@
 // Self-loading attachment list/uploader for any homeAttachment parent
-// (TASK / EVENT / RESERVATION / TRIP / TRIP_LEG / BILL). Mirrors the
+// (TASK / EVENT / TRIP / VISIT / PET / …). Mirrors the
 // web AttachmentSection — fetches on mount, lets the user add via
 // camera / library / file picker, delete with a confirm. Tapping a
-// row opens the file in the in-app Safari sheet (image or PDF).
+// row opens the file in the in-app Safari sheet (image, PDF, video, audio).
 //
 // Auth: the underlying upload-url endpoint is gated by withHomeUserAuth,
 // so authedFetch attaches the access token.
@@ -109,19 +109,20 @@ export function AttachmentSection({
         return;
       }
       const res = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
+        mediaTypes: ["images", "videos"],
         quality: 0.9,
       });
       if (res.canceled || !res.assets[0]) return;
       const a = res.assets[0];
+      const isVideo = a.type === "video";
       picked = {
         uri: a.uri,
-        mimeType: a.mimeType ?? "image/jpeg",
-        fileName: a.fileName ?? "photo.jpg",
+        mimeType: a.mimeType ?? (isVideo ? "video/quicktime" : "image/jpeg"),
+        fileName: a.fileName ?? (isVideo ? "video.mov" : "photo.jpg"),
       };
     } else {
       const res = await DocumentPicker.getDocumentAsync({
-        type: ["application/pdf", "image/*"],
+        type: ["application/pdf", "image/*", "video/*", "audio/*", "application/zip", "application/dicom"],
         copyToCacheDirectory: true,
       });
       if (res.canceled || !res.assets[0]) return;
@@ -324,6 +325,9 @@ function fileIconName(
 ): keyof typeof Ionicons.glyphMap {
   if (contentType === "application/pdf") return "document-text-outline";
   if (contentType?.startsWith("image/")) return "image-outline";
+  if (contentType?.startsWith("video/")) return "videocam-outline";
+  if (contentType?.startsWith("audio/")) return "musical-notes-outline";
+  if (contentType === "application/zip") return "archive-outline";
   return "document-outline";
 }
 
@@ -351,6 +355,29 @@ function guessMime(name: string): string {
       return "image/heic";
     case "gif":
       return "image/gif";
+    case "mp4":
+      return "video/mp4";
+    case "mov":
+      return "video/quicktime";
+    case "m4v":
+      return "video/x-m4v";
+    case "mp3":
+      return "audio/mpeg";
+    case "m4a":
+      return "audio/mp4";
+    case "wav":
+      return "audio/wav";
+    case "aac":
+      return "audio/aac";
+    case "ogg":
+    case "opus":
+      return "audio/ogg";
+    case "flac":
+      return "audio/flac";
+    case "zip":
+      return "application/zip";
+    case "dcm":
+      return "application/dicom";
     default:
       return "application/octet-stream";
   }

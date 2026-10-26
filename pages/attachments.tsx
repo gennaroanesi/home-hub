@@ -16,11 +16,16 @@ import {
   FaFilePdf,
   FaImage,
   FaFile,
+  FaFileArchive,
+  FaFileAudio,
+  FaFileVideo,
   FaSearch,
 } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { photoUrl, originalPhotoUrl } from "@/lib/image-loader";
+import { attachmentKind } from "@/lib/attachment-types";
+import { listAllPages } from "@/lib/list-all";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -37,6 +42,14 @@ const PARENT_TYPE_LABELS: Record<string, string> = {
   EVENT: "Event",
   TASK: "Task",
   BILL: "Bill",
+  VISIT: "Medical visit",
+  LAB_RESULT: "Lab result",
+  CARE_ITEM: "Care item",
+  PREGNANCY: "Pregnancy",
+  PERSON: "Person",
+  PET: "Pet",
+  PET_MEDICATION: "Pet medication",
+  PET_VACCINE: "Pet vaccine",
 };
 
 const PARENT_TYPE_COLORS: Record<string, string> = {
@@ -46,13 +59,31 @@ const PARENT_TYPE_COLORS: Record<string, string> = {
   EVENT: "success",
   TASK: "warning",
   BILL: "danger",
+  VISIT: "success",
+  LAB_RESULT: "success",
+  CARE_ITEM: "success",
+  PREGNANCY: "success",
+  PERSON: "default",
+  PET: "secondary",
+  PET_MEDICATION: "secondary",
+  PET_VACCINE: "secondary",
 };
 
 function fileIcon(contentType: string | null | undefined) {
-  if (!contentType) return <FaFile size={14} />;
-  if (contentType.startsWith("image/")) return <FaImage size={14} />;
-  if (contentType === "application/pdf") return <FaFilePdf size={14} />;
-  return <FaFile size={14} />;
+  switch (attachmentKind(contentType)) {
+    case "image":
+      return <FaImage size={14} />;
+    case "pdf":
+      return <FaFilePdf size={14} />;
+    case "video":
+      return <FaFileVideo size={14} />;
+    case "audio":
+      return <FaFileAudio size={14} />;
+    case "archive":
+      return <FaFileArchive size={14} />;
+    default:
+      return <FaFile size={14} />;
+  }
 }
 
 function isImage(contentType: string | null | undefined): boolean {
@@ -97,27 +128,44 @@ export default function AttachmentsPage() {
   const loadAll = useCallback(async () => {
     setLoading(true);
     try {
-      // Fetch attachments + all potential parent entities in parallel
+      // Fetch attachments + all potential parent entities in parallel.
+      // Paged — a single .list() silently truncates at the 1 MB page.
       const [
-        attachRes,
-        tripsRes,
-        legsRes,
-        reservationsRes,
-        eventsRes,
-        tasksRes,
-        billsRes,
+        attachRows,
+        trips,
+        legs,
+        reservations,
+        events,
+        tasks,
+        bills,
+        visits,
+        labs,
+        careItems,
+        pregnancies,
+        people,
+        pets,
+        petMeds,
+        petVaccines,
       ] = await Promise.all([
-        client.models.homeAttachment.list({ limit: 1000 }),
-        client.models.homeTrip.list({ limit: 500 }),
-        client.models.homeTripLeg.list({ limit: 1000 }),
-        client.models.homeTripReservation.list({ limit: 1000 }),
-        client.models.homeCalendarEvent.list({ limit: 1000 }),
-        client.models.homeTask.list({ limit: 1000 }),
-        client.models.homeBill.list({ limit: 500 }),
+        listAllPages<Attachment>(client.models.homeAttachment),
+        listAllPages<Schema["homeTrip"]["type"]>(client.models.homeTrip),
+        listAllPages<Schema["homeTripLeg"]["type"]>(client.models.homeTripLeg),
+        listAllPages<Schema["homeTripReservation"]["type"]>(client.models.homeTripReservation),
+        listAllPages<Schema["homeCalendarEvent"]["type"]>(client.models.homeCalendarEvent),
+        listAllPages<Schema["homeTask"]["type"]>(client.models.homeTask),
+        listAllPages<Schema["homeBill"]["type"]>(client.models.homeBill),
+        listAllPages<Schema["homeMedicalVisit"]["type"]>(client.models.homeMedicalVisit),
+        listAllPages<Schema["homeLabResult"]["type"]>(client.models.homeLabResult),
+        listAllPages<Schema["homeCareItem"]["type"]>(client.models.homeCareItem),
+        listAllPages<Schema["homePregnancy"]["type"]>(client.models.homePregnancy),
+        listAllPages<Schema["homePerson"]["type"]>(client.models.homePerson),
+        listAllPages<Schema["homePet"]["type"]>(client.models.homePet),
+        listAllPages<Schema["homePetMedication"]["type"]>(client.models.homePetMedication),
+        listAllPages<Schema["homePetVaccine"]["type"]>(client.models.homePetVaccine),
       ]);
 
       setAttachments(
-        (attachRes.data ?? []).sort(
+        attachRows.sort(
           (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
         )
       );
@@ -126,14 +174,14 @@ export default function AttachmentsPage() {
       const map: Record<string, ParentInfo> = {};
 
       // Build a trip name lookup for legs and reservations
-      const tripNameById = new Map(
-        (tripsRes.data ?? []).map((t) => [t.id, t.name])
-      );
+      const tripNameById = new Map(trips.map((t) => [t.id, t.name]));
+      const personNameById = new Map(people.map((p) => [p.id, p.name]));
+      const petNameById = new Map(pets.map((p) => [p.id, p.name]));
 
-      for (const t of tripsRes.data ?? []) {
+      for (const t of trips) {
         map[t.id] = { type: "Trip", name: t.name, href: `/trips/${t.id}` };
       }
-      for (const l of legsRes.data ?? []) {
+      for (const l of legs) {
         const tripName = tripNameById.get(l.tripId) ?? "Unknown trip";
         const legLabel = [l.flightNumber, l.airline].filter(Boolean).join(" ") || l.mode || "Leg";
         map[l.id] = {
@@ -142,7 +190,7 @@ export default function AttachmentsPage() {
           href: `/trips/${l.tripId}`,
         };
       }
-      for (const r of reservationsRes.data ?? []) {
+      for (const r of reservations) {
         const tripName = tripNameById.get(r.tripId) ?? "Unknown trip";
         map[r.id] = {
           type: "Reservation",
@@ -150,14 +198,43 @@ export default function AttachmentsPage() {
           href: `/trips/${r.tripId}`,
         };
       }
-      for (const e of eventsRes.data ?? []) {
+      for (const e of events) {
         map[e.id] = { type: "Event", name: e.title, href: "/calendar" };
       }
-      for (const t of tasksRes.data ?? []) {
+      for (const t of tasks) {
         map[t.id] = { type: "Task", name: t.title, href: "/tasks" };
       }
-      for (const b of billsRes.data ?? []) {
+      for (const b of bills) {
         map[b.id] = { type: "Bill", name: b.name };
+      }
+      for (const v of visits) {
+        const date = new Date(v.visitAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+        map[v.id] = {
+          type: "Medical visit",
+          name: `${v.title || (v.kind ? v.kind.charAt(0) + v.kind.slice(1).toLowerCase().replace("_", " ") : "Visit")} — ${date}`,
+          href: "/health",
+        };
+      }
+      for (const l of labs) {
+        map[l.id] = { type: "Lab result", name: l.panel || l.testName, href: "/health" };
+      }
+      for (const c of careItems) {
+        map[c.id] = { type: "Care item", name: c.title, href: "/health" };
+      }
+      for (const p of pregnancies) {
+        map[p.id] = { type: "Pregnancy", name: `${personNameById.get(p.personId) ?? ""} pregnancy`.trim(), href: "/health" };
+      }
+      for (const p of people) {
+        map[p.id] = { type: "Person", name: p.name };
+      }
+      for (const p of pets) {
+        map[p.id] = { type: "Pet", name: p.name };
+      }
+      for (const m of petMeds) {
+        map[m.id] = { type: "Pet medication", name: `${petNameById.get(m.petId) ?? "Pet"} — ${m.name}` };
+      }
+      for (const v of petVaccines) {
+        map[v.id] = { type: "Pet vaccine", name: `${petNameById.get(v.petId) ?? "Pet"} — ${v.name}` };
       }
 
       setParentMap(map);

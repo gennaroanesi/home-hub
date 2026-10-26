@@ -30,6 +30,7 @@ import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { NotesSection } from "@/components/notes-section";
+import { AttachmentSection } from "@/components/attachment-section";
 import {
   PHONE_KINDS,
   PHONE_KIND_LABELS,
@@ -144,6 +145,7 @@ export default function HealthPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [personId, setPersonId] = useState<string>("");
   const [showClosedCare, setShowClosedCare] = useState(false);
+  const [openLabFiles, setOpenLabFiles] = useState<string | null>(null);
 
   const [visitModalOpen, setVisitModalOpen] = useState(false);
   const [editingVisit, setEditingVisit] = useState<Visit | null>(null);
@@ -430,6 +432,25 @@ export default function HealthPage() {
 
             {pregnancy && (
               <section className="mb-10">
+                <h2 className="text-lg font-semibold mb-1">Scans &amp; media</h2>
+                <p className="text-xs text-default-400 mb-3">
+                  Everything attached to this pregnancy, its visits and its timeline items. New uploads here go on the pregnancy itself — attach to a visit to keep it with that appointment.
+                </p>
+                <AttachmentSection
+                  // Remount (re-fetch) when a visit/care modal closes — it may have added files.
+                  key={visitModalOpen || careModalOpen ? "modal-open" : "modal-closed"}
+                  parentType="PREGNANCY"
+                  parentId={pregnancy.id}
+                  alsoListParentIds={[
+                    ...pregnancyCare.map((c) => c.id),
+                    ...visits.filter((v) => v.pregnancyId === pregnancy.id).map((v) => v.id),
+                  ]}
+                />
+              </section>
+            )}
+
+            {pregnancy && (
+              <section className="mb-10">
                 <h2 className="text-lg font-semibold mb-3">Checklists</h2>
                 <ChecklistPanel entityType="PREGNANCY" entityId={pregnancy.id} />
               </section>
@@ -538,12 +559,34 @@ export default function HealthPage() {
                 </p>
               ) : (
                 <div className="space-y-4">
-                  {labGroups.map((g) => (
-                    <div key={`${g.label}|${g.date}`} className="border border-default-200 rounded-md bg-default-50">
-                      <div className="px-3 py-2 border-b border-default-200 flex justify-between text-sm">
+                  {labGroups.map((g) => {
+                    const groupKey = `${g.label}|${g.date}`;
+                    const filesOpen = openLabFiles === groupKey;
+                    return (
+                    <div key={groupKey} className="border border-default-200 rounded-md bg-default-50">
+                      <div className="px-3 py-2 border-b border-default-200 flex items-center justify-between gap-2 text-sm">
                         <span className="font-medium">{g.label}</span>
-                        <span className="text-default-500 text-xs">{fmtDate(g.date)}</span>
+                        <div className="flex items-center gap-3">
+                          <button
+                            type="button"
+                            onClick={() => setOpenLabFiles(filesOpen ? null : groupKey)}
+                            className="text-xs text-primary"
+                          >
+                            {filesOpen ? "Hide files" : "Files"}
+                          </button>
+                          <span className="text-default-500 text-xs">{fmtDate(g.date)}</span>
+                        </div>
                       </div>
+                      {filesOpen && (
+                        <div className="px-3 py-2 border-b border-default-200">
+                          {/* Report files hang off the panel's first row; list any row's. */}
+                          <AttachmentSection
+                            parentType="LAB_RESULT"
+                            parentId={g.rows[0].id}
+                            alsoListParentIds={g.rows.map((r) => r.id)}
+                          />
+                        </div>
+                      )}
                       <table className="w-full text-sm">
                         <tbody>
                           {g.rows.map((r) => (
@@ -560,7 +603,8 @@ export default function HealthPage() {
                         </tbody>
                       </table>
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -1042,11 +1086,20 @@ function VisitModal({
                 </>
               )}
               {editing ? (
-                <div className="pt-2 border-t border-default-200">
-                  <NotesSection parentType="VISIT" parentId={editing.id} />
-                </div>
+                <>
+                  <div className="pt-2 border-t border-default-200">
+                    <h3 className="text-sm font-semibold mb-2">Files</h3>
+                    <AttachmentSection parentType="VISIT" parentId={editing.id} />
+                    <p className="text-[11px] text-default-400 mt-1">
+                      Ultrasound stills and clips, recordings, reports — images, PDF, video, audio.
+                    </p>
+                  </div>
+                  <div className="pt-2 border-t border-default-200">
+                    <NotesSection parentType="VISIT" parentId={editing.id} />
+                  </div>
+                </>
               ) : (
-                <p className="text-xs text-default-400">Save the visit to attach notes.</p>
+                <p className="text-xs text-default-400">Save the visit to attach files and notes.</p>
               )}
             </ModalBody>
             <ModalFooter>
@@ -1719,6 +1772,12 @@ function CareItemModal({
                 Optional
               </label>
               <Textarea label="Notes" value={notes} onValueChange={setNotes} minRows={2} />
+              {editing && (
+                <div className="pt-2 border-t border-default-200">
+                  <h3 className="text-sm font-semibold mb-2">Files</h3>
+                  <AttachmentSection parentType="CARE_ITEM" parentId={editing.id} />
+                </div>
+              )}
             </ModalBody>
             <ModalFooter>
               {editing && (
