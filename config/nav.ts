@@ -27,6 +27,7 @@ import {
   FaLock,
   FaBoxOpen,
   FaMap,
+  FaTshirt,
 } from "react-icons/fa";
 
 export interface NavLink {
@@ -78,6 +79,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { name: "Map", href: "/map", icon: FaMap },
       { name: "Devices", href: "/devices", icon: FaLightbulb },
       { name: "Inventory", href: "/inventory", icon: FaBoxOpen },
+      { name: "Wardrobe", href: "/wardrobe", icon: FaTshirt },
       { name: "Bills", href: "/bills", icon: FaFileInvoiceDollar, coming: true },
     ],
   },

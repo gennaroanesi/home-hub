@@ -11,6 +11,7 @@ import { postConfirmUser } from "../auth/post-confirmation/resource";
 import { setPersonGroups } from "../functions/set-person-groups/resource";
 import { mergePeople } from "../functions/merge-people/resource";
 import { taskOccurrenceAction } from "../functions/task-occurrence-action/resource";
+import { wardrobeSuggest } from "../functions/wardrobe-suggest/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -523,6 +524,94 @@ const schema = a
         expiresOn: a.date(),
       })
       .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Wardrobe ────────────────────────────────────────────────────────
+    // Per-person closets, separate from household inventory: clothing
+    // here carries styling data (swatch, fabric, fit, formality) that the
+    // outfit suggester reasons over. Categories are free strings so each
+    // person gets their own set (Golf for one, Blouses for the other);
+    // the ordered list lives on homeWardrobeProfile. See lib/wardrobe.ts.
+    homeWardrobeProfile: a
+      .model({
+        personId: a.id().required(), // FK → homePerson.id (1:1)
+        // Ordered category list for this person's closet tabs.
+        categories: a.string().array(),
+        // Free-text style brief the suggester follows: palettes, rules,
+        // what to avoid ("old-money British; no black on top").
+        styleNotes: a.string(),
+        // { "Pants": "34", "Tops": "XL" } — reference only.
+        sizes: a.json(),
+      })
+      .secondaryIndexes((index) => [index("personId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeWardrobeItem: a
+      .model({
+        ownerPersonId: a.id().required(), // FK → homePerson.id
+        category: a.string().required(), // one of the owner's profile categories
+        name: a.string().required(),
+        brand: a.string(),
+        color: a.string(),
+        colorHex: a.string(), // "#1f2a44" — swatch + suggester palette
+        size: a.string(),
+        fabric: a.string(),
+        fit: a.string(),
+        styleCode: a.string(),
+        status: a.enum(["KEEP", "TAILOR", "RETIRE", "NEW", "WISHLIST"]),
+        season: a.enum(["ALL", "WARM", "COLD"]),
+        formality: a.enum(["ATHLETIC", "CASUAL", "SMART_CASUAL", "OFFICE", "DRESSY"]),
+        notes: a.string(),
+        url: a.url(),
+        price: a.float(), // USD; paid for owned, expected for wishlist
+        // S3 keys under home/wardrobe/; the first one is the main photo.
+        imageKeys: a.string().array(),
+        lastWornOn: a.date(),
+        // Stable id from an import (e.g. the old closet artifact) so a
+        // re-run updates instead of duplicating.
+        externalId: a.string(),
+      })
+      .secondaryIndexes((index) => [index("ownerPersonId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // A saved outfit: hand-built, accepted from the suggester, or imported.
+    homeWardrobeLook: a
+      .model({
+        ownerPersonId: a.id().required(),
+        title: a.string().required(),
+        palette: a.string(), // "Navy + grey"
+        occasion: a.string(), // "Office", "Weekend", "Golf"
+        note: a.string(), // why it works
+        itemIds: a.id().array(), // FK array → homeWardrobeItem.id
+        source: a.enum(["MANUAL", "SUGGESTED", "IMPORTED"]),
+        sortOrder: a.float(),
+        externalId: a.string(),
+      })
+      .secondaryIndexes((index) => [index("ownerPersonId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // "Wore this today" log — keeps the suggester from repeating itself.
+    homeWardrobeWear: a
+      .model({
+        personId: a.id().required(),
+        date: a.date().required(),
+        itemIds: a.id().array(),
+        lookId: a.id(),
+        note: a.string(),
+      })
+      .secondaryIndexes((index) => [index("personId")])
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),
@@ -1540,6 +1629,38 @@ const schema = a
       .returns(a.ref("retroactiveFaceMatchResponse"))
       .handler(a.handler.function(retroactiveFaceMatch)),
 
+    // ── Outfit suggester ────────────────────────────────────────────────
+    // Claude picks outfits from one person's wardrobe, using their style
+    // notes, the day's weather and calendar, and what they wore lately.
+    // Shared logic lives in lib/wardrobe-suggest.ts (Janet uses it too).
+    wardrobeSuggestion: a.customType({
+      title: a.string().required(),
+      palette: a.string(),
+      occasion: a.string(),
+      itemIds: a.id().array(),
+      why: a.string(),
+      // Wishlist items that would improve it, if any.
+      wishlistItemIds: a.id().array(),
+    }),
+    wardrobeSuggestResponse: a.customType({
+      suggestions: a.ref("wardrobeSuggestion").array(),
+      // One line on the context used: "72°F high, rain after 3pm; 2 meetings".
+      context: a.string(),
+      error: a.string(),
+    }),
+    suggestOutfit: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users"), allow.authenticated("identityPool")])
+      .arguments({
+        personId: a.id().required(),
+        date: a.date(), // default: today in the household timezone
+        occasion: a.string(), // "office", "golf", "dinner out"…
+        request: a.string(), // free text: "something with the new boots"
+        count: a.integer(), // how many options (default 3, max 5)
+      })
+      .returns(a.ref("wardrobeSuggestResponse"))
+      .handler(a.handler.function(wardrobeSuggest)),
+
     // ── Recurring task occurrence actions ───────────────────────────────
     // Single endpoint for the three recurring-task lifecycle actions —
     // see amplify/functions/task-occurrence-action/handler.ts for the
@@ -1579,6 +1700,7 @@ const schema = a
     allow.resource(setPersonGroups),
     allow.resource(mergePeople),
     allow.resource(taskOccurrenceAction),
+    allow.resource(wardrobeSuggest),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

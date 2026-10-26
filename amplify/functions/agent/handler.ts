@@ -47,6 +47,8 @@ import {
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
+import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
+import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import {
   MAX_INVENTORY_IMAGE_BYTES,
@@ -1811,6 +1813,37 @@ const tools: Anthropic.Tool[] = [
         panel: { type: "string" },
         flag: { type: "string", enum: ["NORMAL", "LOW", "HIGH", "ABNORMAL", "POSITIVE", "NEGATIVE", "PENDING"] },
         latestOnly: { type: "boolean" },
+      },
+    },
+  },
+
+  // ── Wardrobe ───────────────────────────────────────────────────────────────
+  {
+    name: "suggest_outfit",
+    description:
+      "Suggest outfits from someone's wardrobe (the /wardrobe page, separate from inventory). Uses their style brief, today's (or the given day's) weather and calendar, and what they wore recently. Answers 'what should I wear today?', 'outfit for golf Saturday?', 'something for dinner out with the brown boots'. Returns outfits with item names; reply with the outfits briefly, one line each plus the why.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
+        date: { type: "string", description: "YYYY-MM-DD. Defaults to today." },
+        occasion: { type: "string", description: "e.g. 'office', 'golf', 'dinner out'." },
+        request: { type: "string", description: "Anything specific the user asked for." },
+        count: { type: "number", description: "How many options, 1-5. Default 2." },
+      },
+    },
+  },
+  {
+    name: "list_wardrobe",
+    description:
+      "List items in someone's wardrobe, optionally filtered by category, status or a fuzzy query (name, brand, color, fabric). Answers 'what navy sweaters do I have?', 'what's on my wardrobe wishlist?'.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
+        category: { type: "string" },
+        status: { type: "string", enum: ["KEEP", "NEW", "TAILOR", "RETIRE", "WISHLIST", "OWNED", "ALL"], description: "Default OWNED (keep + new + tailor)." },
+        query: { type: "string" },
       },
     },
   },
@@ -5287,6 +5320,63 @@ async function executeTool(
     }
 
     // ── Inventory ──────────────────────────────────────────────────────────
+
+    case "suggest_outfit": {
+      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
+      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
+      const wctx = await loadSuggestContext(client, { personId, date: input.date ?? null });
+      const { suggestions, context } = await suggestOutfits(anthropic, wctx, {
+        occasion: input.occasion ?? null,
+        request: input.request ?? null,
+        count: input.count ?? 2,
+      });
+      const names = new Map([...wctx.items, ...wctx.wishlist].map((i) => [i.id, [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ")]));
+      return JSON.stringify({
+        person: wctx.person.name,
+        date: wctx.date,
+        context,
+        outfits: suggestions.map((o) => ({
+          title: o.title,
+          palette: o.palette,
+          pieces: o.itemIds.map((id) => names.get(id) ?? id),
+          why: o.why,
+          couldAdd: o.wishlistItemIds.map((id) => names.get(id) ?? id),
+        })),
+        note: "Saved looks and the full closet with photos are on the Wardrobe page.",
+      });
+    }
+
+    case "list_wardrobe": {
+      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
+      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
+      const rows = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
+        filter: { ownerPersonId: { eq: personId } },
+      });
+      const status: string = input.status ?? "OWNED";
+      const q = (input.query ?? "").toLowerCase().trim();
+      const out = rows.filter((i) => {
+        const st = i.status ?? "KEEP";
+        if (status === "OWNED" && !["KEEP", "NEW", "TAILOR"].includes(st)) return false;
+        if (status !== "OWNED" && status !== "ALL" && st !== status) return false;
+        if (input.category && (i.category ?? "").toLowerCase() !== String(input.category).toLowerCase()) return false;
+        if (q) {
+          const hay = [i.name, i.brand, i.color, i.fabric, i.category, i.notes].filter(Boolean).join(" ").toLowerCase();
+          if (!q.split(/\s+/).every((w: string) => hay.includes(w))) return false;
+        }
+        return true;
+      });
+      return JSON.stringify({
+        count: out.length,
+        items: out.slice(0, 60).map((i) => ({
+          category: i.category,
+          name: [i.brand, i.name].filter(Boolean).join(" "),
+          color: i.color,
+          size: i.size,
+          status: i.status,
+          lastWornOn: i.lastWornOn,
+        })),
+      });
+    }
 
     case "list_inventory": {
       const { items, clothingByItem, consumableByItem, rooms, roomName } = await loadInventory();
