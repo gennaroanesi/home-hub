@@ -51,6 +51,7 @@ import { icsSync } from "./functions/ics-sync/resource";
 import { setPersonGroups } from "./functions/set-person-groups/resource";
 import { mergePeople } from "./functions/merge-people/resource";
 import { taskOccurrenceAction } from "./functions/task-occurrence-action/resource";
+import { wardrobeSuggest } from "./functions/wardrobe-suggest/resource";
 
 const backend = defineBackend({
   auth,
@@ -67,6 +68,7 @@ const backend = defineBackend({
   setPersonGroups,
   mergePeople,
   taskOccurrenceAction,
+  wardrobeSuggest,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -85,6 +87,7 @@ const lambdaDescriptions: Record<string, string> = {
   setPersonGroups: "Home Hub — Admin mutation: sync homePerson.groups + Cognito groups",
   mergePeople: "Home Hub — Admin mutation: rewrite personId references and delete source",
   taskOccurrenceAction: "Home Hub — Recurring task occurrence: complete/skip/uncomplete (AppSync mutation)",
+  wardrobeSuggest: "Home Hub — Outfit suggester for the wardrobe (AppSync mutation, Anthropic)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -282,6 +285,11 @@ new scheduler.CfnSchedule(recurringStack, "recurringTasksDailySchedule", {
 
 const dailySummaryLambda = backend.dailySummary.resources.lambda as LambdaFunction;
 dailySummaryLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+
+// ── Wardrobe suggester ─────────────────────────────────────────────────────
+// Same plain-env-var pattern as the agent for the Anthropic key.
+const wardrobeSuggestLambda = backend.wardrobeSuggest.resources.lambda as LambdaFunction;
+wardrobeSuggestLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
 
 const dailySummaryScheduleRole = new iam.Role(recurringStack, "dailySummarySchedulerRole", {
   assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
