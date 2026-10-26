@@ -52,6 +52,7 @@ import { setPersonGroups } from "./functions/set-person-groups/resource";
 import { mergePeople } from "./functions/merge-people/resource";
 import { taskOccurrenceAction } from "./functions/task-occurrence-action/resource";
 import { wardrobeSuggest } from "./functions/wardrobe-suggest/resource";
+import { wardrobeTryOn } from "./functions/wardrobe-try-on/resource";
 
 const backend = defineBackend({
   auth,
@@ -69,6 +70,7 @@ const backend = defineBackend({
   mergePeople,
   taskOccurrenceAction,
   wardrobeSuggest,
+  wardrobeTryOn,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -290,6 +292,38 @@ dailySummaryLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API
 // Same plain-env-var pattern as the agent for the Anthropic key.
 const wardrobeSuggestLambda = backend.wardrobeSuggest.resources.lambda as LambdaFunction;
 wardrobeSuggestLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+
+const wardrobeTryOnLambda = backend.wardrobeTryOn.resources.lambda as LambdaFunction;
+wardrobeTryOnLambda.addEnvironment("OPENAI_API_KEY", process.env.OPENAI_API_KEY ?? "");
+wardrobeTryOnLambda.addEnvironment("WARDROBE_TRY_ON_MODEL", process.env.WARDROBE_TRY_ON_MODEL ?? "gpt-image-2.5-sunburst");
+wardrobeTryOnLambda.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
+// Name/ARN patterns, not construct references: this Lambda sits in the data
+// stack as an AppSync handler, so pointing its policy at its own functionArn
+// or at the model table's nested-stack outputs creates a CloudFormation
+// cycle (FunctionDirectiveStack → lambda → policy → …). The table name
+// follows Amplify's `<model>-<apiId>-NONE` convention; the function's own
+// name comes from AWS_LAMBDA_FUNCTION_NAME at runtime.
+const tryOnStack = Stack.of(wardrobeTryOnLambda);
+const tryOnApiId = backend.data.resources.graphqlApi.apiId;
+wardrobeTryOnLambda.addEnvironment("TRY_ON_TABLE", `homeWardrobeTryOn-${tryOnApiId}-NONE`);
+wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
+  actions: [
+    "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem",
+    "dynamodb:Query", "dynamodb:Scan", "dynamodb:BatchGetItem", "dynamodb:BatchWriteItem",
+  ],
+  resources: [
+    `arn:aws:dynamodb:${tryOnStack.region}:${tryOnStack.account}:table/homeWardrobeTryOn-${tryOnApiId}-NONE`,
+    `arn:aws:dynamodb:${tryOnStack.region}:${tryOnStack.account}:table/homeWardrobeTryOn-${tryOnApiId}-NONE/index/*`,
+  ],
+}));
+wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
+  actions: ["lambda:InvokeFunction"],
+  resources: [`arn:aws:lambda:${tryOnStack.region}:${tryOnStack.account}:function:*wardrobetryon*`],
+}));
+wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
+  actions: ["s3:GetObject", "s3:PutObject"],
+  resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/wardrobe/*`],
+}));
 
 const dailySummaryScheduleRole = new iam.Role(recurringStack, "dailySummarySchedulerRole", {
   assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),

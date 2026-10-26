@@ -12,6 +12,7 @@ import { setPersonGroups } from "../functions/set-person-groups/resource";
 import { mergePeople } from "../functions/merge-people/resource";
 import { taskOccurrenceAction } from "../functions/task-occurrence-action/resource";
 import { wardrobeSuggest } from "../functions/wardrobe-suggest/resource";
+import { wardrobeTryOn } from "../functions/wardrobe-try-on/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -543,6 +544,8 @@ const schema = a
         // Free-text style brief the suggester follows: palettes, rules,
         // what to avoid ("old-money British; no black on top").
         styleNotes: a.string(),
+        referenceImageKeys: a.string().array(), // First photo is the primary reference.
+        fitNotes: a.string(),
         // { "Pants": "34", "Tops": "XL" } — reference only.
         sizes: a.json(),
       })
@@ -591,6 +594,10 @@ const schema = a
         palette: a.string(), // "Navy + grey"
         occasion: a.string(), // "Office", "Weekend", "Golf"
         note: a.string(), // why it works
+        previewImageKey: a.string(),
+        tryOnJobId: a.id(),
+        stylingInstructions: a.string(),
+        generationBrief: a.string(),
         itemIds: a.id().array(), // FK array → homeWardrobeItem.id
         source: a.enum(["MANUAL", "SUGGESTED", "IMPORTED"]),
         sortOrder: a.float(),
@@ -600,6 +607,26 @@ const schema = a
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),
+      ]),
+
+    // Durable render cache; only the renderer can write outputs/status.
+    homeWardrobeTryOn: a
+      .model({
+        ownerPersonId: a.id().required(),
+        itemIds: a.id().array(),
+        referenceImageKeys: a.string().array(),
+        stylingInstructions: a.string(),
+        renderInputs: a.json(),
+        model: a.string().required(),
+        status: a.enum(["QUEUED", "PROCESSING", "READY", "FAILED"]),
+        previewImageKey: a.string(),
+        error: a.string(),
+        attempt: a.string().required(),
+      })
+      .secondaryIndexes((index) => [index("ownerPersonId")])
+      .authorization((allow) => [
+        allow.group("home-users").to(["read"]),
+        allow.authenticated("identityPool").to(["read"]),
       ]),
 
     // "Wore this today" log — keeps the suggester from repeating itself.
@@ -1644,6 +1671,20 @@ const schema = a
     // Claude picks outfits from one person's wardrobe, using their style
     // notes, the day's weather and calendar, and what they wore lately.
     // Shared logic lives in lib/wardrobe-suggest.ts (Janet uses it too).
+    wardrobeTryOnResponse: a.customType({ jobId: a.id(), error: a.string() }),
+    requestWardrobeTryOn: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users"), allow.authenticated("identityPool")])
+      .arguments({
+        personId: a.id().required(),
+        itemIds: a.id().array().required(),
+        stylingInstructions: a.string(),
+        // Render again even when a finished image exists for these exact
+        // inputs (the cache would otherwise hand back the same picture).
+        regenerate: a.boolean(),
+      })
+      .returns(a.ref("wardrobeTryOnResponse"))
+      .handler(a.handler.function(wardrobeTryOn)),
     wardrobeSuggestion: a.customType({
       title: a.string().required(),
       palette: a.string(),
@@ -1712,6 +1753,7 @@ const schema = a
     allow.resource(mergePeople),
     allow.resource(taskOccurrenceAction),
     allow.resource(wardrobeSuggest),
+    allow.resource(wardrobeTryOn),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

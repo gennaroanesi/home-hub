@@ -9,15 +9,30 @@ import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 
-import { photoUrl } from "@/lib/image-loader";
+import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import { mainImage } from "@/lib/wardrobe";
+import { wardrobeTryOnAvailable } from "@/lib/wardrobe-capabilities";
 import type { Schema } from "@/amplify/data/resource";
 import { Swatch, type WardrobeItem, type WardrobeLook } from "./shared";
+import { TryOnPreview } from "./try-on-preview";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
+/** A try-on image and the exact set of pieces it was rendered from. */
+interface PreviewState {
+  key: string;
+  jobId: string | null;
+  itemIds: string[];
+}
+
+const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
+
 export interface LookDraft {
   title: string;
+  previewImageKey?: string | null;
+  tryOnJobId?: string | null;
+  stylingInstructions?: string | null;
+  generationBrief?: string | null;
   palette?: string | null;
   occasion?: string | null;
   note?: string | null;
@@ -50,6 +65,10 @@ export function LookModal({
   const [picked, setPicked] = useState<string[]>([]);
   const [cat, setCat] = useState("");
   const [saving, setSaving] = useState(false);
+  // Edited in place: a regenerated image replaces this, and only reaches the
+  // look when it's saved (Cancel discards it).
+  const [preview, setPreview] = useState<PreviewState | null>(null);
+  const [instructions, setInstructions] = useState("");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -60,8 +79,11 @@ export function LookModal({
       occasion: src?.occasion ?? "",
       note: src?.note ?? "",
     });
-    setPicked(((src?.itemIds ?? []) as (string | null)[]).filter((x): x is string => !!x));
+    const ids = ((src?.itemIds ?? []) as (string | null)[]).filter((x): x is string => !!x);
+    setPicked(ids);
     setCat(categories[0] ?? "");
+    setPreview(src?.previewImageKey ? { key: src.previewImageKey, jobId: src.tryOnJobId ?? null, itemIds: ids } : null);
+    setInstructions(src?.stylingInstructions ?? "");
   }, [isOpen, editing, draft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
@@ -76,6 +98,9 @@ export function LookModal({
     }
     setSaving(true);
     try {
+      const src = editing ?? draft;
+      // Keep the image only while it still shows exactly these pieces.
+      const keep = preview && sameSet(preview.itemIds, picked) ? preview : null;
       const body = {
         ownerPersonId,
         title: f.title.trim(),
@@ -83,6 +108,14 @@ export function LookModal({
         occasion: f.occasion.trim() || null,
         note: f.note.trim() || null,
         itemIds: picked,
+        // An image only describes the set of pieces it was rendered from.
+        // Drop it if the look's pieces changed since; never save a stale one.
+        ...(wardrobeTryOnAvailable ? {
+        previewImageKey: keep?.key ?? null,
+        tryOnJobId: keep?.jobId ?? null,
+        stylingInstructions: instructions.trim() || null,
+        generationBrief: src?.generationBrief ?? null,
+        } : {}),
       };
       const r = editing
         ? await client.models.homeWardrobeLook.update({ id: editing.id, ...body })
@@ -114,6 +147,20 @@ export function LookModal({
       <ModalContent>
         <ModalHeader>{editing ? "Edit look" : "New look"}</ModalHeader>
         <ModalBody className="gap-3">
+          {wardrobeTryOnAvailable ? (
+            <TryOnSection
+              preview={preview}
+              savedKey={(editing ?? draft)?.previewImageKey ?? null}
+              picked={picked}
+              instructions={instructions}
+              onInstructions={setInstructions}
+              ownerPersonId={ownerPersonId}
+              onPreview={setPreview}
+            />
+          ) : (editing ?? draft)?.previewImageKey ? (
+            // eslint-disable-next-line @next/next/no-img-element
+            <img src={photoUrl((editing ?? draft)!.previewImageKey!, 640)} alt="Try-on preview" className="max-h-96 object-contain rounded-lg" />
+          ) : null}
           <Input label="Title" value={f.title ?? ""} onValueChange={set("title")} isRequired />
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <Input label="Occasion" value={f.occasion ?? ""} onValueChange={set("occasion")} placeholder="Office, weekend, golf…" />
@@ -205,5 +252,78 @@ export function LookModal({
         </ModalFooter>
       </ModalContent>
     </Modal>
+  );
+}
+
+// Current try-on image plus regenerate / wearing-instructions controls.
+function TryOnSection({
+  preview,
+  savedKey,
+  picked,
+  instructions,
+  onInstructions,
+  ownerPersonId,
+  onPreview,
+}: {
+  preview: PreviewState | null;
+  savedKey: string | null;
+  picked: string[];
+  instructions: string;
+  onInstructions: (v: string) => void;
+  ownerPersonId: string;
+  onPreview: (p: PreviewState) => void;
+}) {
+  const stale = !!preview && !sameSet(preview.itemIds, picked);
+  const unsaved = !!preview && preview.key !== savedKey;
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-default-200 p-3">
+      {preview ? (
+        <>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={photoUrl(preview.key, 640)}
+            alt="AI-generated try-on of this look"
+            className={`max-h-96 w-full object-contain rounded-lg bg-default-50 ${stale ? "opacity-40" : ""}`}
+          />
+          <div className="flex items-center justify-between gap-2 text-xs">
+            <span className={stale ? "text-warning-600" : unsaved ? "text-primary-600" : "text-default-500"}>
+              {stale
+                ? "Pieces changed — regenerate, or this image is dropped on save."
+                : unsaved
+                  ? "New try-on — save the look to keep it."
+                  : "AI-generated try-on · fit and details may vary"}
+            </span>
+            <a href={originalPhotoUrl(preview.key)} target="_blank" rel="noopener noreferrer" className="text-primary shrink-0">
+              Open full size
+            </a>
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-default-500">No try-on image yet.</p>
+      )}
+      <Textarea
+        label="Wearing instructions (try-on)"
+        placeholder="Shirt tucked in, sleeves rolled, jacket open…"
+        value={instructions}
+        onValueChange={onInstructions}
+        minRows={1}
+        size="sm"
+      />
+      <TryOnPreview
+        controlsOnly
+        personId={ownerPersonId}
+        itemIds={picked}
+        instructions={instructions}
+        idleLabel={preview ? "Regenerate try-on" : "Generate try-on"}
+        onReady={(job) =>
+          job.previewImageKey &&
+          onPreview({
+            key: job.previewImageKey,
+            jobId: job.id,
+            itemIds: (job.itemIds ?? []).filter((x): x is string => !!x),
+          })
+        }
+      />
+    </div>
   );
 }

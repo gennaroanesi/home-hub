@@ -39,6 +39,8 @@ import {
 import { ItemModal } from "@/components/wardrobe/item-modal";
 import { LookModal, type LookDraft } from "@/components/wardrobe/look-modal";
 import { ProfileModal } from "@/components/wardrobe/profile-modal";
+import { TryOnPreview, type TryOnJob } from "@/components/wardrobe/try-on-preview";
+import { wardrobeTryOnAvailable, wardrobeTryOnSetupMessage } from "@/lib/wardrobe-capabilities";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -46,6 +48,10 @@ type Person = Schema["homePerson"]["type"];
 type View = "CLOSET" | "LOOKS" | "SUGGEST";
 
 interface Suggestion {
+  previewImageKey?: string | null;
+  tryOnJobId?: string | null;
+  stylingInstructions?: string | null;
+  generationBrief?: string | null;
   title: string;
   palette?: string | null;
   occasion?: string | null;
@@ -314,6 +320,7 @@ export default function WardrobePage() {
                 <LookCard
                   key={l.id}
                   title={l.title}
+                  previewImageKey={l.previewImageKey}
                   occasion={l.occasion}
                   palette={l.palette}
                   note={l.note}
@@ -340,11 +347,14 @@ export default function WardrobePage() {
           )
         ) : (
           <SuggestPanel
+            key={personId}
+            hasReference={wardrobeTryOnAvailable && !!profile?.referenceImageKeys?.some(Boolean)}
+            onSettings={() => setProfileOpen(true)}
             personId={personId}
             personName={person.name}
             byId={byId}
             onOpenItem={openItem}
-            onSave={(s) => openLook(null, { ...s, itemIds: ((s.itemIds ?? []) as string[]).filter(Boolean), source: "SUGGESTED" })}
+            onSave={(s) => openLook(null, { ...s, note: s.why, itemIds: ((s.itemIds ?? []) as string[]).filter(Boolean), source: "SUGGESTED" })}
             onWear={(s) => woreToday(((s.itemIds ?? []) as string[]).filter(Boolean))}
           />
         )}
@@ -428,6 +438,8 @@ function ItemCard({ item, onOpen }: { item: WardrobeItem; onOpen: () => void }) 
 }
 
 function LookCard({
+  previewImageKey,
+  preview,
   title,
   occasion,
   palette,
@@ -438,6 +450,8 @@ function LookCard({
   onOpenItem,
   actions,
 }: {
+  previewImageKey?: string | null;
+  preview?: React.ReactNode;
   title: string;
   occasion?: string | null;
   palette?: string | null;
@@ -475,6 +489,11 @@ function LookCard({
         </span>
         {palette}
       </div>
+      {previewImageKey && (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={photoUrl(previewImageKey, 800)} alt={`AI-generated preview of ${title}`} loading="lazy" className="w-full max-h-[600px] object-contain rounded-lg" />
+      )}
+      {preview}
       <div className="grid grid-cols-4 gap-2">
         {pieces.map((p) => {
           const k = mainImage(p);
@@ -509,6 +528,8 @@ function LookCard({
 }
 
 function SuggestPanel({
+  hasReference,
+  onSettings,
   personId,
   personName,
   byId,
@@ -516,6 +537,8 @@ function SuggestPanel({
   onSave,
   onWear,
 }: {
+  hasReference: boolean;
+  onSettings: () => void;
   personId: string;
   personName: string;
   byId: Map<string, WardrobeItem>;
@@ -529,6 +552,37 @@ function SuggestPanel({
   const [busy, setBusy] = useState(false);
   const [results, setResults] = useState<Suggestion[]>([]);
   const [context, setContext] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const [renderInstructions, setRenderInstructions] = useState("");
+  const [brief, setBrief] = useState("");
+  const [autoPreview, setAutoPreview] = useState(false);
+  const [previewBatch, setPreviewBatch] = useState(false);
+  const [batch, setBatch] = useState(0);
+  const [history, setHistory] = useState<TryOnJob[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [historyVersion, setHistoryVersion] = useState(0);
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout>;
+    async function refresh() {
+      if (!wardrobeTryOnAvailable) return;
+      try {
+        const jobs = await listAllPages<TryOnJob>({ list: async (options: unknown) => {
+          const list = client.models.homeWardrobeTryOn.list as unknown as (input: unknown) => Promise<{ data: TryOnJob[]; errors?: { message: string }[]; nextToken?: string | null }>;
+          const response = await list(options);
+          if (response.errors?.length) throw new Error(response.errors[0].message);
+          return response;
+        } }, { filter: { ownerPersonId: { eq: personId } } });
+        if (!cancelled) {
+          setHistory(jobs.sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 12));
+          setHistoryError("");
+          if (jobs.some(job => (job.status === "QUEUED" || job.status === "PROCESSING") && Date.now() - new Date(job.updatedAt).getTime() < 10 * 60_000)) timer = setTimeout(refresh, 10_000);
+        }
+      } catch { if (!cancelled) setHistoryError("Couldn't load recent previews."); }
+    }
+    void refresh();
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [personId, historyVersion]);
 
   useEffect(() => {
     setResults([]);
@@ -542,12 +596,16 @@ function SuggestPanel({
         personId,
         date,
         occasion: occasion.trim() || null,
-        request: request.trim() || null,
+        request: [request.trim(), instructions.trim() && `Wearing instructions: ${instructions.trim()}`].filter(Boolean).join("\n") || null,
         count: 3,
       });
       if (errors?.length) throw new Error(errors[0].message);
       if (data?.error && !data.suggestions?.length) throw new Error(data.error);
       setResults((data?.suggestions ?? []).filter((s): s is NonNullable<typeof s> => !!s));
+      setRenderInstructions(instructions.trim());
+      setBrief([occasion.trim(), request.trim()].filter(Boolean).join("\n"));
+      setPreviewBatch(autoPreview && hasReference);
+      setBatch(b => b + 1);
       setContext(data?.context ?? "");
     } catch (err: any) {
       addToast({ title: "No suggestions", description: err?.message ?? String(err), color: "danger" });
@@ -567,7 +625,9 @@ function SuggestPanel({
           <DateInput label="Day" value={date} onChange={setDate} />
           <Input label="Occasion" placeholder="Office, golf, dinner out…" value={occasion} onValueChange={setOccasion} />
         </div>
-        <Textarea label="Anything specific?" placeholder="Something with the chestnut boots; it's cold in the office" value={request} onValueChange={setRequest} minRows={2} />
+        <Textarea label="Describe the look" placeholder="Dinner downtown, relaxed but polished. My wife is wearing an emerald dress. Use my chestnut boots…" value={request} onValueChange={setRequest} minRows={3} />
+        <Textarea label="How to wear the pieces" description="These instructions also shape the try-on image." placeholder="Shirt tucked in, jacket open, trousers over boots…" value={instructions} onValueChange={setInstructions} maxLength={2000} minRows={2} />
+        {!wardrobeTryOnAvailable ? null : hasReference ? <label className="text-sm flex items-center gap-2"><input type="checkbox" checked={autoPreview} onChange={e => setAutoPreview(e.target.checked)} />Automatically preview all three outfits</label> : <div className="text-sm text-default-500">Add a reference photo to preview outfits on you. <Button size="sm" variant="light" onPress={onSettings}>Open Closet settings</Button></div>}
         <div>
           <Button color="primary" startContent={!busy && <FaMagic size={12} />} onPress={run} isLoading={busy}>
             Suggest outfits
@@ -578,18 +638,26 @@ function SuggestPanel({
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {results.map((s, n) => (
           <LookCard
-            key={n}
+            key={`${batch}-${n}`}
             title={s.title}
             occasion={s.occasion}
             palette={s.palette}
             note={s.why}
+            preview={hasReference && <TryOnPreview
+              personId={personId}
+              itemIds={(s.itemIds ?? []).filter((id): id is string => !!id)}
+              instructions={renderInstructions}
+              autoStart={previewBatch}
+              onStarted={() => setHistoryVersion(v => v + 1)}
+              onReady={job => setResults(current => current.map((result, index) => index === n ? { ...result, previewImageKey: job.previewImageKey, tryOnJobId: job.id } : result))}
+            />}
             itemIds={s.itemIds}
             wishlistItemIds={s.wishlistItemIds}
             byId={byId}
             onOpenItem={onOpenItem}
             actions={
               <>
-                <Button size="sm" variant="flat" color="primary" onPress={() => onSave(s)}>
+                <Button size="sm" variant="flat" color="primary" onPress={() => onSave({ ...s, stylingInstructions: renderInstructions, generationBrief: brief })}>
                   Save as look
                 </Button>
                 <Button size="sm" variant="flat" onPress={() => onWear(s)}>
@@ -600,6 +668,20 @@ function SuggestPanel({
           />
         ))}
       </div>
+      {!wardrobeTryOnAvailable && <p role="status" className="text-sm text-default-500">{wardrobeTryOnSetupMessage}</p>}
+      {historyError && <p role="alert" className="text-sm text-danger">{historyError}</p>}
+      {history.length > 0 && <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Recent try-ons</h2>
+        <p className="text-sm text-default-500">Previews are kept here even if you leave the page. Reusing the same clothes, reference photos and wearing instructions reuses the image.</p>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          {history.map(job => <LookCard key={job.id} title="Outfit preview" itemIds={job.itemIds} byId={byId} onOpenItem={onOpenItem}
+            previewImageKey={job.status === "READY" ? job.previewImageKey : null}
+            note={job.stylingInstructions}
+            preview={job.status !== "READY" && <TryOnPreview personId={personId} itemIds={(job.itemIds ?? []).filter((id): id is string => !!id)} instructions={job.stylingInstructions ?? ""} initialJobId={job.id} onStarted={() => setHistoryVersion(v => v + 1)} onReady={() => setHistoryVersion(v => v + 1)} />}
+            actions={job.status === "READY" && <Button size="sm" color="primary" variant="flat" onPress={() => onSave({ title: "My look", itemIds: job.itemIds, previewImageKey: job.previewImageKey, tryOnJobId: job.id, stylingInstructions: job.stylingInstructions })}>Save as look</Button>}
+          />)}
+        </div>
+      </section>}
     </div>
   );
 }

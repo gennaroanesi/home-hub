@@ -11,7 +11,9 @@ import { FaArrowDown, FaArrowUp, FaTimes } from "react-icons/fa";
 
 import { CATEGORY_PRESETS } from "@/lib/wardrobe";
 import type { Schema } from "@/amplify/data/resource";
-import type { WardrobeProfile } from "./shared";
+import { uploadWardrobePhotos, type WardrobeProfile } from "./shared";
+import { photoUrl } from "@/lib/image-loader";
+import { wardrobeTryOnAvailable, wardrobeTryOnSetupMessage } from "@/lib/wardrobe-capabilities";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -36,11 +38,16 @@ export function ProfileModal({
   const [notes, setNotes] = useState("");
   const [custom, setCustom] = useState("");
   const [saving, setSaving] = useState(false);
+  const [photos, setPhotos] = useState<string[]>([]);
+  const [fitNotes, setFitNotes] = useState("");
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
     setCats(categories);
     setNotes(profile?.styleNotes ?? "");
+    setPhotos((profile?.referenceImageKeys ?? []).filter((key): key is string => !!key));
+    setFitNotes(profile?.fitNotes ?? "");
     setCustom("");
   }, [isOpen, profile, categories]);
 
@@ -60,7 +67,7 @@ export function ProfileModal({
   async function save() {
     setSaving(true);
     try {
-      const body = { personId, categories: cats, styleNotes: notes.trim() || null };
+      const body = { personId, categories: cats, styleNotes: notes.trim() || null, ...(wardrobeTryOnAvailable ? { referenceImageKeys: photos, fitNotes: fitNotes.trim() || null } : {}) };
       const r = profile
         ? await client.models.homeWardrobeProfile.update({ id: profile.id, ...body })
         : await client.models.homeWardrobeProfile.create(body);
@@ -79,6 +86,37 @@ export function ProfileModal({
       <ModalContent>
         <ModalHeader>{personName}&apos;s closet settings</ModalHeader>
         <ModalBody className="gap-4">
+          {!wardrobeTryOnAvailable && <p role="status" className="text-sm text-default-500">{wardrobeTryOnSetupMessage}</p>}
+          {wardrobeTryOnAvailable && <section className="flex flex-col gap-3">
+            <div>
+              <p className="font-medium">Try-on reference photos</p>
+              <p className="text-sm text-default-500">Add a well-lit full-body photo in a neutral pose. You can add a side or face reference too. The first photo is the default. Photos are sent to OpenAI when you request a new preview.</p>
+            </div>
+            <div className="flex flex-wrap gap-3">
+              {photos.map((key, index) => (
+                <div key={key} className="w-24 flex flex-col gap-1">
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img src={photoUrl(key, 240)} alt={`Reference ${index + 1}`} className="w-24 h-32 object-cover rounded-lg" />
+                  {index === 0 ? <span className="text-xs text-primary">Default photo</span> : <Button size="sm" variant="light" onPress={() => setPhotos(p => [key, ...p.filter(k => k !== key)])}>Use as default</Button>}
+                  <Button size="sm" variant="light" color="danger" onPress={() => setPhotos(p => p.filter(k => k !== key))}>Remove</Button>
+                </div>
+              ))}
+            </div>
+            {photos.length < 3 && <label className="text-sm">
+              {uploading ? "Uploading…" : "Add reference photos (up to 3, JPEG/PNG/WebP, 10 MB each)"}
+              <input type="file" accept="image/jpeg,image/png,image/webp" multiple disabled={uploading || saving} className="block mt-2" onChange={async e => {
+                const files = Array.from(e.target.files ?? []).slice(0, 3 - photos.length);
+                e.target.value = "";
+                if (files.some(f => !["image/jpeg", "image/png", "image/webp"].includes(f.type) || f.size > 10 * 1024 * 1024)) {
+                  addToast({ title: "Use JPEG, PNG or WebP photos under 10 MB", color: "warning" }); return;
+                }
+                setUploading(true);
+                try { const keys = await uploadWardrobePhotos(files); setPhotos(p => [...p, ...keys].slice(0, 3)); }
+                finally { setUploading(false); }
+              }} />
+            </label>}
+            <Textarea label="Fit preferences" placeholder="Relaxed trousers; shirts usually tucked in…" value={fitNotes} onValueChange={setFitNotes} maxLength={2000} minRows={2} />
+          </section>}
           <div>
             <p className="text-sm font-medium mb-2">Categories</p>
             <div className="flex flex-col gap-1">
@@ -125,7 +163,7 @@ export function ProfileModal({
           <Button variant="light" onPress={onClose}>
             Cancel
           </Button>
-          <Button color="primary" onPress={save} isLoading={saving}>
+          <Button color="primary" onPress={save} isLoading={saving} isDisabled={uploading}>
             Save
           </Button>
         </ModalFooter>
