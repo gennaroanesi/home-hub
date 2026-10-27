@@ -4,8 +4,12 @@
 // and the outfit suggester. Each household member has their own category
 // list and style brief (homeWardrobeProfile). Separate from /inventory on
 // purpose: clothing here carries styling data the suggester reasons over.
+//
+// Route: /wardrobe/<personId>/<closet|looks|suggest>?<filters>, kept in sync
+// with the page state (lib/wardrobe-route.ts) so refreshes and links land
+// on the same view.
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -41,11 +45,23 @@ import { LookModal, type LookDraft } from "@/components/wardrobe/look-modal";
 import { ProfileModal } from "@/components/wardrobe/profile-modal";
 import { TryOnPreview, type TryOnJob } from "@/components/wardrobe/try-on-preview";
 import { wardrobeTryOnAvailable, wardrobeTryOnSetupMessage } from "@/lib/wardrobe-capabilities";
+import {
+  DEFAULT_WARDROBE_ROUTE,
+  parseWardrobeRoute,
+  wardrobeHref,
+  type StatusFilter,
+  type WardrobeRoute,
+  type WardrobeView as View,
+} from "@/lib/wardrobe-route";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Person = Schema["homePerson"]["type"];
-type View = "CLOSET" | "LOOKS" | "SUGGEST";
+
+function routeFromRouter(query: Record<string, string | string[] | undefined>): WardrobeRoute {
+  const slug = query.slug;
+  return parseWardrobeRoute(Array.isArray(slug) ? slug : slug ? [slug] : [], query);
+}
 
 interface Suggestion {
   previewImageKey?: string | null;
@@ -84,14 +100,14 @@ export default function WardrobePage() {
   const [items, setItems] = useState<WardrobeItem[]>([]);
   const [looks, setLooks] = useState<WardrobeLook[]>([]);
 
-  const [view, setView] = useState<View>("CLOSET");
-  const [category, setCategory] = useState("");
-  const [status, setStatus] = useState<WardrobeStatus | "OWNED" | "">("OWNED");
-  const [search, setSearch] = useState("");
-  const [inLook, setInLook] = useState<"" | "YES" | "NO">("");
-  const [lookSearch, setLookSearch] = useState("");
-  const [lookOccasion, setLookOccasion] = useState("");
-  const [lookTryOn, setLookTryOn] = useState(false);
+  const [view, setView] = useState<View>(DEFAULT_WARDROBE_ROUTE.view);
+  const [category, setCategory] = useState(DEFAULT_WARDROBE_ROUTE.category);
+  const [status, setStatus] = useState<StatusFilter>(DEFAULT_WARDROBE_ROUTE.status);
+  const [search, setSearch] = useState(DEFAULT_WARDROBE_ROUTE.search);
+  const [inLook, setInLook] = useState(DEFAULT_WARDROBE_ROUTE.inLook);
+  const [lookSearch, setLookSearch] = useState(DEFAULT_WARDROBE_ROUTE.lookSearch);
+  const [lookOccasion, setLookOccasion] = useState(DEFAULT_WARDROBE_ROUTE.lookOccasion);
+  const [lookTryOn, setLookTryOn] = useState(DEFAULT_WARDROBE_ROUTE.lookTryOn);
 
   const [itemOpen, setItemOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<WardrobeItem | null>(null);
@@ -112,11 +128,45 @@ export default function WardrobePage() {
     })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ?person=<id> deep link (the query isn't ready on the first render of a
-  // statically optimized page, so this runs once the router is).
+  // URL -> state: on load (the query isn't ready on the first render of a
+  // statically optimized page) and on back/forward. Skips URLs this page
+  // just wrote itself.
+  const lastHref = useRef("");
+  const navKey = useRef(""); // "<personId>/<view>" currently in the URL
   useEffect(() => {
-    if (router.isReady && typeof router.query.person === "string") setPersonId(router.query.person);
-  }, [router.isReady]); // eslint-disable-line react-hooks/exhaustive-deps
+    if (!router.isReady || router.asPath === lastHref.current) return;
+    const r = routeFromRouter(router.query);
+    if (r.personId) setPersonId(r.personId);
+    setView(r.view);
+    setCategory(r.category);
+    setStatus(r.status);
+    setSearch(r.search);
+    setInLook(r.inLook);
+    setLookSearch(r.lookSearch);
+    setLookOccasion(r.lookOccasion);
+    setLookTryOn(r.lookTryOn);
+    navKey.current = r.personId ? `${r.personId}/${r.view}` : "";
+  }, [router.isReady, router.asPath]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // State -> URL. Switching person or view adds a history entry; filter and
+  // search changes replace it (debounced so typing doesn't spam history).
+  useEffect(() => {
+    if (!router.isReady || !personId) return;
+    const t = setTimeout(() => {
+      const href = wardrobeHref({ personId, view, category, status, search, inLook, lookSearch, lookOccasion, lookTryOn });
+      if (href === router.asPath) {
+        lastHref.current = href;
+        return;
+      }
+      const key = `${personId}/${view}`;
+      const push = !!navKey.current && navKey.current !== key;
+      navKey.current = key;
+      lastHref.current = href;
+      if (push) router.push(href, undefined, { shallow: true });
+      else router.replace(href, undefined, { shallow: true });
+    }, 250);
+    return () => clearTimeout(t);
+  }, [router.isReady, personId, view, category, status, search, inLook, lookSearch, lookOccasion, lookTryOn]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function loadAll() {
     try {
@@ -132,10 +182,13 @@ export default function WardrobePage() {
       setProfiles(prof);
       setItems(it);
       setLooks(lk);
+      // Keep the person from the URL if they exist; a stale or mistyped id
+      // falls back to the signed-in person.
+      const known = (id: string) => !!id && (members.length ? members : ppl).some((p) => p.id === id);
       setPersonId((cur) => {
-        if (cur) return cur;
-        const q = typeof router.query.person === "string" ? router.query.person : "";
-        return q || me?.id || members[0]?.id || "";
+        if (known(cur)) return cur;
+        const fromUrl = routeFromRouter(router.query).personId;
+        return (known(fromUrl) ? fromUrl : "") || me?.id || members[0]?.id || "";
       });
     } catch (err) {
       console.error("Failed to load wardrobe:", err);
@@ -199,7 +252,6 @@ export default function WardrobePage() {
     setCategory("");
     setInLook("");
     setLookOccasion("");
-    router.replace({ pathname: "/wardrobe", query: { person: id } }, undefined, { shallow: true });
   }
 
   function openItem(it: WardrobeItem | null) {
