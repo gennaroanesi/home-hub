@@ -229,6 +229,7 @@ export function buildSuggestPrompt(
     "- Each outfit is complete for the occasion: a top (or dress), a bottom unless it's a dress, and shoes. Add a layer, outerwear or accessory when the weather or occasion calls for it.",
     "- Dress for the weather: no heavy knits or wool above ~80°F, add a layer below ~60°F, and avoid suede if rain is likely.",
     "- Match formality to the calendar and occasion.",
+    "- Golf-category items are for the course: use them only when the occasion, request or calendar involves golf, and then build the look mainly from them.",
     "- Avoid items in the recently-worn list unless nothing else works.",
     "- Make the options genuinely different from each other (different palette or key piece).",
     "- Lean on color harmony: tonal or two-color palettes, with earthy neutrals over high contrast.",
