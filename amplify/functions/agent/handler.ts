@@ -48,6 +48,8 @@ import {
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
+import { wardrobeItemForApi } from "../../../lib/wardrobe.js";
+import { describeTripDay, parseJsonField, type TripDayWeather, type TripLook } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import {
@@ -1863,14 +1865,28 @@ const tools: Anthropic.Tool[] = [
   {
     name: "list_wardrobe",
     description:
-      "List items in someone's wardrobe, optionally filtered by category, status or a fuzzy query (name, brand, color, fabric). Answers 'what navy sweaters do I have?', 'what's on my wardrobe wishlist?'.",
+      "List items in someone's wardrobe with every field: category, brand, name, color (+hex), size, fabric, fit, style code, status, season, formality, price (USD; paid, or expected for wishlist), product link (url), notes, last worn, and photo URLs (photoUrl = main photo resized, photoUrls = all photos full size). Filter by itemId, category, status or a fuzzy query (name, brand, color, fabric, style code, notes). Answers 'what navy sweaters do I have?', 'what's on my wardrobe wishlist and what does it cost?', 'send me the link to the Barbour', 'show me a photo of my brown boots'.",
     input_schema: {
       type: "object" as const,
       properties: {
         personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
+        itemId: { type: "string", description: "Return just this item." },
         category: { type: "string" },
         status: { type: "string", enum: ["KEEP", "NEW", "TAILOR", "RETIRE", "WISHLIST", "OWNED", "ALL"], description: "Default OWNED (keep + new + tailor)." },
         query: { type: "string" },
+        limit: { type: "number", description: "Max items returned, default 60, max 200." },
+      },
+    },
+  },
+  {
+    name: "get_trip_plan",
+    description:
+      "Read the saved trip-looks plan for someone's trip (made on the wardrobe page's Trip looks tab): the packing list (with what's already ticked off as packed), the outfit for each day and activity, the weather used and packing tips. Answers 'what am I packing for Seattle?', 'what do I wear for the dinner on the London trip?'. Defaults to the next upcoming trip.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Whose plan. Defaults to the sender." },
+        tripName: { type: "string", description: "Fuzzy trip name, e.g. 'Seattle'. Defaults to the next upcoming trip." },
       },
     },
   },
@@ -5439,29 +5455,83 @@ async function executeTool(
       const rows = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
         filter: { ownerPersonId: { eq: personId } },
       });
-      const status: string = input.status ?? "OWNED";
+      const status: string = input.status ?? (input.itemId ? "ALL" : "OWNED");
       const q = (input.query ?? "").toLowerCase().trim();
       const out = rows.filter((i) => {
+        if (input.itemId && i.id !== input.itemId) return false;
         const st = i.status ?? "KEEP";
         if (status === "OWNED" && !["KEEP", "NEW", "TAILOR"].includes(st)) return false;
         if (status !== "OWNED" && status !== "ALL" && st !== status) return false;
         if (input.category && (i.category ?? "").toLowerCase() !== String(input.category).toLowerCase()) return false;
         if (q) {
-          const hay = [i.name, i.brand, i.color, i.fabric, i.category, i.notes].filter(Boolean).join(" ").toLowerCase();
+          const hay = [i.name, i.brand, i.color, i.fabric, i.category, i.styleCode, i.notes].filter(Boolean).join(" ").toLowerCase();
           if (!q.split(/\s+/).every((w: string) => hay.includes(w))) return false;
         }
         return true;
       });
+      out.sort((x, y) => (x.category ?? "").localeCompare(y.category ?? "") || (x.brand ?? "").localeCompare(y.brand ?? ""));
+      const limit = Math.min(Math.max(Number(input.limit) || 60, 1), 200);
       return JSON.stringify({
         count: out.length,
-        items: out.slice(0, 60).map((i) => ({
-          category: i.category,
-          name: [i.brand, i.name].filter(Boolean).join(" "),
-          color: i.color,
-          size: i.size,
-          status: i.status,
-          lastWornOn: i.lastWornOn,
+        ...(status === "WISHLIST" ? { wishlistTotalUsd: out.reduce((sum, i) => sum + (i.price ?? 0), 0) } : {}),
+        items: out.slice(0, limit).map(wardrobeItemForApi),
+      });
+    }
+
+    case "get_trip_plan": {
+      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
+      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
+      const today = ymdInTimezone(HOUSEHOLD_TZ);
+      const trips = (await listAllPages<Schema["homeTrip"]["type"]>(client.models.homeTrip)).filter((t) => {
+        const ids = (t.participantIds ?? []).filter(Boolean);
+        return !ids.length || ids.includes(personId);
+      });
+      const want = (input.tripName ?? "").toLowerCase().trim();
+      const trip = want
+        ? trips
+            .filter((t) => [t.name, t.destination?.city].filter(Boolean).join(" ").toLowerCase().includes(want))
+            .sort((x, y) => y.startDate.localeCompare(x.startDate))[0]
+        : trips.filter((t) => t.endDate >= today).sort((x, y) => x.startDate.localeCompare(y.startDate))[0];
+      if (!trip) return JSON.stringify({ error: want ? `No trip matching "${input.tripName}"` : "No upcoming trips" });
+      const plans = await listAllPages<Schema["homeWardrobeTripPlan"]["type"]>(client.models.homeWardrobeTripPlan, {
+        filter: { tripId: { eq: trip.id }, personId: { eq: personId } },
+      });
+      const plan = plans.sort((x, y) => y.updatedAt.localeCompare(x.updatedAt))[0];
+      if (!plan || plan.status !== "READY") {
+        return JSON.stringify({
+          trip: trip.name,
+          dates: `${trip.startDate} to ${trip.endDate}`,
+          status: plan?.status ?? "NONE",
+          note: "No finished plan yet. Make one on the wardrobe page's Trip looks tab.",
+        });
+      }
+      const items = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
+        filter: { ownerPersonId: { eq: personId } },
+      });
+      const byId = new Map(items.map((i) => [i.id, i]));
+      const name = (id: string | null) => {
+        const i = id ? byId.get(id) : undefined;
+        return i ? [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ") : null;
+      };
+      const packed = new Set((plan.packedItemIds ?? []).filter(Boolean));
+      return JSON.stringify({
+        trip: trip.name,
+        dates: `${trip.startDate} to ${trip.endDate}`,
+        luggage: plan.capacity === "PIECES" ? `${plan.maxPieces} pieces` : plan.capacity,
+        context: plan.context,
+        weather: parseJsonField<TripDayWeather[]>(plan.weather, []).map((w) => ({ date: w.date, forecast: describeTripDay(w) })),
+        packingList: (plan.packItemIds ?? [])
+          .filter((id): id is string => !!id && byId.has(id))
+          .map((id) => ({ ...wardrobeItemForApi(byId.get(id)!), packed: packed.has(id) })),
+        looks: parseJsonField<TripLook[]>(plan.looks, []).map((l) => ({
+          date: l.date,
+          title: l.title,
+          occasion: l.occasion,
+          pieces: l.itemIds.map(name).filter(Boolean),
+          why: l.why,
         })),
+        tips: plan.tips,
+        generatedAt: plan.generatedAt,
       });
     }
 

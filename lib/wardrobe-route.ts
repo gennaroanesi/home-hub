@@ -4,12 +4,13 @@
 //   /wardrobe/<personId>/closet?cat=Golf&status=all&q=navy&inlook=yes
 //   /wardrobe/<personId>/looks?occasion=golf&tryon=1&q=brown
 //   /wardrobe/<personId>/suggest
+//   /wardrobe/<personId>/trips?trip=<tripId>
 //
 // Defaults are left out of the query. Pure, no router access.
 
 import { WARDROBE_STATUSES, type WardrobeStatus } from "./wardrobe";
 
-export type WardrobeView = "CLOSET" | "LOOKS" | "SUGGEST";
+export type WardrobeView = "CLOSET" | "LOOKS" | "SUGGEST" | "TRIPS";
 export type StatusFilter = WardrobeStatus | "OWNED" | "";
 
 export interface WardrobeRoute {
@@ -24,6 +25,8 @@ export interface WardrobeRoute {
   lookSearch: string;
   lookOccasion: string; // lowercased occasion key
   lookTryOn: boolean;
+  // Trips
+  tripId: string;
 }
 
 export const DEFAULT_WARDROBE_ROUTE: WardrobeRoute = {
@@ -36,9 +39,10 @@ export const DEFAULT_WARDROBE_ROUTE: WardrobeRoute = {
   lookSearch: "",
   lookOccasion: "",
   lookTryOn: false,
+  tripId: "",
 };
 
-const VIEW_SLUG: Record<WardrobeView, string> = { CLOSET: "closet", LOOKS: "looks", SUGGEST: "suggest" };
+const VIEW_SLUG: Record<WardrobeView, string> = { CLOSET: "closet", LOOKS: "looks", SUGGEST: "suggest", TRIPS: "trips" };
 
 type Query = Record<string, string | string[] | undefined>;
 
@@ -66,6 +70,8 @@ export function parseWardrobeRoute(slug: string[], query: Query): WardrobeRoute 
     r.lookSearch = one(query.q);
     r.lookOccasion = one(query.occasion).toLowerCase();
     r.lookTryOn = one(query.tryon) === "1";
+  } else if (r.view === "TRIPS") {
+    r.tripId = one(query.trip);
   }
   return r;
 }
@@ -83,6 +89,8 @@ export function wardrobeHref(r: WardrobeRoute): string {
     if (r.lookSearch.trim()) p.set("q", r.lookSearch.trim());
     if (r.lookOccasion) p.set("occasion", r.lookOccasion);
     if (r.lookTryOn) p.set("tryon", "1");
+  } else if (r.view === "TRIPS") {
+    if (r.tripId) p.set("trip", r.tripId);
   }
   const qs = p.toString();
   return `/wardrobe/${encodeURIComponent(r.personId)}/${VIEW_SLUG[r.view]}${qs ? `?${qs}` : ""}`;

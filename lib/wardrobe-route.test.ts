@@ -26,6 +26,15 @@ describe("wardrobe route", () => {
     expect(parseWardrobeRoute(u.pathname.split("/").slice(2), Object.fromEntries(u.searchParams))).toEqual(r);
   });
 
+  it("round-trips the trip on the trips view only", () => {
+    const r = route({ view: "TRIPS", tripId: "t1" });
+    const href = wardrobeHref({ ...r, search: "ignored" });
+    expect(href).toBe("/wardrobe/p1/trips?trip=t1");
+    const u = new URL(href, "http://x");
+    expect(parseWardrobeRoute(u.pathname.split("/").slice(2), Object.fromEntries(u.searchParams))).toEqual(r);
+    expect(wardrobeHref(route({ tripId: "t1" }))).toBe("/wardrobe/p1/closet");
+  });
+
   it("tolerates bad input and old ?person= links", () => {
     expect(parseWardrobeRoute([], { person: "p9" })).toEqual({ ...DEFAULT_WARDROBE_ROUTE, personId: "p9" });
     const r = parseWardrobeRoute(["p1", "nope"], { status: "bogus", inlook: "maybe", tryon: "1" });

@@ -8,7 +8,7 @@ import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
-import { FaCamera, FaStar, FaTrash } from "react-icons/fa";
+import { FaCamera, FaExternalLinkAlt, FaStar, FaTrash } from "react-icons/fa";
 
 import { photoUrl } from "@/lib/image-loader";
 import {
@@ -260,7 +260,26 @@ export function ItemModal({
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             <Input label="Style code" value={f.styleCode ?? ""} onValueChange={set("styleCode")} />
-            <Input label="Link" value={f.url ?? ""} onValueChange={set("url")} placeholder="https://…" />
+            <Input
+              label="Link"
+              value={f.url ?? ""}
+              onValueChange={set("url")}
+              placeholder="https://…"
+              endContent={
+                /^https?:\/\/\S+$/i.test(f.url?.trim() ?? "") && (
+                  <a
+                    href={f.url.trim()}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-default-400 hover:text-primary p-1"
+                    aria-label="Open link in a new tab"
+                    title="Open link"
+                  >
+                    <FaExternalLinkAlt size={12} />
+                  </a>
+                )
+              }
+            />
           </div>
           <Textarea label="Notes" value={f.notes ?? ""} onValueChange={set("notes")} minRows={2} />
         </ModalBody>

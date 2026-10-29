@@ -1,6 +1,8 @@
 // Wardrobe helpers shared by the /wardrobe page, the outfit-suggester
 // Lambda, Janet, and the closet import script. Pure — no I/O.
 
+import { originalPhotoUrl, photoUrl } from "./image-loader";
+
 export const WARDROBE_STATUSES = ["KEEP", "NEW", "TAILOR", "RETIRE", "WISHLIST"] as const;
 export type WardrobeStatus = (typeof WARDROBE_STATUSES)[number];
 
@@ -91,6 +93,56 @@ export function imagesOf(item: { imageKeys?: (string | null)[] | null }): string
 
 export function mainImage(item: { imageKeys?: (string | null)[] | null }): string | null {
   return imagesOf(item)[0] ?? null;
+}
+
+/** Every field of a wardrobe item, as served to Janet and the Muse API. */
+export interface WardrobeItemApi {
+  id: string;
+  category: string | null;
+  name: string | null;
+  brand: string | null;
+  color: string | null;
+  colorHex: string | null;
+  size: string | null;
+  fabric: string | null;
+  fit: string | null;
+  styleCode: string | null;
+  status: string;
+  season: string | null;
+  formality: string | null;
+  price: number | null;
+  url: string | null;
+  notes: string | null;
+  lastWornOn: string | null;
+  photoUrl: string | null; // main photo, resized
+  photoUrls: string[]; // every photo, full size, main first
+}
+
+export function wardrobeItemForApi(
+  i: WardrobeItemLike & { styleCode?: string | null; price?: number | null; url?: string | null },
+): WardrobeItemApi {
+  const keys = imagesOf(i);
+  return {
+    id: i.id,
+    category: i.category ?? null,
+    name: i.name ?? null,
+    brand: i.brand ?? null,
+    color: i.color ?? null,
+    colorHex: i.colorHex ?? null,
+    size: i.size ?? null,
+    fabric: i.fabric ?? null,
+    fit: i.fit ?? null,
+    styleCode: i.styleCode ?? null,
+    status: i.status ?? "KEEP",
+    season: i.season ?? null,
+    formality: i.formality ?? null,
+    price: i.price ?? null,
+    url: i.url ?? null,
+    notes: i.notes ?? null,
+    lastWornOn: i.lastWornOn ?? null,
+    photoUrl: keys[0] ? photoUrl(keys[0], 800) : null,
+    photoUrls: keys.map(originalPhotoUrl),
+  };
 }
 
 /** Moves imageKeys[index] to the front (the main photo). */

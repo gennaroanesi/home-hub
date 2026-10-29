@@ -644,6 +644,34 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // Trip looks: one saved packing plan per (trip, person). The
+    // planTripOutfits mutation writes it (status GENERATING → READY or
+    // FAILED) so a slow Claude call still lands after AppSync's 30s limit;
+    // the page polls the record. Logic lives in lib/wardrobe-trip.ts.
+    homeWardrobeTripPlan: a
+      .model({
+        tripId: a.id().required(), // FK → homeTrip.id
+        personId: a.id().required(), // FK → homePerson.id
+        capacity: a.enum(["CARRY_ON", "CHECKED", "PIECES"]),
+        maxPieces: a.integer(), // only for PIECES
+        activities: a.json(), // [{ date?: "YYYY-MM-DD", text }]
+        request: a.string(),
+        status: a.enum(["GENERATING", "READY", "FAILED"]),
+        error: a.string(),
+        context: a.string(), // "Lisbon; 58–74°F"
+        weather: a.json(), // TripDayWeather[]
+        looks: a.json(), // TripLook[]
+        packItemIds: a.id().array(),
+        packedItemIds: a.id().array(), // ticked off while packing
+        tips: a.string(),
+        generatedAt: a.datetime(),
+      })
+      .secondaryIndexes((index) => [index("tripId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Trip ────────────────────────────────────────────────────────────
     // Multi-day trip; days and events reference trips via tripId.
     homeTrip: a
@@ -1711,6 +1739,24 @@ const schema = a
         count: a.integer(), // how many options (default 3, max 5)
       })
       .returns(a.ref("wardrobeSuggestResponse"))
+      .handler(a.handler.function(wardrobeSuggest)),
+    // Trip looks: packing list + outfits for a trip. Same Lambda as
+    // suggestOutfit (it switches on the field name); the result is saved
+    // on homeWardrobeTripPlan, and planId lets the page poll it if this
+    // call times out first.
+    wardrobeTripPlanResponse: a.customType({ planId: a.id(), error: a.string() }),
+    planTripOutfits: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users"), allow.authenticated("identityPool")])
+      .arguments({
+        tripId: a.id().required(),
+        personId: a.id().required(),
+        capacity: a.string().required(), // CARRY_ON | CHECKED | PIECES
+        maxPieces: a.integer(),
+        activities: a.json(), // [{ date?, text }]
+        request: a.string(),
+      })
+      .returns(a.ref("wardrobeTripPlanResponse"))
       .handler(a.handler.function(wardrobeSuggest)),
 
     // ── Recurring task occurrence actions ───────────────────────────────

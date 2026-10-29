@@ -5,10 +5,11 @@ import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
-import { FaArrowLeft, FaTrash } from "react-icons/fa";
+import { FaArrowLeft, FaSuitcase, FaTrash } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
+import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -96,6 +97,14 @@ export default function TripDetailPage() {
     }
   }
 
+  // Trip looks live in the wardrobe; open them for the signed-in person.
+  async function openTripLooks() {
+    if (!trip) return;
+    const me = await resolveCurrentPerson(client);
+    const personId = me?.id ?? (trip.participantIds ?? []).find(Boolean) ?? people[0]?.id;
+    router.push(personId ? `/wardrobe/${personId}/trips?trip=${trip.id}` : "/wardrobe");
+  }
+
   async function handleDelete() {
     const ok = await tripFormRef.current?.delete();
     if (ok) router.push("/trips");
@@ -141,6 +150,17 @@ export default function TripDetailPage() {
             </h1>
           </div>
           <div className="flex gap-2">
+            {!isNew && (
+              <Button
+                size="sm"
+                variant="flat"
+                startContent={<FaSuitcase size={11} />}
+                onPress={openTripLooks}
+                isDisabled={saving}
+              >
+                Plan outfits
+              </Button>
+            )}
             {!isNew && (
               <Button
                 size="sm"
