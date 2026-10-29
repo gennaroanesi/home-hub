@@ -58,7 +58,11 @@ type Args = SuggestArgs | TripArgs;
 type Result = SuggestResult | TripResult;
 
 export const handler: AppSyncResolverHandler<Args, Result> = async (event) => {
-  if (event.info.fieldName === "planTripOutfits") return planTrip(event.arguments as TripArgs);
+  // Amplify's function resolver puts fieldName at the top of the event;
+  // plain AppSync Lambda resolvers nest it under info.
+  const e = event as unknown as { fieldName?: string; info?: { fieldName?: string } };
+  const field = e.fieldName ?? e.info?.fieldName;
+  if (field === "planTripOutfits") return planTrip(event.arguments as TripArgs);
   return suggest(event.arguments as SuggestArgs);
 };
 
