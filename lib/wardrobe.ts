@@ -71,6 +71,13 @@ export interface WardrobeItemLike {
   notes?: string | null;
   imageKeys?: (string | null)[] | null;
   lastWornOn?: string | null;
+  quantity?: number | null;
+}
+
+/** Identical copies owned; missing or bad values count as one. */
+export function quantityOf(item: { quantity?: number | null }): number {
+  const q = item.quantity;
+  return q != null && Number.isFinite(q) && q >= 1 ? Math.floor(q) : 1;
 }
 
 /** The person's ordered categories, plus any category an item uses that the profile doesn't list. */
@@ -111,6 +118,7 @@ export interface WardrobeItemApi {
   season: string | null;
   formality: string | null;
   price: number | null;
+  quantity: number; // identical copies owned
   url: string | null;
   notes: string | null;
   lastWornOn: string | null;
@@ -137,12 +145,20 @@ export function wardrobeItemForApi(
     season: i.season ?? null,
     formality: i.formality ?? null,
     price: i.price ?? null,
+    quantity: quantityOf(i),
     url: i.url ?? null,
     notes: i.notes ?? null,
     lastWornOn: i.lastWornOn ?? null,
     photoUrl: keys[0] ? photoUrl(keys[0], 800) : null,
     photoUrls: keys.map(originalPhotoUrl),
   };
+}
+
+/** Splits a trailing "(×4)" or "(x4)" count off a name, as older imports wrote it. */
+export function splitNameQuantity(name: string): { name: string; quantity: number | null } {
+  const m = /^(.*?)\s*\(\s*[×x]\s*(\d+)\s*\)\s*$/i.exec(name);
+  if (!m || Number(m[2]) < 1) return { name, quantity: null };
+  return { name: m[1], quantity: Number(m[2]) };
 }
 
 /** Moves imageKeys[index] to the front (the main photo). */

@@ -64,6 +64,7 @@ export function ItemModal({
       formality: e?.formality ?? "",
       colorHex: e?.colorHex ?? "",
       price: e?.price != null ? String(e.price) : "",
+      quantity: String(e?.quantity ?? 1),
     };
     for (const k of TEXT_FIELDS) next[k] = (e?.[k] as string | null | undefined) ?? "";
     setF(next);
@@ -94,6 +95,7 @@ export function ItemModal({
     try {
       const str = (k: string) => (f[k]?.trim() ? f[k].trim() : null);
       const price = f.price?.trim() ? Number(f.price) : null;
+      const quantity = Math.floor(Number(f.quantity));
       const body = {
         ownerPersonId,
         category: f.category || categories[0] || "Tops",
@@ -108,6 +110,7 @@ export function ItemModal({
         url: str("url"),
         notes: str("notes"),
         price: price != null && !Number.isNaN(price) ? price : null,
+        quantity: quantity >= 1 ? quantity : 1,
         status: (f.status || "KEEP") as WardrobeItem["status"],
         season: (f.season || "ALL") as WardrobeItem["season"],
         formality: (f.formality || null) as WardrobeItem["formality"],
@@ -241,9 +244,10 @@ export function ItemModal({
             </label>
             <Input label="Size" value={f.size ?? ""} onValueChange={set("size")} />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1fr_7rem] gap-2">
             <Input label="Fabric" value={f.fabric ?? ""} onValueChange={set("fabric")} />
             <Input label="Fit" value={f.fit ?? ""} onValueChange={set("fit")} />
+            <Input label="Copies owned" type="number" min={1} step={1} value={f.quantity ?? "1"} onValueChange={set("quantity")} />
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <Select label="Season" selectedKeys={f.season ? [f.season] : []} onChange={(e) => e.target.value && set("season")(e.target.value)}>

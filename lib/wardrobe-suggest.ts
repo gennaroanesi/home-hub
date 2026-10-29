@@ -12,6 +12,7 @@ import {
   dayBoundsUtc,
   isWearable,
   isWishlist,
+  quantityOf,
   recentlyWorn,
   ymdInTz,
   type WardrobeItemLike,
@@ -188,7 +189,11 @@ export async function loadSuggestContext(
     timezone: tz,
     items: items.filter(isWearable),
     wishlist: items.filter(isWishlist),
-    recentlyWornIds: recentlyWorn(wears, addDaysYmd(date, -3)),
+    // A piece with spare copies isn't held back for having been worn.
+    recentlyWornIds: recentlyWorn(wears, addDaysYmd(date, -3)).filter((id) => {
+      const it = items.find((x) => x.id === id);
+      return !it || quantityOf(it) === 1;
+    }),
     events,
     weather,
   };
@@ -206,6 +211,7 @@ function itemLine(i: WardrobeItemLike): string {
     i.season && i.season !== "ALL" && `season: ${i.season.toLowerCase()}`,
     i.formality && `formality: ${i.formality.toLowerCase().replace("_", " ")}`,
     i.status === "TAILOR" && "needs tailoring",
+    quantityOf(i) > 1 && `owns ${quantityOf(i)} identical copies`,
     i.lastWornOn && `last worn ${i.lastWornOn}`,
     i.notes && `notes: ${i.notes.slice(0, 140)}`,
   ].filter(Boolean);

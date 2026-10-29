@@ -569,6 +569,7 @@ function ItemCard({ item, onOpen }: { item: WardrobeItem; onOpen: () => void }) 
         <span className="h-5 flex items-center gap-1.5 mt-1">
           {/* KEEP is the default — only call out the exceptions. */}
           {item.status && item.status !== "KEEP" && <StatusChip status={item.status} />}
+          {(item.quantity ?? 1) > 1 && <span className="text-[10px] font-medium text-default-600 bg-default-100 rounded px-1.5 py-0.5">×{item.quantity}</span>}
           {item.lastWornOn && <span className="text-[10px] text-default-400">worn {item.lastWornOn}</span>}
         </span>
       </div>

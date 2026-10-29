@@ -35,7 +35,7 @@ type Item = Schema["homeWardrobeItem"]["type"];
 const CONTENT_TYPES: Record<string, string> = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif" };
 const FIELDS = [
   "category", "name", "brand", "color", "colorHex", "size", "fabric", "fit", "styleCode",
-  "status", "season", "formality", "notes", "url", "price", "externalId",
+  "status", "season", "formality", "notes", "url", "price", "quantity", "externalId",
 ] as const;
 
 function arg(name: string): string | undefined {

@@ -20,6 +20,7 @@ import { formatTripRange } from "@/lib/trip";
 import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
+  packCount,
   parseJsonField,
   tripDates,
   type TripActivity,
@@ -364,7 +365,8 @@ export function TripPanel({
             <div className="flex items-baseline justify-between gap-2 flex-wrap">
               <h2 className="text-lg font-semibold">Packing list</h2>
               <span className="text-xs text-default-500">
-                {pack.length} pieces · {packed.size} packed
+                {pack.reduce((n, p) => n + packCount(p, looks), 0)} pieces ·{" "}
+                {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
                 {ready.capacity === "PIECES" && ready.maxPieces ? ` · limit ${ready.maxPieces}` : ready.capacity ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}` : ""}
               </span>
             </div>
@@ -391,7 +393,12 @@ export function TripPanel({
                         </button>
                         <label className="flex items-start gap-1.5 mt-1 text-xs leading-tight cursor-pointer">
                           <input type="checkbox" checked={on} onChange={() => togglePacked(p.id)} className="mt-0.5" />
-                          <span className={`line-clamp-2 ${on ? "line-through text-default-400" : ""}`}>{p.name}</span>
+                          <span className={`line-clamp-2 ${on ? "line-through text-default-400" : ""}`}>
+                            {p.name}
+                            {(p.quantity ?? 1) > 1 && (
+                              <span className="text-default-500"> · pack {packCount(p, looks)} of {p.quantity}</span>
+                            )}
+                          </span>
                         </label>
                       </div>
                     );

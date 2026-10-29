@@ -10,7 +10,7 @@
 // propose_trip_plan tool and validates the answer against real item ids.
 
 import type Anthropic from "@anthropic-ai/sdk";
-import { addDaysYmd, isWearable, ymdInTz, type WardrobeItemLike } from "./wardrobe";
+import { addDaysYmd, isWearable, quantityOf, ymdInTz, type WardrobeItemLike } from "./wardrobe";
 import { listAllPages } from "./list-all";
 import { getHouseholdTimezone } from "./household-settings";
 import { SUGGEST_MODEL, fetchDayWeather, type DayWeather } from "./wardrobe-suggest";
@@ -342,6 +342,7 @@ function itemLine(i: WardrobeItemLike): string {
     i.fabric && `fabric: ${i.fabric}`,
     i.season && i.season !== "ALL" && `season: ${i.season.toLowerCase()}`,
     i.formality && `formality: ${i.formality.toLowerCase().replace("_", " ")}`,
+    quantityOf(i) > 1 && `owns ${quantityOf(i)} identical copies`,
     i.notes && `notes: ${i.notes.slice(0, 100)}`,
   ].filter(Boolean);
   return `- [${i.id}] ${bits.join(" | ")}`;
@@ -357,6 +358,7 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
     "- Every look is complete: a top, a bottom and shoes, plus a layer or outerwear when the weather calls for it.",
     "- Dress for each day's weather: no heavy wool above ~80°F, a layer below ~60°F, rain-proof shoes and outerwear when rain is likely.",
     "- Maximise reuse: each bottom, shoe and layer should appear in several looks. Repeat looks rather than over-pack.",
+    "- An item with several identical copies can be worn on as many days as there are copies (a fresh one each day). Each copy packed counts as a piece toward the luggage limit.",
     "- Match formality to the activity and the trip type.",
     "- Golf-category items are only for golf.",
     "- Respect the luggage limit.",
@@ -429,6 +431,21 @@ export const PROPOSE_TRIP_PLAN_TOOL: Anthropic.Tool = {
  * Keeps only owned item ids, drops looks with fewer than two real pieces,
  * and makes sure everything a look uses is on the packing list.
  */
+/**
+ * Copies of an item to pack: one per day it's worn (undated looks count as
+ * one more day), capped at the copies owned and never below one.
+ */
+export function packCount(item: { id: string; quantity?: number | null }, looks: Pick<TripLook, "date" | "itemIds">[]): number {
+  const days = new Set<string>();
+  let undated = 0;
+  for (const l of looks) {
+    if (!l.itemIds.includes(item.id)) continue;
+    if (l.date) days.add(l.date);
+    else undated++;
+  }
+  return Math.max(1, Math.min(quantityOf(item), days.size + undated));
+}
+
 export function parseTripPlan(raw: unknown, ctx: Pick<TripPlanContext, "items" | "dates">): TripPlan {
   const owned = new Set(ctx.items.map((i) => i.id));
   const days = new Set(ctx.dates);

@@ -573,6 +573,7 @@ const schema = a
         notes: a.string(),
         url: a.url(),
         price: a.float(), // USD; paid for owned, expected for wishlist
+        quantity: a.integer(), // identical copies owned; null means 1
         // S3 keys under home/wardrobe/; the first one is the main photo.
         imageKeys: a.string().array(),
         lastWornOn: a.date(),

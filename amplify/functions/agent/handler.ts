@@ -49,7 +49,7 @@ import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
 import { wardrobeItemForApi } from "../../../lib/wardrobe.js";
-import { describeTripDay, parseJsonField, type TripDayWeather, type TripLook } from "../../../lib/wardrobe-trip.js";
+import { describeTripDay, packCount, parseJsonField, type TripDayWeather, type TripLook } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import {
@@ -5514,6 +5514,7 @@ async function executeTool(
         return i ? [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ") : null;
       };
       const packed = new Set((plan.packedItemIds ?? []).filter(Boolean));
+      const planLooks = parseJsonField<TripLook[]>(plan.looks, []);
       return JSON.stringify({
         trip: trip.name,
         dates: `${trip.startDate} to ${trip.endDate}`,
@@ -5522,8 +5523,12 @@ async function executeTool(
         weather: parseJsonField<TripDayWeather[]>(plan.weather, []).map((w) => ({ date: w.date, forecast: describeTripDay(w) })),
         packingList: (plan.packItemIds ?? [])
           .filter((id): id is string => !!id && byId.has(id))
-          .map((id) => ({ ...wardrobeItemForApi(byId.get(id)!), packed: packed.has(id) })),
-        looks: parseJsonField<TripLook[]>(plan.looks, []).map((l) => ({
+          .map((id) => ({
+            ...wardrobeItemForApi(byId.get(id)!),
+            copiesToPack: packCount(byId.get(id)!, planLooks),
+            packed: packed.has(id),
+          })),
+        looks: planLooks.map((l) => ({
           date: l.date,
           title: l.title,
           occasion: l.occasion,

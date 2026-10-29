@@ -6,10 +6,29 @@ import {
   isDarkHex,
   isWearable,
   makeMain,
+  quantityOf,
   recentlyWorn,
   slugify,
+  splitNameQuantity,
+  wardrobeItemForApi,
   DEFAULT_CATEGORIES,
 } from "./wardrobe";
+
+describe("quantity", () => {
+  it("splits an old (×N) suffix off the name", () => {
+    expect(splitNameQuantity("Supima cotton crew tee (×4)")).toEqual({ name: "Supima cotton crew tee", quantity: 4 });
+    expect(splitNameQuantity("Linen shirt (x2)")).toEqual({ name: "Linen shirt", quantity: 2 });
+    expect(splitNameQuantity("Boot (675 last)")).toEqual({ name: "Boot (675 last)", quantity: null });
+    expect(splitNameQuantity("Tee (×0)")).toEqual({ name: "Tee (×0)", quantity: null });
+  });
+
+  it("treats missing or bad counts as one", () => {
+    expect(quantityOf({})).toBe(1);
+    expect(quantityOf({ quantity: 0 })).toBe(1);
+    expect(quantityOf({ quantity: 3 })).toBe(3);
+    expect(wardrobeItemForApi({ id: "a", quantity: null }).quantity).toBe(1);
+  });
+});
 import {
   buildSuggestPrompt,
   describeWeather,

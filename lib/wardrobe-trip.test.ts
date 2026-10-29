@@ -4,6 +4,7 @@ import {
   buildTripPrompt,
   capacityRule,
   fetchTripWeather,
+  packCount,
   parseTripPlan,
   resolveTripLocation,
   sameDayYearsAgo,
@@ -120,6 +121,21 @@ describe("parseTripPlan", () => {
   });
 });
 
+describe("packCount", () => {
+  const looks = [
+    { date: "2026-11-15", itemIds: ["tee", "chino"] },
+    { date: "2026-11-15", itemIds: ["tee", "jacket"] }, // same day: still one tee
+    { date: "2026-11-16", itemIds: ["tee"] },
+    { date: null, itemIds: ["tee"] },
+  ];
+  it("packs one copy per day worn, capped at what's owned", () => {
+    expect(packCount({ id: "tee", quantity: 4 }, looks)).toBe(3);
+    expect(packCount({ id: "tee", quantity: 2 }, looks)).toBe(2);
+    expect(packCount({ id: "tee" }, looks)).toBe(1);
+    expect(packCount({ id: "ghost", quantity: 3 }, looks)).toBe(1);
+  });
+});
+
 describe("prompt", () => {
   it("states the luggage limit, days, activities and reservations", () => {
     const ctx: TripPlanContext = {
@@ -130,7 +146,7 @@ describe("prompt", () => {
       dates: ["2026-11-12", "2026-11-13"],
       weather: [{ date: "2026-11-12", source: "TYPICAL", highF: 66, lowF: 54, precipChance: 40, summary: "Some rainy days" }],
       reservations: [{ type: "RESTAURANT", name: "Belcanto", date: "2026-11-13", time: "20:00" }],
-      items,
+      items: [...items, { id: "tee", category: "Tops", name: "Supima tee", quantity: 4 }],
     };
     const { user } = buildTripPrompt(ctx, {
       capacity: "PIECES",
@@ -142,6 +158,8 @@ describe("prompt", () => {
     expect(user).toContain("- 2026-11-13: weather unknown");
     expect(user).toContain("- 2026-11-13: Golf\n- Some day: Museum");
     expect(user).toContain("- 2026-11-13 20:00: restaurant Belcanto");
+    expect(user).toContain("Supima tee | owns 4 identical copies");
+    expect(user).not.toContain("Chino | owns");
     expect(capacityRule("CARRY_ON")).toMatch(/Carry-on/);
   });
 });
