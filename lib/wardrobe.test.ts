@@ -11,8 +11,49 @@ import {
   slugify,
   splitNameQuantity,
   wardrobeItemForApi,
+  wardrobeItemPatch,
   DEFAULT_CATEGORIES,
 } from "./wardrobe";
+
+describe("wardrobeItemPatch", () => {
+  it("keeps only the keys given and normalises them", () => {
+    const { patch, errors } = wardrobeItemPatch({
+      name: "  Cotton piqué polo ",
+      status: "wishlist",
+      formality: "smart casual",
+      colorHex: "2A2E3D",
+      price: "135",
+      quantity: 2,
+      brand: "",
+    });
+    expect(errors).toEqual([]);
+    expect(patch).toEqual({
+      name: "Cotton piqué polo",
+      status: "WISHLIST",
+      formality: "SMART_CASUAL",
+      colorHex: "#2a2e3d",
+      price: 135,
+      quantity: 2,
+      brand: null,
+    });
+    expect(wardrobeItemPatch({ status: "KEEP" }).patch).toEqual({ status: "KEEP" });
+  });
+
+  it("clears optional fields and reports every bad value at once", () => {
+    expect(wardrobeItemPatch({ formality: null, price: null, url: "" }).patch).toEqual({ formality: null, price: null, url: null });
+    const { errors } = wardrobeItemPatch({
+      name: " ",
+      status: "OWNED",
+      season: null,
+      price: -1,
+      quantity: 1.5,
+      url: "shop.com/x",
+      colorHex: "navy",
+      lastWornOn: "Oct 3",
+    });
+    expect(errors).toHaveLength(8);
+  });
+});
 
 describe("quantity", () => {
   it("splits an old (×N) suffix off the name", () => {

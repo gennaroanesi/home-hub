@@ -8,7 +8,9 @@
  *   1. POST /uploads { contentType }        → { uploadUrl, s3Key, headers }
  *   2. PUT the raw image bytes to uploadUrl (straight to S3, with those
  *      headers; no bearer key — the URL is the credential, 15 min)
- *   3. POST /tools/add_inventory_photo { itemId | query, s3Key }
+ *   3. POST /tools/add_inventory_photo { itemId | query, s3Key }, or
+ *      POST /tools/save_wardrobe_item { …, s3Keys: [s3Key] } (copied
+ *      into home/wardrobe/)
  */
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
@@ -49,7 +51,7 @@ export default withMuseAuth(async (req, res) => {
       headers: { "Content-Type": contentType },
       s3Key,
       expiresIn: EXPIRES_IN,
-      next: "PUT the image bytes to uploadUrl, then call POST /tools/add_inventory_photo with this s3Key.",
+      next: "PUT the image bytes to uploadUrl, then call POST /tools/add_inventory_photo with this s3Key, or POST /tools/save_wardrobe_item with it in s3Keys.",
     });
   } catch (err) {
     console.error("[muse] presign failed:", err);

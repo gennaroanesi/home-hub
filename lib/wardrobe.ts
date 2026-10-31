@@ -124,10 +124,18 @@ export interface WardrobeItemApi {
   lastWornOn: string | null;
   photoUrl: string | null; // main photo, resized
   photoUrls: string[]; // every photo, full size, main first
+  createdAt: string | null;
+  updatedAt: string | null;
 }
 
 export function wardrobeItemForApi(
-  i: WardrobeItemLike & { styleCode?: string | null; price?: number | null; url?: string | null },
+  i: WardrobeItemLike & {
+    styleCode?: string | null;
+    price?: number | null;
+    url?: string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+  },
 ): WardrobeItemApi {
   const keys = imagesOf(i);
   return {
@@ -151,7 +159,102 @@ export function wardrobeItemForApi(
     lastWornOn: i.lastWornOn ?? null,
     photoUrl: keys[0] ? photoUrl(keys[0], 800) : null,
     photoUrls: keys.map(originalPhotoUrl),
+    createdAt: i.createdAt ?? null,
+    updatedAt: i.updatedAt ?? null,
   };
+}
+
+/** Fields an API caller may set on a wardrobe item (photos are handled separately). */
+export interface WardrobeItemPatch {
+  category?: string;
+  name?: string;
+  brand?: string | null;
+  color?: string | null;
+  colorHex?: string | null;
+  size?: string | null;
+  fabric?: string | null;
+  fit?: string | null;
+  styleCode?: string | null;
+  status?: WardrobeStatus;
+  season?: Season;
+  formality?: Formality | null;
+  price?: number | null;
+  quantity?: number;
+  url?: string | null;
+  notes?: string | null;
+  lastWornOn?: string | null;
+}
+
+const PATCH_TEXT = ["brand", "color", "size", "fabric", "fit", "styleCode", "notes"] as const;
+
+/**
+ * Validates API input into an item patch. Keys left out are untouched;
+ * null or "" clears an optional field. Returns every problem at once so a
+ * caller can fix them in one go.
+ */
+export function wardrobeItemPatch(input: Record<string, unknown>): { patch: WardrobeItemPatch; errors: string[] } {
+  const patch: WardrobeItemPatch = {};
+  const errors: string[] = [];
+  const has = (k: string) => input[k] !== undefined;
+  const text = (k: string): string | null => {
+    const v = input[k];
+    if (v == null) return null;
+    const s = String(v).trim();
+    return s ? s : null;
+  };
+  for (const k of ["category", "name"] as const) {
+    if (!has(k)) continue;
+    const v = text(k);
+    if (v) patch[k] = v;
+    else errors.push(`${k} can't be empty`);
+  }
+  for (const k of PATCH_TEXT) if (has(k)) patch[k] = text(k);
+  if (has("colorHex")) {
+    const v = text("colorHex");
+    if (v && !/^#?[0-9a-f]{6}$/i.test(v)) errors.push("colorHex must look like #1f2a44");
+    else patch.colorHex = v ? (v.startsWith("#") ? v : `#${v}`).toLowerCase() : null;
+  }
+  const oneOf = <T extends string>(k: string, values: readonly T[], nullable: boolean): T | null | undefined => {
+    if (!has(k)) return undefined;
+    const v = text(k)?.toUpperCase().replace(/[\s-]+/g, "_");
+    if (!v) {
+      if (!nullable) errors.push(`${k} must be one of ${values.join(", ")}`);
+      return null;
+    }
+    if (!(values as readonly string[]).includes(v)) {
+      errors.push(`${k} must be one of ${values.join(", ")}`);
+      return undefined;
+    }
+    return v as T;
+  };
+  const status = oneOf("status", WARDROBE_STATUSES, false);
+  if (status) patch.status = status;
+  const season = oneOf("season", SEASONS, false);
+  if (season) patch.season = season;
+  const formality = oneOf("formality", FORMALITIES, true);
+  if (formality !== undefined) patch.formality = formality;
+  if (has("price")) {
+    const v = input.price;
+    if (v == null || v === "") patch.price = null;
+    else if (Number.isFinite(Number(v)) && Number(v) >= 0) patch.price = Number(v);
+    else errors.push("price must be a number of dollars, 0 or more");
+  }
+  if (has("quantity")) {
+    const v = Number(input.quantity);
+    if (Number.isInteger(v) && v >= 1) patch.quantity = v;
+    else errors.push("quantity must be a whole number, 1 or more");
+  }
+  if (has("url")) {
+    const v = text("url");
+    if (v && !/^https?:\/\/\S+$/i.test(v)) errors.push("url must start with http:// or https://");
+    else patch.url = v;
+  }
+  if (has("lastWornOn")) {
+    const v = text("lastWornOn");
+    if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) errors.push("lastWornOn must be YYYY-MM-DD");
+    else patch.lastWornOn = v;
+  }
+  return { patch, errors };
 }
 
 /** Splits a trailing "(×4)" or "(x4)" count off a name, as older imports wrote it. */

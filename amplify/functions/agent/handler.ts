@@ -4,7 +4,7 @@ import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
-import { S3Client, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, CopyObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 // Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
 // direct S3 public paths (bucket allows public reads on home/*, UUID is
 // the unguessability gate). A future session should restrict home/documents/
@@ -48,7 +48,15 @@ import {
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
-import { wardrobeItemForApi } from "../../../lib/wardrobe.js";
+import {
+  FORMALITIES,
+  SEASONS,
+  WARDROBE_STATUSES,
+  categoriesFor,
+  imagesOf,
+  wardrobeItemForApi,
+  wardrobeItemPatch,
+} from "../../../lib/wardrobe.js";
 import { describeTripDay, packCount, parseJsonField, type TripDayWeather, type TripLook } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
@@ -1879,6 +1887,39 @@ const tools: Anthropic.Tool[] = [
     },
   },
   {
+    name: "save_wardrobe_item",
+    description:
+      "Add a wardrobe item or change one. Without itemId it creates a new item (name and category required; status defaults to WISHLIST, so 'add this to my wishlist' needs nothing more). With itemId it updates only the fields given, e.g. { itemId, status: 'KEEP' } when a wishlist piece arrives, or status RETIRE to let something go. Send null or \"\" to clear an optional field. Photos: imageUrls (https links to product images) or s3Keys (from POST /uploads), added after the existing photos; photoMode 'main' puts them first, 'replace' drops the old ones. On create it refuses an item whose url or style code is already in the wardrobe and returns that item instead; pass allowDuplicate to add it anyway. Returns the saved item with every field. Use list_wardrobe first to find itemId and the person's categories.",
+    input_schema: {
+      type: "object" as const,
+      properties: {
+        personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
+        itemId: { type: "string", description: "Item to update. Leave out to create." },
+        category: { type: "string", description: "One of the person's categories (list_wardrobe returns them), e.g. Tops, Knitwear, Pants, Outerwear, Shoes." },
+        name: { type: "string", description: "Product name without the brand, e.g. 'Cotton piqué polo'." },
+        brand: { type: "string" },
+        color: { type: "string", description: "Color name, e.g. 'Navy'." },
+        colorHex: { type: "string", description: "Swatch color, e.g. '#2a2e3d'." },
+        size: { type: "string" },
+        fabric: { type: "string" },
+        fit: { type: "string", description: "e.g. 'Slim', 'Regular'." },
+        styleCode: { type: "string", description: "Brand's product or SKU code." },
+        status: { type: "string", enum: [...WARDROBE_STATUSES], description: "KEEP = owned and worn, NEW = owned with tags, TAILOR = needs alterations, RETIRE = letting go, WISHLIST = want to buy." },
+        season: { type: "string", enum: [...SEASONS] },
+        formality: { type: "string", enum: [...FORMALITIES] },
+        price: { type: "number", description: "USD: paid, or expected for wishlist." },
+        quantity: { type: "number", description: "Identical copies owned. Default 1." },
+        url: { type: "string", description: "Product page link." },
+        notes: { type: "string", description: "Free-text description: details, what it pairs with, where it came from. Replaces the existing notes." },
+        lastWornOn: { type: "string", description: "YYYY-MM-DD." },
+        imageUrls: { type: "array", items: { type: "string" }, description: "https image links to download and add as photos (max 6)." },
+        s3Keys: { type: "array", items: { type: "string" }, description: "Keys returned by POST /uploads after the image was PUT there (max 6)." },
+        photoMode: { type: "string", enum: ["append", "main", "replace"], description: "Default append." },
+        allowDuplicate: { type: "boolean", description: "Create even if the url or style code is already in the wardrobe." },
+      },
+    },
+  },
+  {
     name: "get_trip_plan",
     description:
       "Read the saved trip-looks plan for someone's trip (made on the wardrobe page's Trip looks tab): the packing list (with what's already ticked off as packed), the outfit for each day and activity, the weather used and packing tips. Answers 'what am I packing for Seattle?', 'what do I wear for the dinner on the London trip?'. Defaults to the next upcoming trip.",
@@ -2293,6 +2334,26 @@ async function storeInventoryImage(img: ImageBytes): Promise<string> {
   if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
   const key = `home/inventory/${randomUUID()}.${extensionForImage(img.contentType)}`;
   await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: img.data, ContentType: img.contentType }));
+  return key;
+}
+
+// Wardrobe photos live under home/wardrobe/. Images fetched from a URL go
+// straight there; API uploads land in home/inventory/ (POST /uploads) and
+// are copied over after the same checks add_inventory_photo makes.
+async function storeWardrobeImage(img: ImageBytes): Promise<string> {
+  const bucket = process.env.HOME_HUB_BUCKET;
+  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
+  const key = `home/wardrobe/${randomUUID()}.${extensionForImage(img.contentType)}`;
+  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: img.data, ContentType: img.contentType }));
+  return key;
+}
+
+async function copyUploadToWardrobe(uploadKey: string): Promise<string> {
+  const bucket = process.env.HOME_HUB_BUCKET;
+  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
+  const src = await verifyUploadedInventoryImage(uploadKey);
+  const key = `home/wardrobe/${randomUUID()}${src.slice(src.lastIndexOf("."))}`;
+  await s3.send(new CopyObjectCommand({ Bucket: bucket, Key: key, CopySource: `${bucket}/${src}` }));
   return key;
 }
 
@@ -5471,10 +5532,86 @@ async function executeTool(
       });
       out.sort((x, y) => (x.category ?? "").localeCompare(y.category ?? "") || (x.brand ?? "").localeCompare(y.brand ?? ""));
       const limit = Math.min(Math.max(Number(input.limit) || 60, 1), 200);
+      const { data: profiles } = await client.models.homeWardrobeProfile.list({
+        filter: { personId: { eq: personId } },
+        limit: 500,
+      });
       return JSON.stringify({
+        categories: categoriesFor(profiles?.[0]?.categories, rows),
         count: out.length,
         ...(status === "WISHLIST" ? { wishlistTotalUsd: out.reduce((sum, i) => sum + (i.price ?? 0), 0) } : {}),
         items: out.slice(0, limit).map(wardrobeItemForApi),
+      });
+    }
+
+    case "save_wardrobe_item": {
+      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
+      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
+      const rows = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
+        filter: { ownerPersonId: { eq: personId } },
+      });
+      const existing = input.itemId ? rows.find((i) => i.id === input.itemId) : undefined;
+      if (input.itemId && !existing) return JSON.stringify({ error: `No wardrobe item ${input.itemId} for this person. Use list_wardrobe to find the id.` });
+
+      const { patch, errors } = wardrobeItemPatch(input);
+      if (!existing) {
+        if (!patch.name) errors.push("name is required to add an item");
+        if (!patch.category) errors.push("category is required to add an item");
+      }
+      if (errors.length) return JSON.stringify({ error: errors.join("; ") });
+
+      if (!existing && !input.allowDuplicate) {
+        const same = (a?: string | null, b?: string | null) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
+        const dup = rows.find((i) => same(i.url, patch.url) || same(i.styleCode, patch.styleCode));
+        if (dup) {
+          return JSON.stringify({
+            error: "Already in the wardrobe (same url or style code). Update it with itemId, or pass allowDuplicate to add another.",
+            existing: wardrobeItemForApi(dup),
+          });
+        }
+      }
+
+      const urls: string[] = (Array.isArray(input.imageUrls) ? input.imageUrls : []).map(String);
+      const uploads: string[] = (Array.isArray(input.s3Keys) ? input.s3Keys : []).map(String);
+      if (urls.length + uploads.length > 6) return JSON.stringify({ error: "At most 6 photos per call" });
+      let newKeys: string[] = [];
+      try {
+        for (const u of urls) newKeys.push(await storeWardrobeImage(await fetchImageUrl(u)));
+        for (const k of uploads) newKeys.push(await copyUploadToWardrobe(k));
+      } catch (err: any) {
+        return JSON.stringify({ error: `Photo failed, nothing saved: ${err?.message ?? String(err)}` });
+      }
+      newKeys = Array.from(new Set(newKeys));
+      const oldKeys = existing ? imagesOf(existing) : [];
+      const mode = input.photoMode ?? "append";
+      const imageKeys = !newKeys.length
+        ? undefined
+        : mode === "replace"
+          ? newKeys
+          : mode === "main"
+            ? [...newKeys, ...oldKeys]
+            : [...oldKeys, ...newKeys];
+
+      const body = { ...patch, ...(imageKeys ? { imageKeys } : {}) };
+      const r = existing
+        ? await client.models.homeWardrobeItem.update({ id: existing.id, ...body })
+        : await client.models.homeWardrobeItem.create({
+            status: "WISHLIST",
+            season: "ALL",
+            ...body,
+            ownerPersonId: personId,
+            category: patch.category!,
+            name: patch.name!,
+          });
+      if (r.errors?.length || !r.data) return JSON.stringify({ error: r.errors?.[0]?.message ?? "Save failed" });
+      const { data: profiles } = await client.models.homeWardrobeProfile.list({ filter: { personId: { eq: personId } }, limit: 500 });
+      const known = categoriesFor(profiles?.[0]?.categories, []);
+      const newCategory = patch.category && !known.some((c) => c.toLowerCase() === patch.category!.toLowerCase());
+      return JSON.stringify({
+        success: true,
+        action: existing ? "updated" : "created",
+        ...(newCategory ? { note: `"${patch.category}" isn't one of this person's categories (${known.join(", ")}); it shows as an extra tab.` } : {}),
+        item: wardrobeItemForApi(r.data),
       });
     }
 
