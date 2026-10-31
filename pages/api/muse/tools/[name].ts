@@ -32,10 +32,12 @@ export default withMuseAuth(async (req, res, { sender }) => {
       return res.status(400).json({ error: `Missing required field(s): ${missing.join(", ")}` });
     }
 
-    const out = await invokeAgent<{ result?: unknown; error?: string }>({
+    const out = await invokeAgent<{ result?: unknown; error?: string; details?: unknown }>({
       apiTool: { name, input, sender },
     });
-    if (out.error) return res.status(400).json({ error: out.error });
+    if (out.error) {
+      return res.status(400).json({ error: out.error, ...(out.details ? { details: out.details } : {}) });
+    }
     return res.status(200).json({ result: out.result });
   } catch (err) {
     console.error(`[muse] tool ${name}:`, err);

@@ -28,6 +28,9 @@ export type MuseTool = {
     properties?: Record<string, unknown>;
     required?: string[];
   };
+  // Set for lib/ops operations; legacy agent tools have neither.
+  output_schema?: Record<string, unknown>;
+  access?: "read" | "write" | "sensitive";
 };
 
 export type MuseContext = { sender: string };
@@ -213,16 +216,22 @@ export function buildOpenApiSpec(tools: MuseTool[], baseUrl: string) {
         operationId: t.name,
         summary: summaryOf(t.description, t.name),
         description: t.description,
+        // read | write | unknown (legacy tools). The hh CLI dry-runs anything but read.
+        "x-access": t.access ?? "unknown",
         requestBody: {
           required: true,
           content: { "application/json": { schema: t.input_schema } },
         },
         responses: {
           "200": {
-            description: "Tool result (shape varies per tool)",
+            description: t.output_schema ? "Result" : "Tool result (shape varies per tool)",
             content: {
               "application/json": {
-                schema: { type: "object", properties: { result: {} } },
+                schema: {
+                  type: "object",
+                  properties: { result: t.output_schema ?? {} },
+                  ...(t.output_schema ? { required: ["result"] } : {}),
+                },
               },
             },
           },
@@ -235,7 +244,10 @@ export function buildOpenApiSpec(tools: MuseTool[], baseUrl: string) {
 
   const errorSchema = {
     type: "object",
-    properties: { error: { type: "string" } },
+    properties: {
+      error: { type: "string" },
+      details: { description: "Extra context, e.g. the existing item when a save is a duplicate" },
+    },
   };
 
   return {

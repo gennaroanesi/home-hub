@@ -11,6 +11,7 @@ import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@herou
 import { FaCamera, FaExternalLinkAlt, FaStar, FaTrash } from "react-icons/fa";
 
 import { photoUrl } from "@/lib/image-loader";
+import { callOp } from "@/lib/ops-client";
 import {
   FORMALITIES,
   FORMALITY_LABELS,
@@ -93,11 +94,14 @@ export function ItemModal({
     }
     setSaving(true);
     try {
+      // Validation, defaults and the duplicate check live in the op
+      // (lib/ops/wardrobe.ts), shared with Janet and the Muse API.
       const str = (k: string) => (f[k]?.trim() ? f[k].trim() : null);
       const price = f.price?.trim() ? Number(f.price) : null;
       const quantity = Math.floor(Number(f.quantity));
-      const body = {
-        ownerPersonId,
+      const r = await callOp(client, "save_wardrobe_item", {
+        personId: ownerPersonId,
+        ...(editing ? { itemId: editing.id } : {}),
         category: f.category || categories[0] || "Tops",
         name: f.name.trim(),
         brand: str("brand"),
@@ -111,15 +115,12 @@ export function ItemModal({
         notes: str("notes"),
         price: price != null && !Number.isNaN(price) ? price : null,
         quantity: quantity >= 1 ? quantity : 1,
-        status: (f.status || "KEEP") as WardrobeItem["status"],
-        season: (f.season || "ALL") as WardrobeItem["season"],
-        formality: (f.formality || null) as WardrobeItem["formality"],
+        status: (f.status || "KEEP") as (typeof WARDROBE_STATUSES)[number],
+        season: (f.season || "ALL") as (typeof SEASONS)[number],
+        formality: (f.formality || null) as (typeof FORMALITIES)[number] | null,
         imageKeys: photos,
-      };
-      const r = editing
-        ? await client.models.homeWardrobeItem.update({ id: editing.id, ...body })
-        : await client.models.homeWardrobeItem.create(body);
-      if (r.errors?.length) throw new Error(r.errors[0].message);
+      });
+      if ("error" in r) throw new Error(r.error);
       addToast({ title: editing ? "Saved" : "Added", color: "success" });
       onSaved();
       onClose();

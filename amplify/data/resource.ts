@@ -12,6 +12,7 @@ import { setPersonGroups } from "../functions/set-person-groups/resource";
 import { mergePeople } from "../functions/merge-people/resource";
 import { taskOccurrenceAction } from "../functions/task-occurrence-action/resource";
 import { wardrobeSuggest } from "../functions/wardrobe-suggest/resource";
+import { ops } from "../functions/ops/resource";
 import { wardrobeTryOn } from "../functions/wardrobe-try-on/resource";
 
 // Reusable location shape for trips, days, and events
@@ -1760,6 +1761,21 @@ const schema = a
       .returns(a.ref("wardrobeTripPlanResponse"))
       .handler(a.handler.function(wardrobeSuggest)),
 
+    // ── Operations (lib/ops) ────────────────────────────────────────────
+    // One entry point for every op in lib/ops/registry.ts; web and mobile
+    // call it through lib/ops-client.ts. Returns { result } or { error }
+    // as JSON. See docs/ops-architecture.md.
+    runOp: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({
+        name: a.string().required(),
+        input: a.json(),
+        via: a.string(), // "web" | "mobile"
+      })
+      .returns(a.json())
+      .handler(a.handler.function(ops)),
+
     // ── Recurring task occurrence actions ───────────────────────────────
     // Single endpoint for the three recurring-task lifecycle actions —
     // see amplify/functions/task-occurrence-action/handler.ts for the
@@ -1801,6 +1817,7 @@ const schema = a
     allow.resource(taskOccurrenceAction),
     allow.resource(wardrobeSuggest),
     allow.resource(wardrobeTryOn),
+    allow.resource(ops),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

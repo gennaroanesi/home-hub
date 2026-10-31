@@ -53,6 +53,7 @@ import { mergePeople } from "./functions/merge-people/resource";
 import { taskOccurrenceAction } from "./functions/task-occurrence-action/resource";
 import { wardrobeSuggest } from "./functions/wardrobe-suggest/resource";
 import { wardrobeTryOn } from "./functions/wardrobe-try-on/resource";
+import { ops } from "./functions/ops/resource";
 
 const backend = defineBackend({
   auth,
@@ -71,6 +72,7 @@ const backend = defineBackend({
   taskOccurrenceAction,
   wardrobeSuggest,
   wardrobeTryOn,
+  ops,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -90,6 +92,7 @@ const lambdaDescriptions: Record<string, string> = {
   mergePeople: "Home Hub — Admin mutation: rewrite personId references and delete source",
   taskOccurrenceAction: "Home Hub — Recurring task occurrence: complete/skip/uncomplete (AppSync mutation)",
   wardrobeSuggest: "Home Hub — Outfit suggester for the wardrobe (AppSync mutation, Anthropic)",
+  ops: "Home Hub — runOp mutation: runs lib/ops operations for web and mobile",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -327,6 +330,20 @@ wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
 wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
   actions: ["s3:GetObject", "s3:PutObject"],
   resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/home/wardrobe/*`],
+}));
+
+// ── Operations (runOp) ─────────────────────────────────────────────────────
+// lib/ops for web and mobile. Saves wardrobe photos fetched from a URL and
+// copies API uploads out of home/inventory/ (string ARNs only: this Lambda
+// is an AppSync handler in the data stack, see the cycle note above).
+const opsLambda = backend.ops.resources.lambda as LambdaFunction;
+opsLambda.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
+opsLambda.addToRolePolicy(new PolicyStatement({
+  actions: ["s3:GetObject", "s3:PutObject"],
+  resources: [
+    `arn:aws:s3:::${HOME_HUB_BUCKET}/home/wardrobe/*`,
+    `arn:aws:s3:::${HOME_HUB_BUCKET}/home/inventory/*`,
+  ],
 }));
 
 const dailySummaryScheduleRole = new iam.Role(recurringStack, "dailySummarySchedulerRole", {

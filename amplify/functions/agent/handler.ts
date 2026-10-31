@@ -4,7 +4,7 @@ import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { SchedulerClient, CreateScheduleCommand } from "@aws-sdk/client-scheduler";
-import { S3Client, CopyObjectCommand, GetObjectCommand, HeadObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
 // Note: @aws-sdk/s3-request-presigner was removed. Document URLs use
 // direct S3 public paths (bucket allows public reads on home/*, UUID is
 // the unguessability gate). A future session should restrict home/documents/
@@ -48,25 +48,12 @@ import {
 import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
-import {
-  FORMALITIES,
-  SEASONS,
-  WARDROBE_STATUSES,
-  categoriesFor,
-  imagesOf,
-  wardrobeItemForApi,
-  wardrobeItemPatch,
-} from "../../../lib/wardrobe.js";
-import { describeTripDay, packCount, parseJsonField, type TripDayWeather, type TripLook } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
-import {
-  MAX_INVENTORY_IMAGE_BYTES,
-  checkImage,
-  decodeBase64Image,
-  extensionForImage,
-  type ImageBytes,
-} from "../../../lib/inventory-images.js";
+import { decodeBase64Image, extensionForImage, type ImageBytes } from "../../../lib/inventory-images.js";
+import { OPS, findOp, opJsonSchemas, runOp, toolDefinition } from "../../../lib/ops/registry.js";
+import { createS3ImageStorage, fetchImageUrl, verifyUploadedImage } from "../../../lib/ops/storage.js";
+import type { OpDef } from "../../../lib/ops/define.js";
 import { matchRoom, roomAndDescendants, roomLabel } from "../../../lib/floorplan.js";
 
 const anthropic = new Anthropic();
@@ -329,7 +316,7 @@ async function resolvePersonIds(names?: string[] | null): Promise<string[]> {
 
 // ── Tool definitions for Claude ──────────────────────────────────────────────
 
-const tools: Anthropic.Tool[] = [
+const legacyTools: Anthropic.Tool[] = [
   {
     name: "create_task",
     description: "Create a household task. Use recurrence for repeating tasks (RRULE format).",
@@ -1870,67 +1857,6 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
-  {
-    name: "list_wardrobe",
-    description:
-      "List items in someone's wardrobe with every field: category, brand, name, color (+hex), size, fabric, fit, style code, status, season, formality, price (USD; paid, or expected for wishlist), product link (url), notes, last worn, and photo URLs (photoUrl = main photo resized, photoUrls = all photos full size). Filter by itemId, category, status or a fuzzy query (name, brand, color, fabric, style code, notes). Answers 'what navy sweaters do I have?', 'what's on my wardrobe wishlist and what does it cost?', 'send me the link to the Barbour', 'show me a photo of my brown boots'.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
-        itemId: { type: "string", description: "Return just this item." },
-        category: { type: "string" },
-        status: { type: "string", enum: ["KEEP", "NEW", "TAILOR", "RETIRE", "WISHLIST", "OWNED", "ALL"], description: "Default OWNED (keep + new + tailor)." },
-        query: { type: "string" },
-        limit: { type: "number", description: "Max items returned, default 60, max 200." },
-      },
-    },
-  },
-  {
-    name: "save_wardrobe_item",
-    description:
-      "Add a wardrobe item or change one. Without itemId it creates a new item (name and category required; status defaults to WISHLIST, so 'add this to my wishlist' needs nothing more). With itemId it updates only the fields given, e.g. { itemId, status: 'KEEP' } when a wishlist piece arrives, or status RETIRE to let something go. Send null or \"\" to clear an optional field. Photos: imageUrls (https links to product images) or s3Keys (from POST /uploads), added after the existing photos; photoMode 'main' puts them first, 'replace' drops the old ones. On create it refuses an item whose url or style code is already in the wardrobe and returns that item instead; pass allowDuplicate to add it anyway. Returns the saved item with every field. Use list_wardrobe first to find itemId and the person's categories.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        personName: { type: "string", description: "Whose wardrobe. Defaults to the sender." },
-        itemId: { type: "string", description: "Item to update. Leave out to create." },
-        category: { type: "string", description: "One of the person's categories (list_wardrobe returns them), e.g. Tops, Knitwear, Pants, Outerwear, Shoes." },
-        name: { type: "string", description: "Product name without the brand, e.g. 'Cotton piqué polo'." },
-        brand: { type: "string" },
-        color: { type: "string", description: "Color name, e.g. 'Navy'." },
-        colorHex: { type: "string", description: "Swatch color, e.g. '#2a2e3d'." },
-        size: { type: "string" },
-        fabric: { type: "string" },
-        fit: { type: "string", description: "e.g. 'Slim', 'Regular'." },
-        styleCode: { type: "string", description: "Brand's product or SKU code." },
-        status: { type: "string", enum: [...WARDROBE_STATUSES], description: "KEEP = owned and worn, NEW = owned with tags, TAILOR = needs alterations, RETIRE = letting go, WISHLIST = want to buy." },
-        season: { type: "string", enum: [...SEASONS] },
-        formality: { type: "string", enum: [...FORMALITIES] },
-        price: { type: "number", description: "USD: paid, or expected for wishlist." },
-        quantity: { type: "number", description: "Identical copies owned. Default 1." },
-        url: { type: "string", description: "Product page link." },
-        notes: { type: "string", description: "Free-text description: details, what it pairs with, where it came from. Replaces the existing notes." },
-        lastWornOn: { type: "string", description: "YYYY-MM-DD." },
-        imageUrls: { type: "array", items: { type: "string" }, description: "https image links to download and add as photos (max 6)." },
-        s3Keys: { type: "array", items: { type: "string" }, description: "Keys returned by POST /uploads after the image was PUT there (max 6)." },
-        photoMode: { type: "string", enum: ["append", "main", "replace"], description: "Default append." },
-        allowDuplicate: { type: "boolean", description: "Create even if the url or style code is already in the wardrobe." },
-      },
-    },
-  },
-  {
-    name: "get_trip_plan",
-    description:
-      "Read the saved trip-looks plan for someone's trip (made on the wardrobe page's Trip looks tab): the packing list (with what's already ticked off as packed), the outfit for each day and activity, the weather used and packing tips. Answers 'what am I packing for Seattle?', 'what do I wear for the dinner on the London trip?'. Defaults to the next upcoming trip.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        personName: { type: "string", description: "Whose plan. Defaults to the sender." },
-        tripName: { type: "string", description: "Fuzzy trip name, e.g. 'Seattle'. Defaults to the next upcoming trip." },
-      },
-    },
-  },
 
   // ── Inventory ──────────────────────────────────────────────────────────────
   {
@@ -2104,6 +2030,13 @@ const tools: Anthropic.Tool[] = [
       },
     },
   },
+];
+
+// Tools = the domains not yet moved to lib/ops (above) + every op in the
+// registry. See docs/ops-architecture.md.
+const tools: Anthropic.Tool[] = [
+  ...legacyTools.filter((t) => !findOp(t.name)),
+  ...OPS.map((op) => toolDefinition(op as unknown as OpDef) as Anthropic.Tool),
 ];
 
 // ── Health / pregnancy helpers ───────────────────────────────────────────────
@@ -2295,38 +2228,10 @@ async function restockIfLow(
 // Images for add_inventory_photo land under home/inventory/ (same prefix the
 // web uploader uses), served through CloudFront like every other home/* key.
 
-async function fetchImageUrl(url: string): Promise<ImageBytes> {
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new Error("imageUrl isn't a valid URL");
-  }
-  if (parsed.protocol !== "https:") throw new Error("imageUrl must be https");
-  const res = await fetch(parsed, { signal: AbortSignal.timeout(15_000), redirect: "follow" });
-  if (!res.ok) throw new Error(`Couldn't fetch the image (HTTP ${res.status})`);
-  const declared = Number(res.headers.get("content-length") ?? 0);
-  if (declared > MAX_INVENTORY_IMAGE_BYTES) throw new Error("Image is larger than 10 MB");
-  const data = Buffer.from(await res.arrayBuffer());
-  return checkImage({ data, contentType: res.headers.get("content-type") ?? "" });
-}
-
-// An API client uploaded straight to S3 via a presigned URL (POST /uploads):
-// make sure the key is ours, exists, and is an allowed image type.
-async function verifyUploadedInventoryImage(key: string): Promise<string> {
+function verifyUploadedInventoryImage(key: string): Promise<string> {
   const bucket = process.env.HOME_HUB_BUCKET;
   if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
-  if (!/^home\/inventory\/[0-9a-f-]{36}\.[a-z]+$/.test(key)) {
-    throw new Error("s3Key must be a key returned by POST /uploads (home/inventory/…)");
-  }
-  let head;
-  try {
-    head = await s3.send(new HeadObjectCommand({ Bucket: bucket, Key: key }));
-  } catch {
-    throw new Error("Nothing uploaded at that s3Key yet — PUT the image to the uploadUrl first");
-  }
-  checkImage({ data: Buffer.alloc(Math.max(1, head.ContentLength ?? 0)), contentType: head.ContentType ?? "" });
-  return key;
+  return verifyUploadedImage(s3, bucket, key);
 }
 
 async function storeInventoryImage(img: ImageBytes): Promise<string> {
@@ -2334,26 +2239,6 @@ async function storeInventoryImage(img: ImageBytes): Promise<string> {
   if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
   const key = `home/inventory/${randomUUID()}.${extensionForImage(img.contentType)}`;
   await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: img.data, ContentType: img.contentType }));
-  return key;
-}
-
-// Wardrobe photos live under home/wardrobe/. Images fetched from a URL go
-// straight there; API uploads land in home/inventory/ (POST /uploads) and
-// are copied over after the same checks add_inventory_photo makes.
-async function storeWardrobeImage(img: ImageBytes): Promise<string> {
-  const bucket = process.env.HOME_HUB_BUCKET;
-  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
-  const key = `home/wardrobe/${randomUUID()}.${extensionForImage(img.contentType)}`;
-  await s3.send(new PutObjectCommand({ Bucket: bucket, Key: key, Body: img.data, ContentType: img.contentType }));
-  return key;
-}
-
-async function copyUploadToWardrobe(uploadKey: string): Promise<string> {
-  const bucket = process.env.HOME_HUB_BUCKET;
-  if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
-  const src = await verifyUploadedInventoryImage(uploadKey);
-  const key = `home/wardrobe/${randomUUID()}${src.slice(src.lastIndexOf("."))}`;
-  await s3.send(new CopyObjectCommand({ Bucket: bucket, Key: key, CopySource: `${bucket}/${src}` }));
   return key;
 }
 
@@ -2510,6 +2395,19 @@ async function executeTool(
   ctx: ToolContext
 ): Promise<string> {
   const client = await getDataClient();
+
+  if (findOp(name)) {
+    const out = await runOp(
+      {
+        client,
+        storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
+        actor: { via: ctx.chatContext.channel === "API" ? "api" : "whatsapp", personName: ctx.sender },
+      },
+      name,
+      input,
+    );
+    return JSON.stringify("result" in out ? out.result : out);
+  }
 
   switch (name) {
     case "create_task": {
@@ -5510,173 +5408,6 @@ async function executeTool(
       });
     }
 
-    case "list_wardrobe": {
-      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
-      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
-      const rows = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
-        filter: { ownerPersonId: { eq: personId } },
-      });
-      const status: string = input.status ?? (input.itemId ? "ALL" : "OWNED");
-      const q = (input.query ?? "").toLowerCase().trim();
-      const out = rows.filter((i) => {
-        if (input.itemId && i.id !== input.itemId) return false;
-        const st = i.status ?? "KEEP";
-        if (status === "OWNED" && !["KEEP", "NEW", "TAILOR"].includes(st)) return false;
-        if (status !== "OWNED" && status !== "ALL" && st !== status) return false;
-        if (input.category && (i.category ?? "").toLowerCase() !== String(input.category).toLowerCase()) return false;
-        if (q) {
-          const hay = [i.name, i.brand, i.color, i.fabric, i.category, i.styleCode, i.notes].filter(Boolean).join(" ").toLowerCase();
-          if (!q.split(/\s+/).every((w: string) => hay.includes(w))) return false;
-        }
-        return true;
-      });
-      out.sort((x, y) => (x.category ?? "").localeCompare(y.category ?? "") || (x.brand ?? "").localeCompare(y.brand ?? ""));
-      const limit = Math.min(Math.max(Number(input.limit) || 60, 1), 200);
-      const { data: profiles } = await client.models.homeWardrobeProfile.list({
-        filter: { personId: { eq: personId } },
-        limit: 500,
-      });
-      return JSON.stringify({
-        categories: categoriesFor(profiles?.[0]?.categories, rows),
-        count: out.length,
-        ...(status === "WISHLIST" ? { wishlistTotalUsd: out.reduce((sum, i) => sum + (i.price ?? 0), 0) } : {}),
-        items: out.slice(0, limit).map(wardrobeItemForApi),
-      });
-    }
-
-    case "save_wardrobe_item": {
-      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
-      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
-      const rows = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
-        filter: { ownerPersonId: { eq: personId } },
-      });
-      const existing = input.itemId ? rows.find((i) => i.id === input.itemId) : undefined;
-      if (input.itemId && !existing) return JSON.stringify({ error: `No wardrobe item ${input.itemId} for this person. Use list_wardrobe to find the id.` });
-
-      const { patch, errors } = wardrobeItemPatch(input);
-      if (!existing) {
-        if (!patch.name) errors.push("name is required to add an item");
-        if (!patch.category) errors.push("category is required to add an item");
-      }
-      if (errors.length) return JSON.stringify({ error: errors.join("; ") });
-
-      if (!existing && !input.allowDuplicate) {
-        const same = (a?: string | null, b?: string | null) => !!a && !!b && a.trim().toLowerCase() === b.trim().toLowerCase();
-        const dup = rows.find((i) => same(i.url, patch.url) || same(i.styleCode, patch.styleCode));
-        if (dup) {
-          return JSON.stringify({
-            error: "Already in the wardrobe (same url or style code). Update it with itemId, or pass allowDuplicate to add another.",
-            existing: wardrobeItemForApi(dup),
-          });
-        }
-      }
-
-      const urls: string[] = (Array.isArray(input.imageUrls) ? input.imageUrls : []).map(String);
-      const uploads: string[] = (Array.isArray(input.s3Keys) ? input.s3Keys : []).map(String);
-      if (urls.length + uploads.length > 6) return JSON.stringify({ error: "At most 6 photos per call" });
-      let newKeys: string[] = [];
-      try {
-        for (const u of urls) newKeys.push(await storeWardrobeImage(await fetchImageUrl(u)));
-        for (const k of uploads) newKeys.push(await copyUploadToWardrobe(k));
-      } catch (err: any) {
-        return JSON.stringify({ error: `Photo failed, nothing saved: ${err?.message ?? String(err)}` });
-      }
-      newKeys = Array.from(new Set(newKeys));
-      const oldKeys = existing ? imagesOf(existing) : [];
-      const mode = input.photoMode ?? "append";
-      const imageKeys = !newKeys.length
-        ? undefined
-        : mode === "replace"
-          ? newKeys
-          : mode === "main"
-            ? [...newKeys, ...oldKeys]
-            : [...oldKeys, ...newKeys];
-
-      const body = { ...patch, ...(imageKeys ? { imageKeys } : {}) };
-      const r = existing
-        ? await client.models.homeWardrobeItem.update({ id: existing.id, ...body })
-        : await client.models.homeWardrobeItem.create({
-            status: "WISHLIST",
-            season: "ALL",
-            ...body,
-            ownerPersonId: personId,
-            category: patch.category!,
-            name: patch.name!,
-          });
-      if (r.errors?.length || !r.data) return JSON.stringify({ error: r.errors?.[0]?.message ?? "Save failed" });
-      const { data: profiles } = await client.models.homeWardrobeProfile.list({ filter: { personId: { eq: personId } }, limit: 500 });
-      const known = categoriesFor(profiles?.[0]?.categories, []);
-      const newCategory = patch.category && !known.some((c) => c.toLowerCase() === patch.category!.toLowerCase());
-      return JSON.stringify({
-        success: true,
-        action: existing ? "updated" : "created",
-        ...(newCategory ? { note: `"${patch.category}" isn't one of this person's categories (${known.join(", ")}); it shows as an extra tab.` } : {}),
-        item: wardrobeItemForApi(r.data),
-      });
-    }
-
-    case "get_trip_plan": {
-      const personId = (await resolvePersonIds([input.personName ?? ctx.sender]))[0];
-      if (!personId) return JSON.stringify({ error: `No person matching "${input.personName ?? ctx.sender}"` });
-      const today = ymdInTimezone(HOUSEHOLD_TZ);
-      const trips = (await listAllPages<Schema["homeTrip"]["type"]>(client.models.homeTrip)).filter((t) => {
-        const ids = (t.participantIds ?? []).filter(Boolean);
-        return !ids.length || ids.includes(personId);
-      });
-      const want = (input.tripName ?? "").toLowerCase().trim();
-      const trip = want
-        ? trips
-            .filter((t) => [t.name, t.destination?.city].filter(Boolean).join(" ").toLowerCase().includes(want))
-            .sort((x, y) => y.startDate.localeCompare(x.startDate))[0]
-        : trips.filter((t) => t.endDate >= today).sort((x, y) => x.startDate.localeCompare(y.startDate))[0];
-      if (!trip) return JSON.stringify({ error: want ? `No trip matching "${input.tripName}"` : "No upcoming trips" });
-      const plans = await listAllPages<Schema["homeWardrobeTripPlan"]["type"]>(client.models.homeWardrobeTripPlan, {
-        filter: { tripId: { eq: trip.id }, personId: { eq: personId } },
-      });
-      const plan = plans.sort((x, y) => y.updatedAt.localeCompare(x.updatedAt))[0];
-      if (!plan || plan.status !== "READY") {
-        return JSON.stringify({
-          trip: trip.name,
-          dates: `${trip.startDate} to ${trip.endDate}`,
-          status: plan?.status ?? "NONE",
-          note: "No finished plan yet. Make one on the wardrobe page's Trip looks tab.",
-        });
-      }
-      const items = await listAllPages<Schema["homeWardrobeItem"]["type"]>(client.models.homeWardrobeItem, {
-        filter: { ownerPersonId: { eq: personId } },
-      });
-      const byId = new Map(items.map((i) => [i.id, i]));
-      const name = (id: string | null) => {
-        const i = id ? byId.get(id) : undefined;
-        return i ? [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ") : null;
-      };
-      const packed = new Set((plan.packedItemIds ?? []).filter(Boolean));
-      const planLooks = parseJsonField<TripLook[]>(plan.looks, []);
-      return JSON.stringify({
-        trip: trip.name,
-        dates: `${trip.startDate} to ${trip.endDate}`,
-        luggage: plan.capacity === "PIECES" ? `${plan.maxPieces} pieces` : plan.capacity,
-        context: plan.context,
-        weather: parseJsonField<TripDayWeather[]>(plan.weather, []).map((w) => ({ date: w.date, forecast: describeTripDay(w) })),
-        packingList: (plan.packItemIds ?? [])
-          .filter((id): id is string => !!id && byId.has(id))
-          .map((id) => ({
-            ...wardrobeItemForApi(byId.get(id)!),
-            copiesToPack: packCount(byId.get(id)!, planLooks),
-            packed: packed.has(id),
-          })),
-        looks: planLooks.map((l) => ({
-          date: l.date,
-          title: l.title,
-          occasion: l.occasion,
-          pieces: l.itemIds.map(name).filter(Boolean),
-          why: l.why,
-        })),
-        tips: plan.tips,
-        generatedAt: plan.generatedAt,
-      });
-    }
-
     case "list_inventory": {
       const { items, clothingByItem, consumableByItem, rooms, roomName } = await loadInventory();
       const status: string = input.status ?? "OWNED";
@@ -6145,7 +5876,14 @@ const API_EXCLUDED_TOOLS = new Set([
   "send_photos",
   "attach_file",
 ]);
-const API_TOOLS = tools.filter((t) => !API_EXCLUDED_TOOLS.has(t.name));
+// Ops add their output schema and access level for the OpenAPI spec and
+// the CLI; sensitive ops stay off the API like the tools above.
+const API_TOOLS = tools
+  .filter((t) => !API_EXCLUDED_TOOLS.has(t.name) && findOp(t.name)?.access !== "sensitive")
+  .map((t) => {
+    const op = findOp(t.name);
+    return op ? { ...t, output_schema: opJsonSchemas(op).output, access: op.access } : t;
+  });
 
 async function handleApiTool(payload: {
   name?: string;
@@ -6166,6 +5904,19 @@ async function handleApiTool(payload: {
   console.log(
     `[agent-api] call: ${name} sender=${toolCtx.sender} input=${JSON.stringify(payload.input ?? {}).slice(0, 500)}`
   );
+  if (findOp(name)) {
+    // Ops report caller mistakes as `error`, so the gateway answers 400.
+    const out = await runOp(
+      {
+        client: await getDataClient(),
+        storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
+        actor: { via: "api", personName: toolCtx.sender },
+      },
+      name,
+      payload.input ?? {},
+    );
+    return "result" in out ? { result: out.result } : { error: out.error, ...(out.details ? { details: out.details } : {}) };
+  }
   const result = await executeTool(name, payload.input ?? {}, toolCtx);
   try {
     return { result: JSON.parse(result) };
