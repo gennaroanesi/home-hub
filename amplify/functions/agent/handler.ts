@@ -5862,7 +5862,7 @@ function isAsyncInvoke(event: any): event is AsyncInvokePayload {
 
 // ── External API gateway (pages/api/v1) ────────────────────────────────────
 // The Next.js gateway invokes this Lambda directly with one of two payloads:
-//   { apiListTools: true }                     → { tools: API_TOOLS }
+//   { apiListTools: true }                     → { tools: API_TOOL_LISTING }
 //   { apiTool: { name, input, sender } }       → { result } | { error }
 // plus the normal `{ arguments: {...} }` shape with chatContext.channel =
 // "API" for /ask. Tools that need a Duo push on the requester's phone or
@@ -5876,14 +5876,14 @@ const API_EXCLUDED_TOOLS = new Set([
   "send_photos",
   "attach_file",
 ]);
-// Ops add their output schema and access level for the OpenAPI spec and
-// the CLI; sensitive ops stay off the API like the tools above.
-const API_TOOLS = tools
-  .filter((t) => !API_EXCLUDED_TOOLS.has(t.name) && findOp(t.name)?.access !== "sensitive")
-  .map((t) => {
-    const op = findOp(t.name);
-    return op ? { ...t, output_schema: opJsonSchemas(op).output, access: op.access } : t;
-  });
+// Sensitive ops stay off the API like the tools above. API_TOOLS goes to
+// Claude as is (/ask), so it can only hold fields Claude accepts.
+const API_TOOLS = tools.filter((t) => !API_EXCLUDED_TOOLS.has(t.name) && findOp(t.name)?.access !== "sensitive");
+// What the OpenAPI spec and the CLI read: ops add output schema and access.
+const API_TOOL_LISTING = API_TOOLS.map((t) => {
+  const op = findOp(t.name);
+  return op ? { ...t, output_schema: opJsonSchemas(op).output, access: op.access } : t;
+});
 
 async function handleApiTool(payload: {
   name?: string;
@@ -5926,7 +5926,7 @@ async function handleApiTool(payload: {
 }
 
 export const handler = async (event: any, context?: any): Promise<AgentResponse | object | void> => {
-  if (event?.apiListTools) return { tools: API_TOOLS };
+  if (event?.apiListTools) return { tools: API_TOOL_LISTING };
   if (event?.apiTool) return handleApiTool(event.apiTool);
 
   const isAsync = isAsyncInvoke(event);

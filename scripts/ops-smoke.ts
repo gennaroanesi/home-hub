@@ -3,7 +3,8 @@
  * and deliberately invalid writes: it never changes data.
  *
  *   1. Web/mobile path: Cognito login → runOp mutation → ops Lambda.
- *   2. Janet/Muse path: the agent Lambda's apiListTools / apiTool entry points.
+ *   2. Janet/Muse path: the agent Lambda's apiListTools / apiTool entry points,
+ *      and one real Claude call the way /ask makes it.
  *   3. External API (only when MUSE_API_KEY is set): spec + /tools/*, and the
  *      old /api/muse URL.
  *
@@ -89,6 +90,17 @@ async function agentPath() {
   check("apiTool list_wardrobe returns a result", Array.isArray(list.result?.items), list);
   const bad = await invoke({ apiTool: { name: "save_wardrobe_item", input: INVALID_SAVE, sender: "Gennaro" } });
   check("apiTool reports op errors as error (gateway → 400)", typeof bad.error === "string" && bad.result === undefined, bad);
+  // A real Claude call with the API tool list, the path /ask takes. Asks for
+  // no tools, so it changes nothing.
+  const ask = await invoke({
+    arguments: {
+      message: "Smoke test: reply with just OK. Don't use any tools.",
+      history: [],
+      sender: process.env.SMOKE_PERSON ?? "Gennaro",
+      chatContext: { channel: "API", chatJid: null },
+    },
+  });
+  check("/ask path gets a reply from Claude", typeof ask?.message === "string" && !ask?.errorMessage, ask);
 }
 
 async function musePath() {
