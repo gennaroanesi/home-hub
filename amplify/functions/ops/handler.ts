@@ -23,11 +23,11 @@ interface RunOpArgs {
   via?: string | null;
 }
 
-export const handler = async (event: { arguments: RunOpArgs }): Promise<string> => {
+export const handler = async (event: { arguments: RunOpArgs }): Promise<unknown> => {
   const { name, input, via } = event.arguments;
   const parsed = parseOpInput(input);
-  if ("error" in parsed) return JSON.stringify(parsed);
-  const out = await runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web" } }, name, parsed.input);
-  // a.json() return: AppSync wants a JSON string.
-  return JSON.stringify(out);
+  if ("error" in parsed) return parsed;
+  // Return the object: AppSync encodes a.json() itself, so a string here
+  // would reach the client encoded twice.
+  return runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web" } }, name, parsed.input);
 };

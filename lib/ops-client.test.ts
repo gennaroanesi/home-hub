@@ -14,6 +14,11 @@ describe("callOp", () => {
     expect(r).toEqual({ result: { count: 1 } });
   });
 
+  it("unwraps a response encoded twice", async () => {
+    const twice = JSON.stringify(JSON.stringify({ result: { count: 2 } }));
+    expect(await callOp(client({ data: twice }).client, "list_wardrobe", {})).toEqual({ result: { count: 2 } });
+  });
+
   it("passes op errors and GraphQL errors through as { error }", async () => {
     expect(await callOp(client({ data: { error: "nope", details: { x: 1 } } }).client, "list_wardrobe", {}, "mobile")).toEqual({
       error: "nope",

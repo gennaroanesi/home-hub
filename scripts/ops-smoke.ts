@@ -46,7 +46,9 @@ async function webPath(outputsPath: string) {
   const call = async (name: string, input: unknown) => {
     const r = await client.mutations.runOp({ name, input: JSON.stringify(input), via: "web" });
     if (r.errors?.length) return { error: `GraphQL: ${r.errors[0].message}` };
-    return typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+    let data = r.data;
+    while (typeof data === "string") data = JSON.parse(data);
+    return data;
   };
   try {
     const list = await call("list_wardrobe", { personName: process.env.SMOKE_PERSON ?? "Gennaro", limit: 1 });

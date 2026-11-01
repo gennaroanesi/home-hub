@@ -18,6 +18,8 @@ export async function callOp<N extends OpName>(
 ): Promise<OpCallResult<N>> {
   const r = await client.mutations.runOp({ name, input: JSON.stringify(input), via });
   if (r.errors?.length) return { error: r.errors[0].message };
-  const data = typeof r.data === "string" ? JSON.parse(r.data) : r.data;
+  // AWSJSON can arrive parsed, or as one or more layers of JSON string.
+  let data = r.data;
+  while (typeof data === "string") data = JSON.parse(data);
   return (data ?? { error: "No response" }) as OpCallResult<N>;
 }
