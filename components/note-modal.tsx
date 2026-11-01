@@ -24,6 +24,7 @@ import {
   ModalFooter,
 } from "@heroui/modal";
 import { addToast } from "@heroui/react";
+import { callOp } from "@/lib/ops-client";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -81,32 +82,24 @@ export function NoteModal({
     setSaving(true);
     try {
       if (editing) {
-        const { errors } = await client.models.homeNote.update({
-          id: editing.id,
-          title: title.trim() || null,
-          content,
-        });
-        if (errors?.length) throw new Error(errors[0].message);
+        const r = await callOp(client, "save_note", { noteId: editing.id, title, content });
+        if ("error" in r) throw new Error(r.error);
         addToast({ title: "Note updated", color: "success" });
         onClose();
         onSaved?.(editing.id);
       } else {
-        // Standalone notes (no parent) are allowed — both fields stay null.
-        // When linking, both parentType and parentId must come together.
-        if ((parentType && !parentId) || (!parentType && parentId)) {
-          throw new Error("parentType and parentId must be provided together");
-        }
-        const { data, errors } = await client.models.homeNote.create({
-          parentType: parentType ?? null,
-          parentId: parentId ?? null,
-          title: title.trim() || null,
+        // Standalone notes (no parent) are allowed; the op checks that
+        // parentType and parentId come together.
+        const r = await callOp(client, "save_note", {
+          title,
           content,
-          createdBy: "ui",
+          ...(parentType ? { parentType } : {}),
+          ...(parentId ? { parentId } : {}),
         });
-        if (errors?.length) throw new Error(errors[0].message);
+        if ("error" in r) throw new Error(r.error);
         addToast({ title: "Note saved", color: "success" });
         onClose();
-        if (data?.id) onSaved?.(data.id);
+        onSaved?.(r.result.note.id);
       }
     } catch (err: any) {
       addToast({

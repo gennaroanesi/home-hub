@@ -4,9 +4,10 @@
 import { z } from "zod/v4";
 import type { OpContext, OpVia } from "./context";
 import { OpError, type OpDef } from "./define";
+import { notesOps } from "./notes";
 import { wardrobeOps } from "./wardrobe";
 
-export const OPS = [...wardrobeOps] as const;
+export const OPS = [...wardrobeOps, ...notesOps] as const;
 
 export type AnyOp = (typeof OPS)[number];
 export type OpName = AnyOp["name"];

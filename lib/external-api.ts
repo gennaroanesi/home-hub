@@ -257,7 +257,7 @@ export function buildOpenApiSpec(tools: ApiTool[], baseUrl: string) {
       version: "1.0.0",
       description:
         "Household management API: tasks, bills, calendar, trips, shopping lists, " +
-        "reminders, checklists, health records, inventory and wardrobes (closet, wishlist, " +
+        "reminders, checklists, notes, health records, inventory and wardrobes (closet, wishlist, " +
         "outfits, trip packing). Times are America/Chicago " +
         "unless a field says otherwise.",
     },
