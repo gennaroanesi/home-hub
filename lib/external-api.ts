@@ -1,7 +1,7 @@
 /**
- * Shared plumbing for the external API gateway at /api/muse/*.
+ * Shared plumbing for the external API gateway at /api/v1/*.
  *
- * External assistants (Meta's Muse) can't do a Cognito login, so this
+ * External clients (assistants like Meta's Muse, the hh CLI) can't do a Cognito login, so this
  * gateway uses a single static bearer key and acts as one household
  * member (MUSE_SENDER). Every request is forwarded to the home-agent
  * Lambda, which owns the tool definitions and executeTool — the
@@ -20,7 +20,7 @@ import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 
 const lambda = new LambdaClient({ region: "us-east-1" });
 
-export type MuseTool = {
+export type ApiTool = {
   name: string;
   description?: string;
   input_schema: {
@@ -33,12 +33,12 @@ export type MuseTool = {
   access?: "read" | "write" | "sensitive";
 };
 
-export type MuseContext = { sender: string };
+export type ApiContext = { sender: string };
 
-export type MuseHandler = (
+export type ApiHandler = (
   req: NextApiRequest,
   res: NextApiResponse,
-  ctx: MuseContext
+  ctx: ApiContext
 ) => void | Promise<void>;
 
 // Hash both sides so the comparison is fixed-length and doesn't leak
@@ -48,7 +48,7 @@ function keyMatches(supplied: string, expected: string): boolean {
   return timingSafeEqual(digest(supplied), digest(expected));
 }
 
-export function withMuseAuth(handler: MuseHandler): NextApiHandler {
+export function withApiKey(handler: ApiHandler): NextApiHandler {
   return async (req, res) => {
     // Auth first — before any config check — so an unauthenticated
     // caller can't probe which pieces are deployed.
@@ -84,10 +84,10 @@ export async function invokeAgent<T = any>(payload: unknown): Promise<T> {
 
 // Tool list is fixed per deployed Lambda version; cache it for the life
 // of the SSR container so spec + validation don't pay an invoke each time.
-let toolsCache: Promise<MuseTool[]> | null = null;
-export function listTools(): Promise<MuseTool[]> {
+let toolsCache: Promise<ApiTool[]> | null = null;
+export function listTools(): Promise<ApiTool[]> {
   if (!toolsCache) {
-    toolsCache = invokeAgent<{ tools: MuseTool[] }>({ apiListTools: true })
+    toolsCache = invokeAgent<{ tools: ApiTool[] }>({ apiListTools: true })
       .then((r) => r.tools)
       .catch((err) => {
         toolsCache = null;
@@ -97,7 +97,7 @@ export function listTools(): Promise<MuseTool[]> {
   return toolsCache;
 }
 
-export function missingRequired(tool: MuseTool, input: Record<string, unknown>): string[] {
+export function missingRequired(tool: ApiTool, input: Record<string, unknown>): string[] {
   return (tool.input_schema.required ?? []).filter(
     (k) => input[k] === undefined || input[k] === null
   );
@@ -109,7 +109,7 @@ function summaryOf(description: string | undefined, name: string): string {
   return first.length > 120 ? `${first.slice(0, 117)}...` : first;
 }
 
-export function buildOpenApiSpec(tools: MuseTool[], baseUrl: string) {
+export function buildOpenApiSpec(tools: ApiTool[], baseUrl: string) {
   const paths: Record<string, unknown> = {
     "/ask": {
       post: {
@@ -284,5 +284,5 @@ export function baseUrlFor(req: NextApiRequest): string {
   const host = req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:3001";
   const proto =
     req.headers["x-forwarded-proto"] ?? (String(host).startsWith("localhost") ? "http" : "https");
-  return `${proto}://${host}/api/muse`;
+  return `${proto}://${host}/api/v1`;
 }

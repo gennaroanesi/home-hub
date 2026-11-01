@@ -4,7 +4,8 @@
  *
  *   1. Web/mobile path: Cognito login → runOp mutation → ops Lambda.
  *   2. Janet/Muse path: the agent Lambda's apiListTools / apiTool entry points.
- *   3. Muse HTTP gateway (only when MUSE_API_KEY is set): spec + /tools/*.
+ *   3. External API (only when MUSE_API_KEY is set): spec + /tools/*, and the
+ *      old /api/muse URL.
  *
  * Usage (from the repo root, after the deploy finishes):
  *   npx ampx generate outputs --app-id <id> --branch main --out-dir /tmp/prod-outputs
@@ -90,9 +91,9 @@ async function agentPath() {
 
 async function musePath() {
   const key = process.env.MUSE_API_KEY;
-  if (!key) return console.log("\n== Muse HTTP: skipped (no MUSE_API_KEY)");
-  console.log("\n== Muse HTTP gateway");
-  const base = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/muse").replace(/\/$/, "");
+  if (!key) return console.log("\n== external API: skipped (no MUSE_API_KEY)");
+  console.log("\n== external API");
+  const base = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/v1").replace(/\/$/, "");
   const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
   const spec = await (await fetch(`${base}/openapi.json`, { headers })).json();
   check("spec marks ops with x-access", opNames.every((n) => spec.paths?.[`/tools/${n}`]?.post?.["x-access"]), Object.keys(spec.paths ?? {}).length);
@@ -102,6 +103,8 @@ async function musePath() {
   check("POST invalid save → 400", bad.status === 400, await bad.text());
   const noKey = await fetch(`${base}/tools/list_wardrobe`, { method: "POST", body: "{}" });
   check("no bearer key → 401", noKey.status === 401, noKey.status);
+  const old = await fetch(`${base.replace(/\/api\/v1$/, "/api/muse")}/tools/list_wardrobe`, { method: "POST", headers, body: JSON.stringify({ limit: 1 }) });
+  check("old /api/muse URL still works", old.status === 200, old.status);
 }
 
 (async () => {

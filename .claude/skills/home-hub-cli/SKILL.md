@@ -5,8 +5,8 @@ description: Read or change live Home Hub data (wardrobe items and wishlist, tri
 
 # Home Hub CLI (`hh`)
 
-`hh` is generated from the Muse API spec, so every operation Janet and the
-Muse API have is a command, with the same validation and rules as the app.
+`hh` is generated from the external API spec (`/api/v1`), so every operation
+Janet and API clients have is a command, with the same validation and rules as the app.
 It talks to **production**. See `docs/ops-architecture.md`.
 
 Run from the home-hub repo root. It reads `MUSE_API_KEY` (and optionally

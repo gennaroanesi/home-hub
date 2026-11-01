@@ -927,7 +927,7 @@ new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
 });
 
 // ── Muse API gateway — Next.js SSR → agent Lambda ───────────────────────────
-// pages/api/muse/* invokes the agent Lambda directly from the Hosting
+// pages/api/v1/* invokes the agent Lambda directly from the Hosting
 // compute role. That role is managed in the Amplify console (not this
 // stack), so we import it by name and attach just the invoke grant.
 // The function name is forwarded to the SSR runtime via amplify.yml.

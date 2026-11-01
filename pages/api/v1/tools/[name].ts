@@ -1,18 +1,18 @@
 /**
- * POST /api/muse/tools/{name}
+ * POST /api/v1/tools/{name}
  *
  * Runs one home-agent tool directly (no LLM in the loop). Body is the
- * tool's input object as described by /api/muse/openapi.json.
+ * tool's input object as described by /api/v1/openapi.json.
  * Response: { result } on success, { error } otherwise.
  */
-import { invokeAgent, listTools, missingRequired, withMuseAuth } from "@/lib/muse-api";
+import { invokeAgent, listTools, missingRequired, withApiKey } from "@/lib/external-api";
 
 // Headroom for larger JSON bodies. Note the app's WAF blocks request
 // bodies over ~8 KB before they get here, so images should go through
 // POST /uploads (presigned S3) + add_inventory_photo { s3Key } instead.
 export const config = { api: { bodyParser: { sizeLimit: "6mb" } } };
 
-export default withMuseAuth(async (req, res, { sender }) => {
+export default withApiKey(async (req, res, { sender }) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -40,7 +40,7 @@ export default withMuseAuth(async (req, res, { sender }) => {
     }
     return res.status(200).json({ result: out.result });
   } catch (err) {
-    console.error(`[muse] tool ${name}:`, err);
+    console.error(`[api] tool ${name}:`, err);
     return res.status(502).json({ error: "Tool invocation failed" });
   }
 });

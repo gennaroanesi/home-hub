@@ -1,5 +1,5 @@
 /**
- * hh — command line for Home Hub, generated from the Muse API spec.
+ * hh — command line for Home Hub, generated from the external API spec.
  * Every operation Janet and the Muse API have is a command here, with no
  * per-command code. See docs/ops-architecture.md.
  *
@@ -116,7 +116,7 @@ export const needsConfirmation = (op: Operation) => op["x-access"] !== "read";
 
 async function main() {
   loadEnv();
-  const base = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/muse").replace(/\/$/, "");
+  const base = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/v1").replace(/\/$/, "");
   const key = process.env.MUSE_API_KEY ?? fail("MUSE_API_KEY isn't set (add it to .env.local).");
   const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
   const specRes = await fetch(`${base}/openapi.json`, { headers });

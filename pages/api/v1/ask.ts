@@ -1,5 +1,5 @@
 /**
- * POST /api/muse/ask
+ * POST /api/v1/ask
  *
  * Free-form request to the home agent, same brain as WhatsApp but
  * restricted to the API tool set (no Duo / WhatsApp-only tools).
@@ -9,9 +9,9 @@
  * Runs synchronously, so it's bounded by the SSR request timeout —
  * long multi-tool requests may be cut off; prefer /tools/{name}.
  */
-import { invokeAgent, withMuseAuth } from "@/lib/muse-api";
+import { invokeAgent, withApiKey } from "@/lib/external-api";
 
-export default withMuseAuth(async (req, res, { sender }) => {
+export default withApiKey(async (req, res, { sender }) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -31,7 +31,7 @@ export default withMuseAuth(async (req, res, { sender }) => {
     });
     return res.status(200).json({ message: out.message, actionsTaken: out.actionsTaken });
   } catch (err) {
-    console.error("[muse] ask:", err);
+    console.error("[api] ask:", err);
     return res.status(502).json({ error: "Agent invocation failed" });
   }
 });

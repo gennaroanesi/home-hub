@@ -26,6 +26,12 @@ const nextConfig = {
     "@uiw/react-md-editor",
     "@uiw/react-markdown-preview",
   ],
+  // The external API was /api/muse before it moved to /api/v1. Keeps
+  // clients configured with the old URL working (a rewrite, not a redirect,
+  // so POST bodies and the Authorization header pass through untouched).
+  async rewrites() {
+    return [{ source: "/api/muse/:path*", destination: "/api/v1/:path*" }];
+  },
 };
 
 module.exports = nextConfig;

@@ -2343,7 +2343,7 @@ interface Attachment {
 // Chat context passed in by invokeHomeAgent's chatContext arg. Lets
 // tools know whether the request originated from a group chat (where
 // sensitive payloads must be redirected to DM) vs. a DM or the web UI.
-// API = the Muse REST gateway (pages/api/muse). Runs with API_TOOLS only.
+// API = the external REST gateway (pages/api/v1). Runs with API_TOOLS only.
 export type AgentChannel = "WA_GROUP" | "WA_DM" | "WEB" | "API";
 export interface ChatContext {
   channel: AgentChannel;
@@ -5860,7 +5860,7 @@ function isAsyncInvoke(event: any): event is AsyncInvokePayload {
   return event && !event.arguments && typeof event.inboundMessageId === "string";
 }
 
-// ── External API gateway (pages/api/muse) ────────────────────────────────────
+// ── External API gateway (pages/api/v1) ────────────────────────────────────
 // The Next.js gateway invokes this Lambda directly with one of two payloads:
 //   { apiListTools: true }                     → { tools: API_TOOLS }
 //   { apiTool: { name, input, sender } }       → { result } | { error }

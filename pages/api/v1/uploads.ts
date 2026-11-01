@@ -1,5 +1,5 @@
 /**
- * POST /api/muse/uploads
+ * POST /api/v1/uploads
  *
  * Presigned S3 upload for API clients sending images (inventory photos).
  * Image bytes must NOT go through the JSON API: the app's WAF blocks
@@ -16,13 +16,13 @@ import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { randomUUID } from "crypto";
 
-import { withMuseAuth } from "@/lib/muse-api";
+import { withApiKey } from "@/lib/external-api";
 import { INVENTORY_IMAGE_TYPES, extensionForImage } from "@/lib/inventory-images";
 
 const s3 = new S3Client({ region: "us-east-1" });
 const EXPIRES_IN = 900;
 
-export default withMuseAuth(async (req, res) => {
+export default withApiKey(async (req, res) => {
   if (req.method !== "POST") {
     return res.status(405).json({ error: "Method not allowed" });
   }
@@ -54,7 +54,7 @@ export default withMuseAuth(async (req, res) => {
       next: "PUT the image bytes to uploadUrl, then call POST /tools/add_inventory_photo with this s3Key, or POST /tools/save_wardrobe_item with it in s3Keys.",
     });
   } catch (err) {
-    console.error("[muse] presign failed:", err);
+    console.error("[api] presign failed:", err);
     return res.status(500).json({ error: "Could not create an upload URL" });
   }
 });

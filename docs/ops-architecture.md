@@ -26,8 +26,8 @@ lib/ops-client.ts  typed callOp(client, name, input) for web + mobile
 
 amplify/functions/ops/     runs any op; exposed as the runOp(name, input) AppSync mutation
 amplify/functions/agent/   Janet: tools = legacy tools + registry; runs ops in-process
-pages/api/muse/            OpenAPI from the tool list (ops carry typed output + x-access)
-scripts/hh.ts              generic CLI over the Muse API (dry run unless --yes for writes)
+pages/api/v1/              external API: OpenAPI from the tool list (ops carry typed output + x-access)
+scripts/hh.ts              generic CLI over the external API (dry run unless --yes for writes)
 .claude/skills/home-hub-cli/  how to use hh
 ```
 
@@ -35,7 +35,7 @@ scripts/hh.ts              generic CLI over the Muse API (dry run unless --yes f
 |---|---|
 | Web / mobile | `callOp(client, "save_wardrobe_item", …)` → `runOp` mutation (Cognito, `home-users`) |
 | Janet (WhatsApp) | her tool list, built from the registry; executed in her Lambda |
-| Muse | `POST /api/muse/tools/<name>`, spec generated from the registry |
+| External API (Muse, other clients) | `POST /api/v1/tools/<name>`, spec generated from the registry; `/api/muse/*` still works as a rewrite |
 | CLI | `hh <name> --field value`, generated from the spec |
 
 ## Rules
@@ -53,17 +53,17 @@ scripts/hh.ts              generic CLI over the Muse API (dry run unless --yes f
 - **Long ops** (Claude calls) keep the async pattern: write a GENERATING row,
   return its id, let the client poll. AppSync times out at 30s.
 - **Person:** ops take `personId` or `personName`; if neither, the actor
-  (Janet's sender, Muse's `MUSE_SENDER`). The web always passes `personId`.
+  (Janet's sender, the API key's `MUSE_SENDER`). The web always passes `personId`.
 
 ## Tests
 
 - **Unit** (`npm test`): each domain's ops against a fake data client
   (`lib/ops/<domain>.test.ts`), image storage against a fake S3
-  (`storage.test.ts`), `callOp`, the OpenAPI generator (`lib/muse-api.test.ts`)
+  (`storage.test.ts`), `callOp`, the OpenAPI generator (`lib/external-api.test.ts`)
   and the CLI's flag parsing (`scripts/hh.test.ts`).
 - **Integration, after each deploy** (`npm run ops-smoke -- <outputs.json>`):
   hits the deployed runOp mutation, the agent Lambda's API entry points and
-  the Muse gateway with reads and deliberately invalid writes only. See the
+  the external API with reads and deliberately invalid writes only. See the
   script header for setup.
 
 ## Migrating a domain

@@ -1,17 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { buildOpenApiSpec, missingRequired, type MuseTool } from "./muse-api";
+import { buildOpenApiSpec, missingRequired, type ApiTool } from "./external-api";
 
-const op: MuseTool = {
+const op: ApiTool = {
   name: "list_wardrobe",
   description: "List items. More detail here.",
   input_schema: { type: "object", properties: { status: { type: "string" } } },
   output_schema: { type: "object", properties: { count: { type: "number" } } },
   access: "read",
 };
-const legacy: MuseTool = { name: "create_task", input_schema: { type: "object", properties: {}, required: ["title"] } };
+const legacy: ApiTool = { name: "create_task", input_schema: { type: "object", properties: {}, required: ["title"] } };
 
 describe("buildOpenApiSpec", () => {
-  const spec = buildOpenApiSpec([op, legacy], "https://home.example/api/muse") as any;
+  const spec = buildOpenApiSpec([op, legacy], "https://home.example/api/v1") as any;
 
   it("types an op's result and marks its access", () => {
     const post = spec.paths["/tools/list_wardrobe"].post;
@@ -31,7 +31,7 @@ describe("buildOpenApiSpec", () => {
   });
 
   it("serves the bearer-protected server URL and the upload route", () => {
-    expect(spec.servers).toEqual([{ url: "https://home.example/api/muse" }]);
+    expect(spec.servers).toEqual([{ url: "https://home.example/api/v1" }]);
     expect(spec.paths["/uploads"].post.description).toMatch(/save_wardrobe_item/);
   });
 });
