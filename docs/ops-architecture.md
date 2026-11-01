@@ -55,6 +55,17 @@ scripts/hh.ts              generic CLI over the Muse API (dry run unless --yes f
 - **Person:** ops take `personId` or `personName`; if neither, the actor
   (Janet's sender, Muse's `MUSE_SENDER`). The web always passes `personId`.
 
+## Tests
+
+- **Unit** (`npm test`): each domain's ops against a fake data client
+  (`lib/ops/<domain>.test.ts`), image storage against a fake S3
+  (`storage.test.ts`), `callOp`, the OpenAPI generator (`lib/muse-api.test.ts`)
+  and the CLI's flag parsing (`scripts/hh.test.ts`).
+- **Integration, after each deploy** (`npm run ops-smoke -- <outputs.json>`):
+  hits the deployed runOp mutation, the agent Lambda's API entry points and
+  the Muse gateway with reads and deliberately invalid writes only. See the
+  script header for setup.
+
 ## Migrating a domain
 
 1. Write `lib/ops/<domain>.ts` with the ops and their tests; add them to `OPS`.

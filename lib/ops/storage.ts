@@ -47,7 +47,7 @@ export async function verifyUploadedImage(s3: S3Client, bucket: string, key: str
   return key;
 }
 
-export function createS3ImageStorage(s3: S3Client, bucket: string | undefined): OpImageStorage {
+export function createS3ImageStorage(s3: S3Client, bucket: string | undefined, fetchImpl: typeof fetch = fetch): OpImageStorage {
   const need = () => {
     if (!bucket) throw new Error("HOME_HUB_BUCKET env var not set");
     return bucket;
@@ -55,7 +55,7 @@ export function createS3ImageStorage(s3: S3Client, bucket: string | undefined): 
   return {
     async storeFromUrl(url, prefix) {
       const b = need();
-      const img = await fetchImageUrl(url);
+      const img = await fetchImageUrl(url, fetchImpl);
       const key = `${prefix}${randomUUID()}.${extensionForImage(img.contentType)}`;
       await s3.send(new PutObjectCommand({ Bucket: b, Key: key, Body: img.data, ContentType: img.contentType }));
       return key;

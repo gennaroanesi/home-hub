@@ -8,7 +8,7 @@ import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
 import { env } from "$amplify/env/ops";
 import type { Schema } from "../../data/resource";
-import { runOp } from "../../../lib/ops/registry.js";
+import { parseOpInput, runOp } from "../../../lib/ops/registry.js";
 import { createS3ImageStorage } from "../../../lib/ops/storage.js";
 import type { OpVia } from "../../../lib/ops/context.js";
 
@@ -25,15 +25,9 @@ interface RunOpArgs {
 
 export const handler = async (event: { arguments: RunOpArgs }): Promise<string> => {
   const { name, input, via } = event.arguments;
-  let parsed: unknown = input ?? {};
-  if (typeof parsed === "string") {
-    try {
-      parsed = JSON.parse(parsed);
-    } catch {
-      return JSON.stringify({ error: "input must be JSON" });
-    }
-  }
-  const out = await runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web" } }, name, parsed);
+  const parsed = parseOpInput(input);
+  if ("error" in parsed) return JSON.stringify(parsed);
+  const out = await runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web" } }, name, parsed.input);
   // a.json() return: AppSync wants a JSON string.
   return JSON.stringify(out);
 };

@@ -45,6 +45,17 @@ export async function runOp(ctx: OpContext, name: string, rawInput: unknown): Pr
   }
 }
 
+/** runOp's AWSJSON `input` arrives as a JSON string or already parsed. */
+export function parseOpInput(raw: unknown): { input: unknown } | { error: string } {
+  if (raw == null) return { input: {} };
+  if (typeof raw !== "string") return { input: raw };
+  try {
+    return { input: JSON.parse(raw) };
+  } catch {
+    return { error: "input must be JSON" };
+  }
+}
+
 function jsonSchema(schema: z.ZodType, io: "input" | "output"): Record<string, unknown> {
   const { $schema, ...rest } = z.toJSONSchema(schema, { io, unrepresentable: "any" }) as Record<string, unknown>;
   void $schema;

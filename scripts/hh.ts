@@ -20,9 +20,10 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 type Schema = { type?: string | string[]; enum?: unknown[]; description?: string; items?: Schema; anyOf?: Schema[] };
-type Operation = {
+export type Operation = {
   operationId: string;
   summary?: string;
   description?: string;
@@ -42,20 +43,14 @@ function loadEnv() {
   }
 }
 
+/** Thrown for user mistakes; main prints the message and exits 1. */
+export class UsageError extends Error {}
 function fail(msg: string): never {
-  console.error(msg);
-  process.exit(1);
+  throw new UsageError(msg);
 }
 
-loadEnv();
-const BASE = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/muse").replace(/\/$/, "");
-const KEY = process.env.MUSE_API_KEY ?? fail("MUSE_API_KEY isn't set (add it to .env.local).");
-const headers = { Authorization: `Bearer ${KEY}`, "Content-Type": "application/json" };
-
-async function spec(): Promise<Map<string, Operation>> {
-  const res = await fetch(`${BASE}/openapi.json`, { headers });
-  if (!res.ok) fail(`Couldn't load ${BASE}/openapi.json (HTTP ${res.status})`);
-  const doc = (await res.json()) as { paths: Record<string, { post?: Operation }> };
+/** The /tools/* operations in an OpenAPI document, by name. */
+export function operationsFrom(doc: { paths: Record<string, { post?: Operation }> }): Map<string, Operation> {
   const ops = new Map<string, Operation>();
   for (const [p, item] of Object.entries(doc.paths)) {
     if (p.startsWith("/tools/") && item.post) ops.set(item.post.operationId, item.post);
@@ -68,7 +63,7 @@ const typesOf = (s: Schema): string[] =>
   s.anyOf ? s.anyOf.flatMap(typesOf) : Array.isArray(s.type) ? s.type : s.type ? [s.type] : [];
 const accessMark = (op: Operation) => ({ read: "R", write: "W", sensitive: "S" })[op["x-access"] ?? ""] ?? "?";
 
-function coerce(raw: string, s: Schema | undefined): unknown {
+export function coerce(raw: string, s: Schema | undefined): unknown {
   const types = s ? typesOf(s) : [];
   if (types.length === 1 && types[0] === "string") return raw; // keep "0042" style codes as text
   try {
@@ -78,7 +73,7 @@ function coerce(raw: string, s: Schema | undefined): unknown {
   }
 }
 
-function parseArgs(argv: string[], op: Operation) {
+export function parseArgs(argv: string[], op: Operation) {
   const props = params(op).properties ?? {};
   let input: Record<string, unknown> = {};
   let yes = false;
@@ -98,7 +93,9 @@ function parseArgs(argv: string[], op: Operation) {
     }
     if (!props[key]) fail(`${op.operationId} has no parameter "${key}". Try: npm run hh -- help ${op.operationId}`);
     const isArray = typesOf(props[key]).includes("array");
-    const value = coerce(raw, isArray ? props[key].items : props[key]);
+    // An array flag takes one value per repeat, or a whole JSON array.
+    const whole = isArray && raw.trim().startsWith("[") ? (() => { try { return JSON.parse(raw) as unknown; } catch { return undefined; } })() : undefined;
+    const value = Array.isArray(whole) ? whole : coerce(raw, isArray ? props[key].items : props[key]);
     if (isArray) input[key] = [...((input[key] as unknown[]) ?? []), ...(Array.isArray(value) ? value : [value])];
     else input[key] = value;
   }
@@ -114,9 +111,19 @@ function help(op: Operation) {
   }
 }
 
+/** Only reads skip the dry run; legacy tools ("unknown") might write. */
+export const needsConfirmation = (op: Operation) => op["x-access"] !== "read";
+
 async function main() {
+  loadEnv();
+  const base = (process.env.HOME_HUB_URL ?? "https://home.cristinegennaro.com/api/muse").replace(/\/$/, "");
+  const key = process.env.MUSE_API_KEY ?? fail("MUSE_API_KEY isn't set (add it to .env.local).");
+  const headers = { Authorization: `Bearer ${key}`, "Content-Type": "application/json" };
+  const specRes = await fetch(`${base}/openapi.json`, { headers });
+  if (!specRes.ok) fail(`Couldn't load ${base}/openapi.json (HTTP ${specRes.status})`);
+  const ops = operationsFrom((await specRes.json()) as { paths: Record<string, { post?: Operation }> });
+
   const [cmd, ...rest] = process.argv.slice(2);
-  const ops = await spec();
   if (!cmd || cmd === "list") {
     for (const op of Array.from(ops.values()).sort((a, b) => a.operationId.localeCompare(b.operationId))) {
       console.log(`${accessMark(op)} ${op.operationId.padEnd(30)} ${op.summary ?? ""}`);
@@ -129,11 +136,11 @@ async function main() {
   }
   const op = ops.get(cmd) ?? fail(`Unknown operation "${cmd}". Run npm run hh to list them.`);
   const { input, yes } = parseArgs(rest, op);
-  if (op["x-access"] !== "read" && !yes) {
+  if (needsConfirmation(op) && !yes) {
     console.log(`Dry run (${op["x-access"] ?? "unknown"} operation). Would POST /tools/${cmd}:\n${JSON.stringify(input, null, 2)}\nRe-run with --yes to do it.`);
     return;
   }
-  const res = await fetch(`${BASE}/tools/${cmd}`, { method: "POST", headers, body: JSON.stringify(input) });
+  const res = await fetch(`${base}/tools/${cmd}`, { method: "POST", headers, body: JSON.stringify(input) });
   const body = (await res.json().catch(() => ({ error: `HTTP ${res.status}` }))) as { result?: unknown; error?: string; details?: unknown };
   if (!res.ok || body.error) {
     console.error(JSON.stringify({ error: body.error ?? `HTTP ${res.status}`, ...(body.details ? { details: body.details } : {}) }, null, 2));
@@ -142,4 +149,10 @@ async function main() {
   console.log(JSON.stringify(body.result, null, 2));
 }
 
-main().catch((e) => fail(e instanceof Error ? e.message : String(e)));
+// Run only as a command, not when a test imports the helpers above.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : String(e));
+    process.exit(1);
+  });
+}

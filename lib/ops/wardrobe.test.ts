@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { OpContext } from "./context";
-import { OPS, findOp, opJsonSchemas, runOp, toolDefinition } from "./registry";
+import { OPS, findOp, opJsonSchemas, parseOpInput, runOp, toolDefinition } from "./registry";
 import type { OpDef } from "./define";
 
 // In-memory stand-in for the Amplify data client: list/get/create/update
@@ -133,7 +133,82 @@ describe("list_wardrobe", () => {
   });
 });
 
+describe("get_trip_plan", () => {
+  function tripSetup(planStatus: string | null) {
+    const { ctx, tables } = setup([
+      { ...polo, quantity: 4 },
+      { id: "i2", category: "Pants", name: "Chino", brand: "Todd Snyder", color: "Stone" },
+    ]);
+    tables.homeTrip = [
+      { id: "past", name: "Austin", startDate: "2020-01-01", endDate: "2020-01-02", participantIds: ["p1"] },
+      { id: "t1", name: "Seattle", startDate: "2099-11-16", endDate: "2099-11-18", participantIds: ["p1"], destination: { city: "Seattle" } },
+      { id: "t2", name: "Other person", startDate: "2099-01-01", endDate: "2099-01-02", participantIds: ["p9"] },
+    ];
+    tables.homeWardrobeTripPlan = planStatus
+      ? [
+          {
+            id: "plan",
+            tripId: "t1",
+            personId: "p1",
+            status: planStatus,
+            updatedAt: "2099-01-01",
+            capacity: "CARRY_ON",
+            context: "Seattle",
+            packItemIds: ["i1", "i2", "gone"],
+            packedItemIds: ["i2"],
+            weather: JSON.stringify([{ date: "2099-11-16", source: "TYPICAL", highF: 53, lowF: 40, precipChance: 30, summary: "Some rainy days" }]),
+            looks: JSON.stringify([
+              { date: "2099-11-16", title: "Travel", occasion: "Flight", itemIds: ["i1", "i2"], why: "Easy." },
+              { date: "2099-11-17", title: "Office", occasion: null, itemIds: ["i1"], why: null },
+            ]),
+            tips: "Bring an umbrella.",
+          },
+        ]
+      : [];
+    return ctx;
+  }
+
+  it("defaults to the next trip the person is on and serves the saved plan", async () => {
+    const out: any = await runOp(tripSetup("READY"), "get_trip_plan", {});
+    expect(out.error).toBeUndefined();
+    expect(out.result).toMatchObject({ trip: "Seattle", dates: "2099-11-16 to 2099-11-18", status: "READY", luggage: "CARRY_ON", tips: "Bring an umbrella." });
+    // Items no longer in the closet drop out; copies follow the days worn.
+    expect(out.result.packingList.map((p: any) => [p.id, p.copiesToPack, p.packed])).toEqual([
+      ["i1", 2, false],
+      ["i2", 1, true],
+    ]);
+    expect(out.result.looks[0].pieces).toEqual(["Cotton piqué polo", "Todd Snyder Chino (Stone)"]);
+    expect(out.result.weather[0].forecast).toMatch(/Some rainy days/);
+  });
+
+  it("finds a trip by name or city, and says when there's no finished plan", async () => {
+    expect(((await runOp(tripSetup("GENERATING"), "get_trip_plan", { tripName: "seattle" })) as any).result).toMatchObject({ status: "GENERATING" });
+    expect(((await runOp(tripSetup(null), "get_trip_plan", { tripName: "Seattle" })) as any).result).toMatchObject({ status: "NONE" });
+    expect(((await runOp(tripSetup(null), "get_trip_plan", { tripName: "Lisbon" })) as any).error).toMatch(/No trip matching/);
+  });
+});
+
 describe("registry", () => {
+  it("parses runOp's AWSJSON input either way", () => {
+    expect(parseOpInput('{"a":1}')).toEqual({ input: { a: 1 } });
+    expect(parseOpInput({ a: 1 })).toEqual({ input: { a: 1 } });
+    expect(parseOpInput(null)).toEqual({ input: {} });
+    expect(parseOpInput("{nope")).toEqual({ error: "input must be JSON" });
+  });
+
+  it("keeps sensitive ops off the API and CLI", async () => {
+    const { ctx } = setup();
+    const op = findOp("list_wardrobe")!;
+    const original = op.access;
+    (op as { access: string }).access = "sensitive";
+    try {
+      expect(await runOp(ctx, "list_wardrobe", {})).toEqual({ error: "list_wardrobe isn't available over the API" });
+      expect(((await runOp({ ...ctx, actor: { via: "whatsapp", personName: "Gennaro" } }, "list_wardrobe", {})) as any).result).toBeDefined();
+    } finally {
+      (op as { access: string }).access = original;
+    }
+  });
+
   it("rejects unknown ops and people", async () => {
     const { ctx } = setup();
     expect(await runOp(ctx, "nope", {})).toEqual({ error: "Unknown operation: nope" });

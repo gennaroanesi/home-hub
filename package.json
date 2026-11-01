@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "hh": "tsx scripts/hh.ts",
+    "ops-smoke": "tsx scripts/ops-smoke.ts",
     "lint": "npx eslint . --ext .ts,.tsx -c .eslintrc.json --fix",
     "test": "vitest run",
     "test:watch": "vitest",
