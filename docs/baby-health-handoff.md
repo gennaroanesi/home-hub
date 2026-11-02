@@ -35,7 +35,7 @@ Status as of 2026-09-24. Everything below is on `main` and deployed to prod by A
 ### Inventory and wishlist (`/inventory`, Janet tools)
 | Piece | Where |
 |---|---|
-| Base `homeInventoryItem`: category, status `WISHLIST \| OWNED \| SOLD \| GIVEN_AWAY`, owner (`ownerPersonId`, or `pregnancyId` for the baby on the way; neither means household), quantity, estimated and paid price, gift source | `amplify/data/resource.ts` |
+| Base `homeInventoryItem`: `categoryId` (→ `homeInventoryCategory`, an editable tree), status `WISHLIST \| OWNED \| SOLD \| GIVEN_AWAY`, owner (`ownerPersonId`, or `pregnancyId` for the baby on the way; neither means household), quantity, estimated and paid price, gift source | `amplify/data/resource.ts` |
 | Detail tables keyed by `itemId`: `homeInventoryClothing` (size/color/type/season) and `homeInventoryConsumable` (unit, low-stock threshold, restock list, expiry) | same |
 | Shared rules: low stock, wishlist and spent totals, size ordering | `lib/inventory.ts`, tests in `lib/inventory.test.ts` |
 | Page with Owned / Wishlist / Past tabs, filters, totals, ± buttons, "Got it" | `pages/inventory.tsx` |
@@ -56,7 +56,7 @@ Status as of 2026-09-24. Everything below is on `main` and deployed to prod by A
   - If someone deleted the event from the calendar, the next save recreates it.
   - Janet should never create a second event for an appointment.
 - **Lab results are one row per value.** Pending rows are filled in place, matched by `testName`. A linked care item becomes DONE once none of its results are pending.
-- **Inventory is modular.** A category gets its own detail table only when it needs extra fields. Owner is a plain id column, like the rest of the schema; formal Amplify relationships on `homePerson` risk TypeScript "type instantiation too deep" errors.
+- **Inventory is modular.** A kind of item gets its own detail table only when it needs extra fields; a category's `detailType` chooses the table and subcategories inherit it. Owner is a plain id column, like the rest of the schema; formal Amplify relationships on `homePerson` risk TypeScript "type instantiation too deep" errors.
 - **The wishlist is private.** It sits behind the normal login, with no public registry page.
 - **Shared writes live in `lib/`** as functions that take the data client (`any`), so the page and Janet do the same thing. Don't reimplement them in either place.
 

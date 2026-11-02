@@ -3,44 +3,131 @@
 // totals. Used by the /inventory page, the dashboard, and the agent's
 // inventory tools so they agree on what "low" or "$ left to buy" means.
 
-export const INVENTORY_CATEGORIES = [
-  "CLOTHING",
-  "CONSUMABLE",
-  "GEAR",
-  "FURNITURE",
-  "KITCHEN",
-  "ELECTRONICS",
-  "TOYS",
-  "BOOKS",
-  "TOOLS",
-  "OTHER",
-] as const;
-export type InventoryCategory = (typeof INVENTORY_CATEGORIES)[number];
+// ── Categories ───────────────────────────────────────────────────────────────
+// A tree of homeInventoryCategory rows. detailType says which detail model
+// (homeInventoryClothing / homeInventoryConsumable) items in a category use;
+// a subcategory without its own inherits it from the nearest ancestor.
 
-export const INVENTORY_CATEGORY_LABELS: Record<InventoryCategory, string> = {
-  CLOTHING: "Clothing",
-  CONSUMABLE: "Consumables",
-  GEAR: "Gear",
-  FURNITURE: "Furniture",
-  KITCHEN: "Kitchen",
-  ELECTRONICS: "Electronics",
-  TOYS: "Toys",
-  BOOKS: "Books",
-  TOOLS: "Tools",
-  OTHER: "Other",
+export const CATEGORY_DETAIL_TYPES = ["CLOTHING", "CONSUMABLE"] as const;
+export type CategoryDetailType = (typeof CATEGORY_DETAIL_TYPES)[number];
+
+export const CATEGORY_DETAIL_TYPE_LABELS: Record<CategoryDetailType, string> = {
+  CLOTHING: "Clothing (size, color, type, season)",
+  CONSUMABLE: "Consumable (unit, low stock, expiry)",
 };
 
-// Categories with their own detail model (keyed by itemId). Everything
-// else lives entirely on homeInventoryItem.
-export const DETAIL_MODEL_BY_CATEGORY = {
-  CLOTHING: "homeInventoryClothing",
-  CONSUMABLE: "homeInventoryConsumable",
-} as const satisfies Partial<Record<InventoryCategory, string>>;
+export interface CategoryLike {
+  id: string;
+  name: string;
+  parentId?: string | null;
+  detailType?: string | null;
+  sortOrder?: number | null;
+}
 
-export function hasDetailModel(
-  category: string | null | undefined,
-): category is keyof typeof DETAIL_MODEL_BY_CATEGORY {
-  return !!category && category in DETAIL_MODEL_BY_CATEGORY;
+export interface CategoryNode<T extends CategoryLike = CategoryLike> {
+  category: T;
+  path: string; // "Clothing › Baby"
+  depth: number;
+  detailType: CategoryDetailType | null; // own or inherited
+}
+
+/** Depth-first, siblings by sortOrder then name. A row whose parent is gone counts as top-level. */
+export function categoryTree<T extends CategoryLike>(categories: T[]): CategoryNode<T>[] {
+  const ids = new Set(categories.map((c) => c.id));
+  const childrenOf = new Map<string | null, T[]>();
+  for (const c of categories) {
+    const parent = c.parentId && ids.has(c.parentId) ? c.parentId : null;
+    childrenOf.set(parent, [...(childrenOf.get(parent) ?? []), c]);
+  }
+  const out: CategoryNode<T>[] = [];
+  const seen = new Set<string>();
+  const walk = (c: T, parent: CategoryNode<T> | null) => {
+    if (seen.has(c.id)) return;
+    seen.add(c.id);
+    const node: CategoryNode<T> = {
+      category: c,
+      path: parent ? `${parent.path} › ${c.name}` : c.name,
+      depth: parent ? parent.depth + 1 : 0,
+      detailType: (c.detailType as CategoryDetailType | null | undefined) ?? parent?.detailType ?? null,
+    };
+    out.push(node);
+    const kids = [...(childrenOf.get(c.id) ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name));
+    for (const kid of kids) walk(kid, node);
+  };
+  const roots = [...(childrenOf.get(null) ?? [])].sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name));
+  for (const c of roots) walk(c, null);
+  for (const c of categories) walk(c, null); // rows caught in a parent loop still show up
+  return out;
+}
+
+export function categoryAndDescendants(id: string, categories: CategoryLike[]): Set<string> {
+  const out = new Set([id]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const c of categories) {
+      if (c.parentId && out.has(c.parentId) && !out.has(c.id)) {
+        out.add(c.id);
+        grew = true;
+      }
+    }
+  }
+  return out;
+}
+
+const normalizePath = (s: string) =>
+  s
+    .toLowerCase()
+    .split(/[›>/]/)
+    .map((part) => part.trim().replace(/s$/, ""))
+    .join("/");
+
+/**
+ * Finds a category by name or path, ignoring case and a plural "s", so
+ * "CONSUMABLE", "clothing" and "Clothing > Baby" all work. A full path wins;
+ * otherwise a name has to be unique, or this returns undefined.
+ */
+export function matchCategory<T extends CategoryLike>(categories: T[], text: string): CategoryNode<T> | undefined {
+  const q = normalizePath(text);
+  if (!q) return undefined;
+  const nodes = categoryTree(categories).map((node) => ({ node, path: normalizePath(node.path) }));
+  const exact = nodes.find((n) => n.path === q);
+  if (exact) return exact.node;
+  const partial = nodes.filter((n) => n.path.endsWith(`/${q}`));
+  return partial.length === 1 ? partial[0].node : undefined;
+}
+
+// What homeInventoryItem.category (the old fixed enum) becomes. Used by
+// scripts/inventory-categories-backfill.ts, which creates these rows.
+export const LEGACY_CATEGORIES = [
+  { key: "CLOTHING", name: "Clothing", detailType: "CLOTHING" },
+  { key: "CONSUMABLE", name: "Consumables", detailType: "CONSUMABLE" },
+  { key: "GEAR", name: "Gear", detailType: null },
+  { key: "FURNITURE", name: "Furniture", detailType: null },
+  { key: "KITCHEN", name: "Kitchen", detailType: null },
+  { key: "ELECTRONICS", name: "Electronics", detailType: null },
+  { key: "TOYS", name: "Toys", detailType: null },
+  { key: "BOOKS", name: "Books", detailType: null },
+  { key: "TOOLS", name: "Tools", detailType: null },
+  { key: "OTHER", name: "Other", detailType: null },
+] as const;
+
+/** The category rows still to create, and the items still to point at one (null category → Other). */
+export function planCategoryBackfill(
+  categories: CategoryLike[],
+  items: { id: string; category?: string | null; categoryId?: string | null }[],
+) {
+  const topLevel = categories.filter((c) => !c.parentId);
+  const existing = (name: string) => topLevel.find((c) => c.name.toLowerCase() === name.toLowerCase());
+  return {
+    createCategories: LEGACY_CATEGORIES.flatMap((c, sortOrder) =>
+      existing(c.name) ? [] : [{ name: c.name, detailType: c.detailType, sortOrder }],
+    ),
+    moves: items.flatMap((i) => {
+      if (i.categoryId) return [];
+      const legacy = LEGACY_CATEGORIES.find((c) => c.key === i.category) ?? LEGACY_CATEGORIES[LEGACY_CATEGORIES.length - 1];
+      return [{ itemId: i.id, categoryName: legacy.name }];
+    }),
+  };
 }
 
 export const INVENTORY_STATUSES = ["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"] as const;

@@ -1,6 +1,6 @@
 # Operations layer (`lib/ops/`)
 
-Status: pilot, 2026-10-31. Wardrobe and notes are on it; everything else
+Status: pilot, 2026-10-31. Wardrobe, notes and inventory categories are on it; everything else
 still runs through the legacy tool code in `amplify/functions/agent/handler.ts`.
 
 ## Why

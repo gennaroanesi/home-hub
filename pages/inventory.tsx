@@ -3,9 +3,9 @@
 // Household inventory + wishlist (the wishlist doubles as the private
 // baby registry).
 //
-// Data model is modular: homeInventoryItem is the base row; CLOTHING and
-// CONSUMABLE items also have a detail row (homeInventoryClothing /
-// homeInventoryConsumable) keyed by itemId. This page loads all three and
+// Data model is modular: homeInventoryItem is the base row; items in a
+// category with a detail type also have a detail row (homeInventoryClothing /
+// homeInventoryConsumable) keyed by itemId. This page loads them and
 // joins them in memory. Janet writes the same tables (list_inventory,
 // manage_inventory_item, adjust_inventory_quantity) and also restocks
 // low consumables onto the shopping list automatically; here that's a
@@ -26,26 +26,27 @@ import {
   ModalBody,
   ModalFooter,
 } from "@heroui/modal";
-import { FaBoxOpen, FaCamera, FaPlus, FaMinus, FaExternalLinkAlt } from "react-icons/fa";
+import { FaBoxOpen, FaCamera, FaPlus, FaMinus, FaExternalLinkAlt, FaFolderOpen } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
+import { CategoryManager } from "@/components/inventory/category-manager";
 import { householdMembers } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
 import {
   ACQUIRED_VIA_LABELS,
   CLOTHING_SIZE_PRESETS,
-  INVENTORY_CATEGORIES,
-  INVENTORY_CATEGORY_LABELS,
   INVENTORY_STATUSES,
   INVENTORY_STATUS_LABELS,
   PRIORITY_LABELS,
+  categoryAndDescendants,
+  categoryTree,
   formatUsd,
   isLowStock,
   sizeRank,
   spentTotal,
   wishlistSummary,
-  type InventoryCategory,
+  type CategoryNode,
   type InventoryStatus,
 } from "@/lib/inventory";
 import { roomAndDescendants, roomLabel } from "@/lib/floorplan";
@@ -58,6 +59,7 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 type Person = Schema["homePerson"]["type"];
 type Pregnancy = Schema["homePregnancy"]["type"];
 type Item = Schema["homeInventoryItem"]["type"];
+type Category = Schema["homeInventoryCategory"]["type"];
 type Clothing = Schema["homeInventoryClothing"]["type"];
 type Consumable = Schema["homeInventoryConsumable"]["type"];
 type ShoppingList = Schema["homeShoppingList"]["type"];
@@ -116,6 +118,7 @@ export default function InventoryPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<Item[]>([]);
+  const [categories, setCategories] = useState<Category[]>([]);
   const [clothing, setClothing] = useState<Clothing[]>([]);
   const [consumables, setConsumables] = useState<Consumable[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
@@ -128,12 +131,13 @@ export default function InventoryPage() {
   const [defaultRoom, setDefaultRoom] = useState("");
 
   const [tab, setTab] = useState<Tab>("OWNED");
-  const [category, setCategory] = useState<InventoryCategory | "">("");
+  const [category, setCategory] = useState("");
   const [owner, setOwner] = useState("");
   const [search, setSearch] = useState("");
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
+  const [managerOpen, setManagerOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -166,7 +170,7 @@ export default function InventoryPage() {
       // Rooms/floors are optional: an older amplify_outputs.json (before
       // the house map was deployed) simply doesn't have those models.
       const models = client.models as Partial<typeof client.models>;
-      const [it, cl, co, ppl, preg, sl, rm, fl] = await Promise.all([
+      const [it, cl, co, ppl, preg, sl, rm, fl, cat] = await Promise.all([
         listAllPages<Item>(client.models.homeInventoryItem),
         listAllPages<Clothing>(client.models.homeInventoryClothing),
         listAllPages<Consumable>(client.models.homeInventoryConsumable),
@@ -175,9 +179,11 @@ export default function InventoryPage() {
         listAllPages<ShoppingList>(client.models.homeShoppingList),
         models.homeRoom ? listAllPages<Room>(models.homeRoom) : Promise.resolve([] as Room[]),
         models.homeFloor ? listAllPages<Floor>(models.homeFloor) : Promise.resolve([] as Floor[]),
+        models.homeInventoryCategory ? listAllPages<Category>(models.homeInventoryCategory) : Promise.resolve([] as Category[]),
       ]);
       // Separate so an older backend without petId doesn't block the page.
       listAllPages<Pet>(client.models.homePet).then(setPets, () => setPets([]));
+      setCategories(cat);
       setRooms(rm);
       setFloors(fl);
       if (it.some((i) => i.status === "DRAFT")) setTab((cur) => (cur === "OWNED" ? "DRAFT" : cur));
@@ -237,6 +243,9 @@ export default function InventoryPage() {
   const roomLabelById = useMemo(() => new Map(roomOptions.map((o) => [o.key, o.label])), [roomOptions]);
   const roomFilterIds = useMemo(() => (roomFilter ? roomAndDescendants(roomFilter, rooms) : null), [roomFilter, rooms]);
 
+  const categoryNodes = useMemo(() => categoryTree(categories), [categories]);
+  const categoryFilterIds = useMemo(() => (category ? categoryAndDescendants(category, categories) : null), [category, categories]);
+
   const tabItems = useMemo(
     () =>
       items.filter((i) =>
@@ -248,7 +257,7 @@ export default function InventoryPage() {
   const visible = useMemo(() => {
     const q = search.toLowerCase().trim();
     return tabItems
-      .filter((i) => !category || i.category === category)
+      .filter((i) => !categoryFilterIds || (!!i.categoryId && categoryFilterIds.has(i.categoryId)))
       .filter((i) => !owner || ownerKeyOf(i) === owner)
       .filter((i) => !roomFilterIds || (!!i.roomId && roomFilterIds.has(i.roomId)))
       .filter((i) => {
@@ -261,20 +270,22 @@ export default function InventoryPage() {
           .toLowerCase()
           .includes(q);
       });
-  }, [tabItems, category, owner, roomFilterIds, roomLabelById, search, clothingByItem]);
+  }, [tabItems, categoryFilterIds, owner, roomFilterIds, roomLabelById, search, clothingByItem]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Item[]>();
     for (const i of visible) {
-      const k = i.category ?? "OTHER";
+      const k = i.categoryId && categoryNodes.some((n) => n.category.id === i.categoryId) ? i.categoryId : "";
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k)!.push(i);
     }
-    const order = (c: string) => INVENTORY_CATEGORIES.indexOf(c as InventoryCategory);
+    // Tree order; items without a category go last.
+    const order = (id: string) => (id ? categoryNodes.findIndex((n) => n.category.id === id) : categoryNodes.length);
     return Array.from(groups.entries())
       .sort(([a], [b]) => order(a) - order(b))
-      .map(([cat, rows]) => ({
-        category: cat as InventoryCategory,
+      .map(([id, rows]) => ({
+        id,
+        label: categoryNodes.find((n) => n.category.id === id)?.path ?? "Uncategorized",
         rows: rows.sort(
           (a, b) =>
             (tab === "WISHLIST" ? Number(a.priority !== "MUST_HAVE") - Number(b.priority !== "MUST_HAVE") : 0) ||
@@ -282,7 +293,7 @@ export default function InventoryPage() {
             a.name.localeCompare(b.name),
         ),
       }));
-  }, [visible, tab, clothingByItem]);
+  }, [visible, tab, clothingByItem, categoryNodes]);
 
   const wish = useMemo(() => wishlistSummary(visible), [visible]);
   const spent = useMemo(() => spentTotal(visible), [visible]);
@@ -379,9 +390,14 @@ export default function InventoryPage() {
             <FaBoxOpen className="text-default-500" />
             <h1 className="text-2xl font-bold">Inventory</h1>
           </div>
-          <Button size="sm" color="primary" startContent={<FaPlus />} onPress={openNew}>
-            Add item
-          </Button>
+          <div className="flex gap-2">
+            <Button size="sm" variant="flat" startContent={<FaFolderOpen />} onPress={() => setManagerOpen(true)}>
+              Categories
+            </Button>
+            <Button size="sm" color="primary" startContent={<FaPlus />} onPress={openNew}>
+              Add item
+            </Button>
+          </div>
         </div>
 
         {/* Tabs */}
@@ -431,11 +447,11 @@ export default function InventoryPage() {
             aria-label="Category"
             placeholder="All categories"
             selectedKeys={category ? [category] : []}
-            onChange={(e) => setCategory((e.target.value as InventoryCategory) || "")}
+            onChange={(e) => setCategory(e.target.value)}
             className="sm:max-w-[180px]"
           >
-            {INVENTORY_CATEGORIES.map((c) => (
-              <SelectItem key={c}>{INVENTORY_CATEGORY_LABELS[c]}</SelectItem>
+            {categoryNodes.map((n) => (
+              <SelectItem key={n.category.id}>{n.path}</SelectItem>
             ))}
           </Select>
           <Select
@@ -514,10 +530,10 @@ export default function InventoryPage() {
           </div>
         ) : (
           <div className="space-y-8">
-            {grouped.map(({ category: cat, rows }) => (
-              <section key={cat}>
+            {grouped.map(({ id, label, rows }) => (
+              <section key={id}>
                 <h2 className="text-xs font-medium uppercase tracking-wider text-default-400 mb-2">
-                  {INVENTORY_CATEGORY_LABELS[cat]} · {rows.length}
+                  {label} · {rows.length}
                 </h2>
                 <div className="divide-y divide-default-100 border border-default-200 rounded-md bg-default-50">
                   {rows.map((i) => (
@@ -551,7 +567,8 @@ export default function InventoryPage() {
         onClose={() => setModalOpen(false)}
         editing={editing}
         defaultStatus={tab === "WISHLIST" ? "WISHLIST" : "OWNED"}
-        defaultCategory={category || undefined}
+        defaultCategory={category}
+        categoryNodes={categoryNodes}
         defaultOwner={owner || HOUSEHOLD}
         clothing={editing ? clothingByItem.get(editing.id) : undefined}
         consumable={editing ? consumableByItem.get(editing.id) : undefined}
@@ -560,6 +577,14 @@ export default function InventoryPage() {
         defaultRoom={defaultRoom}
         lists={lists}
         onSaved={loadAll}
+      />
+      <CategoryManager
+        isOpen={managerOpen}
+        onClose={() => setManagerOpen(false)}
+        client={client}
+        categories={categories}
+        items={items}
+        onChanged={loadAll}
       />
     </DefaultLayout>
   );
@@ -710,6 +735,7 @@ function ItemModal({
   editing,
   defaultStatus,
   defaultCategory,
+  categoryNodes,
   defaultOwner,
   clothing,
   consumable,
@@ -723,7 +749,8 @@ function ItemModal({
   onClose: () => void;
   editing: Item | null;
   defaultStatus: InventoryStatus;
-  defaultCategory?: InventoryCategory;
+  defaultCategory: string;
+  categoryNodes: CategoryNode<Category>[];
   defaultOwner: string;
   clothing?: Clothing;
   consumable?: Consumable;
@@ -775,7 +802,7 @@ function ItemModal({
     setPhotos((e?.imageKeys ?? []).filter((k): k is string => !!k));
     setF({
       name: s(e?.name),
-      category: s(e?.category ?? defaultCategory ?? "OTHER"),
+      categoryId: e ? s(e.categoryId) : defaultCategory,
       status: s(e?.status ?? defaultStatus),
       owner: e ? ownerKeyOf(e) : defaultOwner,
       roomId: e ? s(e.roomId) : defaultRoom,
@@ -805,6 +832,7 @@ function ItemModal({
     });
   }, [isOpen, editing, clothing, consumable, defaultStatus, defaultCategory, defaultOwner, defaultRoom]);
 
+  const detailType = categoryNodes.find((n) => n.category.id === f.categoryId)?.detailType ?? null;
   const str = (k: string) => (f[k]?.trim() ? f[k].trim() : null);
   const num = (k: string) => (f[k]?.trim() && !Number.isNaN(Number(f[k])) ? Number(f[k]) : null);
   const int = (k: string) => (num(k) == null ? null : Math.round(num(k)!));
@@ -819,7 +847,7 @@ function ItemModal({
       const status = f.status as InventoryStatus;
       const base = {
         name: f.name.trim(),
-        category: f.category as InventoryCategory,
+        categoryId: str("categoryId"),
         status,
         ...ownerFieldsFromKey(f.owner),
         imageKeys: photos,
@@ -850,13 +878,13 @@ function ItemModal({
       // Detail row for the (possibly new) category. A detail row from a
       // previous category is left in place — harmless, and it comes back
       // if the category is switched back.
-      if (base.category === "CLOTHING") {
+      if (detailType === "CLOTHING") {
         const detail = { size: str("size"), color: str("color"), type: str("clothingType"), season: (str("season") as "ALL" | "WARM" | "COLD" | null) ?? null };
         const r = clothing
           ? await client.models.homeInventoryClothing.update({ id: clothing.id, ...detail })
           : await client.models.homeInventoryClothing.create({ itemId, ...detail });
         if (r.errors?.length) throw new Error(r.errors[0].message);
-      } else if (base.category === "CONSUMABLE") {
+      } else if (detailType === "CONSUMABLE") {
         const detail = {
           unit: str("unit"),
           lowStockThreshold: int("lowStockThreshold"),
@@ -908,11 +936,12 @@ function ItemModal({
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
             <Select
               label="Category"
-              selectedKeys={f.category ? [f.category] : []}
-              onChange={(e) => e.target.value && set("category")(e.target.value)}
+              placeholder="Uncategorized"
+              selectedKeys={f.categoryId ? [f.categoryId] : []}
+              onChange={(e) => set("categoryId")(e.target.value)}
             >
-              {INVENTORY_CATEGORIES.map((c) => (
-                <SelectItem key={c}>{INVENTORY_CATEGORY_LABELS[c]}</SelectItem>
+              {categoryNodes.map((n) => (
+                <SelectItem key={n.category.id}>{n.path}</SelectItem>
               ))}
             </Select>
             <Select
@@ -936,7 +965,7 @@ function ItemModal({
           </div>
 
           {/* Category details */}
-          {f.category === "CLOTHING" && (
+          {detailType === "CLOTHING" && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <Input label="Size" value={f.size ?? ""} onValueChange={set("size")} list="inventory-sizes" />
               <datalist id="inventory-sizes">
@@ -957,7 +986,7 @@ function ItemModal({
               </Select>
             </div>
           )}
-          {f.category === "CONSUMABLE" && (
+          {detailType === "CONSUMABLE" && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <Input label="Unit" placeholder="pack, box…" value={f.unit ?? ""} onValueChange={set("unit")} />
               <Input

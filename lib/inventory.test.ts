@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   approveDrafts,
+  categoryAndDescendants,
+  categoryTree,
   deleteInventoryItems,
-  hasDetailModel,
   isLowStock,
+  matchCategory,
+  planCategoryBackfill,
   sizeRank,
   spentTotal,
   wishlistSummary,
@@ -53,12 +56,79 @@ describe("sizeRank", () => {
   });
 });
 
-describe("hasDetailModel", () => {
-  it("knows which categories have detail rows", () => {
-    expect(hasDetailModel("CLOTHING")).toBe(true);
-    expect(hasDetailModel("CONSUMABLE")).toBe(true);
-    expect(hasDetailModel("GEAR")).toBe(false);
-    expect(hasDetailModel(null)).toBe(false);
+describe("categories", () => {
+  const cats = [
+    { id: "gear", name: "Gear", sortOrder: 1 },
+    { id: "cl", name: "Clothing", detailType: "CLOTHING", sortOrder: 0 },
+    { id: "baby", name: "Baby", parentId: "cl" },
+    { id: "sleep", name: "Sleepwear", parentId: "baby" },
+    { id: "kit", name: "Kitchen", sortOrder: 2 },
+    { id: "kitbaby", name: "Baby", parentId: "kit" },
+    { id: "orphan", name: "Orphan", parentId: "gone", sortOrder: 3 },
+  ];
+
+  it("builds paths in tree order and inherits the detail type", () => {
+    const tree = categoryTree(cats);
+    expect(tree.map((n) => n.path)).toEqual([
+      "Clothing",
+      "Clothing › Baby",
+      "Clothing › Baby › Sleepwear",
+      "Gear",
+      "Kitchen",
+      "Kitchen › Baby",
+      "Orphan",
+    ]);
+    expect(tree[2]).toMatchObject({ depth: 2, detailType: "CLOTHING" });
+    expect(tree[3].detailType).toBeNull();
+  });
+
+  it("lets a subcategory set its own detail type", () => {
+    const tree = categoryTree([{ id: "a", name: "A", detailType: "CLOTHING" }, { id: "b", name: "B", parentId: "a", detailType: "CONSUMABLE" }]);
+    expect(tree[1].detailType).toBe("CONSUMABLE");
+  });
+
+  it("still lists rows caught in a parent loop", () => {
+    const tree = categoryTree([{ id: "a", name: "A", parentId: "b" }, { id: "b", name: "B", parentId: "a" }]);
+    expect(tree).toHaveLength(2);
+  });
+
+  it("collects descendants", () => {
+    expect(categoryAndDescendants("cl", cats)).toEqual(new Set(["cl", "baby", "sleep"]));
+    expect(categoryAndDescendants("gear", cats)).toEqual(new Set(["gear"]));
+  });
+
+  it("matches old enum values, names and paths", () => {
+    const seeded = [...cats, { id: "co", name: "Consumables", detailType: "CONSUMABLE" }];
+    expect(matchCategory(seeded, "CONSUMABLE")?.category.id).toBe("co");
+    expect(matchCategory(seeded, "clothing")?.category.id).toBe("cl");
+    expect(matchCategory(seeded, "sleepwear")?.category.id).toBe("sleep");
+    expect(matchCategory(seeded, "Clothing > Baby")?.category.id).toBe("baby");
+    expect(matchCategory(seeded, "kitchen/baby")?.category.id).toBe("kitbaby");
+  });
+
+  it("won't guess between two categories with the same name", () => {
+    expect(matchCategory(cats, "Baby")).toBeUndefined();
+    expect(matchCategory(cats, "nope")).toBeUndefined();
+    expect(matchCategory(cats, "  ")).toBeUndefined();
+    expect(matchCategory([...cats, { id: "top", name: "Baby" }], "Baby")?.category.id).toBe("top");
+  });
+
+  it("plans the backfill and is safe to run twice", () => {
+    const first = planCategoryBackfill([{ id: "x", name: "clothing" }], [
+      { id: "1", category: "CLOTHING" },
+      { id: "2", category: "CONSUMABLE" },
+      { id: "3", category: null },
+      { id: "4", category: "GEAR", categoryId: "already" },
+    ]);
+    expect(first.createCategories.map((c) => c.name)).not.toContain("Clothing");
+    expect(first.createCategories[0]).toEqual({ name: "Consumables", detailType: "CONSUMABLE", sortOrder: 1 });
+    expect(first.moves).toEqual([
+      { itemId: "1", categoryName: "Clothing" },
+      { itemId: "2", categoryName: "Consumables" },
+      { itemId: "3", categoryName: "Other" },
+    ]);
+    const all = ["Clothing", "Consumables", "Gear", "Furniture", "Kitchen", "Electronics", "Toys", "Books", "Tools", "Other"];
+    expect(planCategoryBackfill(all.map((name, i) => ({ id: `${i}`, name })), [{ id: "1", categoryId: "0" }])).toEqual({ createCategories: [], moves: [] });
   });
 });
 

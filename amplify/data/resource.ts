@@ -430,18 +430,35 @@ const schema = a
     // ── Inventory ───────────────────────────────────────────────────────
     // Modular: one base row per item (what it is, whose it is, whether we
     // own it or want it, what it cost) plus an optional detail row for
-    // categories that need their own fields — homeInventoryClothing for
-    // CLOTHING, homeInventoryConsumable for CONSUMABLE. Other categories
-    // are base-only. A new category that needs detail fields gets its own
+    // categories that need their own fields — homeInventoryClothing and
+    // homeInventoryConsumable, picked by the category's detailType. Other
+    // categories are base-only. A new kind of detail fields gets its own
     // homeInventory<Category> model keyed by itemId (same pattern as
     // gennaroanesi.com's inventoryItem + inventoryFirearm, …).
     //
     // status WISHLIST doubles as the (private) baby registry. Items for
     // the baby on the way carry pregnancyId until the baby is a
     // homePerson; after that, ownerPersonId points at them.
+    // Editable tree of categories (parentId null = top level). detailType
+    // is inherited by subcategories; see categoryTree in lib/inventory.ts.
+    homeInventoryCategory: a
+      .model({
+        name: a.string().required(),
+        parentId: a.id(), // FK → homeInventoryCategory.id
+        detailType: a.enum(["CLOTHING", "CONSUMABLE"]),
+        sortOrder: a.integer().default(0),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     homeInventoryItem: a
       .model({
         name: a.string().required(),
+        categoryId: a.id(), // FK → homeInventoryCategory.id
+        // Replaced by categoryId and no longer read or written. Stays until
+        // scripts/inventory-categories-backfill.ts has run in prod.
         category: a.enum([
           "CLOTHING",
           "CONSUMABLE", // diapers, wipes, formula, pantry, toiletries

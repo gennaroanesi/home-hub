@@ -46,7 +46,7 @@ import {
   syncVisitEvent,
 } from "../../../lib/health.js";
 import { isHouseholdMember } from "../../../lib/household.js";
-import { approveDrafts, deleteInventoryItems, isLowStock, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
+import { approveDrafts, categoryAndDescendants, categoryTree, deleteInventoryItems, isLowStock, matchCategory, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
 import { listAllPages } from "../../../lib/list-all.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
@@ -1873,7 +1873,7 @@ const legacyTools: Anthropic.Tool[] = [
         },
         category: {
           type: "string",
-          enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
+          description: "Category name or path, e.g. 'Clothing' or 'Clothing > Baby'. Includes its subcategories.",
         },
         ownerName: {
           type: "string",
@@ -1902,8 +1902,7 @@ const legacyTools: Anthropic.Tool[] = [
         name: { type: "string", description: "Required for create." },
         category: {
           type: "string",
-          enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
-          description: "Required for create.",
+          description: "Category name or path, e.g. 'Gear' or 'Clothing > Baby' (see list_inventory_categories). Required for create. Pass an empty string to clear.",
         },
         status: { type: "string", enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"], description: "Default OWNED on create." },
         ownerName: { type: "string", description: "Whose item: a person, a pet (e.g. 'Dolce'), or omit / 'household' for shared." },
@@ -1965,10 +1964,7 @@ const legacyTools: Anthropic.Tool[] = [
             type: "object",
             properties: {
               name: { type: "string" },
-              category: {
-                type: "string",
-                enum: ["CLOTHING", "CONSUMABLE", "GEAR", "FURNITURE", "KITCHEN", "ELECTRONICS", "TOYS", "BOOKS", "TOOLS", "OTHER"],
-              },
+              category: { type: "string", description: "Category name or path, e.g. 'Gear' or 'Clothing > Baby' (see list_inventory_categories)." },
               quantity: { type: "integer" },
               brand: { type: "string" },
               location: { type: "string", description: "Overrides the shared location for this item." },
@@ -1988,7 +1984,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "add_inventory_photo",
     description:
-      "Attach a photo to an existing inventory item (appends; replace=true swaps out the old ones). The image can come from: the photo(s) sent with this message ('add this photo to the stroller'); s3Key from POST /uploads (API clients — the recommended way to send image bytes); an https imageUrl to fetch; or imageBase64 for tiny images only (API request bodies over ~8 KB are blocked by the firewall). Identify the item by itemId or a fuzzy name query.",
+      "Attach a photo to an existing inventory item (appends; replace=true swaps out the old ones). The image can come from: the photo(s) sent with this message ('add this photo to the stroller'); s3Key from POST /uploads (API clients — the recommended way to send image bytes); an https imageUrl to fetch; or imageBase64 for small images only. Identify the item by itemId or a fuzzy name query.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -2117,19 +2113,35 @@ async function resolveProviderId(name?: string | null): Promise<string | null> {
 
 // ── Inventory helpers ────────────────────────────────────────────────────────
 
+async function loadInventoryCategories() {
+  const client = await getDataClient();
+  return listAllPages<Schema["homeInventoryCategory"]["type"]>(client.models.homeInventoryCategory);
+}
+
+function noCategoryError(text: string, categories: { id: string; name: string; parentId?: string | null }[], suffix = "") {
+  return JSON.stringify({
+    error: `No single category matching "${text}"${suffix}`,
+    categories: categoryTree(categories).map((n) => n.path),
+  });
+}
+
 async function loadInventory() {
   const client = await getDataClient();
-  const [items, clothing, consumables, rooms] = await Promise.all([
+  const [items, clothing, consumables, rooms, categories] = await Promise.all([
     client.models.homeInventoryItem.list({ limit: 1000 }),
     client.models.homeInventoryClothing.list({ limit: 1000 }),
     client.models.homeInventoryConsumable.list({ limit: 1000 }),
     client.models.homeRoom.list({ limit: 500 }),
+    loadInventoryCategories(),
   ]);
   const roomRows = rooms.data ?? [];
   const roomsById = new Map(roomRows.map((r) => [r.id, r]));
+  const categoryNodes = new Map(categoryTree(categories).map((n) => [n.category.id, n]));
   return {
     items: items.data ?? [],
     rooms: roomRows,
+    categories,
+    categoryPath: (id: string | null | undefined) => (id ? categoryNodes.get(id)?.path ?? null : null),
     roomName: (id: string | null | undefined) => {
       const r = id ? roomsById.get(id) : undefined;
       return r ? roomLabel(r, roomsById) : null;
@@ -5409,7 +5421,7 @@ async function executeTool(
     }
 
     case "list_inventory": {
-      const { items, clothingByItem, consumableByItem, rooms, roomName } = await loadInventory();
+      const { items, clothingByItem, consumableByItem, rooms, roomName, categories, categoryPath } = await loadInventory();
       const status: string = input.status ?? "OWNED";
       let roomIds: Set<string> | null = null;
       if (input.roomName) {
@@ -5421,6 +5433,12 @@ async function executeTool(
           });
         }
         roomIds = roomAndDescendants(room.id, rooms);
+      }
+      let categoryIds: Set<string> | null = null;
+      if (input.category) {
+        const match = matchCategory(categories, input.category);
+        if (!match) return noCategoryError(input.category, categories);
+        categoryIds = categoryAndDescendants(match.category.id, categories);
       }
       let owner: InventoryOwner | null = null;
       if (input.ownerName) {
@@ -5435,7 +5453,7 @@ async function executeTool(
 
       const rows = items
         .filter((i) => status === "ALL" || i.status === status)
-        .filter((i) => !input.category || i.category === input.category)
+        .filter((i) => !categoryIds || (!!i.categoryId && categoryIds.has(i.categoryId)))
         .filter((i) => !roomIds || (!!i.roomId && roomIds.has(i.roomId)))
         .filter((i) => {
           if (!owner) return true;
@@ -5447,7 +5465,7 @@ async function executeTool(
         .filter((i) => {
           if (!q) return true;
           const c = clothingByItem.get(i.id);
-          const hay = [i.name, i.brand, i.notes, roomName(i.roomId), i.location, ...(i.tags ?? []), c?.type, c?.color]
+          const hay = [i.name, i.brand, i.notes, categoryPath(i.categoryId), roomName(i.roomId), i.location, ...(i.tags ?? []), c?.type, c?.color]
             .filter(Boolean)
             .join(" ")
             .toLowerCase();
@@ -5461,7 +5479,7 @@ async function executeTool(
         })
         .sort(
           (a, b) =>
-            (a.category ?? "").localeCompare(b.category ?? "") ||
+            (categoryPath(a.categoryId) ?? "").localeCompare(categoryPath(b.categoryId) ?? "") ||
             sizeRank(clothingByItem.get(a.id)?.size) - sizeRank(clothingByItem.get(b.id)?.size) ||
             a.name.localeCompare(b.name),
         );
@@ -5475,7 +5493,7 @@ async function executeTool(
           return {
             id: i.id,
             name: i.name,
-            category: i.category,
+            category: categoryPath(i.categoryId),
             status: i.status,
             owner: i.pregnancyId
               ? "baby (on the way)"
@@ -5537,7 +5555,6 @@ async function executeTool(
       });
       const baseFields = defined({
         name: input.name,
-        category: input.category,
         status: input.status,
         brand: input.brand,
         quantity: input.quantity,
@@ -5555,6 +5572,17 @@ async function executeTool(
         pricePaid: input.pricePaid,
         priceSold: input.priceSold,
       });
+      const categories = await loadInventoryCategories();
+      const detailTypeOf = (categoryId: string | null | undefined) => categoryTree(categories).find((n) => n.category.id === categoryId)?.detailType ?? null;
+      let categoryFields: { categoryId: string | null } | undefined;
+      if (input.category !== undefined) {
+        if (!input.category) categoryFields = { categoryId: null };
+        else {
+          const match = matchCategory(categories, input.category);
+          if (!match) return noCategoryError(input.category, categories);
+          categoryFields = { categoryId: match.category.id };
+        }
+      }
       let roomFields: { roomId: string | null } | undefined;
       if (input.roomName !== undefined) {
         if (!input.roomName) roomFields = { roomId: null };
@@ -5579,12 +5607,12 @@ async function executeTool(
       }
 
       // Create or update the category's detail row with whatever fields were given.
-      const upsertDetail = async (itemId: string, category: string | null | undefined, existing: { id: string } | undefined) => {
-        if (category === "CLOTHING") {
+      const upsertDetail = async (itemId: string, detailType: string | null, existing: { id: string } | undefined) => {
+        if (detailType === "CLOTHING") {
           if (existing) {
             if (Object.keys(clothingFields).length) await client.models.homeInventoryClothing.update({ id: existing.id, ...clothingFields });
           } else await client.models.homeInventoryClothing.create({ itemId, ...clothingFields });
-        } else if (category === "CONSUMABLE") {
+        } else if (detailType === "CONSUMABLE") {
           if (existing) {
             if (Object.keys(consumableFields).length) await client.models.homeInventoryConsumable.update({ id: existing.id, ...consumableFields });
           } else await client.models.homeInventoryConsumable.create({ itemId, ...consumableFields });
@@ -5598,7 +5626,7 @@ async function executeTool(
           quantity: 1,
           ...baseFields,
           name: input.name,
-          category: input.category,
+          ...categoryFields,
           status,
           ...(ownerFields ?? {}),
           ...(roomFields ?? {}),
@@ -5606,9 +5634,10 @@ async function executeTool(
           createdBy: "agent",
         });
         if (errors || !item) return JSON.stringify({ error: errors?.[0]?.message ?? "create failed" });
-        await upsertDetail(item.id, item.category, undefined);
+        const detailType = detailTypeOf(item.categoryId);
+        await upsertDetail(item.id, detailType, undefined);
         const restock =
-          item.category === "CONSUMABLE"
+          detailType === "CONSUMABLE"
             ? await restockIfLow(item, { ...consumableFields })
             : null;
         return JSON.stringify({ success: true, itemId: item.id, name: item.name, status: item.status, restock });
@@ -5644,6 +5673,7 @@ async function executeTool(
       const { data: updated, errors } = await client.models.homeInventoryItem.update({
         id: item.id,
         ...baseFields,
+        ...(categoryFields ?? {}),
         ...(ownerFields ?? {}),
         ...(roomFields ?? {}),
         ...markOwned,
@@ -5651,12 +5681,12 @@ async function executeTool(
       });
       if (errors || !updated) return JSON.stringify({ error: errors?.[0]?.message ?? "update failed" });
 
-      const cat = updated.category;
-      const existingDetail = cat === "CLOTHING" ? clothingByItem.get(item.id) : cat === "CONSUMABLE" ? consumableByItem.get(item.id) : undefined;
-      await upsertDetail(item.id, cat, existingDetail);
+      const detailType = detailTypeOf(updated.categoryId);
+      const existingDetail = detailType === "CLOTHING" ? clothingByItem.get(item.id) : detailType === "CONSUMABLE" ? consumableByItem.get(item.id) : undefined;
+      await upsertDetail(item.id, detailType, existingDetail);
 
       const restock =
-        cat === "CONSUMABLE"
+        detailType === "CONSUMABLE"
           ? await restockIfLow(updated, { ...(consumableByItem.get(item.id) ?? {}), ...consumableFields })
           : null;
       return JSON.stringify({ success: true, itemId: updated.id, name: updated.name, status: updated.status, restock });
@@ -5666,6 +5696,17 @@ async function executeTool(
       const list: any[] = Array.isArray(input.items) ? input.items : [];
       if (list.length === 0) return JSON.stringify({ error: "items is empty" });
       if (list.length > 60) return JSON.stringify({ error: "Too many items in one call (max 60) — split it up" });
+
+      // Checked up front so one bad category doesn't leave half a batch behind.
+      const categories = await loadInventoryCategories();
+      const tree = categoryTree(categories);
+      const nodeFor = new Map<string, (typeof tree)[number]>();
+      for (const it of list) {
+        const text = String(it.category ?? "Other");
+        const match = matchCategory(categories, text);
+        if (!match) return noCategoryError(text, categories, " — nothing was created");
+        nodeFor.set(text, match);
+      }
 
       let roomId: string | null = null;
       let roomLabelText: string | null = null;
@@ -5694,9 +5735,10 @@ async function executeTool(
       const created: { n: number; id: string; name: string; quantity: number }[] = [];
       const failed: { name: string; error: string }[] = [];
       for (const it of list) {
+        const node = nodeFor.get(String(it.category ?? "Other"))!;
         const { data: item, errors } = await client.models.homeInventoryItem.create({
           name: String(it.name).trim(),
-          category: it.category ?? "OTHER",
+          categoryId: node.category.id,
           status: "DRAFT",
           draftStatus,
           quantity: Number.isInteger(it.quantity) && it.quantity > 0 ? it.quantity : 1,
@@ -5712,14 +5754,14 @@ async function executeTool(
           failed.push({ name: it.name, error: errors?.[0]?.message ?? "create failed" });
           continue;
         }
-        if (item.category === "CLOTHING") {
+        if (node.detailType === "CLOTHING") {
           await client.models.homeInventoryClothing.create({
             itemId: item.id,
             size: it.size ?? null,
             color: it.color ?? null,
             type: it.clothingType ?? null,
           });
-        } else if (item.category === "CONSUMABLE") {
+        } else if (node.detailType === "CONSUMABLE") {
           await client.models.homeInventoryConsumable.create({ itemId: item.id, unit: it.unit ?? null });
         }
         created.push({ n: created.length + 1, id: item.id, name: item.name, quantity: item.quantity ?? 1 });
@@ -6190,8 +6232,10 @@ manage_care_item).
 Household inventory (list_inventory / manage_inventory_item /
 adjust_inventory_quantity): things we own (OWNED), things we want
 (WISHLIST — also the private baby registry), and SOLD / GIVEN_AWAY.
-Every item has a category; CLOTHING carries size/color/type and
-CONSUMABLE carries unit + a low-stock threshold.
+Every item has a category from an editable tree (list_inventory_categories,
+save_inventory_category), named by name or path, e.g. "Clothing > Baby".
+Clothing categories carry size/color/type and consumable categories carry
+unit + a low-stock threshold; subcategories inherit that.
 
 - "Add a stroller to the baby wishlist, ~$400" → manage_inventory_item
   create, status WISHLIST, forBaby true, estimatedPrice 400.
