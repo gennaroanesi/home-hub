@@ -25,7 +25,7 @@ const VALID_PARENT_TYPES = new Set<string>(ATTACHMENT_PARENT_TYPES);
  * sending the returned `contentType` (normalised, e.g. codec params
  * stripped), since that's what was signed — then creates a
  * homeAttachment record via the Amplify data client. Direct-to-S3 keeps
- * large videos off the API (and clear of the WAF body limit).
+ * large videos off the API.
  */
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") {

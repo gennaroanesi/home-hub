@@ -163,8 +163,8 @@ export function buildOpenApiSpec(tools: ApiTool[], baseUrl: string) {
       operationId: "createUpload",
       summary: "Get a presigned URL to upload an image",
       description:
-        "Send images this way, not as base64 in a JSON body (request bodies over ~8 KB are " +
-        "blocked by the firewall). 1) POST here with the image's contentType. 2) PUT the raw " +
+        "Send images this way, not as base64 in a JSON body. 1) POST here with the image's " +
+        "contentType. 2) PUT the raw " +
         "bytes to uploadUrl with the returned headers — directly to S3, no bearer key, valid 15 " +
         "minutes. 3) Call add_inventory_photo with the returned s3Key, or save_wardrobe_item " +
         "with it in s3Keys. For a product image already online, skip this and pass its link " +

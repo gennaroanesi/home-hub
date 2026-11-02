@@ -7,9 +7,9 @@
  */
 import { invokeAgent, listTools, missingRequired, withApiKey } from "@/lib/external-api";
 
-// Headroom for larger JSON bodies. Note the app's WAF blocks request
-// bodies over ~8 KB before they get here, so images should go through
+// Headroom for larger JSON bodies. Images should still go through
 // POST /uploads (presigned S3) + add_inventory_photo { s3Key } instead.
+// The WAF's 8 KB body rule is on Count (scripts/waf-allow-large-bodies.mjs).
 export const config = { api: { bodyParser: { sizeLimit: "6mb" } } };
 
 export default withApiKey(async (req, res, { sender }) => {

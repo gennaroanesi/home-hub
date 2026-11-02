@@ -102,7 +102,7 @@ Send Janet a photo on WhatsApp or in the web chat with where it is ("garage, sec
   2. PUT the bytes straight to S3; the WAF doesn't apply there.
   3. `add_inventory_photo { itemId | query, s3Key }`. Janet checks the key's format, then HEADs it to confirm it exists and is an allowed type; her role gained `s3:GetObject` on `home/inventory/*`.
 
-  `imageUrl` also works (the client found this workaround), and `imageBase64` is fine only for tiny images. The alternative, relaxing `SizeRestrictions_BODY` in the WAF for `/api/v1/*`, is a console-only security decision that wasn't taken.
+  `imageUrl` also works (the client found this workaround), and `imageBase64` is fine only for small images. **Update 2026-11-01:** `SizeRestrictions_BODY` is now on Count for the whole site, because notes outgrew 8 KB and whole-note edits were blocked (`scripts/waf-allow-large-bodies.mjs`, see `docs/ops-architecture.md`). The presigned flow is still the way to send images.
 
 ## Pets as owners
 `homeInventoryItem.petId` (indexed). The web owner picker/filter lists active pets ("🐶 Dolce"). Janet resolves pet names in `ownerName` (`resolveInventoryOwner` → exactly one of `ownerPersonId` / `pregnancyId` / `petId`), and `list_inventory` shows the pet as the owner.

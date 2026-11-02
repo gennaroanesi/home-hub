@@ -2,9 +2,9 @@
  * POST /api/v1/uploads
  *
  * Presigned S3 upload for API clients sending images (inventory photos).
- * Image bytes must NOT go through the JSON API: the app's WAF blocks
- * request bodies over ~8 KB (AWS managed Core rule set,
- * SizeRestrictions_BODY). Instead:
+ * Image bytes shouldn't go through the JSON API, which is capped at 6 MB
+ * and has the size rule of the WAF only on Count, not gone for good
+ * (scripts/waf-allow-large-bodies.mjs). Instead:
  *   1. POST /uploads { contentType }        → { uploadUrl, s3Key, headers }
  *   2. PUT the raw image bytes to uploadUrl (straight to S3, with those
  *      headers; no bearer key — the URL is the credential, 15 min)

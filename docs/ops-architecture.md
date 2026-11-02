@@ -55,6 +55,20 @@ scripts/hh.ts              generic CLI over the external API (dry run unless --y
 - **Person:** ops take `personId` or `personName`; if neither, the actor
   (Janet's sender, the API key's `MUSE_SENDER`). The web always passes `personId`.
 
+## Firewall on the external API
+
+The Amplify-created WAF sits in front of `/api/v1/*` (the web, mobile and
+Janet paths go through AppSync and don't pass it). A block shows up as a
+CloudFront 403 before the app sees the request, so a bad key returning 401
+means the request got through.
+
+- **Size:** `SizeRestrictions_BODY` blocked bodies from 8,192 bytes, which
+  stopped whole-note saves. It's been on Count since 2026-11-01, for the whole
+  site. This lives in AWS, not in the repo: if the ACL is ever recreated, run
+  `AWS_PROFILE=admin node scripts/waf-allow-large-bodies.mjs --apply`.
+- **Content:** other rules are still on, so text containing `../` gets a 403,
+  even in a small note.
+
 ## Tests
 
 - **Unit** (`npm test`): each domain's ops against a fake data client
