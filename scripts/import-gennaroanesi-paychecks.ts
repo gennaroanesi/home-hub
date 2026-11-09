@@ -12,6 +12,7 @@
  *     --from <gennaroanesi.com prod amplify_outputs.json> \
  *     --to   <home-hub amplify_outputs.json> [--yes]
  *     [--me Gennaro] [--spouse Cristine] [--profile amplify-dev]
+ *     [--src-bucket gennaroanesi.com]   (its bucket isn't in its Amplify outputs)
  *
  * Env (from the shell or home-hub's .env.local):
  *   GA_USER / GA_PASS     a gennaroanesi.com login in its admins group
@@ -74,7 +75,7 @@ async function main() {
   if (!fromPath || !toPath) throw new Error("Usage: --from <gennaroanesi outputs> --to <home-hub outputs> [--yes]");
   const fromOutputs = JSON.parse(readFileSync(fromPath, "utf8"));
   const toOutputs = JSON.parse(readFileSync(toPath, "utf8"));
-  const srcBucket: string | undefined = fromOutputs.storage?.bucket_name;
+  const srcBucket: string = arg("src-bucket") ?? fromOutputs.storage?.bucket_name ?? "gennaroanesi.com";
   const dstBucket = process.env.HOME_HUB_BUCKET;
   if (!dstBucket) throw new Error("HOME_HUB_BUCKET must be set");
 
@@ -85,7 +86,7 @@ async function main() {
   await signOut().catch(() => {});
   const pdfOf = new Map<string, any>();
   for (const a of attachments) if (!pdfOf.has(a.parentId)) pdfOf.set(a.parentId, a);
-  console.log(`gennaroanesi.com: ${paychecks.length} paychecks, ${pdfOf.size} with a PDF`);
+  console.log(`gennaroanesi.com: ${paychecks.length} paychecks, ${pdfOf.size} with a PDF (copied from s3://${srcBucket})`);
 
   // ── Plan against home-hub ────────────────────────────────────────────────
   const dst = await session(toOutputs, process.env.TO_USER ?? process.env.PRD_USER, process.env.TO_PASS ?? process.env.PRD_PASS, "home-hub (PRD_USER/PRD_PASS)");
@@ -94,7 +95,10 @@ async function main() {
     ME: people.find((p) => p.name === names.ME)?.id,
     SPOUSE: people.find((p) => p.name === names.SPOUSE)?.id,
   };
-  if (!personId.ME || !personId.SPOUSE) throw new Error(`home-hub needs people named ${names.ME} and ${names.SPOUSE} (--me / --spouse)`);
+  if (!personId.ME || !personId.SPOUSE) {
+    const household = people.filter((p) => (p.groups ?? []).includes("home-users")).map((p) => p.name);
+    throw new Error(`home-hub needs people named ${names.ME} and ${names.SPOUSE}; household members are: ${household.join(", ")}. Pass --me / --spouse.`);
+  }
   const already = new Set((await listAll(dst.models.homePaycheck)).map((p) => p.importRef).filter(Boolean));
   const todo = paychecks.filter((p) => !already.has(p.id));
   const unknown = todo.filter((p) => !personId[p.person]);
@@ -118,7 +122,8 @@ async function main() {
     const id = randomUUID();
     let s3KeyPdf: string | null = null;
     const att = pdfOf.get(p.id);
-    if (att && srcBucket) {
+    if (!att) failures.push(`${p.payDate} ${p.person}: no PDF attached in gennaroanesi.com`);
+    if (att) {
       try {
         await s3.send(new CopyObjectCommand({ Bucket: dstBucket, Key: paycheckPdfKey(id), CopySource: encodeURI(`${srcBucket}/${att.s3Key}`), ContentType: "application/pdf", MetadataDirective: "REPLACE" }));
         s3KeyPdf = paycheckPdfKey(id);
