@@ -9,7 +9,6 @@ export const ATTACHMENT_PARENT_TYPES = [
   "RESERVATION",
   "EVENT",
   "TASK",
-  "BILL",
   "VISIT",
   "LAB_RESULT",
   "CARE_ITEM",

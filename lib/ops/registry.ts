@@ -4,11 +4,12 @@
 import { z } from "zod/v4";
 import type { OpContext, OpVia } from "./context";
 import { OpError, type OpDef } from "./define";
+import { financeOps } from "./finance";
 import { inventoryOps } from "./inventory";
 import { notesOps } from "./notes";
 import { wardrobeOps } from "./wardrobe";
 
-export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps] as const;
+export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...financeOps] as const;
 
 export type AnyOp = (typeof OPS)[number];
 export type OpName = AnyOp["name"];

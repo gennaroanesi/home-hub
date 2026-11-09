@@ -45,8 +45,6 @@ function entityDetailHref(entityType: string, entityId: string): string | null {
       return `/calendar`;
     case "TASK":
       return `/tasks`;
-    case "BILL":
-      return `/bills`;
     case "DOCUMENT":
       return `/documents`;
     case "PREGNANCY":
@@ -114,7 +112,6 @@ export default function ChecklistsPage() {
         resolveNames(idsByType["TRIP"], "homeTrip", "name", names),
         resolveNames(idsByType["EVENT"], "homeCalendarEvent", "title", names),
         resolveNames(idsByType["TASK"], "homeTask", "title", names),
-        resolveNames(idsByType["BILL"], "homeBill", "name", names),
         resolveNames(idsByType["DOCUMENT"], "homeDocument", "title", names),
         resolveNames(idsByType["PREGNANCY"], "homePregnancy", "dueDate", names),
       ]);
@@ -155,7 +152,6 @@ export default function ChecklistsPage() {
         TRIP: { model: "homeTrip", field: "name" },
         EVENT: { model: "homeCalendarEvent", field: "title" },
         TASK: { model: "homeTask", field: "title" },
-        BILL: { model: "homeBill", field: "name" },
         DOCUMENT: { model: "homeDocument", field: "title" },
         PREGNANCY: { model: "homePregnancy", field: "dueDate" },
       };

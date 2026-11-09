@@ -173,7 +173,7 @@ function NavContent({
               <NavItem
                 key={item.href}
                 item={item}
-                active={isNavActive(item.href, pathname)}
+                active={isNavActive(item.href, pathname, item.exact)}
                 collapsed={collapsed}
               />
             ))}
@@ -186,7 +186,7 @@ function NavContent({
           <NavItem
             key={item.href}
             item={item}
-            active={isNavActive(item.href, pathname)}
+            active={isNavActive(item.href, pathname, item.exact)}
             collapsed={collapsed}
           />
         ))}

@@ -41,7 +41,6 @@ const PARENT_TYPE_LABELS: Record<string, string> = {
   RESERVATION: "Reservation",
   EVENT: "Event",
   TASK: "Task",
-  BILL: "Bill",
   VISIT: "Medical visit",
   LAB_RESULT: "Lab result",
   CARE_ITEM: "Care item",
@@ -58,7 +57,6 @@ const PARENT_TYPE_COLORS: Record<string, string> = {
   RESERVATION: "secondary",
   EVENT: "success",
   TASK: "warning",
-  BILL: "danger",
   VISIT: "success",
   LAB_RESULT: "success",
   CARE_ITEM: "success",
@@ -137,7 +135,6 @@ export default function AttachmentsPage() {
         reservations,
         events,
         tasks,
-        bills,
         visits,
         labs,
         careItems,
@@ -153,7 +150,6 @@ export default function AttachmentsPage() {
         listAllPages<Schema["homeTripReservation"]["type"]>(client.models.homeTripReservation),
         listAllPages<Schema["homeCalendarEvent"]["type"]>(client.models.homeCalendarEvent),
         listAllPages<Schema["homeTask"]["type"]>(client.models.homeTask),
-        listAllPages<Schema["homeBill"]["type"]>(client.models.homeBill),
         listAllPages<Schema["homeMedicalVisit"]["type"]>(client.models.homeMedicalVisit),
         listAllPages<Schema["homeLabResult"]["type"]>(client.models.homeLabResult),
         listAllPages<Schema["homeCareItem"]["type"]>(client.models.homeCareItem),
@@ -203,9 +199,6 @@ export default function AttachmentsPage() {
       }
       for (const t of tasks) {
         map[t.id] = { type: "Task", name: t.title, href: "/tasks" };
-      }
-      for (const b of bills) {
-        map[b.id] = { type: "Bill", name: b.name };
       }
       for (const v of visits) {
         const date = new Date(v.visitAt).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });

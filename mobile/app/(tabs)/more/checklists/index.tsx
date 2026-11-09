@@ -51,7 +51,6 @@ const CREATABLE_TYPES: EntityType[] = [
   "TRIP",
   "EVENT",
   "TASK",
-  "BILL",
   "DOCUMENT",
   "PREGNANCY",
   "OTHER",
@@ -66,7 +65,6 @@ const ENTITY_LOOKUP: Record<
   TRIP: { model: "homeTrip", field: "name" },
   EVENT: { model: "homeCalendarEvent", field: "title" },
   TASK: { model: "homeTask", field: "title" },
-  BILL: { model: "homeBill", field: "name" },
   DOCUMENT: { model: "homeDocument", field: "title" },
   PREGNANCY: { model: "homePregnancy", field: "dueDate" },
 };

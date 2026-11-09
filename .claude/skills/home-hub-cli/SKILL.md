@@ -1,6 +1,6 @@
 ---
 name: home-hub-cli
-description: Read or change live Home Hub data (wardrobe items and wishlist, trips, trip plans, tasks, inventory, shopping lists, calendar…) from the terminal with `npm run hh`. Use this instead of writing a one-off script whenever the user asks to look something up or change something in their household data, e.g. "add this to my wishlist", "mark the polo as arrived", "what's in my Seattle packing list". Not for schema or code changes.
+description: Read or change live Home Hub data (wardrobe items and wishlist, trips, trip plans, tasks, inventory, shopping lists, calendar, household finance: budget, transactions, scheduled bills, goals…) from the terminal with `npm run hh`. Use this instead of writing a one-off script whenever the user asks to look something up or change something in their household data, e.g. "add this to my wishlist", "mark the polo as arrived", "what's in my Seattle packing list". Not for schema or code changes.
 ---
 
 # Home Hub CLI (`hh`)

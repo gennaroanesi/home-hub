@@ -36,6 +36,8 @@ import * as ecs from "aws-cdk-lib/aws-ecs";
 import * as ecr from "aws-cdk-lib/aws-ecr";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import * as codebuild from "aws-cdk-lib/aws-codebuild";
+import * as secretsmanager from "aws-cdk-lib/aws-secretsmanager";
+import * as s3n from "aws-cdk-lib/aws-s3-notifications";
 
 import { auth } from "./auth/resource";
 import { data } from "./data/resource";
@@ -54,6 +56,9 @@ import { taskOccurrenceAction } from "./functions/task-occurrence-action/resourc
 import { wardrobeSuggest } from "./functions/wardrobe-suggest/resource";
 import { wardrobeTryOn } from "./functions/wardrobe-try-on/resource";
 import { ops } from "./functions/ops/resource";
+import { financeSync } from "./functions/finance-sync/resource";
+import { paycheckProcessor } from "./functions/paycheck-processor/resource";
+import { invoiceProcessor } from "./functions/invoice-processor/resource";
 
 const backend = defineBackend({
   auth,
@@ -73,6 +78,9 @@ const backend = defineBackend({
   wardrobeSuggest,
   wardrobeTryOn,
   ops,
+  financeSync,
+  paycheckProcessor,
+  invoiceProcessor,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -93,6 +101,9 @@ const lambdaDescriptions: Record<string, string> = {
   taskOccurrenceAction: "Home Hub — Recurring task occurrence: complete/skip/uncomplete (AppSync mutation)",
   wardrobeSuggest: "Home Hub — Outfit suggester for the wardrobe (AppSync mutation, Anthropic)",
   ops: "Home Hub — runOp mutation: runs lib/ops operations for web and mobile",
+  financeSync: "Home Hub — SimpleFIN sync for household finance accounts (scheduled 3×/day + syncFinance mutation)",
+  paycheckProcessor: "Home Hub — Emailed / uploaded paystubs → paycheck review inbox (Claude extraction)",
+  invoiceProcessor: "Home Hub — Emailed / uploaded invoices → homeInvoice (Claude extraction, auto-link)",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -369,6 +380,106 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
     arn: dailySummaryLambda.functionArn,
     roleArn: dailySummaryScheduleRole.roleArn,
   },
+});
+
+// ── Finance sync — SimpleFIN, 3×/day ─────────────────────────────────────
+// Pulls the mapped household accounts (homeFinanceAccount.simplefinAccountId)
+// from SimpleFIN, classifies and reconciles transactions, links them to
+// scheduled transactions and upserts today's balance snapshots.
+//
+// The SimpleFIN access URL is the one gennaroanesi.com already stores in
+// Secrets Manager (same account). It can see personal accounts too, so the
+// Lambda only requests mapped ids (lib/finance/simplefin.ts enforces it).
+// SimpleFIN Bridge rate-limits per token; gennaroanesi.com also pulls 3×/day,
+// so these runs sit 30 min after its ~4/12/19h Chicago runs.
+
+const financeSyncLambda = backend.financeSync.resources.lambda as LambdaFunction;
+const financeSyncStack = Stack.of(financeSyncLambda);
+const simplefinSecret = secretsmanager.Secret.fromSecretNameV2(financeSyncStack, "SimplefinSecret", "gennaroanesi/simplefin");
+simplefinSecret.grantRead(financeSyncLambda);
+financeSyncLambda.addEnvironment("SIMPLEFIN_ACCESS_URL", simplefinSecret.secretValueFromJson("accessUrl").unsafeUnwrap());
+financeSyncLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+
+const financeSyncScheduleRole = new iam.Role(financeSyncStack, "financeSyncSchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [
+        new iam.PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["lambda:InvokeFunction"],
+          resources: [financeSyncLambda.functionArn],
+        }),
+      ],
+    }),
+  },
+});
+
+new scheduler.CfnSchedule(financeSyncStack, "financeSyncSchedule", {
+  scheduleExpression: "cron(30 4,12,19 * * ? *)",
+  scheduleExpressionTimezone: "America/Chicago",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: {
+    arn: financeSyncLambda.functionArn,
+    roleArn: financeSyncScheduleRole.roleArn,
+    input: JSON.stringify({ source: "aws.events", "detail-type": "Scheduled Event" }),
+  },
+});
+
+// ── Finance inbound email: paychecks@ / invoices@import.cristinegennaro.com ─
+// SES (receipt rules in the account's single ACTIVE rule set, created by
+// scripts/setup-finance-inbound-email.sh) stores each message in this bucket
+// under paychecks/ or invoices/; the object-created notification invokes the
+// matching processor. Raw mail expires after 90 days; the processors keep
+// the PDFs (and an invoice's .eml) under home/finance/ in HOME_HUB_BUCKET.
+// Only allowed senders are processed (FINANCE_INBOUND_ALLOWED_SENDERS,
+// comma-separated, from .env.local / Amplify Hosting env vars).
+
+const paycheckLambda = backend.paycheckProcessor.resources.lambda as LambdaFunction;
+const invoiceLambda = backend.invoiceProcessor.resources.lambda as LambdaFunction;
+const inboundStack = Stack.of(paycheckLambda);
+
+const financeInboundBucket = new s3.Bucket(inboundStack, "FinanceInboundMailBucket", {
+  encryption: s3.BucketEncryption.S3_MANAGED,
+  blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+  enforceSSL: true,
+  lifecycleRules: [{ expiration: Duration.days(90) }],
+  removalPolicy: RemovalPolicy.RETAIN,
+});
+// SES may write only the two prefixes, and only on behalf of this account.
+financeInboundBucket.addToResourcePolicy(
+  new PolicyStatement({
+    effect: Effect.ALLOW,
+    principals: [new iam.ServicePrincipal("ses.amazonaws.com")],
+    actions: ["s3:PutObject"],
+    resources: [financeInboundBucket.arnForObjects("paychecks/*"), financeInboundBucket.arnForObjects("invoices/*")],
+    conditions: { StringEquals: { "aws:SourceAccount": inboundStack.account } },
+  }),
+);
+financeInboundBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(paycheckLambda), { prefix: "paychecks/" });
+financeInboundBucket.addEventNotification(s3.EventType.OBJECT_CREATED, new s3n.LambdaDestination(invoiceLambda), { prefix: "invoices/" });
+
+const FINANCE_ALLOWED_SENDERS = process.env.FINANCE_INBOUND_ALLOWED_SENDERS ?? "";
+for (const [fn, kind, outPrefix] of [
+  [paycheckLambda, "paychecks", "home/finance/paychecks/*"],
+  [invoiceLambda, "invoices", "home/finance/invoices/*"],
+] as const) {
+  financeInboundBucket.grantRead(fn, `${kind}/*`);
+  fn.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
+  fn.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+  fn.addEnvironment("FINANCE_INBOUND_ALLOWED_SENDERS", FINANCE_ALLOWED_SENDERS);
+  fn.addToRolePolicy(
+    new PolicyStatement({
+      effect: Effect.ALLOW,
+      actions: ["s3:GetObject", "s3:PutObject"],
+      resources: [`arn:aws:s3:::${HOME_HUB_BUCKET}/${outPrefix}`, `arn:aws:s3:::${HOME_HUB_BUCKET}/home/finance/staging/*`],
+    }),
+  );
+}
+
+new CfnOutput(inboundStack, "FinanceInboundMailBucketName", {
+  value: financeInboundBucket.bucketName,
+  description: "SES receipt rules for paychecks@/invoices@import.cristinegennaro.com write here (scripts/setup-finance-inbound-email.sh)",
 });
 
 // ── Reminder sweep — every 5 min ───────────────────────────────────────────

@@ -37,7 +37,6 @@
 //
 //   array:
 //     homeTask.assignedPersonIds
-//     homeBill.assignedPersonIds
 //     homeCalendarEvent.assignedPersonIds
 
 import type { AppSyncResolverHandler } from "aws-lambda";
@@ -147,7 +146,6 @@ export const handler: AppSyncResolverHandler<Args, MergeResult> = async (event) 
   // single household, so the scan is fine.
   const arrayRewrites: { model: Model; field: string }[] = [
     { model: "homeTask" as Model, field: "assignedPersonIds" },
-    { model: "homeBill" as Model, field: "assignedPersonIds" },
     { model: "homeCalendarEvent" as Model, field: "assignedPersonIds" },
   ];
 

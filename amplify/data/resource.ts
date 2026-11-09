@@ -14,6 +14,9 @@ import { taskOccurrenceAction } from "../functions/task-occurrence-action/resour
 import { wardrobeSuggest } from "../functions/wardrobe-suggest/resource";
 import { ops } from "../functions/ops/resource";
 import { wardrobeTryOn } from "../functions/wardrobe-try-on/resource";
+import { financeSync } from "../functions/finance-sync/resource";
+import { paycheckProcessor } from "../functions/paycheck-processor/resource";
+import { invoiceProcessor } from "../functions/invoice-processor/resource";
 
 // Reusable location shape for trips, days, and events
 const locationCustomType = a.customType({
@@ -31,7 +34,7 @@ const locationCustomType = a.customType({
 const schema = a
   .schema({
     // ── Person ──────────────────────────────────────────────────────────
-    // One row per household member. Tasks/bills/events/days reference these.
+    // One row per household member. Tasks/events/days reference these.
     homePerson: a
       .model({
         name: a.string().required(),
@@ -841,22 +844,349 @@ const schema = a
       .secondaryIndexes((idx) => [idx("taskId")])
       .authorization((allow) => [allow.group("home-users")]),
 
-    // ── Bill ────────────────────────────────────────────────────────────
-    homeBill: a
+    // ── Finance ─────────────────────────────────────────────────────────
+    // Household finances: the joint account(s), their transactions (synced
+    // from SimpleFIN by the finance-sync Lambda), scheduled transactions,
+    // a versioned budget, savings goals and spend groups. Ported and
+    // trimmed from gennaroanesi.com's finance module (no holdings, RSU,
+    // paychecks or tax). See docs/finance-handoff.md. Pure logic lives in
+    // lib/finance/ and is shared by the pages, the ops and the Lambda.
+
+    homeFinanceAccount: a
       .model({
         name: a.string().required(),
-        amount: a.float(),
+        type: a.enum(["CHECKING", "SAVINGS", "CREDIT", "LOAN", "CASH", "OTHER"]),
+        institution: a.string(),
+        last4: a.string(),
+        // Signed: positive = asset, negative = owed (cards, loans).
+        currentBalance: a.float().required().default(0),
         currency: a.string().default("USD"),
-        dueDay: a.integer(),
-        dueDate: a.datetime(),
-        isRecurring: a.boolean().default(true),
-        isPaid: a.boolean().default(false),
-        paidAt: a.datetime(),
+        // Empty = joint/household. Set for a member's own account tracked
+        // here (e.g. a personal card that pays household bills).
+        ownerPersonIds: a.id().array(),
+        active: a.boolean().default(true),
+        sortOrder: a.integer(),
+        // Cash buffer for CHECKING: the overview warns when the projected
+        // balance (after scheduled debits) dips below it.
+        minBalance: a.float(),
+        creditLimit: a.float(), // CREDIT only
+        statementDueDay: a.integer(), // CREDIT only: day of month
+        apr: a.float(), // CREDIT/LOAN, decimal (0.0625)
+        apy: a.float(), // SAVINGS, decimal
+        // SimpleFIN Bridge account id ("ACT-…"). When set, finance-sync
+        // pulls this account's balance and transactions. The token is
+        // shared with gennaroanesi.com, so only mapped ids are requested.
+        simplefinAccountId: a.string(),
+        balanceUpdatedAt: a.datetime(),
+        lastSyncAt: a.datetime(),
+        lastSyncDetails: a.string(), // JSON summary of the last run for this account
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    homeFinanceTransaction: a
+      .model({
+        accountId: a.id().required(),
+        amount: a.float().required(), // positive = in, negative = out
+        type: a.enum(["INCOME", "EXPENSE", "TRANSFER"]),
         category: a.string(),
+        // Who set the category: RULE (rule table, recomputable), LLM
+        // (classifier fallback, recomputable) or MANUAL (never touched by
+        // automation).
+        categorySource: a.enum(["RULE", "LLM", "MANUAL"]),
+        description: a.string(),
+        date: a.date().required(),
+        status: a.enum(["POSTED", "PENDING"]),
+        // Household member this money is attributed to: the contributor
+        // for money in (Contribution), the spender for money out when a
+        // rule or a person can tell (card last-4). Null = household.
+        personId: a.id(),
+        personSource: a.enum(["RULE", "MANUAL"]),
+        goalId: a.id(),
+        spendGroupId: a.id(),
+        toAccountId: a.id(), // TRANSFER destination
+        recurringId: a.id(), // scheduled transaction this realizes
+        importHash: a.string(), // dedup fingerprint (date|amount|description)
+        sfTransactionId: a.string(), // SimpleFIN id: stable across pending → posted
+        notes: a.string(),
+      })
+      .secondaryIndexes((index) => [
+        index("accountId").sortKeys(["date"]),
+        index("recurringId"),
+        index("spendGroupId"),
+      ])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Scheduled transaction: mortgage, car, utilities, each member's
+    // contribution. Replaces homeBill. Drives the projected balance and
+    // the budget's "committed" figure; the matcher links posted rows to it.
+    homeFinanceRecurring: a
+      .model({
+        accountId: a.id().required(),
+        amount: a.float().required(), // positive = in, negative = out
+        type: a.enum(["INCOME", "EXPENSE", "TRANSFER"]),
+        toAccountId: a.id(),
+        category: a.string(),
+        description: a.string().required(),
+        cadence: a.enum(["ONCE", "WEEKLY", "BIWEEKLY", "MONTHLY", "QUARTERLY", "SEMIANNUALLY", "ANNUALLY"]),
+        startDate: a.date().required(),
+        endDate: a.date(), // inclusive; null = no end
+        nextDate: a.date(),
+        active: a.boolean().default(true),
+        autopay: a.boolean().default(true), // false = someone has to pay it by hand
+        personId: a.id(), // contributor for INCOME rules
+        goalId: a.id(),
+        spendGroupId: a.id(),
+        // Substring or /regex/flags matched against bank descriptions to
+        // link posted transactions ("ROCKET MORTGAGE", "/TOYOTA.*PMT/i").
+        matchPattern: a.string(),
         url: a.url(),
         notes: a.string(),
-        assignedPersonIds: a.id().array(), // empty = household
       })
+      .secondaryIndexes((index) => [index("accountId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Versioned budget bucket (SCD type 2): a change closes the current
+    // row (effectiveTo) and inserts a new one with the same seriesId, so
+    // past periods are judged against the budget that governed them.
+    // INCOME lines declare what each member contributes (personId);
+    // EXPENSE lines cover a set of categories. A category belongs to at
+    // most one in-force EXPENSE bucket (lib/finance/budget.ts validates).
+    homeFinanceBudget: a
+      .model({
+        seriesId: a.id().required(),
+        name: a.string().required(),
+        kind: a.enum(["INCOME", "EXPENSE"]),
+        personId: a.id(), // INCOME: the contributor
+        categories: a.string().array(),
+        amount: a.float().required(), // positive magnitude per period
+        period: a.enum(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]),
+        rollover: a.boolean().default(false),
+        effectiveFrom: a.date().required(),
+        effectiveTo: a.date(), // null = open-ended
+        active: a.boolean().default(true),
+        label: a.string(), // names the change: "baby arrives"
+        notes: a.string(),
+      })
+      .secondaryIndexes((index) => [index("seriesId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    homeFinanceSavingsGoal: a
+      .model({
+        name: a.string().required(),
+        targetAmount: a.float().required(),
+        // Manual progress. Ignored when fundingAccountId is set: progress
+        // is then that account's balance, allocated across its goals in
+        // priority order (lower first), each capped at its target.
+        currentAmount: a.float().default(0),
+        fundingAccountId: a.id(),
+        priority: a.integer().default(100),
+        targetDate: a.date(),
+        active: a.boolean().default(true),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Cuts across categories: a trip, the nursery, a remodel. Tagged
+    // transactions count here instead of against the monthly budget.
+    homeFinanceSpendGroup: a
+      .model({
+        name: a.string().required(),
+        kind: a.enum(["TRIP", "PROJECT", "EVENT", "OTHER"]),
+        budget: a.float(),
+        startDate: a.date(),
+        endDate: a.date(),
+        tripId: a.id(), // optional link to homeTrip
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Editable classification rules, first match wins by sortOrder.
+    // pattern = "/regex/flags" or a case-insensitive substring. personId
+    // also attributes the row (e.g. "transfer from … 1234" → Gennaro).
+    // Empty table = the bundled lib/finance/category-rules.json.
+    homeFinanceCategoryRule: a
+      .model({
+        pattern: a.string().required(),
+        category: a.string(),
+        personId: a.id(),
+        sortOrder: a.integer().required(),
+        active: a.boolean().default(true),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // One row per finance-sync run: the audit trail of what SimpleFIN
+    // returned and what changed. *Json fields are JSON strings.
+    homeFinanceSyncLog: a
+      .model({
+        startedAt: a.datetime().required(),
+        finishedAt: a.datetime(),
+        trigger: a.enum(["CRON", "MANUAL"]),
+        status: a.enum(["OK", "PARTIAL", "ERROR", "DRY_RUN"]),
+        windowFrom: a.date(),
+        windowTo: a.date(),
+        accountsChecked: a.integer(),
+        txPulled: a.integer(),
+        txInserted: a.integer(),
+        txUpdated: a.integer(),
+        txDuplicate: a.integer(),
+        txFailed: a.integer(),
+        balancesUpdated: a.integer(),
+        errorCount: a.integer(),
+        durationMs: a.integer(),
+        perAccountJson: a.string(),
+        errorsJson: a.string(),
+        bridgeErrorsJson: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Daily balance per account, upserted by every finance-sync run, so
+    // the balance chart needs no ledger replay. Derived, never edited.
+    homeFinanceAccountSnapshot: a
+      .model({
+        accountId: a.id().required(),
+        date: a.date().required(), // America/Chicago local date
+        balance: a.float().required(),
+        inflow: a.float().default(0),
+        outflow: a.float().default(0),
+        txCount: a.integer().default(0),
+        capturedAt: a.datetime().required(),
+      })
+      .identifier(["accountId", "date"])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Paychecks ───────────────────────────────────────────────────────
+    // One row per paystub per household member, moved here from
+    // gennaroanesi.com (its financePaycheck, with person ME/SPOUSE → personId).
+    // Feeds the tax outlook and "contributions vs pay". Headline columns are
+    // what queries aggregate; the long tail goes in lineItems:
+    // [{ name, amount, ytd?, type: PRETAX|POSTTAX|IMPUTED|EMPLOYER_PAID|EARNING|OTHER }].
+    // The stub PDF lives at s3KeyPdf (home/finance/paychecks/…).
+    homePaycheck: a
+      .model({
+        personId: a.id().required(),
+        payDate: a.date().required(),
+        periodStart: a.date(),
+        periodEnd: a.date(),
+        employer: a.string(),
+        gross: a.float().required(), // cash gross; excludes imputed income
+        taxableWage: a.float(),
+        net: a.float().required(),
+        imputedGtl: a.float(),
+        fedWh: a.float(),
+        stateWh: a.float(),
+        oasdi: a.float(),
+        medicare: a.float(),
+        contrib401k: a.float(),
+        contribRoth401k: a.float(),
+        contribAfterTax401k: a.float(),
+        hsa: a.float(),
+        fsa: a.float(),
+        medical: a.float(),
+        dental: a.float(),
+        vision: a.float(),
+        ytdGross: a.float(),
+        ytdTaxableWage: a.float(),
+        ytdFedWh: a.float(),
+        ytdOasdi: a.float(),
+        ytdMedicare: a.float(),
+        ytd401k: a.float(),
+        ytdRoth401k: a.float(),
+        ytdAfterTax401k: a.float(),
+        ytdNet: a.float(),
+        // Supplemental wages, kept out of `gross` (they're in taxableWage).
+        bonusGross: a.float(),
+        rsuGross: a.float(),
+        ytdBonusGross: a.float(),
+        ytdRsuGross: a.float(),
+        supplementalFedWh: a.float(),
+        ytdSupplementalFedWh: a.float(),
+        // W-4 elections on the stub (settings, not deductions).
+        w4FilingStatus: a.string(), // SINGLE | MFJ | MFS | HOH
+        w4ExtraWithholding: a.float(),
+        w4Dependents: a.float(),
+        lineItems: a.json(),
+        s3KeyPdf: a.string(),
+        source: a.enum(["EMAIL", "UPLOAD", "MANUAL", "IMPORT"]),
+        // gennaroanesi.com financePaycheck id for imported rows (re-run safe).
+        importRef: a.string(),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Stubs that arrived by email (paychecks@import.cristinegennaro.com →
+    // SES → paycheck-processor) wait here for review; unreviewed Claude
+    // output never lands in homePaycheck. Kept after import so contentHash
+    // still dedups a re-forward.
+    homePaycheckInbox: a
+      .model({
+        draft: a.json(), // extraction JSON (paycheck-extract.ts shape); null on ERROR
+        personId: a.id(), // matched from the employee name on the stub
+        s3KeyPdf: a.string(),
+        filename: a.string(),
+        sizeBytes: a.integer(),
+        contentHash: a.string(),
+        emailFrom: a.string(),
+        emailSubject: a.string(),
+        receivedAt: a.datetime(),
+        status: a.enum(["NEEDS_REVIEW", "ERROR", "IMPORTED", "DISMISSED"]),
+        parseError: a.string(),
+        paycheckId: a.id(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Invoices ────────────────────────────────────────────────────────
+    // Household invoices / receipts / bills, from invoices@import.cristinegennaro.com
+    // (SES → invoice-processor) or a PDF upload. The PDF facsimile is the
+    // record; extracted fields are Claude's best effort (NEEDS_REVIEW when
+    // the total couldn't be read). Ported from gennaroanesi.com.
+    homeInvoice: a
+      .model({
+        vendor: a.string(),
+        invoiceNumber: a.string(),
+        issueDate: a.date(),
+        dueDate: a.date(),
+        currency: a.string().default("USD"),
+        subtotal: a.float(),
+        tax: a.float(),
+        total: a.float(),
+        items: a.string(), // JSON [{description, qty, unitPrice, amount}]
+        category: a.string(),
+        spendGroupId: a.id(),
+        s3KeyPdf: a.string().required(),
+        s3KeyOriginal: a.string(),
+        contentHash: a.string(),
+        source: a.enum(["EMAIL", "UPLOAD"]),
+        emailFrom: a.string(),
+        emailSubject: a.string(),
+        receivedAt: a.datetime(),
+        parseStatus: a.enum(["PARSED", "NEEDS_REVIEW", "ERROR"]),
+        parseError: a.string(),
+        paid: a.boolean().default(false),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Many-to-many: a payment can cover several invoices and an invoice can
+    // be paid in parts. amount = this transaction's share (null = all).
+    homeInvoiceLink: a
+      .model({
+        invoiceId: a.id().required(),
+        transactionId: a.id().required(),
+        amount: a.float(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Small JSON settings for finance pages (tax outlook inputs per year:
+    // prior-year tax, filing status, per-person RSU cadence, 401k what-ifs).
+    // key e.g. "tax-outlook:2026".
+    homeFinanceSetting: a
+      .model({
+        key: a.string().required(),
+        value: a.json(),
+      })
+      .identifier(["key"])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Calendar Event ──────────────────────────────────────────────────
@@ -1297,7 +1627,6 @@ const schema = a
           "RESERVATION",
           "EVENT",
           "TASK",
-          "BILL",
           "INBOUND_MESSAGE",
           "OUTBOUND_MESSAGE",
           // Health records: ultrasound clips/stills, scans, recordings,
@@ -1366,7 +1695,6 @@ const schema = a
         entityType: a.enum([
           "TRIP",
           "EVENT",
-          "BILL",
           "DOCUMENT",
           "TASK",
           "PREGNANCY",
@@ -1793,6 +2121,42 @@ const schema = a
       .returns(a.json())
       .handler(a.handler.function(ops)),
 
+    // ── Finance sync (finance-sync Lambda) ──────────────────────────────
+    // "Sync now" on the finance pages. Returns the run summary as JSON
+    // ({ ok, status, txInserted, … }); the same run the schedule does.
+    syncFinance: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({ days: a.integer(), accountId: a.id(), dryRun: a.boolean() })
+      .returns(a.json())
+      .handler(a.handler.function(financeSync)),
+    // SimpleFIN accounts on the (shared) token, for mapping one to a
+    // homeFinanceAccount: id, institution and name only, no balances or
+    // activity. A mutation rather than a query so it isn't cached.
+    listSimplefinAccounts: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .returns(a.json())
+      .handler(a.handler.function(financeSync)),
+
+    // ── Paycheck / invoice PDFs uploaded from the pages ─────────────────
+    // The page uploads the PDF (POST /api/finance/upload-url) and then:
+    // parsePaycheckPdf returns an extraction draft for the review form
+    // (never saves); ingestInvoicePdf runs the same pipeline as an emailed
+    // invoice and returns { invoiceId }. Both return JSON.
+    parsePaycheckPdf: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({ s3Key: a.string().required() })
+      .returns(a.json())
+      .handler(a.handler.function(paycheckProcessor)),
+    ingestInvoicePdf: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({ s3Key: a.string().required(), filename: a.string() })
+      .returns(a.json())
+      .handler(a.handler.function(invoiceProcessor)),
+
     // ── Recurring task occurrence actions ───────────────────────────────
     // Single endpoint for the three recurring-task lifecycle actions —
     // see amplify/functions/task-occurrence-action/handler.ts for the
@@ -1835,6 +2199,9 @@ const schema = a
     allow.resource(wardrobeSuggest),
     allow.resource(wardrobeTryOn),
     allow.resource(ops),
+    allow.resource(financeSync),
+    allow.resource(paycheckProcessor),
+    allow.resource(invoiceProcessor),
   ]);
 
 export type Schema = ClientSchema<typeof schema>;

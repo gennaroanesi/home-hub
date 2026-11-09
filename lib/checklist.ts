@@ -15,7 +15,6 @@ export type ChecklistItem = Schema["homeChecklistItem"]["type"];
 export type EntityType =
   | "TRIP"
   | "EVENT"
-  | "BILL"
   | "DOCUMENT"
   | "TASK"
   | "PREGNANCY"
@@ -28,7 +27,6 @@ export const ENTITY_TYPE_ORDER: EntityType[] = [
   "TRIP",
   "EVENT",
   "TASK",
-  "BILL",
   "DOCUMENT",
   "PREGNANCY",
   "OTHER",
@@ -38,7 +36,6 @@ export const ENTITY_TYPE_LABELS: Record<EntityType, string> = {
   TRIP: "Trips",
   EVENT: "Events",
   TASK: "Tasks",
-  BILL: "Bills",
   DOCUMENT: "Documents",
   PREGNANCY: "Pregnancy",
   TEMPLATE: "Templates",
@@ -50,7 +47,6 @@ export const ENTITY_TYPE_SINGULAR: Record<EntityType, string> = {
   TRIP: "Trip",
   EVENT: "Event",
   TASK: "Task",
-  BILL: "Bill",
   DOCUMENT: "Document",
   PREGNANCY: "Pregnancy",
   TEMPLATE: "Template",

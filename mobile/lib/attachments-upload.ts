@@ -20,7 +20,6 @@ export type AttachmentParentType =
   | "RESERVATION"
   | "EVENT"
   | "TASK"
-  | "BILL"
   | "VISIT"
   | "LAB_RESULT"
   | "CARE_ITEM"

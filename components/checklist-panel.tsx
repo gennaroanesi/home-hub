@@ -494,9 +494,9 @@ export function ChecklistPanel({
   // ── Move checklist to entity ────────────────────────────────────────
 
   const MOVE_TYPE_LABELS: Record<string, string> = {
-    TRIP: "Trip", EVENT: "Event", TASK: "Task", BILL: "Bill", DOCUMENT: "Document",
+    TRIP: "Trip", EVENT: "Event", TASK: "Task", DOCUMENT: "Document",
   };
-  const MOVE_TYPES = ["TRIP", "EVENT", "TASK", "BILL", "DOCUMENT"];
+  const MOVE_TYPES = ["TRIP", "EVENT", "TASK", "DOCUMENT"];
 
   async function loadMoveEntities(type: string) {
     setLoadingMoveEntities(true);
@@ -506,7 +506,6 @@ export function ChecklistPanel({
       TRIP: { model: "homeTrip", field: "name" },
       EVENT: { model: "homeCalendarEvent", field: "title" },
       TASK: { model: "homeTask", field: "title" },
-      BILL: { model: "homeBill", field: "name" },
       DOCUMENT: { model: "homeDocument", field: "title" },
     };
     const cfg = modelMap[type];

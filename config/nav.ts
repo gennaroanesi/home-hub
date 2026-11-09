@@ -9,7 +9,6 @@ import {
   FaComments,
   FaTasks,
   FaShoppingCart,
-  FaFileInvoiceDollar,
   FaCalendarAlt,
   FaPlane,
   FaCheckSquare,
@@ -28,6 +27,18 @@ import {
   FaBoxOpen,
   FaMap,
   FaTshirt,
+  FaWallet,
+  FaExchangeAlt,
+  FaBalanceScale,
+  FaClipboardCheck,
+  FaCalendarCheck,
+  FaBullseye,
+  FaLayerGroup,
+  FaUniversity,
+  FaFilter,
+  FaMoneyCheckAlt,
+  FaFileInvoiceDollar,
+  FaLandmark,
 } from "react-icons/fa";
 
 export interface NavLink {
@@ -35,6 +46,9 @@ export interface NavLink {
   href: string;
   icon: IconType;
   coming?: boolean;
+  // Active only on this exact path, not its children (/finance would
+  // otherwise light up on every finance page).
+  exact?: boolean;
 }
 
 export interface NavSection {
@@ -80,7 +94,23 @@ export const NAV_SECTIONS: NavSection[] = [
       { name: "Devices", href: "/devices", icon: FaLightbulb },
       { name: "Inventory", href: "/inventory", icon: FaBoxOpen },
       { name: "Wardrobe", href: "/wardrobe", icon: FaTshirt },
-      { name: "Bills", href: "/bills", icon: FaFileInvoiceDollar, coming: true },
+    ],
+  },
+  {
+    label: "Finance",
+    items: [
+      { name: "Overview", href: "/finance", icon: FaWallet, exact: true },
+      { name: "Transactions", href: "/finance/transactions", icon: FaExchangeAlt },
+      { name: "Budget", href: "/finance/budget", icon: FaBalanceScale },
+      { name: "Review", href: "/finance/review", icon: FaClipboardCheck },
+      { name: "Scheduled", href: "/finance/scheduled", icon: FaCalendarCheck },
+      { name: "Goals", href: "/finance/goals", icon: FaBullseye },
+      { name: "Groups", href: "/finance/groups", icon: FaLayerGroup },
+      { name: "Paychecks", href: "/finance/paychecks", icon: FaMoneyCheckAlt },
+      { name: "Tax outlook", href: "/finance/tax-outlook", icon: FaLandmark },
+      { name: "Invoices", href: "/finance/invoices", icon: FaFileInvoiceDollar },
+      { name: "Accounts", href: "/finance/accounts", icon: FaUniversity },
+      { name: "Rules", href: "/finance/rules", icon: FaFilter },
     ],
   },
   {
@@ -110,7 +140,7 @@ export const ACCOUNT_LINKS: NavLink[] = [
 
 // Active when on the page itself or one of its children (/trips/[id]).
 // "/" only matches exactly, or it'd light up everywhere.
-export function isNavActive(href: string, pathname: string): boolean {
-  if (href === "/") return pathname === "/";
+export function isNavActive(href: string, pathname: string, exact = false): boolean {
+  if (href === "/" || exact) return pathname === href;
   return pathname === href || pathname.startsWith(`${href}/`);
 }

@@ -74,7 +74,6 @@ const ATTACHMENT_PARENT_TYPES = [
   "RESERVATION",
   "EVENT",
   "TASK",
-  "BILL",
   "VISIT",
   "LAB_RESULT",
   "CARE_ITEM",
@@ -381,49 +380,6 @@ const legacyTools: Anthropic.Tool[] = [
       properties: {
         person: { type: "string", description: "Person name to filter by" },
       },
-    },
-  },
-  {
-    name: "create_bill",
-    description: "Create a bill to track. Use dueDay for recurring monthly bills, dueDate for one-off.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        name: { type: "string" },
-        amount: { type: "number" },
-        currency: { type: "string" },
-        dueDay: { type: "integer", description: "Day of month (1-31) for recurring bills" },
-        dueDate: { type: "string", description: "ISO 8601 datetime for one-off bills" },
-        isRecurring: { type: "boolean" },
-        category: { type: "string" },
-        url: { type: "string" },
-        notes: { type: "string" },
-        assignedPeople: {
-          type: "array",
-          items: { type: "string" },
-          description: "Array of person names. Empty/omitted for household.",
-        },
-      },
-      required: ["name"],
-    },
-  },
-  {
-    name: "mark_bill_paid",
-    description: "Mark a bill as paid by its ID.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        billId: { type: "string" },
-      },
-      required: ["billId"],
-    },
-  },
-  {
-    name: "list_bills",
-    description: "List unpaid bills.",
-    input_schema: {
-      type: "object" as const,
-      properties: {},
     },
   },
   {
@@ -958,42 +914,6 @@ const legacyTools: Anthropic.Tool[] = [
     },
   },
   {
-    name: "update_bill",
-    description: "Update fields on an existing bill by its ID. Only the fields you pass are changed; omit fields to leave them untouched. To mark a bill as paid, use mark_bill_paid instead.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        billId: { type: "string" },
-        name: { type: "string" },
-        amount: { type: "number" },
-        currency: { type: "string" },
-        dueDay: { type: "integer", description: "Day of month (1-31) for recurring bills" },
-        dueDate: { type: "string", description: "ISO 8601 datetime. Pass empty string to clear." },
-        isRecurring: { type: "boolean" },
-        category: { type: "string", description: "Pass empty string to clear." },
-        url: { type: "string", description: "Pass empty string to clear." },
-        notes: { type: "string", description: "Pass empty string to clear." },
-        assignedPeople: {
-          type: "array",
-          items: { type: "string" },
-          description: "Array of person names. Use ['both'] or empty for household.",
-        },
-      },
-      required: ["billId"],
-    },
-  },
-  {
-    name: "delete_bill",
-    description: "Hard-delete a bill by its ID. Use when the user wants to remove a bill entirely. To just mark it as paid, use mark_bill_paid instead.",
-    input_schema: {
-      type: "object" as const,
-      properties: {
-        billId: { type: "string" },
-      },
-      required: ["billId"],
-    },
-  },
-  {
     name: "update_shopping_list",
     description: "Update fields on an existing shopping list by its ID. For archive/unarchive use archive_shopping_list / unarchive_shopping_list.",
     input_schema: {
@@ -1462,7 +1382,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "manage_checklist",
     description:
-      "Create, rename, delete, duplicate, or save-as-template a checklist. Checklists attach to entities (trip, event, bill, document, task, pregnancy). For a pregnancy checklist (e.g. hospital bag, nursery prep) pass entityType=PREGNANCY and omit entityId — the active pregnancy is used (pass personName if there are several). 'duplicate' copies all items (unchecked) to the same or a different entity. 'save_as_template' saves a copy as a reusable template. 'from_template' creates a checklist from an existing template.",
+      "Create, rename, delete, duplicate, or save-as-template a checklist. Checklists attach to entities (trip, event, document, task, pregnancy). For a pregnancy checklist (e.g. hospital bag, nursery prep) pass entityType=PREGNANCY and omit entityId — the active pregnancy is used (pass personName if there are several). 'duplicate' copies all items (unchecked) to the same or a different entity. 'save_as_template' saves a copy as a reusable template. 'from_template' creates a checklist from an existing template.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1472,7 +1392,7 @@ const legacyTools: Anthropic.Tool[] = [
         },
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
+          enum: ["TRIP", "EVENT", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
           description: "Required for create/duplicate/from_template. The type of entity this checklist belongs to.",
         },
         entityId: {
@@ -1553,7 +1473,7 @@ const legacyTools: Anthropic.Tool[] = [
       properties: {
         entityType: {
           type: "string",
-          enum: ["TRIP", "EVENT", "BILL", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
+          enum: ["TRIP", "EVENT", "DOCUMENT", "TASK", "PREGNANCY", "TEMPLATE", "OTHER"],
           description: "Optional. Filter by entity type. Use TEMPLATE to list saved templates.",
         },
         entityId: {
@@ -1570,7 +1490,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "attach_file",
     description:
-      "Attach a file the user sent with THIS message (image, PDF, video, audio) to a record so it's kept there: a medical visit (ultrasound stills/clips, recordings), lab result (the report), care item, pregnancy, person, pet / pet medication / pet vaccine, trip, trip leg, reservation, event, task, or bill. Pick files by fileIndex from the '[Files sent with this message]' list; omit fileIndex to attach all of them. For a lab panel, attach to one of its lab result rows. If the user sends a scan or clip from an appointment, find the visit (get_medical_history) and attach it there; log the visit first if it doesn't exist.",
+      "Attach a file the user sent with THIS message (image, PDF, video, audio) to a record so it's kept there: a medical visit (ultrasound stills/clips, recordings), lab result (the report), care item, pregnancy, person, pet / pet medication / pet vaccine, trip, trip leg, reservation, event or task. Pick files by fileIndex from the '[Files sent with this message]' list; omit fileIndex to attach all of them. For a lab panel, attach to one of its lab result rows. If the user sends a scan or clip from an appointment, find the visit (get_medical_history) and attach it there; log the visit first if it doesn't exist.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -2512,41 +2432,6 @@ async function executeTool(
       return JSON.stringify({ tasks: filtered });
     }
 
-    case "create_bill": {
-      const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
-      const { data, errors } = await client.models.homeBill.create({
-        name: input.name,
-        amount: input.amount ?? null,
-        currency: input.currency ?? "USD",
-        dueDay: input.dueDay ?? null,
-        dueDate: input.dueDate ?? null,
-        isRecurring: input.isRecurring ?? true,
-        isPaid: false,
-        category: input.category ?? null,
-        url: input.url ?? null,
-        notes: input.notes ?? null,
-        assignedPersonIds,
-      });
-      if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, billId: data?.id, name: input.name });
-    }
-
-    case "mark_bill_paid": {
-      await client.models.homeBill.update({
-        id: input.billId,
-        isPaid: true,
-        paidAt: new Date().toISOString(),
-      });
-      return JSON.stringify({ success: true, billId: input.billId });
-    }
-
-    case "list_bills": {
-      const { data: bills } = await client.models.homeBill.list({
-        filter: { isPaid: { eq: false } },
-      });
-      return JSON.stringify({ bills: bills ?? [] });
-    }
-
     case "create_event": {
       const assignedPersonIds = await resolvePersonIds(input.assignedPeople);
       const { data, errors } = await client.models.homeCalendarEvent.create({
@@ -2918,31 +2803,6 @@ async function executeTool(
       const { errors } = await client.models.homeTask.delete({ id: input.taskId });
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, taskId: input.taskId });
-    }
-
-    case "update_bill": {
-      const updates: { id: string } & Record<string, any> = { id: input.billId };
-      if (input.name !== undefined) updates.name = input.name;
-      if (input.amount !== undefined) updates.amount = input.amount;
-      if (input.currency !== undefined) updates.currency = input.currency;
-      if (input.dueDay !== undefined) updates.dueDay = input.dueDay;
-      if (input.dueDate !== undefined) updates.dueDate = input.dueDate || null;
-      if (input.isRecurring !== undefined) updates.isRecurring = input.isRecurring;
-      if (input.category !== undefined) updates.category = input.category || null;
-      if (input.url !== undefined) updates.url = input.url || null;
-      if (input.notes !== undefined) updates.notes = input.notes || null;
-      if (input.assignedPeople !== undefined) {
-        updates.assignedPersonIds = await resolvePersonIds(input.assignedPeople);
-      }
-      const { data, errors } = await client.models.homeBill.update(updates);
-      if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, billId: data?.id, name: data?.name });
-    }
-
-    case "delete_bill": {
-      const { errors } = await client.models.homeBill.delete({ id: input.billId });
-      if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, billId: input.billId });
     }
 
     case "list_shopping_lists": {
@@ -6103,14 +5963,14 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
     })
     .join("\n");
 
-  const systemPrompt = `You are Janet, the household assistant. You help manage tasks, bills, calendar events, shopping lists, photos, home devices, weather briefings, reminders, and health records.
+  const systemPrompt = `You are Janet, the household assistant. You help manage tasks, household finances (the joint account, budget, bills and other scheduled payments, savings goals), calendar events, shopping lists, photos, home devices, weather briefings, reminders, and health records.
 
 Household members: ${peopleNames}
 Today is ${dateFmt.format(now)}. Current local time: ${timeFmt.format(now)}.
 Timezone: ${TZ} (Central)
 Message sender: ${sender}
 ${pregnancyContext ? `${pregnancyContext}\n` : ""}
-When assigning tasks/bills/events to people, pass their names in the assignedPeople array — names must match a person's name (usually one of the Household members listed above, but anyone in the people list can be named), or use ["both"] for the whole household (the members listed above). Empty/omitted = household.
+When assigning tasks/events to people, pass their names in the assignedPeople array — names must match a person's name (usually one of the Household members listed above, but anyone in the people list can be named), or use ["both"] for the whole household (the members listed above). Empty/omitted = household.
 
 When the user asks to see photos, call send_photos DIRECTLY with whatever album or trip name they mentioned (it does fuzzy matching internally — do NOT call list_trips or list_albums first). Pass the name in the "query" param. It's capped at 5 photos per call — if more match, mention the count and share the deepLink the tool returns so the user can view the rest.
 
@@ -6138,6 +5998,10 @@ When control_device returns CONFIRM_REQUIRED (reply confirm), ask the user
 call will execute because the user's confirmation counts as the reply.
 
 For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions, call get_weather_briefing. By default it uses KAUS and auto-selects plain vs aviation mode. Pass mode="aviation" if the user is clearly asking about flying conditions, or pass a different ICAO if they name an airport. The tool returns structured data including the raw METAR and TAF — for a household-level question render a plain line; for a pilot question include the raw strings and the VFR/MVFR/IFR verdict.
+
+## Money
+
+Household money lives in the joint account. For "how are we doing this month", spending, contributions, upcoming payments or goals, call get_finance_summary first. Bills (mortgage, car, utilities, insurance) are scheduled transactions: list_finance_schedules / save_finance_schedule — there is no separate bill list. To find or fix a transaction's category or who it belongs to, use list_finance_transactions then update_finance_transaction (pass rememberPattern when they say "always"). Budgets change with save_finance_budget, goals with save_finance_goal. Amounts are USD; say them plainly ("$1,240 of $1,500").
 
 ## Reminders
 

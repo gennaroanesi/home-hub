@@ -54,7 +54,6 @@ interface SharedFile {
 const PARENT_TYPES: { value: AttachmentParentType; label: string; modelKey: string }[] = [
   { value: "TASK", label: "Task", modelKey: "homeTask" },
   { value: "EVENT", label: "Event", modelKey: "homeCalendarEvent" },
-  { value: "BILL", label: "Bill", modelKey: "homeBill" },
   { value: "TRIP", label: "Trip", modelKey: "homeTrip" },
   { value: "TRIP_LEG", label: "Trip leg", modelKey: "homeTripLeg" },
   { value: "RESERVATION", label: "Reservation", modelKey: "homeTripReservation" },
@@ -498,8 +497,6 @@ function parentLabel(type: AttachmentParentType, row: any): string {
       return row.title ?? "(untitled task)";
     case "EVENT":
       return `${row.title ?? "(untitled event)"} ${row.startsAt ?? ""}`.trim();
-    case "BILL":
-      return `${row.label ?? "(unlabeled bill)"} — $${row.amountCents ? (row.amountCents / 100).toFixed(2) : "?"}`;
     case "TRIP":
       return row.name ?? "(untitled trip)";
     case "TRIP_LEG":
