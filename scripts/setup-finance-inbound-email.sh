@@ -54,9 +54,17 @@ run() {
 
 echo "==> Inbound bucket"
 if [ -z "$BUCKET" ]; then
+  # describe-stacks paginates and the CLI applies --query to each page, so
+  # pages without the output print "None": keep the one real value.
   BUCKET=$(aws cloudformation describe-stacks --region $REGION \
-    --query "Stacks[?starts_with(StackName, 'amplify-${APP_ID}-${BRANCH}-')].Outputs[] | [?starts_with(OutputKey, 'FinanceInboundMailBucketName')].OutputValue | [0]" \
-    --output text)
+    --query "Stacks[?starts_with(StackName, 'amplify-${APP_ID}-${BRANCH}-')].Outputs[] | [?starts_with(OutputKey, 'FinanceInboundMailBucketName')].OutputValue" \
+    --output text | tr '\t' '\n' | grep -v -x -e 'None' -e '' | sort -u)
+fi
+if [ "$(printf '%s\n' "$BUCKET" | grep -c .)" -gt 1 ]; then
+  echo "ERROR: more than one FinanceInboundMailBucketName output on branch $BRANCH:"
+  printf '  %s\n' $BUCKET
+  echo "Pass the right one with --bucket."
+  exit 1
 fi
 if [ -z "$BUCKET" ] || [ "$BUCKET" = "None" ]; then
   echo "ERROR: no FinanceInboundMailBucketName output on branch $BRANCH. Deploy first, or pass --bucket."
@@ -77,7 +85,7 @@ TOKENS=$(aws sesv2 get-email-identity --email-identity "$MAIL_DOMAIN" --region $
 echo ""
 echo "==> Route53 records in $ZONE_DOMAIN"
 ZONE_ID=$(aws route53 list-hosted-zones-by-name --dns-name "$ZONE_DOMAIN" \
-  --query "HostedZones[?Name=='${ZONE_DOMAIN}.'].Id | [0]" --output text | sed 's#/hostedzone/##')
+  --query "HostedZones[?Name=='${ZONE_DOMAIN}.'].Id" --output text | tr '\t' '\n' | grep -v -x -e 'None' -e '' | head -1 | sed 's#/hostedzone/##')
 if [ -z "$ZONE_ID" ] || [ "$ZONE_ID" = "None" ]; then
   echo "ERROR: no Route53 hosted zone for $ZONE_DOMAIN"
   exit 1
