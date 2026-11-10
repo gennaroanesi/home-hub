@@ -4,7 +4,7 @@ import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./d
 import { householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress } from "./goals";
-import { buildDedupIndex, markSelfTransfers, reconcileDraft, sfTxToDraft, type TxDraft } from "./sync-engine";
+import { buildDedupIndex, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
 import type { RecurringLike, TxLike } from "./types";
 
 describe("categories", () => {
@@ -182,6 +182,22 @@ describe("sync engine", () => {
       expect(r.patch).toMatchObject({ date: "2026-11-05", status: "POSTED", description: "H-E-B #12 AUSTIN TX" });
       expect(r.patch.category).toBeUndefined();
     }
+  });
+
+  it("takes the settled amount and refreshes the fingerprint", () => {
+    const draft = sfTxToDraft(sf({ amount: -60, description: "TACO SPOT" }), "joint")!;
+    const idx = buildDedupIndex([{ id: "row", sfTransactionId: "TRN-1", date: "2026-11-05", amount: -50, description: "TACO SPOT", status: "PENDING" }]);
+    const r = reconcileDraft(draft, idx);
+    expect(r.action).toBe("update");
+    if (r.action === "update") expect(r.patch).toMatchObject({ amount: -60, status: "POSTED", importHash: draft.importHash });
+    // Same amount: nothing about it changes.
+    const same = reconcileDraft(sfTxToDraft(sf({ amount: -50, description: "TACO SPOT" }), "joint")!, idx);
+    if (same.action === "update") expect(same.patch.amount).toBeUndefined();
+  });
+
+  it("gives a synced row an id built from its SimpleFIN id", () => {
+    expect(syncedTransactionId("joint", "TRN-1")).toBe("sf-joint-TRN-1");
+    expect(syncedTransactionId("joint", "TRN-1")).not.toBe(syncedTransactionId("savings", "TRN-1"));
   });
 
   it("creates two same-day same-amount charges that each have their own SimpleFIN id", () => {

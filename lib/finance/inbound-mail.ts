@@ -6,8 +6,14 @@
 // Gate, before any parsing work or Claude call:
 //   - SES verdicts (the receipt rule has scanning on): spam or virus FAIL → drop.
 //   - The sender must be on FINANCE_INBOUND_ALLOWED_SENDERS (comma-separated
-//     addresses, case-insensitive) AND SES must have seen DKIM or SPF pass
-//     for the message, so a forged From header isn't enough.
+//     addresses, case-insensitive), and SES must vouch for the From domain:
+//     DMARC pass, or DKIM / SPF pass for that same domain. Anyone can type an
+//     address into From; only this ties it to who actually sent the message.
+//   - Only the headers SES itself added count. SES puts them above
+//     everything else, so the first Authentication-Results / X-SES-*-Verdict
+//     is SES's; copies further down were written by the sender. This relies
+//     on mail only arriving through the SES receipt rule (the inbound bucket
+//     only accepts writes from SES).
 
 import { simpleParser, type Attachment, type ParsedMail } from "mailparser";
 
@@ -22,34 +28,52 @@ export function parseAllowedSenders(env: string | undefined): Set<string> {
   );
 }
 
-function header(mail: ParsedMail, name: string): string {
-  const v = mail.headers.get(name.toLowerCase());
-  if (v == null) return "";
-  if (typeof v === "string") return v;
-  if (Array.isArray(v)) return v.join(" ");
-  return typeof v === "object" && "text" in (v as object) ? String((v as { text: string }).text) : String(v);
+/** Every value of a header, top of the message first, unfolded. */
+function headerValues(mail: ParsedMail, name: string): string[] {
+  return (mail.headerLines ?? [])
+    .filter((h) => h.key === name)
+    .map((h) => h.line.slice(h.line.indexOf(":") + 1).replace(/\r?\n[ \t]+/g, " ").trim());
 }
 
-/** SES's own verdicts, from the headers it adds when scanning is on. */
-export function sesVerdicts(mail: ParsedMail): { spam: string; virus: string; dkim: boolean; spf: boolean } {
-  const auth = header(mail, "authentication-results").toLowerCase();
+const domainOf = (address: string) => address.slice(address.lastIndexOf("@") + 1).toLowerCase();
+const sameDomain = (d: string, fromDomain: string) => d === fromDomain || d.endsWith(`.${fromDomain}`);
+
+/**
+ * SES's verdicts: the topmost Authentication-Results (only if SES wrote it)
+ * and X-SES-*-Verdict headers. `aligned` = SES vouches for fromDomain.
+ */
+export function sesVerdicts(mail: ParsedMail, fromDomain: string): { spam: string; virus: string; aligned: boolean } {
+  const first = (name: string) => headerValues(mail, name)[0] ?? "";
+  const auth = first("authentication-results").toLowerCase();
+  const results = auth.startsWith("amazonses.com") ? auth.split(";").slice(1).map((r) => r.trim()) : [];
+  const passFor = (method: string, prop: RegExp) =>
+    results.some((r) => {
+      if (!r.startsWith(`${method}=pass`)) return false;
+      const m = r.match(prop);
+      return !!m && sameDomain(domainOf(m[1]), fromDomain);
+    });
   return {
-    spam: header(mail, "x-ses-spam-verdict").toUpperCase(),
-    virus: header(mail, "x-ses-virus-verdict").toUpperCase(),
-    dkim: /\bdkim=pass\b/.test(auth),
-    spf: /\bspf=pass\b/.test(auth),
+    spam: first("x-ses-spam-verdict").toUpperCase(),
+    virus: first("x-ses-virus-verdict").toUpperCase(),
+    aligned:
+      passFor("dmarc", /header\.from=(\S+)/) ||
+      passFor("dkim", /header\.[id]=@?(\S+)/) ||
+      passFor("spf", /smtp\.mailfrom=(\S+)/),
   };
 }
 
 export function gateMail(mail: ParsedMail, allowed: Set<string>): Gate {
   const from = (mail.from?.value?.[0]?.address ?? "").toLowerCase() || null;
-  const v = sesVerdicts(mail);
+  if (headerValues(mail, "from").length > 1 || (mail.from?.value?.length ?? 0) > 1) {
+    return { ok: false, reason: "more than one From address", from };
+  }
+  const v = sesVerdicts(mail, from ? domainOf(from) : "");
   if (v.virus === "FAIL") return { ok: false, reason: "virus verdict FAIL", from };
   if (v.spam === "FAIL") return { ok: false, reason: "spam verdict FAIL", from };
   if (!from) return { ok: false, reason: "no From address", from };
   if (allowed.size === 0) return { ok: false, reason: "FINANCE_INBOUND_ALLOWED_SENDERS is empty", from };
   if (!allowed.has(from)) return { ok: false, reason: `sender ${from} not allowed`, from };
-  if (!v.dkim && !v.spf) return { ok: false, reason: `no DKIM/SPF pass for ${from}`, from };
+  if (!v.aligned) return { ok: false, reason: `SES didn't verify ${domainOf(from)} (no DMARC, or DKIM/SPF pass for it)`, from };
   return { ok: true, from };
 }
 

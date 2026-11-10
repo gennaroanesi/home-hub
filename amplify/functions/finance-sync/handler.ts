@@ -27,6 +27,7 @@ import {
   markSelfTransfers,
   reconcileDraft,
   sfTxToDraft,
+  syncedTransactionId,
   targetBalance,
   type DedupIndex,
   type Reconciliation,
@@ -48,7 +49,11 @@ async function getClient(): Promise<DataClient> {
   return _client;
 }
 
-/** Every transaction on an account matching the date condition (walks nextToken). */
+/**
+ * Every transaction on an account matching the date condition (walks
+ * nextToken). Throws when a read fails: an empty answer would look like "no
+ * rows yet" and the sync would insert everything again.
+ */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 async function txsForAccount(c: DataClient, accountId: string, date: Record<string, string>): Promise<any[]> {
   const out = [];
@@ -58,10 +63,16 @@ async function txsForAccount(c: DataClient, accountId: string, date: Record<stri
       { accountId, date },
       { limit: 1000, nextToken },
     );
+    if (res.errors?.length) throw new Error(`reading transactions for ${accountId}: ${res.errors[0].message}`);
     out.push(...(res.data ?? []));
     nextToken = res.nextToken;
   } while (nextToken);
   return out;
+}
+
+// Amplify's create refuses an id that exists (DynamoDB conditional check).
+function isAlreadyStored(err: { message?: string; errorType?: string }): boolean {
+  return /ConditionalCheckFailed/i.test(err.errorType ?? "") || /conditional request failed/i.test(err.message ?? "");
 }
 
 // A pending row is stored under a provisional date that can be days before
@@ -207,8 +218,15 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   // Reconcile against stored rows (widened window, see above).
   const reconcileFrom = addDays(windowFrom, -RECONCILE_LOOKBACK_DAYS);
   const dedup = new Map<string, DedupIndex>();
-  for (const a of mapped) {
-    dedup.set(a.id, buildDedupIndex(await txsForAccount(c, a.id, { ge: reconcileFrom })));
+  try {
+    for (const a of mapped) {
+      dedup.set(a.id, buildDedupIndex(await txsForAccount(c, a.id, { ge: reconcileFrom })));
+    }
+  } catch (e) {
+    // Without the stored rows we can't tell new from known: write nothing.
+    errors.push(`Couldn't read stored transactions, nothing written: ${e instanceof Error ? e.message : String(e)}`);
+    await log("ERROR", { ...empty, txPulled });
+    return { ok: false, status: "ERROR", ...empty, txPulled, errors };
   }
   const infer = (description: string) => inferCategory({ description, type: "EXPENSE", amount: -1 }, rules);
   const plans: Reconciliation[] = drafts.map((d) => reconcileDraft(d, dedup.get(d.accountId), infer));
@@ -273,9 +291,11 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const nowIso = new Date().toISOString();
   let txInserted = 0;
   let txFailed = 0;
+  let txAlreadyStored = 0;
   for (const d of fresh) {
     const rule = links.get(d);
     const { errors: e } = await c.models.homeFinanceTransaction.create({
+      id: syncedTransactionId(d.accountId, d.sfTransactionId),
       accountId: d.accountId,
       amount: d.amount,
       type: d.type,
@@ -291,7 +311,11 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       sfTransactionId: d.sfTransactionId,
       recurringId: rule?.id ?? null,
     });
-    if (e?.length) {
+    if (e?.length && isAlreadyStored(e[0])) {
+      // The row id is taken: this transaction is already stored.
+      txAlreadyStored++;
+      links.delete(d);
+    } else if (e?.length) {
       txFailed++;
       errors.push(`create ${d.date} ${d.description.slice(0, 40)}: ${e[0].message}`);
     } else txInserted++;
@@ -305,6 +329,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     const { errors: e } = await c.models.homeFinanceTransaction.update({
       id: u.id,
       ...(p.date !== undefined ? { date: p.date } : {}),
+      ...(p.amount !== undefined ? { amount: p.amount } : {}),
       ...(p.description !== undefined ? { description: p.description } : {}),
       ...(p.status !== undefined ? { status: p.status } : {}),
       ...(p.importHash !== undefined ? { importHash: p.importHash } : {}),
@@ -350,7 +375,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const status = txFailed > 0 || errors.length > 0 ? "PARTIAL" : "OK";
   const counts = { accountsChecked: mapped.length, txPulled, txInserted, txUpdated, balancesUpdated, linked: links.size };
   console.log(`[finance-sync] ${status}: ${JSON.stringify(counts)} errors=${errors.length}`);
-  await log(status, { ...counts, txDuplicate, txFailed }, perAccountArr);
+  await log(status, { ...counts, txDuplicate: txDuplicate + txAlreadyStored, txFailed }, perAccountArr);
   return { ok: true, status, ...counts, errors };
 }
 
@@ -362,7 +387,14 @@ async function upsertSnapshots(c: DataClient, accounts: any[], date: string, err
   const capturedAt = new Date().toISOString();
   for (const a of accounts) {
     if (a.active === false) continue;
-    const posted = (await txsForAccount(c, a.id, { eq: date })).filter((t) => t.status !== "PENDING");
+    let posted;
+    try {
+      posted = (await txsForAccount(c, a.id, { eq: date })).filter((t) => t.status !== "PENDING");
+    } catch (e) {
+      // Skip rather than record a day with nothing in or out.
+      errors.push(`snapshot ${a.name}: ${e instanceof Error ? e.message : String(e)}`);
+      continue;
+    }
     const row = {
       accountId: a.id,
       date,

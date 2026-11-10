@@ -34,7 +34,7 @@ Household differences from gennaroanesi.com:
 |---|---|
 | `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date); `syncFinance` and `listSimplefinAccounts` mutations |
 | `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `dates.ts`, `sync-engine.ts`, `simplefin.ts`, `data.ts` (loading through the indexes) |
-| `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place, auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, writes a sync log |
+| `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, writes a sync log |
 | `lib/ops/finance.ts` | `get_finance_summary`, `list_finance_transactions`, `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule`, `save_finance_goal`, `list_finance_categories` — Janet, the API, `hh` and the pages' writes |
 | `pages/finance/` | Overview, Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
 
@@ -62,8 +62,14 @@ can't also have MX). SES stores mail in `FinanceInboundMailBucket` (CDK,
 invokes the processor. Before any parsing or Claude call, a message must
 pass SES's spam/virus verdicts, come from an address in
 `FINANCE_INBOUND_ALLOWED_SENDERS` (comma-separated, env var, read at deploy),
-and carry a DKIM or SPF pass, so a forged From isn't enough. Empty list =
-everything dropped (logged as `dropped …`).
+and SES must vouch for the From domain: DMARC pass, or a DKIM / SPF pass for
+that same domain (an address typed into From proves nothing; a pass for some
+other domain doesn't count). Only SES's own headers are read — the topmost
+`Authentication-Results` (authserv-id `amazonses.com`) and `X-SES-*-Verdict` —
+since a sender can add copies of their own further down. Two From lines are
+refused. Empty list = everything dropped (logged as `dropped …`). After the
+first real email, check its headers look as expected (`dropped …` in the
+processor log names the reason).
 
 **Setup (once, per environment that should receive mail):**
 1. Set `FINANCE_INBOUND_ALLOWED_SENDERS` (both of our addresses) in
@@ -82,6 +88,14 @@ semantic dedup), and an email dropped by the gate. Not yet exercised: real
 SES delivery and the Chromium body render (needs an allowed sender).
 
 ## SimpleFIN
+
+**Duplicates.** A synced row's id is `sf-<accountId>-<SimpleFIN id>`
+(`syncedTransactionId`), so DynamoDB refuses a second copy no matter what
+the dedup read saw; the sync counts that as a duplicate. If reading the
+stored rows fails, the sync writes nothing and logs ERROR. Not handled yet:
+a bank that gives the posted charge a different SimpleFIN id than the
+pending one (the pending row would stay) — check after the first weeks of
+real data.
 
 The access URL is the one gennaroanesi.com uses (Secrets Manager
 `gennaroanesi/simplefin`, same AWS account). That token can see the personal

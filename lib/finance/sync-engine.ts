@@ -24,6 +24,15 @@ export type TxDraft = {
   sfTransactionId: string;
 };
 
+/**
+ * Row id for a synced transaction. Built from the SimpleFIN id, so DynamoDB
+ * itself refuses a second copy of the same transaction (create fails when
+ * the id exists), whatever the dedup read did or didn't see.
+ */
+export function syncedTransactionId(accountId: string, sfTransactionId: string): string {
+  return `sf-${accountId}-${sfTransactionId}`;
+}
+
 export function importHash(date: string, amount: number, description: string): string {
   const raw = [date, Number(amount).toFixed(2), (description ?? "").trim().toLowerCase()].join("|");
   return Buffer.from(raw, "utf8").toString("base64").replace(/[^a-zA-Z0-9]/g, "").slice(0, 32);
@@ -128,6 +137,7 @@ export function isRedacted(description: string): boolean {
 
 export type TxPatch = {
   date?: string;
+  amount?: number;
   description?: string;
   status?: "POSTED" | "PENDING";
   importHash?: string;
@@ -157,11 +167,13 @@ export function reconcileDraft(
   if (existing) {
     const patch: TxPatch = {};
     if (draft.date && existing.date !== draft.date) patch.date = draft.date;
+    // A pending charge can settle for a different amount (a tip, a hotel hold).
+    if (existing.amount == null || Math.abs(existing.amount - draft.amount) >= 0.005) patch.amount = draft.amount;
     const newDesc = (draft.description ?? "").trim();
     const oldDesc = (existing.description ?? "").trim();
     if (newDesc && newDesc !== oldDesc && !(isRedacted(newDesc) && !isRedacted(oldDesc))) patch.description = newDesc;
     if ((existing.status ?? "") !== draft.status) patch.status = draft.status;
-    if (patch.date || patch.description) patch.importHash = draft.importHash;
+    if (patch.date || patch.description || patch.amount !== undefined) patch.importHash = draft.importHash;
     if (patch.description && inferForDescription) {
       const next = shouldRecategorize(oldDesc, newDesc, existing.category ?? null, inferForDescription, existing.categorySource ?? null);
       if (next !== undefined) {

@@ -4,15 +4,17 @@ import { draftToPaycheck, matchPerson } from "./paycheck-fields";
 import { autoMatchCandidates, normalizeInvoiceFields } from "./invoice-fields";
 import { isServableFinanceKey, isStagingKey, looksLikePdf, stagingKey } from "./finance-files";
 
-function eml(opts: { from: string; spam?: string; virus?: string; auth?: string; pdf?: boolean }): Buffer {
+function eml(opts: { from: string; spam?: string; virus?: string; auth?: string; pdf?: boolean; extra?: string[] }): Buffer {
   const boundary = "XYZ";
+  // SES adds its headers on top; anything the sender wrote comes after.
   const headers = [
-    `From: Someone <${opts.from}>`,
-    "To: paychecks@import.cristinegennaro.com",
-    "Subject: Pay stub",
     opts.auth !== undefined ? `Authentication-Results: amazonses.com; ${opts.auth}` : null,
     opts.spam ? `X-SES-Spam-Verdict: ${opts.spam}` : null,
     opts.virus ? `X-SES-Virus-Verdict: ${opts.virus}` : null,
+    ...(opts.extra ?? []),
+    `From: Someone <${opts.from}>`,
+    "To: paychecks@import.cristinegennaro.com",
+    "Subject: Pay stub",
     "MIME-Version: 1.0",
     `Content-Type: multipart/mixed; boundary="${boundary}"`,
   ].filter(Boolean);
@@ -31,22 +33,47 @@ describe("inbound gate", () => {
     expect([...allowed]).toEqual(["gennaro@example.com", "cris@example.com"]);
   });
 
-  it("accepts an allowed sender with DKIM or SPF pass and clean verdicts", async () => {
-    const mail = await parseMail(eml({ from: "GENNARO@example.com", auth: "spf=pass smtp.mailfrom=example.com; dkim=pass header.i=@example.com", spam: "PASS", virus: "PASS", pdf: true }));
+  const reason = async (o: Parameters<typeof eml>[0], list = allowed) => {
+    const g = gateMail(await parseMail(eml(o)), list);
+    return g.ok ? "ok" : g.reason;
+  };
+
+  it("accepts an allowed sender when SES vouches for their domain", async () => {
+    const mail = await parseMail(eml({ from: "GENNARO@example.com", auth: "spf=pass smtp.mailfrom=bounce@example.com; dkim=pass header.i=@example.com; dmarc=pass header.from=example.com", spam: "PASS", virus: "PASS", pdf: true }));
     expect(gateMail(mail, allowed)).toEqual({ ok: true, from: "gennaro@example.com" });
     expect((await collectPdfs(mail)).map((a) => a.filename)).toEqual(["stub.pdf"]);
+    // Any one aligned pass is enough, including a subdomain.
+    expect(await reason({ from: "cris@example.com", auth: "dmarc=pass header.from=example.com" })).toBe("ok");
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.d=mail.example.com" })).toBe("ok");
+    expect(await reason({ from: "cris@example.com", auth: "spf=pass smtp.mailfrom=example.com" })).toBe("ok");
   });
 
-  it("drops unknown senders, forged From without DKIM/SPF, virus/spam FAIL, and everything when the list is empty", async () => {
-    const reason = async (o: Parameters<typeof eml>[0], list = allowed) => {
-      const g = gateMail(await parseMail(eml(o)), list);
-      return g.ok ? "ok" : g.reason;
-    };
-    expect(await reason({ from: "stranger@example.com", auth: "dkim=pass" })).toMatch(/not allowed/);
-    expect(await reason({ from: "cris@example.com", auth: "spf=fail; dkim=fail" })).toMatch(/no DKIM\/SPF pass/);
-    expect(await reason({ from: "cris@example.com", auth: "dkim=pass", virus: "FAIL" })).toMatch(/virus/);
-    expect(await reason({ from: "cris@example.com", auth: "dkim=pass", spam: "FAIL" })).toMatch(/spam/);
-    expect(await reason({ from: "cris@example.com", auth: "dkim=pass" }, new Set())).toMatch(/empty/);
+  it("drops unknown senders, unverified mail, virus/spam FAIL, and everything when the list is empty", async () => {
+    expect(await reason({ from: "stranger@example.com", auth: "dkim=pass header.i=@example.com" })).toMatch(/not allowed/);
+    expect(await reason({ from: "cris@example.com", auth: "spf=fail; dkim=fail; dmarc=fail" })).toMatch(/didn't verify/);
+    expect(await reason({ from: "cris@example.com" })).toMatch(/didn't verify/);
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.i=@example.com", virus: "FAIL" })).toMatch(/virus/);
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.i=@example.com", spam: "FAIL" })).toMatch(/spam/);
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.i=@example.com" }, new Set())).toMatch(/empty/);
+  });
+
+  it("doesn't accept a pass for some other domain", async () => {
+    // An attacker's own domain passes SPF/DKIM, with our address in From.
+    expect(await reason({ from: "cris@example.com", auth: "spf=pass smtp.mailfrom=evil.test; dkim=pass header.i=@evil.test; dmarc=fail header.from=example.com" })).toMatch(/didn't verify/);
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.i=@notexample.com" })).toMatch(/didn't verify/);
+  });
+
+  it("ignores verdict headers the sender wrote themselves", async () => {
+    const forged = ["Authentication-Results: amazonses.com; dkim=pass header.i=@example.com; dmarc=pass header.from=example.com", "X-SES-Virus-Verdict: PASS", "X-SES-Spam-Verdict: PASS"];
+    expect(await reason({ from: "cris@example.com", auth: "spf=fail; dkim=fail; dmarc=fail header.from=example.com", extra: forged })).toMatch(/didn't verify/);
+    expect(await reason({ from: "cris@example.com", auth: "dkim=pass header.i=@example.com", virus: "FAIL", extra: forged })).toMatch(/virus/);
+    // Only an amazonses.com header counts. (Mail only reaches us through SES,
+    // which always adds its own on top, so a sender's copy is never first.)
+    expect(await reason({ from: "cris@example.com", extra: ["Authentication-Results: mx.evil.test; dmarc=pass header.from=example.com"] })).toMatch(/didn't verify/);
+  });
+
+  it("refuses a second From line", async () => {
+    expect(await reason({ from: "stranger@evil.test", auth: "dkim=pass header.i=@evil.test", extra: ["From: cris@example.com"] })).toMatch(/more than one From/);
   });
 });
 
