@@ -2254,10 +2254,11 @@ const schema = a
         allow.authenticated("identityPool"),
       ])
       .arguments({
-        action: a.string().required(), // "COMPLETE" | "SKIP" | "UNCOMPLETE"
+        action: a.string().required(), // "COMPLETE" | "SKIP" | "UNCOMPLETE" | "RESCHEDULE"
         taskId: a.id().required(),
         byPersonId: a.id(),
         reason: a.string(),
+        scheduledFor: a.datetime(), // RESCHEDULE: the open occurrence's new date
       })
       .returns(a.ref("taskOccurrenceActionResponse"))
       .handler(a.handler.function(taskOccurrenceAction)),

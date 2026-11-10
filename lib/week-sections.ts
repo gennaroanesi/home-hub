@@ -203,7 +203,8 @@ export function buildWeekSections(
   }
   for (const o of rows.occurrences ?? []) {
     const t = taskById.get(o.taskId);
-    if (!t || o.completedAt || o.skippedAt || !o.scheduledFor) continue;
+    // A completed task is a finished series, even with an occurrence left open (as on the home page).
+    if (!t || t.isCompleted || o.completedAt || o.skippedAt || !o.scheduledFor) continue;
     const date = localDate(o.scheduledFor);
     if (date > weekEnd) continue;
     tasks.push({ id: t.id, occurrenceId: o.id, title: t.title, date, overdue: date < today, personIds: (t.assignedPersonIds ?? []).filter(Boolean), recurring: true });

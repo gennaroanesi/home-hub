@@ -4,6 +4,8 @@
 //   completeTaskOccurrence({ taskId, byPersonId })
 //   skipTaskOccurrence({ taskId, byPersonId, reason? })
 //   uncompleteTaskOccurrence({ taskId })
+//   RESCHEDULE({ taskId, scheduledFor }) — the task's date was edited;
+//     moves the open occurrence (and dueDate) to it
 //
 // Why a Lambda mutation instead of letting clients write occurrences
 // directly: closing one occurrence + creating the next one needs to
@@ -29,13 +31,14 @@ const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env)
 Amplify.configure(resourceConfig, libraryOptions);
 const client = generateClient<Schema>();
 
-type Action = "COMPLETE" | "SKIP" | "UNCOMPLETE";
+type Action = "COMPLETE" | "SKIP" | "UNCOMPLETE" | "RESCHEDULE";
 
 interface Args {
   action: Action;
   taskId: string;
   byPersonId?: string | null;
   reason?: string | null;
+  scheduledFor?: string | null;
 }
 
 interface Result {
@@ -46,7 +49,7 @@ interface Result {
 }
 
 export const handler: AppSyncResolverHandler<Args, Result> = async (event) => {
-  const { action, taskId, byPersonId, reason } = event.arguments;
+  const { action, taskId, byPersonId, reason, scheduledFor } = event.arguments;
   if (!taskId) return reject("taskId required");
 
   const { data: task, errors: taskErrors } =
@@ -181,6 +184,20 @@ export const handler: AppSyncResolverHandler<Args, Result> = async (event) => {
         nextOccurrenceId: null,
         message: null,
       };
+    }
+
+    case "RESCHEDULE": {
+      // A recurring task's date was edited: move the open occurrence with
+      // it, so the task (home page) and its occurrence (tasks page, week
+      // planner) agree. Creates the open occurrence if there's none.
+      if (!scheduledFor || Number.isNaN(new Date(scheduledFor).getTime())) return reject("scheduledFor required");
+      const open = (occurrences ?? []).find((o) => !o.completedAt && !o.skippedAt);
+      const { data: row, errors } = open
+        ? await client.models.homeTaskOccurrence.update({ id: open.id, scheduledFor })
+        : await client.models.homeTaskOccurrence.create({ taskId, scheduledFor });
+      if (errors?.length) return reject(errors[0].message);
+      await client.models.homeTask.update({ id: taskId, dueDate: scheduledFor });
+      return { ok: true, occurrenceId: row?.id ?? null, nextOccurrenceId: null, message: null };
     }
 
     default:

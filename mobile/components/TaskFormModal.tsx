@@ -30,6 +30,15 @@ import { type Person } from "../lib/use-people";
 import type { Schema } from "../../amplify/data/resource";
 import { AttachmentSection } from "./AttachmentSection";
 
+const RESCHEDULE = /* GraphQL */ `
+  mutation Reschedule($taskId: ID!, $scheduledFor: AWSDateTime) {
+    taskOccurrenceAction(action: "RESCHEDULE", taskId: $taskId, scheduledFor: $scheduledFor) {
+      ok
+      message
+    }
+  }
+`;
+
 type Task = Schema["homeTask"]["type"];
 
 interface Props {
@@ -113,6 +122,17 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
           ...payload,
         });
         if (errors?.length) throw new Error(errors[0].message);
+        // Recurring task moved: move its open occurrence too, or the
+        // home screen and the tasks list / week planner disagree.
+        const moved = payload.dueDate && (!task.dueDate || new Date(task.dueDate).getTime() !== new Date(payload.dueDate).getTime());
+        if (payload.recurrence && moved) {
+          // Raw GraphQL: builds with an older bundled amplify_outputs.json
+          // don't know the scheduledFor argument and would drop it.
+          const r: any = await client.graphql({ query: RESCHEDULE, variables: { taskId: task.id, scheduledFor: payload.dueDate } });
+          const result = r.data?.taskOccurrenceAction;
+          if (r.errors?.length) throw new Error(r.errors[0].message);
+          if (result && !result.ok) throw new Error(result.message ?? "rescheduling failed");
+        }
       } else {
         const { errors } = await client.models.homeTask.create({
           ...payload,

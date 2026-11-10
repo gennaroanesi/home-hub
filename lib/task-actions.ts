@@ -4,6 +4,8 @@
 //     occurrence and rolls the task to its next cycle server-side
 //   - one-off task   → mark completed + pause its reminders
 //   - reopen         → clear completion + resume its reminders
+//   - a recurring task's date edited → taskOccurrenceAction(RESCHEDULE),
+//     so its open occurrence moves too (rescheduleIfMoved)
 //
 // Returns the toast copy for the caller to show; toasts stay in the UI.
 // The client is `any` for the same reason as lib/reminder-parent.ts.
@@ -58,4 +60,25 @@ export async function toggleTaskCompleted(
   });
   await pauseRemindersFor(client, task.id);
   return { title: "Task completed" };
+}
+
+/**
+ * After saving a task: when it's recurring and its due date changed, move
+ * the open occurrence with it. Without this the task (home page) and the
+ * occurrence (Tasks page, week planner) disagree on when it's due.
+ */
+export async function rescheduleIfMoved(
+  client: DataClient,
+  task: { id: string; recurrence?: string | null; dueDate?: string | null },
+  previousDueDate: string | null | undefined,
+): Promise<void> {
+  if (!task.recurrence || !task.dueDate) return;
+  if (previousDueDate && new Date(previousDueDate).getTime() === new Date(task.dueDate).getTime()) return;
+  const { data: result, errors } = await client.mutations.taskOccurrenceAction({
+    action: "RESCHEDULE",
+    taskId: task.id,
+    scheduledFor: task.dueDate,
+  });
+  if (errors?.length) throw new Error(errors[0].message);
+  if (result && !result.ok) throw new Error(result.message ?? "rejected");
 }

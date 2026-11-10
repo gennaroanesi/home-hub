@@ -15,7 +15,7 @@ Home management app for a two-person household.
 ## Key decisions
 - Auth uses Cognito `home-users` group for all home models
 - Agent Lambda invoked via AppSync custom mutation (not Lambda Function URL — blocked by account-level public access policy)
-- Recurring tasks: on-completion creates next occurrence + daily EventBridge sweep as safety net
+- Recurring tasks: on-completion creates next occurrence + daily EventBridge sweep as safety net. The open `homeTaskOccurrence` is the source of truth and `homeTask.dueDate` mirrors it; anything that changes a recurring task's date must go through `taskOccurrenceAction` RESCHEDULE (`rescheduleIfMoved` in lib/task-actions.ts)
 - WhatsApp bot uses Baileys (not official WA Business API) because it needs group chat support
 - WA bot desiredCount is 0 until first Docker image is pushed to ECR
 - Finance (`/finance`, `docs/finance-handoff.md`) reuses gennaroanesi.com's SimpleFIN token (`gennaroanesi/simplefin`); the sync must only request mapped account ids, since the token also sees personal accounts

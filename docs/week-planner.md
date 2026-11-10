@@ -77,7 +77,12 @@ Computed in `lib/week-plan.ts` (`buildWeekPlan`):
   flagged; neither are events whose title names a pet ("Dolce Barkin
   Creek"), which show in the pet's row.
 - **Not set:** a weekday with no status for someone (and no trip).
-- **Overdue:** open tasks past due.
+- **Overdue:** open tasks past due. A recurring task counts by its open
+  occurrence, and not at all once the task is marked completed (same as the
+  home page). Editing a recurring task's date moves its open occurrence
+  (`taskOccurrenceAction` RESCHEDULE, from web, mobile and Janet's
+  `update_task`); before that fix the two drifted, which is why the planner
+  once showed more overdue tasks than the home page.
 - **Care:** a pet vaccine past due; a required (not optional) pregnancy
   care item due or overdue and not booked.
 - **Trip prep:** a trip starting this week with an unfinished checklist.

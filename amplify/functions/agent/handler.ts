@@ -2410,8 +2410,16 @@ async function executeTool(
       }
       if (input.dueDate !== undefined) updates.dueDate = input.dueDate || null;
       if (input.recurrence !== undefined) updates.recurrence = input.recurrence || null;
+      const { data: before } = await client.models.homeTask.get({ id: input.taskId });
       const { data, errors } = await client.models.homeTask.update(updates);
       if (errors) return JSON.stringify({ error: errors[0].message });
+      // A recurring task moved: move its open occurrence too (tasks page, week planner read it).
+      if (data?.recurrence && data.dueDate && (!before?.dueDate || new Date(before.dueDate).getTime() !== new Date(data.dueDate).getTime())) {
+        const { data: result, errors: rescheduleErrors } = await client.mutations.taskOccurrenceAction({ action: "RESCHEDULE", taskId: data.id, scheduledFor: data.dueDate });
+        if (rescheduleErrors?.length || (result && !result.ok)) {
+          return JSON.stringify({ success: true, taskId: data.id, title: data.title, warning: `Saved, but its next occurrence wasn't moved: ${rescheduleErrors?.[0]?.message ?? result?.message}` });
+        }
+      }
       return JSON.stringify({ success: true, taskId: data?.id, title: data?.title });
     }
 

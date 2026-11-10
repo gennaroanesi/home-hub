@@ -24,6 +24,7 @@ import { RemindersSection } from "@/components/reminders-section";
 import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForTask } from "@/lib/reminder-defaults";
 import { resolveCurrentPerson } from "@/lib/current-person";
+import { rescheduleIfMoved } from "@/lib/task-actions";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -88,14 +89,16 @@ export function TaskModal({ isOpen, onOpenChange, task, people, onSaved, default
     if (!formTitle.trim()) return null;
 
     if (editingTask) {
+      const dueDate = formDueDate ? new Date(formDueDate).toISOString() : null;
       await client.models.homeTask.update({
         id: editingTask.id,
         title: formTitle,
         description: formDescription || null,
         assignedPersonIds: formAssignedIds,
-        dueDate: formDueDate ? new Date(formDueDate).toISOString() : null,
+        dueDate,
         recurrence: formRecurrence || null,
       });
+      await rescheduleIfMoved(client, { id: editingTask.id, recurrence: formRecurrence || null, dueDate }, editingTask.dueDate);
       return editingTask.id;
     }
     const { data } = await client.models.homeTask.create({

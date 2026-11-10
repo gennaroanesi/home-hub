@@ -58,10 +58,13 @@ describe("sections", () => {
           { id: "later", title: "Taxes", dueDate: "2027-04-01T18:00:00.000Z" },
           { id: "done", title: "Done", dueDate: "2026-11-17T18:00:00.000Z", isCompleted: true },
           { id: "rec", title: "Water plants", recurrence: "FREQ=WEEKLY", assignedPersonIds: ["cris"] },
+          // Series ended (marked completed) with its last occurrence still open: not overdue.
+          { id: "ended", title: "Take trash out", recurrence: "FREQ=WEEKLY", isCompleted: true },
         ],
         occurrences: [
           { id: "o1", taskId: "rec", scheduledFor: "2026-11-18T15:00:00.000Z" },
           { id: "o0", taskId: "rec", scheduledFor: "2026-11-11T15:00:00.000Z", completedAt: "2026-11-11T16:00:00.000Z" },
+          { id: "o9", taskId: "ended", scheduledFor: "2026-04-30T15:00:00.000Z" },
         ],
         reminders: [
           { id: "pill", name: "Dolce's pill", status: "PENDING", targetKind: "GROUP", items: [{ id: "i", name: "pill", rrule: "FREQ=DAILY;BYHOUR=8;BYMINUTE=0" }] },
