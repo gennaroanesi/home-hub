@@ -956,8 +956,9 @@ const schema = a
       .model({
         seriesId: a.id().required(),
         name: a.string().required(),
-        kind: a.enum(["INCOME", "EXPENSE"]),
+        kind: a.enum(["INCOME", "SAVINGS", "EXPENSE"]),
         personId: a.id(), // INCOME: the contributor
+        accountId: a.id(), // SAVINGS: the account the money goes into
         categories: a.string().array(),
         amount: a.float().required(), // positive magnitude per period
         period: a.enum(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]),

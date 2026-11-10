@@ -59,10 +59,14 @@ export const getFinanceSummary = defineOp({
     month: z.string(),
     accounts: z.array(z.object({ id: z.string(), name: z.string(), type: z.string().nullable(), balance: z.number(), updatedAt: z.string().nullable() })),
     contributions: z.array(z.object({ person: z.string().nullable(), planned: z.number(), received: z.number() })),
+    savings: z.array(z.object({ name: z.string(), account: z.string().nullable(), planned: z.number(), saved: z.number() })),
     budget: z.object({
       planned: z.number().describe("Planned contributions"),
       received: z.number().describe("Money that came in"),
       allocated: z.number().describe("Sum of spending lines"),
+      savingsPlanned: z.number().describe("Sum of savings lines"),
+      saved: z.number().describe("What actually went into those savings accounts"),
+      unallocated: z.number().describe("Planned contributions − spending lines − savings lines; negative = more planned than comes in"),
       spentBudgeted: z.number(),
       spentTotal: z.number().describe("All money out except transfers and card payments"),
       overspend: z.number(),
@@ -117,10 +121,14 @@ export const getFinanceSummary = defineOp({
       month: window.label,
       accounts: active.map((a) => ({ id: a.id, name: a.name, type: a.type ?? null, balance: r2(a.currentBalance ?? 0), updatedAt: a.balanceUpdatedAt ?? null })),
       contributions: view.incomeViews.map((v) => ({ person: nameOf(folks, v.line.personId) ?? v.line.name, planned: r2(v.budgeted), received: r2(v.spent) })),
+      savings: view.savingsViews.map((v) => ({ name: v.line.name, account: accounts.find((a) => a.id === v.line.accountId)?.name ?? null, planned: r2(v.budgeted), saved: r2(v.spent) })),
       budget: {
         planned: r2(view.planned),
         received: r2(view.received),
         allocated: r2(view.allocated),
+        savingsPlanned: r2(view.savingsPlanned),
+        saved: r2(view.saved),
+        unallocated: r2(view.unallocated),
         spentBudgeted: r2(view.spentBudgeted),
         spentTotal: r2(view.spentTotal),
         overspend: r2(view.overspend),
@@ -309,6 +317,7 @@ const BudgetOut = z.object({
   name: z.string(),
   kind: z.string(),
   person: z.string().nullable(),
+  account: z.string().nullable().describe("SAVINGS: the account the money goes into"),
   categories: z.array(z.string()),
   amount: z.number(),
   period: z.string(),
@@ -321,13 +330,15 @@ export const saveFinanceBudget = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month. Budgets are versioned: changing one (pass seriesId) starts a new version on effectiveFrom (default the 1st of this month) and ends the old one the day before, so past months keep the budget they had. Changing a version that starts on that same date corrects it in place. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
+    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month; SAVINGS lines plan what moves into a savings account each month (accountId or accountName), measured by what actually lands there. Budgets are versioned: changing one (pass seriesId) starts a new version on effectiveFrom (default the 1st of this month) and ends the old one the day before, so past months keep the budget they had. Changing a version that starts on that same date corrects it in place. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
   input: z.object({
     seriesId: z.string().optional().describe("Budget to change; leave out to create one."),
     name: z.string().optional(),
-    kind: z.enum(["INCOME", "EXPENSE"]).optional().describe("Default EXPENSE on create."),
+    kind: z.enum(["INCOME", "SAVINGS", "EXPENSE"]).optional().describe("Default EXPENSE on create."),
     personId: z.string().optional().describe("INCOME: who contributes."),
     personName: z.string().optional(),
+    accountId: z.string().optional().describe("SAVINGS: the account the money goes into."),
+    accountName: z.string().optional(),
     categories: z.array(z.string()).optional().describe("EXPENSE: categories the line covers."),
     amount: z.number().positive().optional(),
     period: z.enum(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]).optional().describe("Default MONTHLY."),
@@ -340,13 +351,14 @@ export const saveFinanceBudget = defineOp({
   async run(ctx, input) {
     const today = todayIso();
     const lines: BudgetLine[] = await listBudgetLines(ctx.client);
-    const folks = await people(ctx);
+    const [folks, accounts] = await Promise.all([people(ctx), listAccounts(ctx.client)]);
     const out = (l: any) => ({
       seriesId: l.seriesId,
       id: l.id,
       name: l.name,
       kind: l.kind ?? "EXPENSE",
       person: nameOf(folks, l.personId),
+      account: accounts.find((a) => a.id === l.accountId)?.name ?? null,
       categories: bucketCategories(l),
       amount: l.amount,
       period: l.period ?? "MONTHLY",
@@ -385,6 +397,14 @@ export const saveFinanceBudget = defineOp({
     if (kind === "EXPENSE" && !categories.length) throw new OpError("A spending line needs at least one category");
     const contributor = personId === undefined ? latest?.personId ?? null : personId;
     if (kind === "INCOME" && !contributor) throw new OpError("An income line needs the person who contributes (personId or personName)");
+    let savingsAccount: string | null = latest?.accountId ?? null;
+    if (input.accountId || input.accountName) {
+      const want = input.accountName?.trim().toLowerCase();
+      const acc = accounts.find((a) => (input.accountId ? a.id === input.accountId : a.name.toLowerCase() === want));
+      if (!acc) throw new OpError(`No account ${input.accountId ?? input.accountName}. Accounts: ${accounts.map((a) => a.name).join(", ") || "none"}`);
+      savingsAccount = acc.id;
+    }
+    if (kind === "SAVINGS" && !savingsAccount) throw new OpError("A savings line needs the account the money goes into (accountId or accountName)");
 
     const effectiveFrom = input.effectiveFrom ?? (latest && latest.effectiveFrom! > monthStart(today) ? latest.effectiveFrom! : monthStart(today));
 
@@ -402,6 +422,7 @@ export const saveFinanceBudget = defineOp({
       name,
       kind,
       personId: kind === "INCOME" ? contributor : null,
+      accountId: kind === "SAVINGS" ? savingsAccount : null,
       categories: kind === "EXPENSE" ? categories : [],
       amount,
       period: input.period ?? latest?.period ?? "MONTHLY",

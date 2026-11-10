@@ -1,7 +1,7 @@
 "use client";
 
-// Create / change a budget line (EXPENSE bucket of categories, or a
-// member's INCOME contribution). Saves through save_finance_budget, which
+// Create / change a budget line (EXPENSE bucket of categories, a member's
+// INCOME contribution, or SAVINGS into an account). Saves through save_finance_budget, which
 // versions the line: a change starts on `effectiveFrom` and closes the old
 // version the day before.
 
@@ -19,10 +19,11 @@ import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, typ
 
 export type BudgetDraft = {
   seriesId?: string;
-  kind: "INCOME" | "EXPENSE";
+  kind: "INCOME" | "SAVINGS" | "EXPENSE";
   name: string;
   categories: string[];
   personId: string;
+  accountId: string;
   amount: string;
   period: BudgetPeriod;
   effectiveFrom: string;
@@ -37,6 +38,7 @@ export function draftFromLine(line: BudgetLine, effectiveFrom: string): BudgetDr
     name: line.name,
     categories: bucketCategories(line),
     personId: line.personId ?? "",
+    accountId: line.accountId ?? "",
     amount: String(line.amount ?? ""),
     period: (line.period ?? "MONTHLY") as BudgetPeriod,
     effectiveFrom,
@@ -46,19 +48,21 @@ export function draftFromLine(line: BudgetLine, effectiveFrom: string): BudgetDr
 }
 
 export function emptyDraft(effectiveFrom: string, patch: Partial<BudgetDraft> = {}): BudgetDraft {
-  return { kind: "EXPENSE", name: "", categories: [], personId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ...patch };
+  return { kind: "EXPENSE", name: "", categories: [], personId: "", accountId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ...patch };
 }
 
 export function BudgetLineModal({
   draft,
   categories,
   people,
+  accounts = [],
   onClose,
   onSaved,
 }: {
   draft: BudgetDraft | null;
   categories: string[];
   people: PersonLite[];
+  accounts?: { id: string; name: string; active?: boolean | null }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -81,7 +85,11 @@ export function BudgetLineModal({
       ...(d.seriesId ? { seriesId: d.seriesId } : {}),
       kind: d.kind,
       name: d.name.trim() || undefined,
-      ...(d.kind === "EXPENSE" ? { categories: d.categories } : { personId: d.personId || undefined }),
+      ...(d.kind === "EXPENSE"
+        ? { categories: d.categories }
+        : d.kind === "SAVINGS"
+          ? { accountId: d.accountId || undefined }
+          : { personId: d.personId || undefined }),
       amount,
       period: d.period,
       effectiveFrom: d.effectiveFrom,
@@ -107,8 +115,14 @@ export function BudgetLineModal({
           >
             <SelectItem key="EXPENSE">Spending (categories)</SelectItem>
             <SelectItem key="INCOME">Contribution (a person puts in)</SelectItem>
+            <SelectItem key="SAVINGS">Savings (moved into an account)</SelectItem>
           </Select>
-          <Input label="Name" placeholder={d.kind === "INCOME" ? "Gennaro's contribution" : "Groceries & dining"} value={d.name} onValueChange={(name) => set({ name })} />
+          <Input
+            label="Name"
+            placeholder={d.kind === "INCOME" ? "Gennaro's contribution" : d.kind === "SAVINGS" ? "Joint savings" : "Groceries & dining"}
+            value={d.name}
+            onValueChange={(name) => set({ name })}
+          />
           {d.kind === "EXPENSE" ? (
             <>
               <Select
@@ -140,6 +154,21 @@ export function BudgetLineModal({
                 </Button>
               </div>
             </>
+          ) : d.kind === "SAVINGS" ? (
+            <Select
+              label="Savings account"
+              selectedKeys={d.accountId ? new Set([d.accountId]) : new Set()}
+              onSelectionChange={(k) => set({ accountId: (Array.from(k as Set<string>)[0] as string) ?? "" })}
+              description="Counts what lands in this account (minus withdrawals, not interest)."
+            >
+              {accounts
+                .filter((a) => a.active !== false || a.id === d.accountId)
+                .map((a) => (
+                  <SelectItem key={a.id} textValue={a.name}>
+                    {a.name}
+                  </SelectItem>
+                ))}
+            </Select>
           ) : (
             <Select label="Contributor" selectedKeys={d.personId ? new Set([d.personId]) : new Set()} onSelectionChange={(k) => set({ personId: (Array.from(k as Set<string>)[0] as string) ?? "" })}>
               {people.map((p) => (

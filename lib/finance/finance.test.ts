@@ -118,6 +118,35 @@ describe("budget", () => {
     expect(v.unassigned).toEqual([{ category: "Pets", spent: 60 }]);
     expect(v.spentTotal).toBe(3660);
   });
+
+  it("plans savings into an account and counts what lands there, net of withdrawals, without interest", () => {
+    const lines = [
+      line({ id: "g", seriesId: "g", name: "Gennaro", kind: "INCOME", personId: "gen", amount: 10000 }),
+      line({ id: "s", seriesId: "s", name: "Joint savings", kind: "SAVINGS", accountId: "sav", amount: 1500 }),
+      line({ id: "f", seriesId: "f", name: "Food", categories: ["Groceries"], amount: 900 }),
+    ];
+    const txs = [
+      tx({ accountId: "joint", amount: -1200, category: "Transfers" }),
+      tx({ accountId: "sav", amount: 1200, category: "Transfers" }),
+      tx({ accountId: "sav", amount: 500, category: "Contribution", personId: "cris" }), // straight into savings
+      tx({ accountId: "sav", amount: -200, category: "Transfers" }), // moved back out
+      tx({ accountId: "sav", amount: 12.5, category: "Interest" }),
+      tx({ accountId: "sav", amount: 300, category: "Transfers", status: "PENDING" }),
+    ];
+    const v = householdBudget(lines, txs, [], nov, "2026-11-15");
+    expect(v.savingsViews.map((x) => [x.line.id, x.budgeted, x.spent])).toEqual([["s", 1500, 1500]]);
+    expect(v.savingsPlanned).toBe(1500);
+    expect(v.saved).toBe(1500);
+    expect(v.unallocated).toBe(10000 - 900 - 1500);
+    // The transfers are not spending.
+    expect(v.spentTotal).toBe(0);
+    expect(v.expenseViews.map((x) => x.line.id)).toEqual(["f"]);
+  });
+
+  it("flags a savings line without an account", () => {
+    const issues = validateBudgetHistory([line({ id: "s", seriesId: "s", name: "Savings", kind: "SAVINGS", accountId: null, categories: [] })]);
+    expect(issues.map((i) => i.kind)).toEqual(["missing-account"]);
+  });
 });
 
 describe("scheduled transactions", () => {

@@ -154,6 +154,31 @@ describe("save_finance_budget", () => {
   });
 });
 
+describe("savings lines", () => {
+  it("creates a savings line by account name, refuses one without an account, and reports it in the summary", async () => {
+    const sav = { id: "sav", name: "Joint savings", type: "SAVINGS", currentBalance: 20000, active: true };
+    const { ctx } = setup({
+      homePerson: people,
+      homeFinanceAccount: [joint, sav],
+      homeFinanceBudget: [{ id: "c", seriesId: "c", name: "Gennaro", kind: "INCOME", personId: "gen", amount: 10000, period: "MONTHLY", effectiveFrom: "2026-01-01" }],
+      homeFinanceTransaction: [
+        { id: "t1", accountId: "joint", amount: -1000, category: "Transfers", type: "TRANSFER", toAccountId: "sav", date: thisMonth, status: "POSTED" },
+        { id: "t2", accountId: "sav", amount: 1000, category: "Transfers", type: "TRANSFER", date: thisMonth, status: "POSTED" },
+      ],
+    });
+    const missing: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", amount: 2000 });
+    expect(missing.error).toMatch(/account/);
+    const unknown: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", accountName: "Nope", amount: 2000 });
+    expect(unknown.error).toMatch(/No account Nope/);
+    const ok: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", accountName: "joint SAVINGS", amount: 2000, effectiveFrom: "2026-01-01" });
+    expect(ok.result.budget).toMatchObject({ kind: "SAVINGS", account: "Joint savings", categories: [], person: null });
+
+    const s = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(s.savings).toEqual([{ name: "Savings", account: "Joint savings", planned: 2000, saved: 1000 }]);
+    expect(s.budget).toMatchObject({ savingsPlanned: 2000, saved: 1000, unallocated: 8000, spentTotal: 0 });
+  });
+});
+
 describe("save_finance_schedule", () => {
   it("puts a new bill on the household checking account with a negative amount", async () => {
     const { ctx, tables } = setup({ homeFinanceAccount: [{ ...joint, id: "personal", ownerPersonIds: ["gen"] }, joint] });

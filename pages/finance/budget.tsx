@@ -1,8 +1,9 @@
 "use client";
 
 // /finance/budget — the household budget for a month, quarter or year:
-// what each of us planned to put in vs what came in, each spending line's
-// pace, what isn't budgeted, and every budget series with its versions.
+// what each of us planned to put in vs what came in, what went to savings,
+// each spending line's pace, what isn't budgeted, and every budget series
+// with its versions.
 // Computation is lib/finance/budget.ts (householdBudget); writes go
 // through the save_finance_budget op, which versions lines.
 
@@ -159,11 +160,14 @@ export default function BudgetPage() {
               label="Budgeted to spend"
               value={view.allocated}
               sub={
-                view.unallocated < 0 ? (
-                  <span className="text-danger-600">{fmtCurrency(-view.unallocated)} more than comes in</span>
-                ) : (
-                  <>{fmtCurrency(view.unallocated)} not allocated</>
-                )
+                <>
+                  {view.unallocated < 0 ? (
+                    <span className="text-danger-600">{fmtCurrency(-view.unallocated)} more than comes in</span>
+                  ) : (
+                    <>{fmtCurrency(view.unallocated)} not allocated</>
+                  )}
+                  {view.savingsPlanned > 0 && <> after {fmtCurrency(view.savingsPlanned, { cents: false })} to savings</>}
+                </>
               }
             />
             <Stat label="Spent on budgeted lines" value={view.spentBudgeted} sub={<>of {fmtCurrency(view.allocated)}</>} />
@@ -193,6 +197,37 @@ export default function BudgetPage() {
                     </div>
                     <div className="flex-1">
                       <BudgetBar spent={v.spent} budgeted={v.budgeted} income />
+                    </div>
+                    <div className="text-sm w-48 text-right tabular-nums">
+                      <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
+                    </div>
+                    <LineActions line={v.line} onEdit={() => setDraft(draftFromLine(v.line, newFrom))} onEnd={() => endSeries(v.line.seriesId, v.line.name)} />
+                  </div>
+                ))
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Savings */}
+          <Card>
+            <CardHeader className="font-semibold">Savings</CardHeader>
+            <CardBody className="gap-3 pt-0">
+              {view.savingsViews.length === 0 ? (
+                <p className="text-sm text-default-500">
+                  No savings lines. Add one to plan what moves into a savings account each month; it&apos;s measured by what lands there.
+                  <Button size="sm" variant="light" color="primary" className="ml-2" onPress={() => setDraft(emptyDraft(newFrom, { kind: "SAVINGS" }))}>
+                    Add savings
+                  </Button>
+                </p>
+              ) : (
+                view.savingsViews.map((v) => (
+                  <div key={v.line.id} className="flex items-center gap-3">
+                    <div className="w-40 shrink-0 text-sm">
+                      {v.line.name}
+                      <div className="text-xs text-default-400">{refs.accounts.find((a) => a.id === v.line.accountId)?.name ?? "no account"}</div>
+                    </div>
+                    <div className="flex-1">
+                      <BudgetBar spent={Math.max(0, v.spent)} budgeted={v.budgeted} income />
                     </div>
                     <div className="text-sm w-48 text-right tabular-nums">
                       <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
@@ -335,7 +370,7 @@ export default function BudgetPage() {
                     <summary className="cursor-pointer flex flex-wrap items-center gap-2 py-1">
                       <span className="font-medium">{s.name}</span>
                       <Chip size="sm" variant="flat">
-                        {s.kind === "INCOME" ? "Contribution" : "Spending"}
+                        {s.kind === "INCOME" ? "Contribution" : s.kind === "SAVINGS" ? "Savings" : "Spending"}
                       </Chip>
                       {s.liveNow && (
                         <Chip size="sm" color="success" variant="flat">
@@ -390,6 +425,7 @@ export default function BudgetPage() {
         draft={draft}
         categories={refs.categories}
         people={refs.people}
+        accounts={refs.accounts}
         onClose={() => setDraft(null)}
         onSaved={() => {
           setDraft(null);

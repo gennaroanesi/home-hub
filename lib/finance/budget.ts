@@ -2,13 +2,15 @@
 // posted spending. Ported from gennaroanesi.com (components/finance/budget.ts),
 // keeping its SCD resolution, validation, pace and range scaling; the
 // funding-source pools (salary/bonus/RSU) become one household pool fed by
-// each member's contribution (INCOME lines carry a personId).
+// each member's contribution (INCOME lines carry a personId). SAVINGS lines
+// plan what moves into a savings account (accountId) each period; that money
+// is a transfer, so it never counts as spending.
 
 import { effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
 import { daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 
-export const BUDGET_KINDS = ["INCOME", "EXPENSE"] as const;
+export const BUDGET_KINDS = ["INCOME", "SAVINGS", "EXPENSE"] as const;
 export type BudgetKind = (typeof BUDGET_KINDS)[number];
 
 export const BUDGET_PERIODS = ["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"] as const;
@@ -30,6 +32,7 @@ export type BudgetLine = {
   name: string;
   kind?: string | null;
   personId?: string | null;
+  accountId?: string | null;
   categories?: (string | null)[] | null;
   amount?: number | null;
   period?: string | null;
@@ -42,7 +45,7 @@ export type BudgetLine = {
 };
 
 export function budgetKind(line: BudgetLine): BudgetKind {
-  return line.kind === "INCOME" ? "INCOME" : "EXPENSE";
+  return line.kind === "INCOME" || line.kind === "SAVINGS" ? line.kind : "EXPENSE";
 }
 
 export function bucketCategories(line: BudgetLine): string[] {
@@ -85,7 +88,7 @@ export function resolutionDate(window: DateRange, todayIso: string): string {
 // ── Validation ────────────────────────────────────────────────────────────────
 
 export type BudgetHistoryIssue = {
-  kind: "overlap" | "multiple-open" | "reversed-range" | "missing-from" | "shared-category";
+  kind: "overlap" | "multiple-open" | "reversed-range" | "missing-from" | "shared-category" | "missing-account";
   seriesId: string;
   name: string;
   detail: string;
@@ -104,6 +107,7 @@ export function validateBudgetHistory(lines: BudgetLine[], onDate?: string): Bud
   for (const [seriesId, group] of bySeries) {
     const base = { seriesId, name: group[0].name };
     for (const l of group) {
+      if (budgetKind(l) === "SAVINGS" && !l.accountId) issues.push({ ...base, kind: "missing-account", lineIds: [l.id], detail: "no savings account, so nothing can count toward it" });
       if (!l.effectiveFrom) issues.push({ ...base, kind: "missing-from", lineIds: [l.id], detail: "no start date, so it never applies" });
       else if (l.effectiveTo != null && l.effectiveTo < l.effectiveFrom)
         issues.push({ ...base, kind: "reversed-range", lineIds: [l.id], detail: `ends ${l.effectiveTo}, before it starts ${l.effectiveFrom}` });
@@ -151,6 +155,7 @@ export function planBudgetChange(
       name: next.name,
       kind: next.kind ?? "EXPENSE",
       personId: next.personId ?? null,
+      accountId: next.accountId ?? null,
       categories: next.categories ?? [],
       amount: next.amount ?? 0,
       period: next.period ?? "MONTHLY",
@@ -268,6 +273,22 @@ export function receivedByPerson(txs: TxLike[], window: DateRange): Map<string, 
 }
 
 /**
+ * What was saved into each account: posted money in minus money out, so a
+ * withdrawal undoes a deposit. Interest and other income are earnings, not
+ * saving, and don't count.
+ */
+export function savedByAccount(txs: TxLike[], window: DateRange): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const tx of txs) {
+    if (tx.status === "PENDING" || !inWindow(tx, window)) continue;
+    const cat = effectiveCategory(tx);
+    if (cat === "Interest" || cat === "Income") continue;
+    out.set(tx.accountId, (out.get(tx.accountId) ?? 0) + (tx.amount ?? 0));
+  }
+  return out;
+}
+
+/**
  * Spending already committed by scheduled transactions in the window, per
  * category. Decomposes a line ("Utilities $300: $240 scheduled, $60
  * variable"); never adds to it.
@@ -310,8 +331,9 @@ const PACE_TOLERANCE = 0.05;
 
 /**
  * One line against the window. For INCOME lines, `spent` is what that
- * member actually contributed. Status is the fact (above/below), not a
- * verdict: over is bad for spending and good for income.
+ * member actually contributed; for SAVINGS lines, what was saved into the
+ * account. Status is the fact (above/below), not a verdict: over is bad for
+ * spending and good for income and savings.
  */
 export function computeLineView(
   line: BudgetLine,
@@ -320,13 +342,19 @@ export function computeLineView(
   committedByCat: Map<string, number>,
   receivedByPersonId: Map<string, number>,
   todayIso: string,
+  savedByAccountId: Map<string, number> = new Map(),
 ): BudgetLineView {
   const budgeted = budgetedForRange(line, window);
-  const income = budgetKind(line) === "INCOME";
+  const kind = budgetKind(line);
   const cats = bucketCategories(line);
   const sum = (m: Map<string, number>) => cats.reduce((s, c) => s + (m.get(c) ?? 0), 0);
-  const spent = income ? receivedByPersonId.get(line.personId ?? "") ?? 0 : sum(spentByCat);
-  const committed = income ? 0 : sum(committedByCat);
+  const spent =
+    kind === "INCOME"
+      ? receivedByPersonId.get(line.personId ?? "") ?? 0
+      : kind === "SAVINGS"
+        ? savedByAccountId.get(line.accountId ?? "") ?? 0
+        : sum(spentByCat);
+  const committed = kind === "EXPENSE" ? sum(committedByCat) : 0;
   const elapsed = elapsedFraction(window, todayIso);
   const expectedByNow = budgeted * elapsed;
   const pace = expectedByNow > 0 ? spent / expectedByNow : null;
@@ -360,15 +388,20 @@ export type HouseholdBudgetView = {
   received: number;
   /** Sum of EXPENSE lines. */
   allocated: number;
+  /** Sum of SAVINGS lines. */
+  savingsPlanned: number;
+  /** What was saved into the accounts those lines name. */
+  saved: number;
   /** Spending counted against EXPENSE lines. */
   spentBudgeted: number;
   /** All money out except internal movement, budgeted or not. */
   spentTotal: number;
   /** Sum of the lines that are over, not netted against the ones under. */
   overspend: number;
-  /** planned − allocated: negative means more is budgeted than comes in. */
+  /** planned − allocated − savingsPlanned: negative means more is budgeted than comes in. */
   unallocated: number;
   incomeViews: BudgetLineView[];
+  savingsViews: BudgetLineView[];
   expenseViews: BudgetLineView[];
   /** Spending in categories no in-force line covers. */
   unassigned: Array<{ category: string; spent: number }>;
@@ -387,8 +420,10 @@ export function householdBudget(
   const spentByCat = spendByCategory(txs, window);
   const committed = committedByCategory(rules, window);
   const received = receivedByPerson(txs, window);
-  const views = inForce.map((l) => computeLineView(l, window, spentByCat, committed, received, todayIso));
+  const saved = savedByAccount(txs, window);
+  const views = inForce.map((l) => computeLineView(l, window, spentByCat, committed, received, todayIso, saved));
   const incomeViews = views.filter((v) => budgetKind(v.line) === "INCOME").sort((a, b) => a.line.name.localeCompare(b.line.name));
+  const savingsViews = views.filter((v) => budgetKind(v.line) === "SAVINGS").sort((a, b) => a.line.name.localeCompare(b.line.name));
   const expenseViews = views.filter((v) => budgetKind(v.line) === "EXPENSE").sort((a, b) => b.budgeted - a.budgeted);
   const covered = new Set(expenseViews.flatMap((v) => bucketCategories(v.line)));
   const unassigned = [...spentByCat.entries()]
@@ -397,16 +432,20 @@ export function householdBudget(
     .sort((a, b) => b.spent - a.spent);
   const planned = incomeViews.reduce((s, v) => s + v.budgeted, 0);
   const allocated = expenseViews.reduce((s, v) => s + v.budgeted, 0);
+  const savingsPlanned = savingsViews.reduce((s, v) => s + v.budgeted, 0);
   return {
     window,
     planned,
     received: [...received.values()].reduce((s, n) => s + n, 0),
     allocated,
+    savingsPlanned,
+    saved: savingsViews.reduce((s, v) => s + v.spent, 0),
     spentBudgeted: expenseViews.reduce((s, v) => s + v.spent, 0),
     spentTotal: totalOutflow(txs, window),
     overspend: expenseViews.reduce((s, v) => s + Math.max(0, v.spent - v.budgeted), 0),
-    unallocated: planned - allocated,
+    unallocated: planned - allocated - savingsPlanned,
     incomeViews,
+    savingsViews,
     expenseViews,
     unassigned,
     issues: validateBudgetHistory(lines, resolutionDate(window, todayIso)),
@@ -450,7 +489,8 @@ export function listBudgetSeries(lines: BudgetLine[], todayIso: string): BudgetS
       endedOn: ended ? latest.effectiveTo ?? null : null,
     });
   }
-  return out.sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "INCOME" ? -1 : 1) || a.name.localeCompare(b.name));
+  const order: Record<BudgetKind, number> = { INCOME: 0, SAVINGS: 1, EXPENSE: 2 };
+  return out.sort((a, b) => order[a.kind] - order[b.kind] || a.name.localeCompare(b.name));
 }
 
 export type CategorySeed = { category: string; median: number; min: number; max: number; volatility: number; monthly: number[] };

@@ -22,6 +22,13 @@ Household differences from gennaroanesi.com:
   per person.
 - **Mortgage and car are ordinary budgeted spending.** Only transfers between
   tracked accounts and card payments are left out.
+- **Savings is a budget line, not spending.** A SAVINGS line names an
+  account (`accountId`) and an amount per period; actual = what landed in
+  that account in the period, minus withdrawals, not counting interest
+  (`savedByAccount` in `lib/finance/budget.ts`). The money moves as a
+  transfer, so it never shows as spending. Contributions are planned to
+  cover spending + savings (`unallocated` = contributions − spending −
+  savings).
 - **Budget pools collapse to one.** INCOME budget lines are per contributor
   (`personId`) instead of salary / bonus / RSU.
 - **homeBill is gone.** Bills are scheduled transactions
