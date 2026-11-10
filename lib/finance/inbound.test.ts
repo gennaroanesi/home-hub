@@ -48,6 +48,12 @@ describe("inbound gate", () => {
     expect(await reason({ from: "cris@example.com", auth: "spf=pass smtp.mailfrom=example.com" })).toBe("ok");
   });
 
+  it("reads SES's own SPF format (envelope-from in a later segment)", async () => {
+    const ses = (from: string) => `spf=pass (spfCheck: domain of ${from} designates 192.0.2.1 as permitted sender) client-ip=192.0.2.1; envelope-from=bounce@${from}; helo=mail.${from}; dkim=fail; dmarc=none`;
+    expect(await reason({ from: "cris@example.com", auth: ses("example.com") })).toBe("ok");
+    expect(await reason({ from: "cris@example.com", auth: ses("evil.test") })).toMatch(/didn't verify/);
+  });
+
   it("drops unknown senders, unverified mail, virus/spam FAIL, and everything when the list is empty", async () => {
     expect(await reason({ from: "stranger@example.com", auth: "dkim=pass header.i=@example.com" })).toMatch(/not allowed/);
     expect(await reason({ from: "cris@example.com", auth: "spf=fail; dkim=fail; dmarc=fail" })).toMatch(/didn't verify/);

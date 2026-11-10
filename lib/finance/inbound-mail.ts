@@ -45,7 +45,16 @@ const sameDomain = (d: string, fromDomain: string) => d === fromDomain || d.ends
 export function sesVerdicts(mail: ParsedMail, fromDomain: string): { spam: string; virus: string; aligned: boolean } {
   const first = (name: string) => headerValues(mail, name)[0] ?? "";
   const auth = first("authentication-results").toLowerCase();
-  const results = auth.startsWith("amazonses.com") ? auth.split(";").slice(1).map((r) => r.trim()) : [];
+  // SES writes SPF as "spf=pass (…) client-ip=…; envelope-from=…; helo=…;",
+  // so a segment that doesn't start a new method belongs to the one before.
+  const results: string[] = [];
+  if (auth.startsWith("amazonses.com")) {
+    for (const seg of auth.split(";").slice(1).map((r) => r.trim())) {
+      if (!seg) continue;
+      if (/^(spf|dkim|dmarc|arc|bimi|iprev|auth|dkim-atps)=/.test(seg)) results.push(seg);
+      else if (results.length) results[results.length - 1] += `; ${seg}`;
+    }
+  }
   const passFor = (method: string, prop: RegExp) =>
     results.some((r) => {
       if (!r.startsWith(`${method}=pass`)) return false;
@@ -58,7 +67,7 @@ export function sesVerdicts(mail: ParsedMail, fromDomain: string): { spam: strin
     aligned:
       passFor("dmarc", /header\.from=(\S+)/) ||
       passFor("dkim", /header\.[id]=@?(\S+)/) ||
-      passFor("spf", /smtp\.mailfrom=(\S+)/),
+      passFor("spf", /(?:smtp\.mailfrom|envelope-from)=([^\s;]+)/),
   };
 }
 
