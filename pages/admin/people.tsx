@@ -37,7 +37,14 @@ import DefaultLayout from "@/layouts/default";
 import { HOUSEHOLD_GROUP } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
 import { ASSIGNABLE_GROUPS, inHousehold } from "@/lib/people";
-import { MergeModal, PersonAvatar, type Person } from "@/components/people";
+import {
+  MergeModal,
+  PersonAvatar,
+  RelationshipsEditor,
+  relationsLine,
+  type Person,
+} from "@/components/people";
+import type { RelationshipRow } from "@/lib/relationships";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -63,11 +70,13 @@ function rowGroups(p: Person): string[] {
 
 function MemberCard({
   person,
+  relations,
   isAdmin,
   onEdit,
   onMerge,
 }: {
   person: Person;
+  relations: string;
   isAdmin: boolean;
   onEdit: () => void;
   onMerge: () => void;
@@ -98,6 +107,9 @@ function MemberCard({
                 .join(" · ")}
             </span>
           </div>
+          {relations && (
+            <p className="text-xs text-default-500 truncate">{relations}</p>
+          )}
         </div>
         <div className="flex gap-1">
           {isAdmin && (
@@ -129,6 +141,7 @@ function MemberCard({
 export default function HouseholdPage() {
   const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
+  const [rels, setRels] = useState<RelationshipRow[]>([]);
   const [editing, setEditing] = useState<Person | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const editModal = useDisclosure();
@@ -156,8 +169,12 @@ export default function HouseholdPage() {
   const [inviting, setInviting] = useState(false);
 
   const loadPeople = useCallback(async () => {
-    const rows = await listAllPages<Person>(client.models.homePerson);
+    const [rows, relRows] = await Promise.all([
+      listAllPages<Person>(client.models.homePerson),
+      listAllPages<RelationshipRow>(client.models.homePersonRelationship),
+    ]);
     setPeople(rows.sort((a, b) => a.name.localeCompare(b.name)));
+    setRels(relRows);
   }, []);
 
   useEffect(() => {
@@ -327,6 +344,11 @@ export default function HouseholdPage() {
             <MemberCard
               key={p.id}
               person={p}
+              relations={relationsLine(
+                p.id,
+                rels,
+                new Map(people.map((x) => [x.id, x])),
+              )}
               isAdmin={isAdmin}
               onEdit={() => openEdit(p)}
               onMerge={() => {
@@ -347,6 +369,7 @@ export default function HouseholdPage() {
           isOpen={editModal.isOpen}
           onOpenChange={editModal.onOpenChange}
           scrollBehavior="inside"
+          size="lg"
         >
           <ModalContent>
             {(onClose) => (
@@ -461,6 +484,15 @@ export default function HouseholdPage() {
                         sign-in.
                       </p>
                     </div>
+                  )}
+                  {editing && (
+                    <RelationshipsEditor
+                      client={client}
+                      person={editing}
+                      people={people}
+                      rels={rels}
+                      onChanged={loadPeople}
+                    />
                   )}
                 </ModalBody>
                 <ModalFooter>

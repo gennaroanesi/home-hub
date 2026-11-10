@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { birthdayLabel, daysToBirthday, inHousehold, relationshipLabel } from "./people";
+import { birthdayLabel, daysToBirthday, inHousehold, circleLabel } from "./people";
 
 describe("people helpers", () => {
   it("labels birthdays with the age when the year is known", () => {
@@ -21,8 +21,8 @@ describe("people helpers", () => {
     expect(inHousehold({})).toBe(false);
   });
 
-  it("relationship labels ignore unknown values", () => {
-    expect(relationshipLabel("FAMILY")).toBe("Family");
-    expect(relationshipLabel("ENEMY")).toBeNull();
+  it("circle labels ignore unknown values", () => {
+    expect(circleLabel("FAMILY")).toBe("Family");
+    expect(circleLabel("ENEMY")).toBeNull();
   });
 });

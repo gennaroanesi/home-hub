@@ -5,18 +5,18 @@
 
 import { HOUSEHOLD_GROUP } from "./household";
 
-export const RELATIONSHIPS = ["FAMILY", "FRIEND", "WORK", "OTHER"] as const;
-export type Relationship = (typeof RELATIONSHIPS)[number];
+export const CIRCLES = ["FAMILY", "FRIEND", "WORK", "OTHER"] as const;
+export type Circle = (typeof CIRCLES)[number];
 
-export const RELATIONSHIP_LABELS: Record<Relationship, string> = {
+export const CIRCLE_LABELS: Record<Circle, string> = {
   FAMILY: "Family",
-  FRIEND: "Friend",
+  FRIEND: "Friends",
   WORK: "Work",
   OTHER: "Other",
 };
 
-export function relationshipLabel(r: string | null | undefined): string | null {
-  return r && r in RELATIONSHIP_LABELS ? RELATIONSHIP_LABELS[r as Relationship] : null;
+export function circleLabel(r: string | null | undefined): string | null {
+  return r && r in CIRCLE_LABELS ? CIRCLE_LABELS[r as Circle] : null;
 }
 
 /** Groups an admin can give a member. A "friends" group comes with sharing. */

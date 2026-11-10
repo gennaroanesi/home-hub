@@ -6,34 +6,52 @@
 import { z } from "zod/v4";
 import { listAllPages } from "../list-all";
 import { BUSINESS_CATEGORIES, businessMatches, businessRow, healthProviderRow } from "../businesses";
-import { RELATIONSHIPS, daysToBirthday, inHousehold } from "../people";
+import { CIRCLES, daysToBirthday, inHousehold } from "../people";
 import { todayIso } from "../finance/dates";
+import { RELATION_KINDS, RELATION_LABELS, findPairRow, normalizeRelationship, relationsOf, type RelationshipRow } from "../relationships";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+const RelationOut = z.object({
+  relationshipId: z.string(),
+  personId: z.string().describe("The other person"),
+  name: z.string(),
+  kind: z.enum(RELATION_KINDS).describe("What the other person is to this one"),
+  role: z.string().describe("Display word, e.g. 'daughter' (falls back to the kind)"),
+});
+
 const ContactOut = z.object({
   id: z.string(),
   name: z.string(),
-  relationship: z.string().nullable(),
+  circle: z.string().nullable(),
   birthday: z.string().nullable().describe("YYYY-MM-DD; year 1900 = unknown"),
   daysToBirthday: z.number().nullable(),
   phoneNumber: z.string().nullable(),
   email: z.string().nullable(),
   notes: z.string().nullable(),
+  relations: z.array(RelationOut).describe("How other people relate to them"),
 });
 
-function contactOut(p: any, today: string): z.infer<typeof ContactOut> {
+
+function relationsOut(personId: string, rels: RelationshipRow[], byId: Map<string, any>): z.infer<typeof RelationOut>[] {
+  return relationsOf(personId, rels)
+    .filter((r) => byId.has(r.otherPersonId))
+    .map((r) => ({ relationshipId: r.relationshipId, personId: r.otherPersonId, name: byId.get(r.otherPersonId).name, kind: r.kind, role: r.role }));
+}
+
+function contactOut(p: any, today: string, rels: RelationshipRow[] = [], byId: Map<string, any> = new Map()): z.infer<typeof ContactOut> {
   return {
     id: p.id,
     name: p.name,
-    relationship: p.relationship ?? null,
+    circle: p.circle ?? null,
     birthday: p.birthday ?? null,
     daysToBirthday: daysToBirthday(p.birthday, today),
     phoneNumber: p.phoneNumber ?? null,
     email: p.email ?? null,
     notes: p.notes ?? null,
+    relations: relationsOut(p.id, rels, byId),
   };
 }
 
@@ -54,27 +72,44 @@ const BusinessOut = z.object({
 });
 
 const allPeople = (ctx: OpContext) => listAllPages<any>(ctx.client.models.homePerson);
+const allRelationships = (ctx: OpContext) => listAllPages<RelationshipRow>(ctx.client.models.homePersonRelationship);
+
+/** A person by id, else by exact name (case-insensitive), from anyone in the app. */
+function pickPerson(people: any[], id: string | undefined, name: string | undefined, what: string): any {
+  if (id) {
+    const p = people.find((x) => x.id === id);
+    if (!p) throw new OpError(`No person with id ${id}`);
+    return p;
+  }
+  const n = (name ?? "").trim().toLowerCase();
+  if (!n) throw new OpError(`Say who the ${what} is: id or name`);
+  const p = people.find((x) => x.name.toLowerCase() === n);
+  if (!p) throw new OpError(`No person named "${name}"; add them with save_contact first`);
+  return p;
+}
 
 export const listContacts = defineOp({
   name: "list_contacts",
   domain: "contacts",
   access: "read",
   description:
-    "The contact book's people: friends, family and others who aren't in the household, with relationship, birthday, phone, email and notes. Answers 'when is Marco's birthday?', 'whose birthdays are coming up?', 'what's Ana's number?'. Household members aren't included.",
+    "The contact book's people: friends, family and others who aren't in the household, with circle (family, friends, work), birthday, phone, email and notes. Answers 'when is Marco's birthday?', 'whose birthdays are coming up?', 'what's Ana's number?'. Household members aren't included.",
   input: z.object({
     query: z.string().optional().describe("Words that must all appear in the name, email, phone or notes."),
-    relationship: z.enum(RELATIONSHIPS).optional(),
+    circle: z.enum(CIRCLES).optional(),
     upcomingBirthdaysDays: z.number().int().min(0).max(366).optional().describe("Only people whose birthday is within this many days, soonest first."),
   }),
   output: z.object({ contacts: z.array(ContactOut) }),
   async run(ctx, input) {
     const today = todayIso();
     const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-    let rows = (await allPeople(ctx))
+    const [people, rels] = await Promise.all([allPeople(ctx), allRelationships(ctx).catch(() => [] as RelationshipRow[])]);
+    const byId = new Map(people.map((p) => [p.id, p]));
+    let rows = people
       .filter((p) => !inHousehold(p) && p.active !== false)
-      .filter((p) => !input.relationship || p.relationship === input.relationship)
+      .filter((p) => !input.circle || p.circle === input.circle)
       .filter((p) => words.every((w) => [p.name, p.email, p.phoneNumber, p.notes].filter(Boolean).join(" ").toLowerCase().includes(w)))
-      .map((p) => contactOut(p, today));
+      .map((p) => contactOut(p, today, rels, byId));
     if (input.upcomingBirthdaysDays != null) {
       rows = rows.filter((c) => c.daysToBirthday != null && c.daysToBirthday <= input.upcomingBirthdaysDays!).sort((a, b) => a.daysToBirthday! - b.daysToBirthday!);
     } else {
@@ -93,7 +128,7 @@ export const saveContact = defineOp({
   input: z.object({
     contactId: z.string().optional(),
     name: z.string().optional(),
-    relationship: z.enum(RELATIONSHIPS).nullable().optional(),
+    circle: z.enum(CIRCLES).nullable().optional(),
     birthday: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).nullable().optional().describe("YYYY-MM-DD; use 1900 for an unknown year."),
     phoneNumber: z.string().nullable().optional().describe("E.164, e.g. +15125551234"),
     email: z.string().nullable().optional(),
@@ -103,7 +138,7 @@ export const saveContact = defineOp({
   async run(ctx, input) {
     const today = todayIso();
     const fields = Object.fromEntries(
-      (["name", "relationship", "birthday", "phoneNumber", "email", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, typeof input[k] === "string" ? (input[k] as string).trim() || null : input[k]]),
+      (["name", "circle", "birthday", "phoneNumber", "email", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, typeof input[k] === "string" ? (input[k] as string).trim() || null : input[k]]),
     );
     if (input.contactId) {
       const { data: p } = await ctx.client.models.homePerson.get({ id: input.contactId });
@@ -195,4 +230,66 @@ export const saveBusiness = defineOp({
   },
 });
 
-export const contactsOps = [listContacts, saveContact, listBusinesses, saveBusiness];
+export const listRelationships = defineOp({
+  name: "list_relationships",
+  domain: "contacts",
+  access: "read",
+  description:
+    "How people relate to one person, household members included: 'who is Eva's mother?', 'who are Priscilla's kids?', 'how is Gabrielle related to us?'. Each relation says what the other person is to this one (kind, plus role, the word to use, e.g. 'daughter').",
+  input: z.object({
+    personId: z.string().optional(),
+    personName: z.string().optional(),
+  }),
+  output: z.object({ personId: z.string(), name: z.string(), relations: z.array(RelationOut) }),
+  async run(ctx, input) {
+    const [people, rels] = await Promise.all([allPeople(ctx), allRelationships(ctx)]);
+    const p = pickPerson(people, input.personId, input.personName, "person");
+    return { personId: p.id, name: p.name, relations: relationsOut(p.id, rels, new Map(people.map((x) => [x.id, x]))) };
+  },
+});
+
+export const saveRelationship = defineOp({
+  name: "save_relationship",
+  domain: "contacts",
+  access: "write",
+  description:
+    "Record how two people relate: '<person> is the <kind> of <relatedPerson>'. The inverse is implied, so record each pair once (Priscilla PARENT of Eva also means Eva is Priscilla's child). label is the word for person, inverseLabel the word for relatedPerson, e.g. person Eva, kind CHILD, relatedPerson Priscilla, label 'daughter'. One relationship per pair: saving a pair that's already linked replaces it. remove: true unlinks the pair. Both people must already exist (household or contacts).",
+  input: z.object({
+    personId: z.string().optional(),
+    personName: z.string().optional(),
+    kind: z.enum(RELATION_KINDS).optional().describe("What person is to relatedPerson. Required unless remove."),
+    relatedPersonId: z.string().optional(),
+    relatedPersonName: z.string().optional(),
+    label: z.string().nullable().optional().describe("Word for person, e.g. 'mother', 'daughter', 'mother-in-law'"),
+    inverseLabel: z.string().nullable().optional().describe("Word for relatedPerson"),
+    remove: z.boolean().optional(),
+  }),
+  output: z.object({ action: z.enum(["created", "updated", "removed", "unchanged"]), summary: z.string() }),
+  async run(ctx, input) {
+    const [people, rels] = await Promise.all([allPeople(ctx), allRelationships(ctx)]);
+    const a = pickPerson(people, input.personId, input.personName, "person");
+    const b = pickPerson(people, input.relatedPersonId, input.relatedPersonName, "related person");
+    if (a.id === b.id) throw new OpError("A person can't be related to themselves");
+    const model = ctx.client.models.homePersonRelationship;
+    const existing = findPairRow(rels, a.id, b.id);
+    if (input.remove) {
+      if (!existing) return { action: "unchanged" as const, summary: `${a.name} and ${b.name} weren't linked` };
+      await model.delete({ id: existing.id });
+      return { action: "removed" as const, summary: `Unlinked ${a.name} and ${b.name}` };
+    }
+    if (!input.kind) throw new OpError("kind is required");
+    const row = normalizeRelationship({
+      personId: a.id,
+      relatedPersonId: b.id,
+      kind: input.kind,
+      label: input.label?.trim() || null,
+      inverseLabel: input.inverseLabel?.trim() || null,
+    });
+    const r = existing ? await model.update({ id: existing.id, ...row }) : await model.create(row);
+    if (r.errors?.length) throw new Error(r.errors[0].message);
+    const word = input.label?.trim() || RELATION_LABELS[input.kind];
+    return { action: existing ? ("updated" as const) : ("created" as const), summary: `${a.name} is ${b.name}'s ${word}` };
+  },
+});
+
+export const contactsOps = [listContacts, saveContact, listBusinesses, saveBusiness, listRelationships, saveRelationship];

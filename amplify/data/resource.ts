@@ -94,9 +94,10 @@ const schema = a
         // integration. Used by the v2 risk matrix to detect whether an
         // action is being requested from home wifi.
         homeDeviceTrackerEntity: a.string(),
-        // Contact book: how we know them (lib/people.ts RELATIONSHIPS:
-        // FAMILY, FRIEND, WORK, OTHER) and free-form notes.
-        relationship: a.string(),
+        // Contact book: which circle they're in (lib/people.ts CIRCLES:
+        // FAMILY, FRIEND, WORK, OTHER) and free-form notes. How people
+        // relate to each other is homePersonRelationship.
+        circle: a.string(),
         notes: a.string(),
       })
       .authorization((allow) => [
@@ -105,6 +106,25 @@ const schema = a
         // mergePeople admin lambdas reach this model via IAM. The
         // schema-level allow.resource grants aren't enough on their
         // own (see the comment on homePersonFace).
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Person relationships ────────────────────────────────────────────
+    // How two people relate: one row per pair, read as "personId is
+    // <kind> of relatedPersonId"; the inverse is derived (lib/
+    // relationships.ts), never stored. Kinds are neutral (PARENT, SPOUSE,
+    // …); label / inverseLabel hold each side's word ("mother", "son").
+    homePersonRelationship: a
+      .model({
+        personId: a.id().required(),
+        relatedPersonId: a.id().required(),
+        kind: a.string().required(),
+        label: a.string(),
+        inverseLabel: a.string(),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
+        // mergePeople rewrites both ids (see homePerson's comment).
         allow.authenticated("identityPool"),
       ]),
 

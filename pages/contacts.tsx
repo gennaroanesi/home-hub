@@ -43,14 +43,21 @@ import DefaultLayout from "@/layouts/default";
 import { listAllPages } from "@/lib/list-all";
 import { todayIso } from "@/lib/finance/dates";
 import {
-  RELATIONSHIPS,
-  RELATIONSHIP_LABELS,
+  CIRCLES,
+  CIRCLE_LABELS,
   birthdayLabel,
   daysToBirthday,
   inHousehold,
-  relationshipLabel,
+  circleLabel,
 } from "@/lib/people";
-import { MergeModal, PersonAvatar, type Person } from "@/components/people";
+import {
+  MergeModal,
+  PersonAvatar,
+  RelationshipsEditor,
+  relationsLine,
+  type Person,
+} from "@/components/people";
+import type { RelationshipRow } from "@/lib/relationships";
 import { BusinessesTab } from "@/components/businesses-tab";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -60,7 +67,7 @@ type Sort = "name" | "birthday";
 
 const EMPTY_FORM = {
   name: "",
-  relationship: "",
+  circle: "",
   birthday: "",
   phoneNumber: "",
   email: "",
@@ -73,6 +80,7 @@ export default function ContactsPage() {
   const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
   const [faceCounts, setFaceCounts] = useState<Map<string, number>>(new Map());
+  const [rels, setRels] = useState<RelationshipRow[]>([]);
   const [isAdmin, setIsAdmin] = useState(false);
   const [query, setQuery] = useState("");
   const [relFilter, setRelFilter] = useState<string>("ALL");
@@ -86,13 +94,15 @@ export default function ContactsPage() {
   const tab = router.query.tab === "businesses" ? "businesses" : "people";
 
   const load = useCallback(async () => {
-    const [rows, faces] = await Promise.all([
+    const [rows, faces, relRows] = await Promise.all([
       listAllPages<Person>(client.models.homePerson),
       listAllPages<{ personId: string }>(client.models.homePersonFace).catch(
         () => [],
       ),
+      listAllPages<RelationshipRow>(client.models.homePersonRelationship),
     ]);
     setPeople(rows.sort((a, b) => a.name.localeCompare(b.name)));
+    setRels(relRows);
     const counts = new Map<string, number>();
     for (const f of faces)
       counts.set(f.personId, (counts.get(f.personId) ?? 0) + 1);
@@ -119,14 +129,15 @@ export default function ContactsPage() {
     () => people.filter((p) => !inHousehold(p)),
     [people],
   );
+  const byId = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
 
   const shown = useMemo(() => {
     const q = query.trim().toLowerCase();
     const rows = contacts.filter((p) => {
       if (
         relFilter === "NONE"
-          ? !!relationshipLabel(p.relationship)
-          : relFilter !== "ALL" && p.relationship !== relFilter
+          ? !!circleLabel(p.circle)
+          : relFilter !== "ALL" && p.circle !== relFilter
       )
         return false;
       if (!q) return true;
@@ -155,7 +166,7 @@ export default function ContactsPage() {
     setEditing(p);
     setForm({
       name: p.name,
-      relationship: p.relationship ?? "",
+      circle: p.circle ?? "",
       birthday: p.birthday ?? "",
       phoneNumber: p.phoneNumber ?? "",
       email: p.email ?? "",
@@ -170,7 +181,7 @@ export default function ContactsPage() {
     if (!form.name.trim()) return;
     const payload = {
       name: form.name.trim(),
-      relationship: form.relationship || null,
+      circle: form.circle || null,
       birthday: form.birthday || null,
       phoneNumber: form.phoneNumber.trim() || null,
       email: form.email.trim() || null,
@@ -204,6 +215,12 @@ export default function ContactsPage() {
       )
     )
       return;
+    // Their relationship rows go too, so no link points at nobody.
+    await Promise.all(
+      rels
+        .filter((r) => r.personId === p.id || r.relatedPersonId === p.id)
+        .map((r) => client.models.homePersonRelationship.delete({ id: r.id })),
+    );
     await client.models.homePerson.delete({ id: p.id });
     await load();
   }
@@ -284,7 +301,7 @@ export default function ContactsPage() {
                 onClear={() => setQuery("")}
               />
               <div className="flex items-center gap-1 flex-wrap">
-                {["ALL", ...RELATIONSHIPS, "NONE"].map((r) => (
+                {["ALL", ...CIRCLES, "NONE"].map((r) => (
                   <Chip
                     key={r}
                     size="sm"
@@ -297,9 +314,7 @@ export default function ContactsPage() {
                       ? "All"
                       : r === "NONE"
                         ? "Unsorted"
-                        : RELATIONSHIP_LABELS[
-                            r as keyof typeof RELATIONSHIP_LABELS
-                          ]}
+                        : CIRCLE_LABELS[r as keyof typeof CIRCLE_LABELS]}
                   </Chip>
                 ))}
                 <span className="flex-1" />
@@ -321,7 +336,7 @@ export default function ContactsPage() {
 
             <div className="space-y-2">
               {shown.map((p) => {
-                const rel = relationshipLabel(p.relationship);
+                const rel = circleLabel(p.circle);
                 const bday = birthdayLabel(p.birthday, today);
                 const faces = faceCounts.get(p.id) ?? 0;
                 return (
@@ -359,6 +374,11 @@ export default function ContactsPage() {
                             .filter(Boolean)
                             .join(" · ")}
                         </p>
+                        {relationsLine(p.id, rels, byId) && (
+                          <p className="text-xs text-default-500 truncate">
+                            {relationsLine(p.id, rels, byId)}
+                          </p>
+                        )}
                         {p.notes && (
                           <p className="text-xs text-default-500 truncate">
                             {p.notes}
@@ -427,6 +447,7 @@ export default function ContactsPage() {
           isOpen={editModal.isOpen}
           onOpenChange={editModal.onOpenChange}
           scrollBehavior="inside"
+          size="lg"
         >
           <ModalContent>
             {(onClose) => (
@@ -442,24 +463,22 @@ export default function ContactsPage() {
                     isRequired
                   />
                   <Select
-                    label="Relationship"
+                    label="Circle"
                     placeholder="None"
                     selectedKeys={
-                      form.relationship
-                        ? new Set([form.relationship])
-                        : new Set<string>()
+                      form.circle ? new Set([form.circle]) : new Set<string>()
                     }
                     onSelectionChange={(keys) =>
                       setForm({
                         ...form,
-                        relationship: String(
+                        circle: String(
                           Array.from(keys as Set<string>)[0] ?? "",
                         ),
                       })
                     }
                   >
-                    {RELATIONSHIPS.map((r) => (
-                      <SelectItem key={r}>{RELATIONSHIP_LABELS[r]}</SelectItem>
+                    {CIRCLES.map((r) => (
+                      <SelectItem key={r}>{CIRCLE_LABELS[r]}</SelectItem>
                     ))}
                   </Select>
                   <Input
@@ -501,6 +520,15 @@ export default function ContactsPage() {
                       onValueChange={(v) => setForm({ ...form, emoji: v })}
                     />
                   </div>
+                  {editing && (
+                    <RelationshipsEditor
+                      client={client}
+                      person={editing}
+                      people={people}
+                      rels={rels}
+                      onChanged={load}
+                    />
+                  )}
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>

@@ -38,6 +38,9 @@
 //   array:
 //     homeTask.assignedPersonIds
 //     homeCalendarEvent.assignedPersonIds
+//
+//   pair (special-cased below):
+//     homePersonRelationship.personId / relatedPersonId
 
 import type { AppSyncResolverHandler } from "aws-lambda";
 import { Amplify } from "aws-amplify";
@@ -168,6 +171,37 @@ export const handler: AppSyncResolverHandler<Args, MergeResult> = async (event) 
       count++;
     }
     if (count > 0) rewrites[`${String(model)}.${field}`] = count;
+  }
+
+  // ── relationships (both ends) ────────────────────────────────────────────
+  // One row per pair: a link between source and target would become a
+  // self-link, and a link the target already has with the same person
+  // would become a duplicate. Both are dropped; the rest move over.
+  {
+    type Rel = { id: string; personId: string; relatedPersonId: string };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const m = (client.models as any).homePersonRelationship;
+    if (m) {
+      const rels = await listAll<Rel>((nextToken) => m.list({ nextToken }));
+      const otherOf = (r: Rel, id: string) => (r.personId === id ? r.relatedPersonId : r.personId);
+      const targetLinks = new Set(rels.filter((r) => r.personId === targetId || r.relatedPersonId === targetId).map((r) => otherOf(r, targetId)));
+      let moved = 0;
+      let dropped = 0;
+      for (const r of rels) {
+        if (r.personId !== sourceId && r.relatedPersonId !== sourceId) continue;
+        const other = otherOf(r, sourceId);
+        if (other === targetId || targetLinks.has(other)) {
+          await m.delete({ id: r.id });
+          dropped++;
+          continue;
+        }
+        await m.update({ id: r.id, ...(r.personId === sourceId ? { personId: targetId } : { relatedPersonId: targetId }) });
+        targetLinks.add(other);
+        moved++;
+      }
+      if (moved) rewrites["homePersonRelationship.moved"] = moved;
+      if (dropped) rewrites["homePersonRelationship.dropped"] = dropped;
+    }
   }
 
   // ── delete the source ────────────────────────────────────────────────────
