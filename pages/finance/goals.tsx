@@ -5,7 +5,8 @@
 // savings; both 401ks for retirement), allocated across the goals drawing
 // on them in priority order (lib/finance/goals.ts). Writes go
 // through the save_finance_goal op. Transactions tagged with a goal (goalId)
-// are totalled on the card as "tagged".
+// are totalled on the card as "tagged". Milestones ("$20k by June 2027")
+// show as markers on the bar and a list, HIT / MISSED / PENDING.
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -18,17 +19,25 @@ import { Select, SelectItem } from "@heroui/select";
 import { Switch } from "@heroui/switch";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { addToast, Progress, Spinner } from "@heroui/react";
-import { FaArchive, FaPen, FaPlus, FaUndo } from "react-icons/fa";
+import { FaArchive, FaCheck, FaPen, FaPlus, FaRegCircle, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { callOp } from "@/lib/ops-client";
-import { listGoals, listTransactions } from "@/lib/finance/data";
-import { fmtDate, todayIso } from "@/lib/finance/dates";
+import { listGoalMilestones, listGoals, listTransactions } from "@/lib/finance/data";
+import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
 import { accountTypeLabel } from "@/lib/finance/accounts";
-import { goalAccountIds, goalProgress } from "@/lib/finance/goals";
+import { goalAccountIds, goalProgress, milestoneViews, type MilestoneLike, type MilestoneStatus } from "@/lib/finance/goals";
+
+type MilestoneDraft = { id?: string; targetAmount: string; targetDate: string; label: string };
+
+const STATUS_ICON: Record<MilestoneStatus, React.ReactNode> = {
+  HIT: <FaCheck className="text-success" />,
+  MISSED: <FaTimes className="text-danger" />,
+  PENDING: <FaRegCircle className="text-default-400" />,
+};
 
 type Form = {
   id?: string;
@@ -39,15 +48,17 @@ type Form = {
   priority: string;
   targetDate: string;
   notes: string;
+  milestones: MilestoneDraft[];
 };
 
 function emptyForm(): Form {
-  return { name: "", targetAmount: "", currentAmount: "0", fundingAccountIds: [], priority: "100", targetDate: "", notes: "" };
+  return { name: "", targetAmount: "", currentAmount: "0", fundingAccountIds: [], priority: "100", targetDate: "", notes: "", milestones: [] };
 }
 
 export default function GoalsPage() {
   const refs = useFinanceRefs();
   const [goals, setGoals] = useState<any[]>([]);
+  const [milestones, setMilestones] = useState<MilestoneLike[]>([]);
   const [tagged, setTagged] = useState<Map<string, { total: number; count: number }>>(new Map());
   const [loading, setLoading] = useState(true);
   const [showArchived, setShowArchived] = useState(false);
@@ -57,8 +68,9 @@ export default function GoalsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const [rows, txs] = await Promise.all([listGoals(financeClient), listTransactions(financeClient)]);
+      const [rows, txs, ms] = await Promise.all([listGoals(financeClient), listTransactions(financeClient), listGoalMilestones(financeClient)]);
       setGoals(rows);
+      setMilestones(ms);
       const m = new Map<string, { total: number; count: number }>();
       for (const t of txs) {
         if (!t.goalId || t.status === "PENDING") continue;
@@ -93,6 +105,12 @@ export default function GoalsPage() {
       return;
     }
     const manual = form.fundingAccountIds.length === 0;
+    // Untouched blank rows are dropped; half-filled ones are an error.
+    const rows = form.milestones.filter((m) => m.targetAmount.trim() || m.targetDate || m.label.trim());
+    if (rows.some((m) => !(Number(m.targetAmount) > 0) || !m.targetDate)) {
+      addToast({ title: "Each milestone needs an amount and a date", color: "warning" });
+      return;
+    }
     setSaving(true);
     const r = await callOp(financeClient, "save_finance_goal", {
       ...(form.id ? { goalId: form.id } : {}),
@@ -103,6 +121,7 @@ export default function GoalsPage() {
       priority: Number.parseInt(form.priority, 10) || 100,
       targetDate: form.targetDate || null,
       notes: form.notes.trim() || null,
+      milestones: rows.map((m) => ({ ...(m.id ? { id: m.id } : {}), targetAmount: Number(m.targetAmount), targetDate: m.targetDate, label: m.label.trim() || null })),
     });
     setSaving(false);
     if ("error" in r) {
@@ -163,6 +182,11 @@ export default function GoalsPage() {
               .map((id) => refs.accounts.find((a) => a.id === id)?.name)
               .filter(Boolean)
               .join(" + ");
+            const views = milestoneViews(
+              milestones.filter((m) => m.goalId === g.id),
+              p.current,
+              todayIso(),
+            );
             return (
               <Card key={g.id}>
                 <CardBody className="gap-3">
@@ -191,6 +215,7 @@ export default function GoalsPage() {
                             priority: String(g.priority ?? 100),
                             targetDate: g.targetDate ?? "",
                             notes: g.notes ?? "",
+                            milestones: views.map((v) => ({ id: v.milestone.id, targetAmount: String(v.milestone.targetAmount), targetDate: v.milestone.targetDate, label: v.milestone.label ?? "" })),
                           })
                         }
                       >
@@ -215,8 +240,37 @@ export default function GoalsPage() {
                       </span>
                       <span className="text-default-500">{Math.round(p.pct * 100)}%</span>
                     </div>
-                    <Progress aria-label="Goal progress" size="md" value={p.pct * 100} color={p.pct >= 1 ? "success" : "primary"} />
+                    <div className="relative">
+                      <Progress aria-label="Goal progress" size="md" value={p.pct * 100} color={p.pct >= 1 ? "success" : "primary"} />
+                      {p.target > 0 &&
+                        views.map((v) => (
+                          <div
+                            key={v.milestone.id}
+                            className={`absolute inset-y-0 w-0.5 ${v.status === "HIT" ? "bg-success-700" : "bg-default-600"}`}
+                            style={{ left: `${Math.min(100, (v.milestone.targetAmount / p.target) * 100)}%` }}
+                            title={`${v.milestone.label ? `${v.milestone.label}: ` : ""}${fmtCurrency(v.milestone.targetAmount, { cents: false })} by ${fmtDate(v.milestone.targetDate, { month: "short", day: "numeric", year: "numeric" })}`}
+                          />
+                        ))}
+                    </div>
                   </div>
+                  {views.length > 0 && (
+                    <ul className="flex flex-col gap-1 border-t border-default-100 pt-2 text-xs">
+                      {views.map((v) => (
+                        <li key={v.milestone.id} className="flex items-center gap-2">
+                          <span title={v.status.toLowerCase()}>{STATUS_ICON[v.status]}</span>
+                          <Money value={v.milestone.targetAmount} cents={false} className="font-semibold" />
+                          <span className="text-default-500">by {fmtDate(v.milestone.targetDate, { month: "short", day: "numeric", year: "numeric" })}</span>
+                          {v.milestone.label && <span className="text-default-500 truncate">· {v.milestone.label}</span>}
+                          {v.monthlyNeeded != null && (
+                            <span className="ml-auto text-default-500 whitespace-nowrap">
+                              <Money value={v.monthlyNeeded} cents={false} />
+                              /mo
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
                   <div className="flex flex-wrap gap-2 text-xs">
                     {p.pct >= 1 ? (
                       <Chip size="sm" color="success" variant="flat">
@@ -241,7 +295,7 @@ export default function GoalsPage() {
         </div>
       )}
 
-      <Modal isOpen={!!form} onClose={() => setForm(null)} size="lg">
+      <Modal isOpen={!!form} onClose={() => setForm(null)} size="2xl" scrollBehavior="inside">
         <ModalContent>
           {form && (
             <>
@@ -258,7 +312,7 @@ export default function GoalsPage() {
                     onValueChange={(v) => setForm({ ...form, targetAmount: v })}
                     isRequired
                   />
-                  <Input label="Target date (optional)" type="date" value={form.targetDate} onValueChange={(v) => setForm({ ...form, targetDate: v })} />
+                  <Input label="Target date (optional)" type="date" placeholder=" " value={form.targetDate} onValueChange={(v) => setForm({ ...form, targetDate: v })} />
                   <Select
                     label="Progress comes from"
                     placeholder="Tracked by hand"
@@ -293,6 +347,7 @@ export default function GoalsPage() {
                   )}
                   <Input label="Notes" value={form.notes} onValueChange={(v) => setForm({ ...form, notes: v })} className="sm:col-span-2" />
                 </div>
+                <MilestoneEditor rows={form.milestones} onChange={(milestones) => setForm({ ...form, milestones })} />
               </ModalBody>
               <ModalFooter>
                 <Button variant="light" onPress={() => setForm(null)}>
@@ -307,5 +362,38 @@ export default function GoalsPage() {
         </ModalContent>
       </Modal>
     </FinanceShell>
+  );
+}
+
+function MilestoneEditor({ rows, onChange }: { rows: MilestoneDraft[]; onChange: (rows: MilestoneDraft[]) => void }) {
+  const update = (i: number, patch: Partial<MilestoneDraft>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Milestones</span>
+        <Button size="sm" variant="flat" startContent={<FaPlus />} onPress={() => onChange([...rows, { targetAmount: "", targetDate: "", label: "" }])}>
+          Add
+        </Button>
+      </div>
+      {rows.length === 0 && <div className="text-xs text-default-500">Checkpoints on the way, like $20k by next June.</div>}
+      {rows.map((m, i) => (
+        <div key={m.id ?? `new-${i}`} className="grid grid-cols-[1fr_1fr_auto] sm:grid-cols-[1fr_1fr_1.5fr_auto] gap-2 items-center">
+          <Input
+            size="sm"
+            label="Amount"
+            type="number"
+            min={0}
+            startContent={<span className="text-default-400 text-sm">$</span>}
+            value={m.targetAmount}
+            onValueChange={(v) => update(i, { targetAmount: v })}
+          />
+          <Input size="sm" label="By" type="date" placeholder=" " value={m.targetDate} onValueChange={(v) => update(i, { targetDate: v })} />
+          <Input size="sm" label="Label (optional)" value={m.label} onValueChange={(v) => update(i, { label: v })} className="col-span-2 sm:col-span-1 row-start-2 sm:row-start-auto" />
+          <Button size="sm" isIconOnly variant="light" aria-label="Remove milestone" className="row-start-1 col-start-3 sm:col-start-auto" onPress={() => onChange(rows.filter((_, j) => j !== i))}>
+            <FaTrash />
+          </Button>
+        </div>
+      ))}
+    </div>
   );
 }

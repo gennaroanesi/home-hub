@@ -18,8 +18,8 @@ import {
 } from "../finance/budget";
 import { allCategories, CATEGORY_RULES, effectiveCategory, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
-import { listAccounts, listBudgetLines, listCategoryRules, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
-import { goalAccountIds, goalProgress } from "../finance/goals";
+import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
+import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, projectBalance, upcomingEvents } from "../finance/recurring";
 import type { OpContext } from "./context";
@@ -30,6 +30,28 @@ import { OpError, defineOp } from "./define";
 const MONTH = z.string().regex(/^\d{4}-\d{2}$/, "YYYY-MM");
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 const r2 = (n: number) => Math.round(n * 100) / 100;
+
+const MilestoneOut = z.object({
+  id: z.string(),
+  label: z.string().nullable(),
+  targetAmount: z.number(),
+  targetDate: z.string(),
+  status: z.enum(["HIT", "MISSED", "PENDING"]).describe("HIT = progress reached it; MISSED = its date passed first"),
+  monthlyNeeded: z.number().nullable().describe("Next pending milestone only: monthly saving needed to reach it on time"),
+});
+
+const fmtUsd = (n: number) => `$${n.toLocaleString("en-US", { maximumFractionDigits: 2 })}`;
+
+function milestoneOut(rows: any[], current: number, today: string): Array<z.infer<typeof MilestoneOut>> {
+  return milestoneViews(rows, current, today).map((v) => ({
+    id: v.milestone.id,
+    label: v.milestone.label ?? null,
+    targetAmount: r2(v.milestone.targetAmount),
+    targetDate: v.milestone.targetDate,
+    status: v.status,
+    monthlyNeeded: v.monthlyNeeded == null ? null : r2(v.monthlyNeeded),
+  }));
+}
 
 type Person = { id: string; name: string };
 
@@ -100,19 +122,20 @@ export const getFinanceSummary = defineOp({
     upcoming: z.array(z.object({ date: z.string(), description: z.string(), amount: z.number(), account: z.string() })),
     lowPoint: z.object({ account: z.string(), date: z.string(), balance: z.number(), belowBuffer: z.boolean() }).nullable(),
     goals: z.array(
-      z.object({ name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable(), fundedBy: z.array(z.string()).describe("Accounts whose balance counts; empty = tracked by hand") }),
+      z.object({ name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable(), fundedBy: z.array(z.string()).describe("Accounts whose balance counts; empty = tracked by hand"), milestones: z.array(MilestoneOut) }),
     ),
     uncategorizedCount: z.number(),
   }),
   async run(ctx, input) {
     const today = todayIso();
     const window = monthRange(input.month ? `${input.month}-01` : today);
-    const [accounts, lines, schedules, goals, folks] = await Promise.all([
+    const [accounts, lines, schedules, goals, folks, milestones] = await Promise.all([
       listAccounts(ctx.client),
       listBudgetLines(ctx.client),
       listSchedules(ctx.client),
       listGoals(ctx.client),
       people(ctx),
+      listGoalMilestones(ctx.client),
     ]);
     const active = accounts.filter((a) => a.active !== false);
     const txs = await listTransactions(ctx.client, { ...window, accountIds: householdAccounts(accounts).map((a) => a.id) });
@@ -171,6 +194,7 @@ export const getFinanceSummary = defineOp({
           targetDate: g.goal.targetDate ?? null,
           monthlyNeeded: g.monthlyNeeded == null ? null : r2(g.monthlyNeeded),
           fundedBy: g.funded === "account" ? goalAccountIds(g.goal).map((id) => accounts.find((a) => a.id === id)?.name ?? id) : [],
+          milestones: milestoneOut(milestones.filter((m) => m.goalId === g.goal.id), g.current, today),
         })),
       uncategorizedCount: txs.filter((t) => effectiveCategory(t) === UNCATEGORIZED).length,
     };
@@ -652,7 +676,7 @@ export const saveFinanceGoal = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create or change a household savings goal (emergency fund, baby, a trip, a new car, retirement). Progress is either tracked by hand (currentAmount) or follows the balance of one or more accounts (fundingAccountIds, e.g. both 401ks for a retirement goal; invested accounts count at total value); goals sharing an account are filled in priority order (lower first). With goalId, only the fields given change; active false archives it.",
+    "Create or change a household savings goal (emergency fund, baby, a trip, a new car, retirement). Progress is either tracked by hand (currentAmount) or follows the balance of one or more accounts (fundingAccountIds, e.g. both 401ks for a retirement goal; invested accounts count at total value); goals sharing an account are filled in priority order (lower first). milestones sets the goal's checkpoints ('$20k by June 2027'); it replaces the whole list, so pass the existing ones (with their id) to keep them. With goalId, only the fields given change; active false archives it.",
   input: z.object({
     goalId: z.string().optional(),
     name: z.string().optional(),
@@ -664,10 +688,31 @@ export const saveFinanceGoal = defineOp({
     targetDate: DATE.nullable().optional(),
     active: z.boolean().optional(),
     notes: z.string().nullable().optional(),
+    milestones: z
+      .array(
+        z.object({
+          id: z.string().optional().describe("An existing milestone's id, to change it in place"),
+          targetAmount: z.number().positive(),
+          targetDate: DATE,
+          label: z.string().nullable().optional(),
+          notes: z.string().nullable().optional(),
+        }),
+      )
+      .optional()
+      .describe("The goal's full milestone list; replaces the existing one ([] removes them all)."),
   }),
   output: z.object({
     action: z.enum(["created", "updated"]),
-    goal: z.object({ id: z.string(), name: z.string(), targetAmount: z.number(), current: z.number(), pct: z.number(), targetDate: z.string().nullable(), accounts: z.array(z.string()) }),
+    goal: z.object({
+      id: z.string(),
+      name: z.string(),
+      targetAmount: z.number(),
+      current: z.number(),
+      pct: z.number(),
+      targetDate: z.string().nullable(),
+      accounts: z.array(z.string()),
+      milestones: z.array(MilestoneOut),
+    }),
   }),
   async run(ctx, input) {
     const fields: Record<string, unknown> = Object.fromEntries(
@@ -682,13 +727,27 @@ export const saveFinanceGoal = defineOp({
       fields.fundingAccountIds = [...new Set(fundingIds)];
       fields.fundingAccountId = null;
     }
+    // Validate milestones before writing anything.
+    const existing = input.goalId ? (await ctx.client.models.homeFinanceSavingsGoal.get({ id: input.goalId })).data : null;
+    if (input.goalId && !existing) throw new OpError(`No goal ${input.goalId}`);
+    const stored = input.goalId ? (await listGoalMilestones(ctx.client)).filter((m) => m.goalId === input.goalId) : [];
+    if (input.milestones) {
+      const target = input.targetAmount ?? existing?.targetAmount ?? 0;
+      for (const m of input.milestones) {
+        if (m.id && !stored.some((x) => x.id === m.id)) throw new OpError(`Milestone ${m.id} isn't on this goal`);
+        if (m.targetAmount > target) throw new OpError(`Milestone ${fmtUsd(m.targetAmount)} is above the goal's target (${fmtUsd(target)})`);
+      }
+    }
+
     let saved: any;
     let action: "created" | "updated";
     if (input.goalId) {
-      if (!Object.keys(fields).length) throw new OpError("Nothing to change");
-      const r = await ctx.client.models.homeFinanceSavingsGoal.update({ id: input.goalId, ...fields });
-      if (r.errors?.length || !r.data) throw new OpError(r.errors?.[0]?.message ?? `No goal ${input.goalId}`);
-      saved = r.data;
+      if (!Object.keys(fields).length && !input.milestones) throw new OpError("Nothing to change");
+      if (Object.keys(fields).length) {
+        const r = await ctx.client.models.homeFinanceSavingsGoal.update({ id: input.goalId, ...fields });
+        if (r.errors?.length || !r.data) throw new OpError(r.errors?.[0]?.message ?? `No goal ${input.goalId}`);
+        saved = r.data;
+      } else saved = existing;
       action = "updated";
     } else {
       if (!input.name?.trim() || input.targetAmount == null) throw new OpError("name and targetAmount are required");
@@ -697,8 +756,23 @@ export const saveFinanceGoal = defineOp({
       saved = r.data;
       action = "created";
     }
-    const goals = await listGoals(ctx.client);
-    const p =goalProgress(goals, accounts, todayIso()).find((g) => g.goal.id === saved.id);
+    if (input.milestones) {
+      const keep = new Set(input.milestones.map((m) => m.id).filter(Boolean));
+      for (const m of stored.filter((x) => !keep.has(x.id))) {
+        const r = await ctx.client.models.homeFinanceGoalMilestone.delete({ id: m.id });
+        if (r.errors?.length) throw new Error(`Removing milestone: ${r.errors[0].message}`);
+      }
+      for (const m of input.milestones) {
+        const row = { goalId: saved.id, targetAmount: m.targetAmount, targetDate: m.targetDate, label: m.label?.trim() || null, notes: m.notes?.trim() || null };
+        const r = m.id ? await ctx.client.models.homeFinanceGoalMilestone.update({ id: m.id, ...row }) : await ctx.client.models.homeFinanceGoalMilestone.create(row);
+        if (r.errors?.length) throw new Error(`Saving milestone: ${r.errors[0].message}`);
+      }
+    }
+
+    const today = todayIso();
+    const [goals, milestones] = await Promise.all([listGoals(ctx.client), listGoalMilestones(ctx.client)]);
+    const p = goalProgress(goals, accounts, today).find((g) => g.goal.id === saved.id);
+    const current = p?.current ?? saved.currentAmount ?? 0;
     return {
       action,
       goal: {
@@ -709,6 +783,7 @@ export const saveFinanceGoal = defineOp({
         pct: Math.round((p?.pct ?? 0) * 100) / 100,
         targetDate: saved.targetDate ?? null,
         accounts: goalAccountIds(saved).map((id) => accounts.find((a) => a.id === id)?.name ?? id),
+        milestones: milestoneOut(milestones.filter((m) => m.goalId === saved.id), current, today),
       },
     };
   },

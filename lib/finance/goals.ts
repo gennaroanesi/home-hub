@@ -19,6 +19,37 @@ export type GoalProgress = {
   funded: "manual" | "account";
 };
 
+export type MilestoneLike = { id: string; goalId: string; targetAmount: number; targetDate: string; label?: string | null; notes?: string | null };
+
+export type MilestoneStatus = "HIT" | "MISSED" | "PENDING";
+
+export type MilestoneView = {
+  milestone: MilestoneLike;
+  status: MilestoneStatus;
+  /** Only on the next pending milestone: monthly saving needed to reach it by its date. */
+  monthlyNeeded: number | null;
+};
+
+/**
+ * A goal's milestones by date, each HIT (progress reached its amount),
+ * MISSED (its date passed first) or PENDING. Status is live, as in
+ * gennaroanesi.com: a goal on a 401k can drop back below a milestone it hit.
+ */
+export function milestoneViews(milestones: MilestoneLike[], current: number, todayIso: string): MilestoneView[] {
+  const sorted = [...milestones].sort((a, b) => a.targetDate.localeCompare(b.targetDate) || a.targetAmount - b.targetAmount);
+  let nextSeen = false;
+  return sorted.map((m) => {
+    const status: MilestoneStatus = current >= m.targetAmount ? "HIT" : todayIso > m.targetDate ? "MISSED" : "PENDING";
+    let monthlyNeeded: number | null = null;
+    if (status === "PENDING" && !nextSeen) {
+      nextSeen = true;
+      // Under a month left: the whole gap is due now.
+      monthlyNeeded = (m.targetAmount - current) / Math.max(1, daysBetween(todayIso, m.targetDate) / 30.44);
+    }
+    return { milestone: m, status, monthlyNeeded };
+  });
+}
+
 /** The accounts a goal draws on: fundingAccountIds, else the older single fundingAccountId. */
 export function goalAccountIds(goal: Pick<GoalLike, "fundingAccountId" | "fundingAccountIds">): string[] {
   const ids = (goal.fundingAccountIds ?? []).filter((x): x is string => !!x);

@@ -16,6 +16,11 @@ function setup(seed: Record<string, any[]> = {}) {
     return {
       list: async () => ({ data: rows, nextToken: null }),
       get: async ({ id }: any) => ({ data: rows.find((r) => r.id === id) ?? null }),
+      delete: async ({ id }: any) => {
+        const i = rows.findIndex((r) => r.id === id);
+        if (i >= 0) rows.splice(i, 1);
+        return { data: { id } };
+      },
       create: async (row: any) => {
         const saved = { id: `${name}-${++n}`, ...row };
         rows.push(saved);
@@ -39,7 +44,7 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
@@ -297,6 +302,38 @@ describe("invested accounts' transactions", () => {
     expect(all.transactions.map((t: any) => t.id)).toEqual(["t1"]);
     const k = ((await runOp(ctx, "list_finance_transactions", { accountId: "k1" })) as any).result;
     expect(k.count).toBe(2);
+  });
+});
+
+describe("goal milestones", () => {
+  it("adds, edits in place, removes, and refuses one above the target", async () => {
+    const { ctx, tables } = setup({ homeFinanceAccount: [{ id: "sav", name: "Savings", type: "SAVINGS", currentBalance: 12000 }] });
+    const created: any = await runOp(ctx, "save_finance_goal", {
+      name: "Emergency fund",
+      targetAmount: 30000,
+      fundingAccountIds: ["sav"],
+      milestones: [
+        { targetAmount: 10000, targetDate: "2026-06-01", label: "Cushion" },
+        { targetAmount: 20000, targetDate: "2099-01-01" },
+      ],
+    });
+    expect(created.error).toBeUndefined();
+    const goal = created.result.goal;
+    expect(goal.milestones.map((m: any) => [m.label, m.status])).toEqual([
+      ["Cushion", "HIT"],
+      [null, "PENDING"],
+    ]);
+    const [cushion, second] = goal.milestones;
+
+    const edited: any = await runOp(ctx, "save_finance_goal", { goalId: goal.id, milestones: [{ id: second.id, targetAmount: 25000, targetDate: "2099-01-01", label: "Most of it" }] });
+    expect(edited.result.goal.milestones).toMatchObject([{ id: second.id, targetAmount: 25000, label: "Most of it" }]);
+    expect(tables.homeFinanceGoalMilestone.map((m) => m.id)).toEqual([second.id]);
+    expect(tables.homeFinanceGoalMilestone.some((m) => m.id === cushion.id)).toBe(false);
+
+    expect(((await runOp(ctx, "save_finance_goal", { goalId: goal.id, milestones: [{ targetAmount: 40000, targetDate: "2099-01-01" }] })) as any).error).toMatch(/above the goal's target/);
+    expect(((await runOp(ctx, "save_finance_goal", { goalId: goal.id, milestones: [{ id: "elsewhere", targetAmount: 1, targetDate: "2099-01-01" }] })) as any).error).toMatch(/isn't on this goal/);
+    const s = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(s.goals[0].milestones).toHaveLength(1);
   });
 });
 

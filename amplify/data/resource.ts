@@ -1028,6 +1028,21 @@ const schema = a
       })
       .authorization((allow) => [allow.group("home-users")]),
 
+    // Checkpoint on the way to a goal ("$50k by Dec 2027"), ported from
+    // gennaroanesi.com's financeGoalMilestone. Status is derived against the
+    // goal's current progress (lib/finance/goals.ts milestoneViews): HIT
+    // when progress reaches targetAmount, MISSED once targetDate passes
+    // without it, else PENDING. Written through save_finance_goal.
+    homeFinanceGoalMilestone: a
+      .model({
+        goalId: a.id().required(),
+        targetAmount: a.float().required(),
+        targetDate: a.date().required(),
+        label: a.string(),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
     // Cuts across categories: a trip, the nursery, a remodel. Tagged
     // transactions count here instead of against the monthly budget.
     homeFinanceSpendGroup: a

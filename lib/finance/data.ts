@@ -119,6 +119,10 @@ export async function listGoals(client: Client): Promise<any[]> {
   return listAllPages<any>(client.models.homeFinanceSavingsGoal);
 }
 
+export async function listGoalMilestones(client: Client): Promise<any[]> {
+  return listAllPages<any>(client.models.homeFinanceGoalMilestone);
+}
+
 /** Positions in invested accounts (one account, or all), largest first. */
 export async function listHoldings(client: Client, accountId?: string): Promise<any[]> {
   const rows = accountId

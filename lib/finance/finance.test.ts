@@ -3,7 +3,7 @@ import { classify, effectiveCategory, rulesFromDbRows, CATEGORY_RULES } from "./
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
 import { filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
-import { goalProgress } from "./goals";
+import { goalProgress, milestoneViews } from "./goals";
 import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
 import type { SfAccount } from "./simplefin";
 import type { RecurringLike, TxLike } from "./types";
@@ -246,6 +246,22 @@ describe("goals", () => {
       ["ret", 430000],
       ["old", 0],
     ]);
+  });
+});
+
+describe("goal milestones", () => {
+  it("marks hit, missed and pending by date, with the monthly pace only for the next one", () => {
+    const m = (id: string, targetAmount: number, targetDate: string) => ({ id, goalId: "g", targetAmount, targetDate });
+    const out = milestoneViews([m("c", 30000, "2027-11-09"), m("a", 5000, "2026-06-01"), m("b", 20000, "2026-10-01"), m("d", 40000, "2028-01-01")], 12000, "2026-11-09");
+    expect(out.map((v) => [v.milestone.id, v.status])).toEqual([
+      ["a", "HIT"],
+      ["b", "MISSED"],
+      ["c", "PENDING"],
+      ["d", "PENDING"],
+    ]);
+    // $18k to go over ~12 months.
+    expect(out[2].monthlyNeeded!).toBeCloseTo(1500, -1);
+    expect(out[3].monthlyNeeded).toBeNull();
   });
 });
 
