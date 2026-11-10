@@ -5,6 +5,7 @@
 
 import type { IconType } from "react-icons";
 import {
+  FaCalendarWeek,
   FaHome,
   FaComments,
   FaTasks,
@@ -52,7 +53,7 @@ export interface NavLink {
 }
 
 export interface NavSection {
-  // Omitted for the top, unlabeled section (Home, Janet).
+  // Omitted for the top, unlabeled section (Home, Janet, Week planner).
   label?: string;
   items: NavLink[];
 }
@@ -62,6 +63,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { name: "Home", href: "/", icon: FaHome },
       { name: "Janet", href: "/agent", icon: FaComments },
+      { name: "Week planner", href: "/week", icon: FaCalendarWeek },
     ],
   },
   {

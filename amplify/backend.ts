@@ -59,6 +59,7 @@ import { ops } from "./functions/ops/resource";
 import { financeSync } from "./functions/finance-sync/resource";
 import { paycheckProcessor } from "./functions/paycheck-processor/resource";
 import { invoiceProcessor } from "./functions/invoice-processor/resource";
+import { weekReview } from "./functions/week-review/resource";
 
 const backend = defineBackend({
   auth,
@@ -81,6 +82,7 @@ const backend = defineBackend({
   financeSync,
   paycheckProcessor,
   invoiceProcessor,
+  weekReview,
 });
 
 Tags.of(backend.stack).add("app", "home-hub");
@@ -104,6 +106,7 @@ const lambdaDescriptions: Record<string, string> = {
   financeSync: "Home Hub — SimpleFIN sync for household finance accounts (scheduled 3×/day + syncFinance mutation)",
   paycheckProcessor: "Home Hub — Emailed / uploaded paystubs → paycheck review inbox (Claude extraction)",
   invoiceProcessor: "Home Hub — Emailed / uploaded invoices → homeInvoice (Claude extraction, auto-link)",
+  weekReview: "Home Hub — Sunday week-planner nudge to the household WhatsApp group",
 };
 
 for (const [key, desc] of Object.entries(lambdaDescriptions)) {
@@ -424,6 +427,27 @@ new scheduler.CfnSchedule(financeSyncStack, "financeSyncSchedule", {
     roleArn: financeSyncScheduleRole.roleArn,
     input: JSON.stringify({ source: "aws.events", "detail-type": "Scheduled Event" }),
   },
+});
+
+// ── Week review — Sunday nudge ────────────────────────────────────────────────
+// Sundays 17:00 Chicago: the coming week's headline and what needs attention
+// (lib/week-plan.ts) to the household WhatsApp group, linking to /week.
+// Skipped when the week is already marked reviewed.
+const weekReviewLambda = backend.weekReview.resources.lambda as LambdaFunction;
+const weekReviewStack = Stack.of(weekReviewLambda);
+const weekReviewScheduleRole = new iam.Role(weekReviewStack, "weekReviewSchedulerRole", {
+  assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),
+  inlinePolicies: {
+    invokeLambda: new iam.PolicyDocument({
+      statements: [new iam.PolicyStatement({ effect: Effect.ALLOW, actions: ["lambda:InvokeFunction"], resources: [weekReviewLambda.functionArn] })],
+    }),
+  },
+});
+new scheduler.CfnSchedule(weekReviewStack, "weekReviewSchedule", {
+  scheduleExpression: "cron(0 17 ? * SUN *)",
+  scheduleExpressionTimezone: "America/Chicago",
+  flexibleTimeWindow: { mode: "OFF" },
+  target: { arn: weekReviewLambda.functionArn, roleArn: weekReviewScheduleRole.roleArn, input: "{}" },
 });
 
 // ── Finance inbound email: paychecks@ / invoices@import.cristinegennaro.com ─

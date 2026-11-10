@@ -52,9 +52,12 @@ interface TaskModalProps {
   people: Person[];
   // Fired after a create, save or skip so the caller can reload.
   onSaved: () => void;
+  // Prefill for a new task (task null), e.g. the week planner's day.
+  // dueDate as YYYY-MM-DDTHH:mm.
+  defaults?: { dueDate?: string; assignedPersonIds?: string[] };
 }
 
-export function TaskModal({ isOpen, onOpenChange, task, people, onSaved }: TaskModalProps) {
+export function TaskModal({ isOpen, onOpenChange, task, people, onSaved, defaults }: TaskModalProps) {
   const [editingTask, setEditingTask] = useState<Task | null>(task);
   const [formTitle, setFormTitle] = useState("");
   const [formDescription, setFormDescription] = useState("");
@@ -68,8 +71,8 @@ export function TaskModal({ isOpen, onOpenChange, task, people, onSaved }: TaskM
     setEditingTask(task);
     setFormTitle(task?.title ?? "");
     setFormDescription(task?.description ?? "");
-    setFormAssignedIds((task?.assignedPersonIds ?? []).filter((id): id is string => !!id));
-    setFormDueDate(task?.dueDate ? dayjs(task.dueDate).format("YYYY-MM-DDTHH:mm") : "");
+    setFormAssignedIds(task ? (task.assignedPersonIds ?? []).filter((id): id is string => !!id) : defaults?.assignedPersonIds ?? []);
+    setFormDueDate(task?.dueDate ? dayjs(task.dueDate).format("YYYY-MM-DDTHH:mm") : !task && defaults?.dueDate ? defaults.dueDate : "");
     setFormRecurrence(task?.recurrence ?? "");
     setIsCustomRecurrence(
       task?.recurrence ? !RECURRENCE_PRESETS.some((p) => p.value === task.recurrence) : false,

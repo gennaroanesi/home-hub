@@ -49,6 +49,9 @@ interface EventModalProps {
   feeds?: Feed[];
   // Fired after a create, save or delete so the caller can reload.
   onSaved: () => void;
+  // Prefill for a new event (event null), e.g. the day and person the
+  // week planner's "+" was pressed on. startAt as YYYY-MM-DDTHH:mm.
+  defaults?: { startAt?: string; isAllDay?: boolean; assignedPersonIds?: string[] };
 }
 
 export function EventModal({
@@ -59,6 +62,7 @@ export function EventModal({
   trips,
   feeds = [],
   onSaved,
+  defaults,
 }: EventModalProps) {
   // Event form (used for both create and edit)
   const [eventForm, setEventForm] = useState({
@@ -81,18 +85,19 @@ export function EventModal({
   useEffect(() => {
     if (!isOpen) return;
     if (!event) {
+      const start = defaults?.startAt ? dayjs(defaults.startAt) : dayjs();
       setEventForm({
         id: "",
         title: "",
         description: "",
-        startAt: dayjs().format("YYYY-MM-DDTHH:mm"),
-        endAt: dayjs().add(1, "hour").format("YYYY-MM-DDTHH:mm"),
-        isAllDay: false,
+        startAt: start.format("YYYY-MM-DDTHH:mm"),
+        endAt: start.add(1, "hour").format("YYYY-MM-DDTHH:mm"),
+        isAllDay: defaults?.isAllDay ?? false,
         location: "",
         locationLat: null,
         locationLon: null,
         locationCountry: "",
-        assignedPersonIds: [],
+        assignedPersonIds: defaults?.assignedPersonIds ?? [],
         tripId: "",
         recurrence: "",
         feedId: "",
@@ -116,6 +121,8 @@ export function EventModal({
       recurrence: event.recurrence ?? "",
       feedId: event.feedId ?? "",
     });
+    // defaults only matter when the modal opens.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, event]);
 
   // Core save — creates or updates the event and returns its id.

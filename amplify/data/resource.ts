@@ -15,6 +15,7 @@ import { wardrobeSuggest } from "../functions/wardrobe-suggest/resource";
 import { ops } from "../functions/ops/resource";
 import { wardrobeTryOn } from "../functions/wardrobe-try-on/resource";
 import { financeSync } from "../functions/finance-sync/resource";
+import { weekReview } from "../functions/week-review/resource";
 import { paycheckProcessor } from "../functions/paycheck-processor/resource";
 import { invoiceProcessor } from "../functions/invoice-processor/resource";
 
@@ -41,6 +42,9 @@ const schema = a
         color: a.string(), // hex color for UI
         defaultTimezone: a.string(),
         emoji: a.string(),
+        // Birthday (YYYY-MM-DD). The year is optional in spirit: store 1900
+        // when unknown and the week planner shows no age.
+        birthday: a.date(),
         active: a.boolean().default(true),
         // Cognito username (= sub UUID for our pool) for the user
         // this row represents. Null for people we track but who don't
@@ -804,6 +808,34 @@ const schema = a
         tripId: a.id(),
       })
       .secondaryIndexes((index) => [index("date"), index("personId")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Pet Day ─────────────────────────────────────────────────────────
+    // Where a pet is on a day (Dolce at daycare / boarding / with a
+    // sitter), marked by hand in the week planner. One row per
+    // (date, petId); no row = nothing planned.
+    homePetDay: a
+      .model({
+        date: a.date().required(),
+        petId: a.id().required(),
+        status: a.enum(["DAYCARE", "BOARDING", "SITTER", "WITH_US"]),
+        notes: a.string(),
+      })
+      .secondaryIndexes((index) => [index("date")])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // ── Week Review ─────────────────────────────────────────────────────
+    // The Sunday review of a week (lib/week-plan.ts): when it was done,
+    // by whom, and notes. `summary` holds the AI-written summary (later).
+    homeWeekReview: a
+      .model({
+        weekStart: a.date().required(), // the Monday
+        reviewedAt: a.datetime(),
+        reviewedBy: a.string(),
+        notes: a.string(),
+        summary: a.string(),
+      })
+      .identifier(["weekStart"])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Task ────────────────────────────────────────────────────────────
@@ -2201,6 +2233,7 @@ const schema = a
     allow.resource(wardrobeTryOn),
     allow.resource(ops),
     allow.resource(financeSync),
+    allow.resource(weekReview),
     allow.resource(paycheckProcessor),
     allow.resource(invoiceProcessor),
   ]);

@@ -14,6 +14,7 @@
     "create-user": "node scripts/create-user.mjs",
     "seed:dev": "tsx scripts/seed-dev.ts",
     "seed:finance-dev": "tsx scripts/seed-finance-dev.ts",
+    "seed:week-dev": "tsx scripts/seed-week-dev.ts",
     "prepare": "husky"
   },
   "dependencies": {

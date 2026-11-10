@@ -8,8 +8,9 @@ import { financeOps } from "./finance";
 import { inventoryOps } from "./inventory";
 import { notesOps } from "./notes";
 import { wardrobeOps } from "./wardrobe";
+import { weekOps } from "./week";
 
-export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...financeOps] as const;
+export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...financeOps, ...weekOps] as const;
 
 export type AnyOp = (typeof OPS)[number];
 export type OpName = AnyOp["name"];

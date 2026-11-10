@@ -21,6 +21,7 @@ Home management app for a two-person household.
 - Finance (`/finance`, `docs/finance-handoff.md`) reuses gennaroanesi.com's SimpleFIN token (`gennaroanesi/simplefin`); the sync must only request mapped account ids, since the token also sees personal accounts
 - Bills are scheduled transactions (`homeFinanceRecurring`); `homeBill` was removed
 - Paychecks live here now (`homePaycheck`, moved from gennaroanesi.com). Emailed stubs/invoices go to `paychecks@` / `invoices@import.cristinegennaro.com`; only senders in `FINANCE_INBOUND_ALLOWED_SENDERS` (with DKIM/SPF pass) are processed. SES receipt rules live in the account's single active rule set, shared with other apps: change them only via `scripts/setup-finance-inbound-email.sh`
+- Week planner (`/week`, `docs/week-planner.md`): one computed read, `get_week_plan`, shared by web, mobile, Janet and the Sunday WhatsApp nudge (`week-review` Lambda); feed events can be assigned to people and keep it across ics-sync
 - Amplify's model client can't run secondary-index queries on our lowercase model names; use raw GraphQL (`txIndexQuery` in `lib/finance/data.ts`)
 
 ## Dev

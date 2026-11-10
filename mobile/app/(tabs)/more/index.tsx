@@ -27,6 +27,7 @@ interface FeatureRow {
 }
 
 const FEATURE_ROWS: FeatureRow[] = [
+  { label: "Week planner", icon: "calendar-outline", route: "/more/week" },
   { label: "Shopping", icon: "cart-outline", route: "/more/shopping" },
   { label: "Reminders", icon: "alarm-outline", route: "/more/reminders" },
   { label: "Checklists", icon: "checkbox-outline", route: "/more/checklists" },

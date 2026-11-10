@@ -156,6 +156,7 @@ export default function PeoplePage() {
   const [color, setColor] = useState("#3a5068");
   const [emoji, setEmoji] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
+  const [birthday, setBirthday] = useState("");
   const [cognitoUsername, setCognitoUsername] = useState("");
   const [email, setEmail] = useState("");
   const [timezone, setTimezone] = useState(
@@ -197,6 +198,7 @@ export default function PeoplePage() {
     setColor("#3a5068");
     setEmoji("");
     setPhoneNumber("");
+    setBirthday("");
     setCognitoUsername("");
     setEmail("");
     setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
@@ -212,6 +214,7 @@ export default function PeoplePage() {
     setColor(p.color ?? "#3a5068");
     setEmoji(p.emoji ?? "");
     setPhoneNumber(p.phoneNumber ?? "");
+    setBirthday(p.birthday ?? "");
     setCognitoUsername(p.cognitoUsername ?? "");
     setEmail(p.email ?? "");
     setTimezone(p.defaultTimezone ?? "America/New_York");
@@ -228,6 +231,7 @@ export default function PeoplePage() {
       color,
       emoji: emoji || null,
       phoneNumber: phoneNumber.trim() || null,
+      birthday: birthday || null,
       cognitoUsername: cognitoUsername.trim() || null,
       email: email.trim() || null,
       defaultTimezone: timezone,
@@ -394,6 +398,14 @@ export default function PeoplePage() {
                     onValueChange={setPhoneNumber}
                     placeholder="+12125551234"
                     description="E.164 format. Used by the WhatsApp bot to DM this person."
+                  />
+                  <Input
+                    label="Birthday (optional)"
+                    type="date"
+                    placeholder=" "
+                    value={birthday}
+                    onValueChange={setBirthday}
+                    description="Shows in the week planner. Unknown year: use 1900."
                   />
                   <Input
                     label="Cognito username (sub)"
