@@ -13,7 +13,7 @@ import { listAllPages } from "../list-all";
 type Client = any;
 
 const TX_FIELDS = `id accountId amount type category categorySource description date status personId personSource
-  goalId spendGroupId toAccountId recurringId importHash sfTransactionId notes createdAt updatedAt`;
+  goalId spendGroupId toAccountId recurringId importHash sfTransactionId notes lineItems createdAt updatedAt`;
 
 const TX_INDEX: Record<"AccountIdAndDate" | "SpendGroupId" | "RecurringId", { field: string; key: string; sortKey?: string }> = {
   AccountIdAndDate: { field: "listHomeFinanceTransactionByAccountIdAndDate", key: "accountId", sortKey: "date" },

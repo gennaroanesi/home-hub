@@ -27,6 +27,7 @@ export type TxLike = {
   spendGroupId?: string | null;
   goalId?: string | null;
   recurringId?: string | null;
+  lineItems?: string | null; // JSON [{ name, amount, category, quantity? }] (categories.ts)
 };
 
 export type RecurringLike = {

@@ -102,6 +102,7 @@ type InferInput = {
   type?: string | null;
   amount?: number | null;
   category?: string | null;
+  lineItems?: string | null;
 };
 
 function isInflow(tx: InferInput): boolean {
@@ -151,9 +152,68 @@ export function inferCategory(tx: InferInput, rules: CategoryRule[] = CATEGORY_R
   return classify(tx, rules).category;
 }
 
-/** What to group by: the stored category, else inferred, else Uncategorized. */
+/**
+ * What to group by: for an itemized charge, its largest item's category
+ * (the items, not the charge, carry categories; see categoryParts); else
+ * the stored category, else inferred, else Uncategorized.
+ */
 export function effectiveCategory(tx: InferInput, rules: CategoryRule[] = CATEGORY_RULES): string {
+  const items = parseLineItems(tx);
+  if (items) return [...itemTotals(items)].sort((a, b) => b[1] - a[1])[0][0];
   const set = (tx.category ?? "").trim();
   if (set) return set;
   return inferCategory(tx, rules) ?? UNCATEGORIZED;
+}
+
+// ── Line items ────────────────────────────────────────────────────────────────
+// A charge that spans categories (an Amazon shipment: diapers and a patio
+// cover) carries `lineItems`, a JSON string of [{ name, amount, category,
+// quantity? }]. Its spending then counts per item category instead of the
+// charge's own. Ported from gennaroanesi.com.
+
+export type LineItem = { name?: string | null; amount: number; category: string; quantity?: number | null };
+
+/**
+ * The stored lineItems, validated, or null when absent, empty or
+ * malformed. Lenient: a row without a numeric amount or a category is
+ * dropped, so a partial import can't break the totals. Accepts the JSON
+ * string or an already-parsed array (AWSJSON-style round trips).
+ */
+export function parseLineItems(tx: { lineItems?: unknown }): LineItem[] | null {
+  let parsed: unknown = tx.lineItems;
+  try {
+    while (typeof parsed === "string") parsed = parsed.trim() ? JSON.parse(parsed) : null;
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const items: LineItem[] = [];
+  for (const it of parsed as Array<Record<string, unknown>>) {
+    const amount = Number(it?.amount);
+    const category = String(it?.category ?? "").trim();
+    if (!Number.isFinite(amount) || !category) continue;
+    items.push({ name: it?.name == null ? null : String(it.name), amount: Math.abs(amount), category, quantity: it?.quantity == null ? null : Number(it.quantity) });
+  }
+  return items.length ? items : null;
+}
+
+function itemTotals(items: LineItem[]): Map<string, number> {
+  const byCat = new Map<string, number>();
+  for (const it of items) byCat.set(it.category, (byCat.get(it.category) ?? 0) + it.amount);
+  return byCat;
+}
+
+/**
+ * A transaction's magnitude split by category: per item category, scaled so
+ * the parts sum exactly to |amount| (tax, shipping and rounding make the raw
+ * item sum differ); a single part under effectiveCategory when not itemized.
+ * Every category total should go through this, so itemized and plain rows
+ * add up the same way.
+ */
+export function categoryParts(tx: InferInput, rules: CategoryRule[] = CATEGORY_RULES): Array<{ category: string; amount: number }> {
+  const magnitude = Math.abs(tx.amount ?? 0);
+  const items = parseLineItems(tx);
+  const raw = items ? items.reduce((s, i) => s + i.amount, 0) : 0;
+  if (!items || raw <= 0) return [{ category: effectiveCategory(tx, rules), amount: magnitude }];
+  return [...itemTotals(items)].map(([category, amount]) => ({ category, amount: (amount * magnitude) / raw }));
 }

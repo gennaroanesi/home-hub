@@ -25,7 +25,7 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { effectiveCategory, stripProcessorPrefix, UNCATEGORIZED } from "@/lib/finance/categories";
+import { categoryParts, effectiveCategory, parseLineItems, stripProcessorPrefix, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
 
@@ -131,15 +131,16 @@ export default function TransactionsPage() {
   const rows = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     return txs
-      .map((t) => ({ ...t, _cat: effectiveCategory(t, refs.rules) }))
+      .map((t) => ({ ...t, _cat: effectiveCategory(t, refs.rules), _cats: categoryParts(t, refs.rules).map((p) => p.category) }))
       .filter((t) => {
         if (account && t.accountId !== account) return false;
-        if (category && t._cat !== category) return false;
+        // An itemized charge matches any of its items' categories.
+        if (category && !t._cats.includes(category)) return false;
         if (person === HOUSEHOLD ? !!t.personId : person && t.personId !== person) return false;
         if (group === NONE ? !!t.spendGroupId : group && t.spendGroupId !== group) return false;
         if (direction === "in" && (t.amount ?? 0) <= 0) return false;
         if (direction === "out" && (t.amount ?? 0) >= 0) return false;
-        const hay = `${t.description ?? ""} ${t.notes ?? ""} ${t._cat}`.toLowerCase();
+        const hay = `${t.description ?? ""} ${t.notes ?? ""} ${t._cats.join(" ")} ${(parseLineItems(t) ?? []).map((i) => i.name ?? "").join(" ")}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       });
   }, [txs, refs.rules, account, category, person, group, direction, query]);
@@ -157,7 +158,7 @@ export default function TransactionsPage() {
 
   const categoryOptions = useMemo(() => {
     const set = new Set(refs.categories);
-    for (const t of txs) set.add(effectiveCategory(t, refs.rules));
+    for (const t of txs) for (const p of categoryParts(t, refs.rules)) set.add(p.category);
     set.add(UNCATEGORIZED);
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [refs.categories, refs.rules, txs]);
@@ -312,10 +313,16 @@ export default function TransactionsPage() {
                   </div>
                   <div className="flex flex-wrap items-center gap-1.5 mt-0.5 text-xs text-default-500">
                     <span>{accName.get(t.accountId) ?? "—"}</span>
-                    <Chip size="sm" variant="flat" color={t._cat === UNCATEGORIZED ? "warning" : "default"}>
-                      {t._cat}
-                      {src && <span className="opacity-60"> · {src}</span>}
-                    </Chip>
+                    {t._cats.length > 1 ? (
+                      <Chip size="sm" variant="flat" color="primary" title={t._cats.join(", ")}>
+                        Itemized · {t._cats.length} categories
+                      </Chip>
+                    ) : (
+                      <Chip size="sm" variant="flat" color={t._cat === UNCATEGORIZED ? "warning" : "default"}>
+                        {t._cat}
+                        {src && !parseLineItems(t) && <span className="opacity-60"> · {src}</span>}
+                      </Chip>
+                    )}
                     {t.personId && <PersonChip personId={t.personId} people={refs.people} />}
                     {t.spendGroupId && (
                       <Chip size="sm" variant="flat" color="secondary">
@@ -404,6 +411,8 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
   const [remember, setRemember] = useState(false);
   const [pattern, setPattern] = useState(suggestPattern(tx.description));
   const [saving, setSaving] = useState(false);
+  const stored = useMemo(() => parseLineItems(tx), [tx]);
+  const [items, setItems] = useState<ItemDraft[]>(() => (stored ?? []).map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category })));
   const manual = !tx.sfTransactionId;
 
   async function save() {
@@ -414,6 +423,13 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
     if (person !== (tx.personId ?? "")) input.personId = person || null;
     if (group !== (tx.spendGroupId ?? "")) input.spendGroupId = group || null;
     if (notes !== (tx.notes ?? "")) input.notes = notes || null;
+    const rows = items.filter((i) => i.name.trim() || i.amount.trim() || i.category.trim());
+    if (rows.some((i) => !(Number(i.amount) > 0) || !i.category.trim())) {
+      return addToast({ title: "Each item needs an amount and a category", color: "warning" });
+    }
+    const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim() }));
+    const before = (stored ?? []).map((i) => ({ name: i.name ?? null, amount: i.amount, category: i.category }));
+    if (JSON.stringify(next) !== JSON.stringify(before)) input.lineItems = next.length ? next : null;
     if (remember && pattern.trim()) input.rememberPattern = pattern.trim();
     if (Object.keys(input).length === 1) return onClose();
     setSaving(true);
@@ -434,7 +450,7 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
   }
 
   return (
-    <Modal isOpen onClose={onClose} size="lg" scrollBehavior="inside">
+    <Modal isOpen onClose={onClose} size="2xl" scrollBehavior="inside">
       <ModalContent>
         <ModalHeader className="flex flex-col gap-0.5">
           <span className="truncate">{tx.description || "(no description)"}</span>
@@ -445,12 +461,22 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
         </ModalHeader>
         <ModalBody className="gap-3">
           <FreeCombobox label="Category" placeholder="Uncategorized" value={category} onValueChange={setCategory} options={refs.categories} />
+          {items.length > 0 && <p className="text-xs text-default-500 -mt-2">Itemized: spending counts under the items&apos; categories below, not this one.</p>}
           {tx.categorySource === "LLM" && category === (tx.category ?? "") && (
             <p className="text-xs text-default-500 -mt-2">Guessed by the classifier. Saving confirms it, so the sync won&apos;t change it.</p>
           )}
           <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Person (contributor or spender)" />
           <GroupSelect value={group} onChange={setGroup} groups={refs.groups} />
           <Input label="Notes" value={notes} onValueChange={setNotes} />
+          {(tx.amount ?? 0) < 0 && (
+            <ItemsEditor
+              items={items}
+              onChange={setItems}
+              charge={Math.abs(tx.amount ?? 0)}
+              categories={refs.categories}
+              start={() => setItems([{ name: "", amount: String(Math.abs(tx.amount ?? 0)), category: category.trim() }, { name: "", amount: "", category: "" }])}
+            />
+          )}
           <div className="rounded-lg border border-default-200 p-3 flex flex-col gap-2">
             <Checkbox isSelected={remember} onValueChange={setRemember}>
               Remember for similar transactions
@@ -481,6 +507,56 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
         </ModalFooter>
       </ModalContent>
     </Modal>
+  );
+}
+
+// ── Itemization ──────────────────────────────────────────────────────────────
+
+type ItemDraft = { name: string; amount: string; category: string };
+
+/**
+ * Split one charge across categories (an Amazon order). Items needn't add
+ * up exactly: they're scaled to the charge, so tax and shipping spread
+ * proportionally (lib/finance/categories.ts categoryParts).
+ */
+function ItemsEditor({ items, onChange, charge, categories, start }: { items: ItemDraft[]; onChange: (items: ItemDraft[]) => void; charge: number; categories: string[]; start: () => void }) {
+  const update = (i: number, patch: Partial<ItemDraft>) => onChange(items.map((it, j) => (j === i ? { ...it, ...patch } : it)));
+  const sum = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  if (!items.length) {
+    return (
+      <Button variant="flat" size="sm" startContent={<FaPlus />} onPress={start} className="self-start">
+        Itemize (split across categories)
+      </Button>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-default-200 p-3 flex flex-col gap-2">
+      <div className="flex items-center justify-between">
+        <span className="text-sm font-medium">Items</span>
+        <Button size="sm" variant="light" color="danger" onPress={() => onChange([])}>
+          Remove itemization
+        </Button>
+      </div>
+      {items.map((it, i) => (
+        <div key={i} className="grid grid-cols-[1fr_auto] sm:grid-cols-[1.4fr_0.7fr_1.2fr_auto] gap-2 items-center">
+          <Input size="sm" label="Item" value={it.name} onValueChange={(v) => update(i, { name: v })} className="col-span-2 sm:col-span-1" />
+          <Input size="sm" label="Amount" type="number" min={0} startContent={<span className="text-default-400 text-sm">$</span>} value={it.amount} onValueChange={(v) => update(i, { amount: v })} />
+          <FreeCombobox label="Category" value={it.category} onValueChange={(v) => update(i, { category: v })} options={categories} />
+          <Button size="sm" isIconOnly variant="light" aria-label="Remove item" onPress={() => onChange(items.filter((_, j) => j !== i))}>
+            <FaTrash />
+          </Button>
+        </div>
+      ))}
+      <div className="flex items-center justify-between">
+        <Button size="sm" variant="flat" startContent={<FaPlus />} onPress={() => onChange([...items, { name: "", amount: "", category: "" }])}>
+          Add item
+        </Button>
+        <span className={`text-xs ${Math.abs(sum - charge) < 0.01 ? "text-default-500" : "text-warning-600"}`}>
+          Items <Money value={sum} /> of <Money value={charge} />
+          {Math.abs(sum - charge) >= 0.01 && " · scaled to the charge"}
+        </span>
+      </div>
+    </div>
   );
 }
 

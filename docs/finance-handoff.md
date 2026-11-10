@@ -51,6 +51,17 @@ Household differences from gennaroanesi.com:
   the older single `fundingAccountId` still reads): a retirement goal over
   both 401ks. Goals fill in priority order, each taking from its accounts in
   order, so two goals never count the same dollars.
+- **Itemized charges.** `homeFinanceTransaction.lineItems` (JSON string of
+  `{ name, amount, category, quantity? }`), ported from gennaroanesi.com,
+  splits one charge across categories (an Amazon order). Every category
+  total goes through `categoryParts` (lib/finance/categories.ts): per item
+  category, scaled so the parts sum to the charge, so tax and shipping
+  spread proportionally; a plain row is one part. The budget, review,
+  seeding and the Transactions filter use it; `effectiveCategory` of an
+  itemized row is its largest item's category. Edited in the transaction
+  window ("Itemize") or by Janet (`update_finance_transaction` `lineItems`).
+  gennaroanesi.com also fills it from Amazon's order export
+  (`scripts/amazon_itemize.mjs`); not ported yet.
 - **Goal milestones** (`homeFinanceGoalMilestone`: goalId, targetAmount,
   targetDate, label), ported from gennaroanesi.com. Status is derived
   against the goal's current progress (`milestoneViews` in `goals.ts`): HIT,

@@ -282,6 +282,35 @@ describe("save_finance_goal", () => {
   });
 });
 
+describe("itemizing a transaction", () => {
+  it("saves line items, filters by an item's category, and removes them", async () => {
+    const { ctx, tables } = setup({
+      homeFinanceAccount: [joint],
+      homeFinanceTransaction: [{ id: "amz", accountId: "joint", amount: -60, description: "AMAZON MKTPL", date: thisMonth, status: "POSTED", category: "Shopping" }],
+    });
+    const saved: any = await runOp(ctx, "update_finance_transaction", {
+      transactionId: "amz",
+      lineItems: [
+        { name: "Diapers", amount: 30, category: "Baby" },
+        { name: " Bulbs ", amount: 30, category: "Home", quantity: 2 },
+      ],
+    });
+    expect(saved.error).toBeUndefined();
+    expect(JSON.parse(tables.homeFinanceTransaction[0].lineItems)).toEqual([
+      { name: "Diapers", amount: 30, category: "Baby" },
+      { name: "Bulbs", amount: 30, category: "Home", quantity: 2 },
+    ]);
+    const home: any = await runOp(ctx, "list_finance_transactions", { from: thisMonth, category: "home" });
+    expect(home.result.transactions[0].items).toHaveLength(2);
+    const s = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(s.budget.unbudgeted).toEqual(expect.arrayContaining([{ category: "Baby", spent: 30 }, { category: "Home", spent: 30 }]));
+
+    await runOp(ctx, "update_finance_transaction", { transactionId: "amz", lineItems: null });
+    expect(tables.homeFinanceTransaction[0].lineItems).toBeNull();
+    expect(((await runOp(ctx, "update_finance_transaction", { transactionId: "amz", lineItems: [{ amount: 5, category: "" }] })) as any).error).toBeDefined();
+  });
+});
+
 describe("invested accounts' transactions", () => {
   it("stay out of the summary and the default transaction search", async () => {
     const k401 = { id: "k1", name: "Gennaro 401k", type: "RETIREMENT", currentBalance: 300000, active: true };

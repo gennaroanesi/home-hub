@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { classify, effectiveCategory, rulesFromDbRows, CATEGORY_RULES } from "./categories";
+import { categoryParts, classify, effectiveCategory, parseLineItems, rulesFromDbRows, CATEGORY_RULES } from "./categories";
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
-import { filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
+import { budgetTransactions, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress, milestoneViews } from "./goals";
 import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
@@ -246,6 +246,45 @@ describe("goals", () => {
       ["ret", 430000],
       ["old", 0],
     ]);
+  });
+});
+
+describe("itemized transactions", () => {
+  const amazon = {
+    id: "amz",
+    accountId: "card",
+    amount: -110,
+    date: "2026-11-05",
+    status: "POSTED",
+    description: "AMAZON MKTPL*AB12",
+    category: "Shopping",
+    // $100 of items; tax and shipping make the charge $110.
+    lineItems: JSON.stringify([
+      { name: "Diapers", amount: 40, category: "Baby" },
+      { name: "Wipes", amount: 20, category: "Baby" },
+      { name: "Patio cover", amount: 40, category: "Home" },
+      { name: "junk row" },
+    ]),
+  };
+  const window = { fromIso: "2026-11-01", toIso: "2026-11-30", label: "Nov" };
+
+  it("splits the charge by item category, scaled to the charge, ignoring bad rows", () => {
+    expect(parseLineItems(amazon)).toHaveLength(3);
+    expect(categoryParts(amazon)).toEqual([
+      { category: "Baby", amount: 66 },
+      { category: "Home", amount: 44 },
+    ]);
+    expect(effectiveCategory(amazon)).toBe("Baby");
+    expect(parseLineItems({ lineItems: "not json" })).toBeNull();
+    expect(categoryParts({ amount: -5, category: "Fuel" })).toEqual([{ category: "Fuel", amount: 5 }]);
+  });
+
+  it("counts in the budget per item, and lists the charge under each line it touches", () => {
+    const txs = [amazon, { id: "g", accountId: "card", amount: -30, date: "2026-11-06", status: "POSTED", category: "Groceries" }];
+    expect(Object.fromEntries(spendByCategory(txs, window))).toEqual({ Baby: 66, Home: 44, Groceries: 30 });
+    expect(totalOutflow(txs, window)).toBe(140);
+    expect(budgetTransactions(txs, window, ["Home"]).map((t) => t.id)).toEqual(["amz"]);
+    expect(budgetTransactions(txs, window, ["Shopping"])).toEqual([]);
   });
 });
 

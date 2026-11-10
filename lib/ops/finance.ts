@@ -16,7 +16,7 @@ import {
   type BudgetLine,
   type SeriesWrite,
 } from "../finance/budget";
-import { allCategories, CATEGORY_RULES, effectiveCategory, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
+import { allCategories, CATEGORY_RULES, categoryParts, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
@@ -203,6 +203,13 @@ export const getFinanceSummary = defineOp({
 
 // ── list_finance_transactions ─────────────────────────────────────────────────
 
+const LineItemSchema = z.object({
+  name: z.string().nullable().optional(),
+  amount: z.number().positive().describe("The item's cost (positive); items are scaled to the charge, so tax and shipping needn't be spread by hand"),
+  category: z.string().min(1),
+  quantity: z.number().nullable().optional(),
+});
+
 const TxOut = z.object({
   id: z.string(),
   date: z.string(),
@@ -216,6 +223,7 @@ const TxOut = z.object({
   spendGroupId: z.string().nullable(),
   recurringId: z.string().nullable(),
   notes: z.string().nullable(),
+  items: z.array(LineItemSchema).nullable().describe("Itemization, when the charge is split across categories"),
 });
 
 export const listFinanceTransactions = defineOp({
@@ -251,7 +259,8 @@ export const listFinanceTransactions = defineOp({
     const matched = txs.filter((t) => {
       const cat = effectiveCategory(t, rules);
       if (input.uncategorized && cat !== UNCATEGORIZED) return false;
-      if (input.category && cat.toLowerCase() !== input.category.toLowerCase()) return false;
+      // An itemized charge matches any of its items' categories.
+      if (input.category && !categoryParts(t, rules).some((p) => p.category.toLowerCase() === input.category!.toLowerCase())) return false;
       if (personId && t.personId !== personId) return false;
       if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
       if (input.direction === "in" && (t.amount ?? 0) <= 0) return false;
@@ -275,6 +284,7 @@ export const listFinanceTransactions = defineOp({
         spendGroupId: t.spendGroupId ?? null,
         recurringId: t.recurringId ?? null,
         notes: t.notes ?? null,
+        items: parseLineItems(t),
       })),
     };
   },
@@ -287,7 +297,7 @@ export const updateFinanceTransaction = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Change a transaction's category, person, spend group, goal or notes (only what's given; null clears). A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
+    "Change a transaction's category, person, spend group, goal, notes or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
   input: z.object({
     transactionId: z.string(),
     category: z.string().nullable().optional(),
@@ -296,6 +306,7 @@ export const updateFinanceTransaction = defineOp({
     spendGroupId: z.string().nullable().optional(),
     goalId: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    lineItems: z.array(LineItemSchema).nullable().optional().describe("The full itemization (replaces any existing); null or [] removes it."),
     rememberPattern: z.string().optional().describe("Substring or /regex/flags; creates a rule at the top of the rule list."),
   }),
   output: z.object({ transactionId: z.string(), category: z.string(), personId: z.string().nullable(), ruleCreated: z.boolean() }),
@@ -316,6 +327,10 @@ export const updateFinanceTransaction = defineOp({
     if (input.spendGroupId !== undefined) patch.spendGroupId = input.spendGroupId;
     if (input.goalId !== undefined) patch.goalId = input.goalId;
     if (input.notes !== undefined) patch.notes = input.notes;
+    if (input.lineItems !== undefined) {
+      const items = (input.lineItems ?? []).map((i) => ({ name: i.name?.trim() || null, amount: r2(i.amount), category: i.category.trim(), ...(i.quantity != null ? { quantity: i.quantity } : {}) }));
+      patch.lineItems = items.length ? JSON.stringify(items) : null;
+    }
     if (!Object.keys(patch).length && !input.rememberPattern) throw new OpError("Nothing to change");
 
     let saved = tx;

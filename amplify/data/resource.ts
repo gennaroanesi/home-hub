@@ -945,6 +945,11 @@ const schema = a
         toAccountId: a.id(), // TRANSFER destination
         recurringId: a.id(), // scheduled transaction this realizes
         importHash: a.string(), // dedup fingerprint (date|amount|description)
+        // Itemization for a charge spanning categories (an Amazon order):
+        // JSON [{ name, amount, category, quantity? }]. When set, category
+        // totals split the charge across the items' categories, scaled to
+        // the charge (lib/finance/categories.ts categoryParts).
+        lineItems: a.string(),
         sfTransactionId: a.string(), // SimpleFIN id: stable across pending → posted
         notes: a.string(),
       })

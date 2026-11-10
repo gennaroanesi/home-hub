@@ -6,7 +6,7 @@
 // plan what moves into a savings account (accountId) each period; that money
 // is a transfer, so it never counts as spending.
 
-import { effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
+import { categoryParts, effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
 import { addDays, daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 
@@ -319,26 +319,36 @@ function inWindow(tx: TxLike, window: DateRange): boolean {
  */
 export function countsTowardBudget(tx: TxLike, window: DateRange): boolean {
   if (tx.status === "PENDING" || tx.spendGroupId || !inWindow(tx, window)) return false;
-  const cat = effectiveCategory(tx);
-  if (isExcludedFromBudget(cat) || INCOME_CATEGORIES.has(cat)) return false;
-  return (tx.amount ?? 0) < 0;
+  return (tx.amount ?? 0) < 0 && spendParts(tx).length > 0;
+}
+
+/**
+ * The budgetable pieces of money out: one per category (several for an
+ * itemized charge, see categoryParts), minus internal movement and income.
+ */
+export function spendParts(tx: TxLike): Array<{ category: string; amount: number }> {
+  if ((tx.amount ?? 0) >= 0) return [];
+  return categoryParts(tx).filter((p) => !isExcludedFromBudget(p.category) && !INCOME_CATEGORIES.has(p.category));
 }
 
 export function spendByCategory(txs: TxLike[], window: DateRange): Map<string, number> {
   const out = new Map<string, number>();
   for (const tx of txs) {
     if (!countsTowardBudget(tx, window)) continue;
-    const cat = effectiveCategory(tx);
-    out.set(cat, (out.get(cat) ?? 0) + Math.abs(tx.amount ?? 0));
+    for (const p of spendParts(tx)) out.set(p.category, (out.get(p.category) ?? 0) + p.amount);
   }
   return out;
 }
 
-/** The rows behind a bucket's number, largest first. Same filter as spendByCategory. */
+/**
+ * The rows behind a bucket's number, largest first. Same filter as
+ * spendByCategory; an itemized charge is listed under each line one of its
+ * items counts toward.
+ */
 export function budgetTransactions<T extends TxLike>(txs: T[], window: DateRange, categories: string[]): T[] {
   const want = new Set(categories);
   return txs
-    .filter((tx) => countsTowardBudget(tx, window) && want.has(effectiveCategory(tx)))
+    .filter((tx) => countsTowardBudget(tx, window) && spendParts(tx).some((p) => want.has(p.category)))
     .sort((a, b) => Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
 }
 
@@ -346,10 +356,8 @@ export function budgetTransactions<T extends TxLike>(txs: T[], window: DateRange
 export function totalOutflow(txs: TxLike[], window: DateRange): number {
   let sum = 0;
   for (const tx of txs) {
-    if (tx.status === "PENDING" || !inWindow(tx, window)) continue;
-    const amt = tx.amount ?? 0;
-    if (amt >= 0 || isExcludedFromBudget(effectiveCategory(tx))) continue;
-    sum += -amt;
+    if (tx.status === "PENDING" || !inWindow(tx, window) || (tx.amount ?? 0) >= 0) continue;
+    for (const p of categoryParts(tx)) if (!isExcludedFromBudget(p.category)) sum += p.amount;
   }
   return sum;
 }
@@ -667,11 +675,11 @@ export function seedFromHistory(txs: TxLike[], months: string[]): CategorySeed[]
     if (amt >= 0) continue;
     const m = (tx.date ?? "").slice(0, 7);
     if (!months.includes(m)) continue;
-    const cat = effectiveCategory(tx);
-    if (isExcludedFromBudget(cat) || INCOME_CATEGORIES.has(cat)) continue;
-    if (!byCat.has(cat)) byCat.set(cat, new Map());
-    const mm = byCat.get(cat)!;
-    mm.set(m, (mm.get(m) ?? 0) - amt);
+    for (const p of spendParts(tx)) {
+      if (!byCat.has(p.category)) byCat.set(p.category, new Map());
+      const mm = byCat.get(p.category)!;
+      mm.set(m, (mm.get(m) ?? 0) + p.amount);
+    }
   }
   const out: CategorySeed[] = [];
   for (const [category, mm] of byCat) {
