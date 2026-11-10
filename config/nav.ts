@@ -23,6 +23,7 @@ import {
   FaLightbulb,
   FaFileAlt,
   FaUsers,
+  FaAddressBook,
   FaCog,
   FaLock,
   FaBoxOpen,
@@ -87,6 +88,7 @@ export const NAV_SECTIONS: NavSection[] = [
     items: [
       { name: "Health", href: "/health", icon: FaHeartbeat },
       { name: "Household", href: "/admin/people", icon: FaUsers },
+      { name: "Contacts", href: "/contacts", icon: FaAddressBook },
     ],
   },
   {

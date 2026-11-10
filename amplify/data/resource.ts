@@ -35,7 +35,11 @@ const locationCustomType = a.customType({
 const schema = a
   .schema({
     // ── Person ──────────────────────────────────────────────────────────
-    // One row per household member. Tasks/events/days reference these.
+    // Everyone the app knows about: household members (app users, the
+    // `home-users` group; managed on /admin/people) and the contact book
+    // (friends, family, anyone tagged in photos; /contacts). One table so
+    // faces, birthdays and documents keep pointing at the same row when a
+    // contact is later invited. Tasks/events/days reference these.
     homePerson: a
       .model({
         name: a.string().required(),
@@ -90,6 +94,10 @@ const schema = a
         // integration. Used by the v2 risk matrix to detect whether an
         // action is being requested from home wifi.
         homeDeviceTrackerEntity: a.string(),
+        // Contact book: how we know them (lib/people.ts RELATIONSHIPS:
+        // FAMILY, FRIEND, WORK, OTHER) and free-form notes.
+        relationship: a.string(),
+        notes: a.string(),
       })
       .authorization((allow) => [
         allow.group("home-users"),
@@ -97,6 +105,32 @@ const schema = a
         // mergePeople admin lambdas reach this model via IAM. The
         // schema-level allow.resource grants aren't enough on their
         // own (see the comment on homePersonFace).
+        allow.authenticated("identityPool"),
+      ]),
+
+    // ── Business ────────────────────────────────────────────────────────
+    // The contact book's businesses and service people: the appliance
+    // repair guy, the mechanic, the vet's groomer. Shown under Contacts →
+    // Businesses next to homeHealthProvider rows, which stay their own
+    // model because visits point at them. category: lib/businesses.ts.
+    homeBusiness: a
+      .model({
+        name: a.string().required(), // "Austin Appliance Repair" or "Mike (dishwasher)"
+        category: a.string(),
+        // What they do for us, free text: "Fixed the dishwasher pump".
+        service: a.string(),
+        contactName: a.string(),
+        phone: a.string(),
+        email: a.string(),
+        website: a.string(),
+        address: a.string(),
+        // When we last used them, for "who did we use last time".
+        lastUsedOn: a.date(),
+        notes: a.string(),
+        active: a.boolean().default(true),
+      })
+      .authorization((allow) => [
+        allow.group("home-users"),
         allow.authenticated("identityPool"),
       ]),
 
@@ -2089,6 +2123,23 @@ const schema = a
       .authorization((allow) => [allow.group("admins")])
       .arguments({
         personId: a.id().required(),
+        groups: a.string().required().array().required(),
+      })
+      .returns(a.ref("homePerson"))
+      .handler(a.handler.function(setPersonGroups)),
+
+    // ── invitePerson (admin) ────────────────────────────────────────────
+    // Create a Cognito login for a person and email them a temporary
+    // password (self sign-up is off). With personId, links that existing
+    // row (a contact becoming a member); otherwise creates one from
+    // `name`. Then sets `groups` as setPersonGroups would. Same Lambda.
+    invitePerson: a
+      .mutation()
+      .authorization((allow) => [allow.group("admins")])
+      .arguments({
+        personId: a.id(),
+        name: a.string(),
+        email: a.email().required(),
         groups: a.string().required().array().required(),
       })
       .returns(a.ref("homePerson"))

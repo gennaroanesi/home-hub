@@ -1,31 +1,27 @@
 "use client";
 
-// Admin-facing people management.
+// Household: the app's users (homePerson rows in the `home-users`
+// Cognito group). Everyone else (friends, family, people tagged in
+// photos) is on /contacts; see lib/people.ts.
 //
-// Sectioning is driven by the homePerson.groups cache (synced from
-// Cognito by the setPersonGroups Lambda):
-//
-//   - Household: groups includes "home-users". Members of the home.
-//   - Friends:   has cognitoUsername (so they can log in) but is NOT
-//                in home-users. Future-proofs invited guests.
-//   - Others:    no cognitoUsername — face-tag-only rows for kids /
-//                extended family.
-//
-// Group changes are admin-only and route through the setPersonGroups
-// mutation, which rewrites Cognito group membership AND mirrors the
-// result onto homePerson.groups. Non-admin household members can
-// still edit names, colors, timezones, and their own notification
-// flags via the regular update path.
+// Admins invite members here (invitePerson creates the login and emails
+// a temporary password; self sign-up is off) and change their groups
+// (setPersonGroups, which rewrites Cognito membership and mirrors it onto
+// homePerson.groups). Taking someone out of home-users moves them to
+// Contacts. Non-admin members can still edit names, colors, timezones
+// and notification flags via the regular update path.
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchAuthSession, getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
+import NextLink from "next/link";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
+import { Select, SelectItem } from "@heroui/select";
 import {
   Modal,
   ModalContent,
@@ -35,21 +31,16 @@ import {
   useDisclosure,
 } from "@heroui/modal";
 import { addToast } from "@heroui/react";
-import {
-  FaPlus,
-  FaTrash,
-  FaPen,
-  FaArrowLeft,
-  FaCodeBranch,
-} from "react-icons/fa";
+import { FaPen, FaArrowLeft, FaCodeBranch, FaEnvelope } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { HOUSEHOLD_GROUP } from "@/lib/household";
+import { listAllPages } from "@/lib/list-all";
+import { ASSIGNABLE_GROUPS, inHousehold } from "@/lib/people";
+import { MergeModal, PersonAvatar, type Person } from "@/components/people";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
-
-type Person = Schema["homePerson"]["type"];
 
 const COMMON_TIMEZONES = [
   "America/New_York",
@@ -64,78 +55,70 @@ const COMMON_TIMEZONES = [
   "UTC",
 ];
 
-// The set of groups admins can assign from the UI. Cognito allows
-// arbitrary group names but the UI shouldn't be a free-text editor —
-// limit to the ones the app actually uses, plus "friends" so we have
-// somewhere to land invited guests.
-const ASSIGNABLE_GROUPS = ["home-users", "admins", "friends"];
+const NEW_PERSON = "__new";
 
 function rowGroups(p: Person): string[] {
   return (p.groups ?? []).filter((g): g is string => !!g);
 }
 
-function isHousehold(p: Person): boolean {
-  // Unlike lib/household's isHouseholdMember, inactive rows still count
-  // here so the admin can see and reactivate them.
-  return rowGroups(p).includes(HOUSEHOLD_GROUP);
-}
-
-function isFriend(p: Person): boolean {
-  return !!p.cognitoUsername && !isHousehold(p);
-}
-
-function PersonCard({
+function MemberCard({
   person,
+  isAdmin,
   onEdit,
-  onRemove,
   onMerge,
-  canMerge,
 }: {
   person: Person;
+  isAdmin: boolean;
   onEdit: () => void;
-  onRemove: () => void;
   onMerge: () => void;
-  canMerge: boolean;
 }) {
-  const groups = rowGroups(person);
-  const isLogin = !!person.cognitoUsername;
   const muted: string[] = [];
-  if (isLogin && person.notifyWhatsApp === false) muted.push("WA off");
-  if (isLogin && person.notifyPush === false) muted.push("Push off");
+  if (person.notifyWhatsApp === false) muted.push("WA off");
+  if (person.notifyPush === false) muted.push("Push off");
   return (
     <Card>
       <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
-        <div
-          className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium"
-          style={{ backgroundColor: person.color ?? "#3a5068" }}
-        >
-          {person.emoji || person.name[0]}
-        </div>
+        <PersonAvatar person={person} />
         <div className="flex-1 min-w-0">
-          <p className="text-sm font-medium">{person.name}</p>
+          <p className="text-sm font-medium">
+            {person.name}
+            {person.active === false && (
+              <span className="text-xs text-default-400"> · inactive</span>
+            )}
+          </p>
           <div className="flex items-center gap-1 flex-wrap mt-0.5">
-            {groups.map((g) => (
+            {rowGroups(person).map((g) => (
               <Chip key={g} size="sm" variant="flat" color="primary">
                 {g}
               </Chip>
             ))}
             <span className="text-xs text-default-400">
-              {person.defaultTimezone}
-              {muted.length > 0 ? ` · ${muted.join(", ")}` : ""}
+              {[person.email, person.defaultTimezone, ...muted]
+                .filter(Boolean)
+                .join(" · ")}
             </span>
           </div>
         </div>
         <div className="flex gap-1">
-          {canMerge && (
-            <Button size="sm" isIconOnly variant="light" onPress={onMerge} title="Merge into…">
+          {isAdmin && (
+            <Button
+              size="sm"
+              isIconOnly
+              variant="light"
+              onPress={onMerge}
+              title="Merge into…"
+            >
               <FaCodeBranch size={12} />
             </Button>
           )}
-          <Button size="sm" isIconOnly variant="light" onPress={onEdit}>
+          <Button
+            size="sm"
+            isIconOnly
+            variant="light"
+            onPress={onEdit}
+            title="Edit"
+          >
             <FaPen size={12} />
-          </Button>
-          <Button size="sm" isIconOnly variant="light" color="danger" onPress={onRemove}>
-            <FaTrash size={12} />
           </Button>
         </div>
       </CardBody>
@@ -143,12 +126,13 @@ function PersonCard({
   );
 }
 
-export default function PeoplePage() {
+export default function HouseholdPage() {
   const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
   const [editing, setEditing] = useState<Person | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
-  const { isOpen, onOpen, onOpenChange } = useDisclosure();
+  const editModal = useDisclosure();
+  const inviteModal = useDisclosure();
   const mergeModal = useDisclosure();
   const [mergeSource, setMergeSource] = useState<Person | null>(null);
 
@@ -157,56 +141,48 @@ export default function PeoplePage() {
   const [emoji, setEmoji] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [birthday, setBirthday] = useState("");
-  const [cognitoUsername, setCognitoUsername] = useState("");
-  const [email, setEmail] = useState("");
-  const [timezone, setTimezone] = useState(
-    Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York"
-  );
+  const [timezone, setTimezone] = useState("America/Chicago");
   const [notifyWhatsApp, setNotifyWhatsApp] = useState(true);
   const [notifyPush, setNotifyPush] = useState(true);
+  const [active, setActive] = useState(true);
   const [groups, setGroups] = useState<string[]>([]);
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
-
-  async function checkAuth() {
-    try {
-      await getCurrentUser();
-      const session = await fetchAuthSession();
-      const cognitoGroups =
-        (session.tokens?.idToken?.payload?.["cognito:groups"] as string[]) ?? [];
-      setIsAdmin(cognitoGroups.includes("admins"));
-      await loadPeople();
-    } catch {
-      router.push("/login");
-    }
-  }
+  const [invite, setInvite] = useState({
+    personId: NEW_PERSON,
+    name: "",
+    email: "",
+    admin: false,
+  });
+  const [inviting, setInviting] = useState(false);
 
   const loadPeople = useCallback(async () => {
-    const { data } = await client.models.homePerson.list();
-    setPeople((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+    const rows = await listAllPages<Person>(client.models.homePerson);
+    setPeople(rows.sort((a, b) => a.name.localeCompare(b.name)));
   }, []);
 
-  const household = useMemo(() => people.filter(isHousehold), [people]);
-  const friends = useMemo(() => people.filter(isFriend), [people]);
-  const others = useMemo(() => people.filter((p) => !p.cognitoUsername), [people]);
+  useEffect(() => {
+    (async () => {
+      try {
+        await getCurrentUser();
+        const session = await fetchAuthSession();
+        const cognitoGroups =
+          (session.tokens?.idToken?.payload?.["cognito:groups"] as string[]) ??
+          [];
+        setIsAdmin(cognitoGroups.includes("admins"));
+        await loadPeople();
+      } catch {
+        router.push("/login");
+      }
+    })();
+  }, [loadPeople, router]);
 
-  function openCreate() {
-    setEditing(null);
-    setName("");
-    setColor("#3a5068");
-    setEmoji("");
-    setPhoneNumber("");
-    setBirthday("");
-    setCognitoUsername("");
-    setEmail("");
-    setTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone || "America/New_York");
-    setNotifyWhatsApp(true);
-    setNotifyPush(true);
-    setGroups([]);
-    onOpen();
-  }
+  const members = useMemo(() => people.filter(inHousehold), [people]);
+  // Contacts without a login yet: an invite can turn one into a member,
+  // keeping their faces, birthday and history.
+  const invitable = useMemo(
+    () => people.filter((p) => !inHousehold(p) && !p.cognitoUsername),
+    [people],
+  );
 
   function openEdit(p: Person) {
     setEditing(p);
@@ -215,71 +191,59 @@ export default function PeoplePage() {
     setEmoji(p.emoji ?? "");
     setPhoneNumber(p.phoneNumber ?? "");
     setBirthday(p.birthday ?? "");
-    setCognitoUsername(p.cognitoUsername ?? "");
-    setEmail(p.email ?? "");
-    setTimezone(p.defaultTimezone ?? "America/New_York");
+    setTimezone(p.defaultTimezone ?? "America/Chicago");
     setNotifyWhatsApp(p.notifyWhatsApp !== false);
     setNotifyPush(p.notifyPush !== false);
+    setActive(p.active !== false);
     setGroups(rowGroups(p));
-    onOpen();
+    editModal.onOpen();
   }
 
   async function save(onClose: () => void) {
-    if (!name.trim()) return;
-    const basePayload = {
-      name,
+    if (!editing || !name.trim()) return;
+    const { data: saved, errors } = await client.models.homePerson.update({
+      id: editing.id,
+      name: name.trim(),
       color,
       emoji: emoji || null,
       phoneNumber: phoneNumber.trim() || null,
       birthday: birthday || null,
-      cognitoUsername: cognitoUsername.trim() || null,
-      email: email.trim() || null,
       defaultTimezone: timezone,
       notifyWhatsApp,
       notifyPush,
-    };
-    let savedPerson: Person | null = null;
-    if (editing) {
-      const { data } = await client.models.homePerson.update({
-        id: editing.id,
-        ...basePayload,
+      active,
+    });
+    if (errors?.length || !saved) {
+      addToast({
+        title: "Couldn't save",
+        description: errors?.[0]?.message,
+        color: "danger",
       });
-      savedPerson = data ?? null;
-    } else {
-      const { data } = await client.models.homePerson.create({
-        ...basePayload,
-        active: true,
-        groups: [],
-      });
-      savedPerson = data ?? null;
+      return;
     }
 
-    // Group changes route through the admin mutation so Cognito
-    // stays in sync. Skip if the row has no Cognito link (no user
-    // to assign groups to) or if nothing changed.
+    // Group changes route through the admin mutation so Cognito stays in sync.
     if (
       isAdmin &&
-      savedPerson &&
-      savedPerson.cognitoUsername &&
-      !arraysEqual(rowGroups(savedPerson), groups)
+      saved.cognitoUsername &&
+      !sameSet(rowGroups(saved), groups)
     ) {
       try {
         const res = await client.mutations.setPersonGroups({
-          personId: savedPerson.id,
+          personId: saved.id,
           groups,
         });
-        if (res.errors?.length) {
-          throw new Error(res.errors[0].message);
-        }
+        if (res.errors?.length) throw new Error(res.errors[0].message);
         addToast({
           title: "Groups updated",
-          description:
-            "Cognito changes take effect on the user's next sign-in.",
+          description: groups.includes(HOUSEHOLD_GROUP)
+            ? "Takes effect on their next sign-in."
+            : `${saved.name} is no longer in the household; they're under Contacts now.`,
         });
-      } catch (err: any) {
+      } catch (err) {
         addToast({
           title: "Failed to update groups",
-          description: err?.message ?? String(err),
+          description: err instanceof Error ? err.message : String(err),
           color: "danger",
         });
       }
@@ -289,115 +253,132 @@ export default function PeoplePage() {
     await loadPeople();
   }
 
-  async function remove(id: string) {
-    if (!confirm("Delete this person? Tasks/events assigned to them will become unassigned.")) return;
-    await client.models.homePerson.delete({ id });
-    await loadPeople();
+  function openInvite() {
+    setInvite({ personId: NEW_PERSON, name: "", email: "", admin: false });
+    inviteModal.onOpen();
   }
 
-  function openMerge(p: Person) {
-    setMergeSource(p);
-    mergeModal.onOpen();
-  }
-
-  async function performMerge(target: Person) {
-    if (!mergeSource) return;
-    if (!confirm(
-      `Merge ${mergeSource.name} into ${target.name}? Every reference to ${mergeSource.name} will be rewritten and the row deleted.`
-    )) return;
+  async function sendInvite(onClose: () => void) {
+    const existing = invite.personId !== NEW_PERSON ? invite.personId : null;
+    if (!invite.email.trim() || (!existing && !invite.name.trim())) return;
+    setInviting(true);
     try {
-      const res = await client.mutations.mergePeople({
-        sourceId: mergeSource.id,
-        targetId: target.id,
+      const res = await client.mutations.invitePerson({
+        personId: existing,
+        name: existing ? null : invite.name.trim(),
+        email: invite.email.trim(),
+        groups: invite.admin ? [HOUSEHOLD_GROUP, "admins"] : [HOUSEHOLD_GROUP],
       });
       if (res.errors?.length) throw new Error(res.errors[0].message);
-      addToast({ title: "Merged", description: JSON.stringify(res.data?.rewrites ?? {}) });
-      mergeModal.onClose();
-      setMergeSource(null);
-      await loadPeople();
-    } catch (err: any) {
       addToast({
-        title: "Merge failed",
-        description: err?.message ?? String(err),
+        title: "Invite sent",
+        description: `${invite.email.trim()} will get an email with a temporary password.`,
+      });
+      onClose();
+      await loadPeople();
+    } catch (err) {
+      addToast({
+        title: "Invite failed",
+        description: err instanceof Error ? err.message : String(err),
         color: "danger",
       });
+    } finally {
+      setInviting(false);
     }
   }
 
   return (
     <DefaultLayout>
       <div className="max-w-2xl mx-auto px-4 py-10">
-        <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center justify-between mb-2">
           <div className="flex items-center gap-3">
-            <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
+            <Button
+              size="sm"
+              isIconOnly
+              variant="light"
+              onPress={() => router.push("/")}
+            >
               <FaArrowLeft />
             </Button>
-            <h1 className="text-2xl font-bold text-foreground">People</h1>
+            <h1 className="text-2xl font-bold text-foreground">Household</h1>
           </div>
-          <Button color="primary" size="sm" startContent={<FaPlus size={12} />} onPress={openCreate}>
-            New Person
-          </Button>
+          {isAdmin && (
+            <Button
+              color="primary"
+              size="sm"
+              startContent={<FaEnvelope size={12} />}
+              onPress={openInvite}
+            >
+              Invite
+            </Button>
+          )}
+        </div>
+        <p className="text-xs text-default-400 mb-6">
+          The people who use the app. Friends, family and anyone tagged in
+          photos are in{" "}
+          <NextLink href="/contacts" className="text-primary hover:underline">
+            Contacts
+          </NextLink>
+          .{!isAdmin && " Inviting and group changes are admin-only."}
+        </p>
+
+        <div className="space-y-2">
+          {members.map((p) => (
+            <MemberCard
+              key={p.id}
+              person={p}
+              isAdmin={isAdmin}
+              onEdit={() => openEdit(p)}
+              onMerge={() => {
+                setMergeSource(p);
+                mergeModal.onOpen();
+              }}
+            />
+          ))}
+          {members.length === 0 && (
+            <p className="text-center text-default-300 py-10">
+              No members yet.
+            </p>
+          )}
         </div>
 
-        {!isAdmin && (
-          <p className="text-xs text-default-400 mb-4">
-            Group membership is admin-only. You can edit names / timezones /
-            notification toggles, but the &quot;Groups&quot; section is read-only for you.
-          </p>
-        )}
-
-        {people.length === 0 && (
-          <p className="text-center text-default-300 py-10">
-            No people yet. Add household members to get started.
-          </p>
-        )}
-
-        <Section
-          title="Household"
-          rows={household}
-          isAdmin={isAdmin}
-          onEdit={openEdit}
-          onRemove={remove}
-          onMerge={openMerge}
-        />
-        <Section
-          title="Friends (logged-in, not in household)"
-          rows={friends}
-          isAdmin={isAdmin}
-          onEdit={openEdit}
-          onRemove={remove}
-          onMerge={openMerge}
-        />
-        <Section
-          title="Others (face tagging)"
-          rows={others}
-          isAdmin={isAdmin}
-          onEdit={openEdit}
-          onRemove={remove}
-          onMerge={openMerge}
-        />
-
-        {/* Edit / create modal */}
-        <Modal isOpen={isOpen} onOpenChange={onOpenChange} scrollBehavior="inside">
+        {/* Edit */}
+        <Modal
+          isOpen={editModal.isOpen}
+          onOpenChange={editModal.onOpenChange}
+          scrollBehavior="inside"
+        >
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>{editing ? "Edit Person" : "New Person"}</ModalHeader>
+                <ModalHeader>Edit {editing?.name}</ModalHeader>
                 <ModalBody>
-                  <Input label="Name" value={name} onValueChange={setName} isRequired />
-                  <Input label="Color" type="color" value={color} onValueChange={setColor} />
                   <Input
-                    label="Emoji (optional)"
-                    value={emoji}
-                    onValueChange={setEmoji}
-                    placeholder="🐱"
+                    label="Name"
+                    value={name}
+                    onValueChange={setName}
+                    isRequired
                   />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input
+                      label="Color"
+                      type="color"
+                      value={color}
+                      onValueChange={setColor}
+                    />
+                    <Input
+                      label="Emoji (optional)"
+                      value={emoji}
+                      onValueChange={setEmoji}
+                      placeholder="🐱"
+                    />
+                  </div>
                   <Input
-                    label="Phone number (optional)"
+                    label="Phone number"
                     value={phoneNumber}
                     onValueChange={setPhoneNumber}
                     placeholder="+12125551234"
-                    description="E.164 format. Used by the WhatsApp bot to DM this person."
+                    description="E.164. Lets them DM Janet on WhatsApp and get personal messages."
                   />
                   <Input
                     label="Birthday (optional)"
@@ -408,41 +389,44 @@ export default function PeoplePage() {
                     description="Shows in the week planner. Unknown year: use 1900."
                   />
                   <Input
-                    label="Cognito username (sub)"
-                    value={cognitoUsername}
-                    onValueChange={setCognitoUsername}
-                    placeholder="auto-populated on sign-up"
-                    description="Set automatically by the post-confirmation Lambda. Only edit when manually linking a face row to a fresh sign-up."
-                  />
-                  <Input
-                    label="Email"
-                    value={email}
-                    onValueChange={setEmail}
-                    placeholder="user@example.com"
-                    description="Used by the post-confirmation Lambda to match a sign-up to this row."
-                  />
-                  <Input
                     label="Default timezone"
                     value={timezone}
                     onValueChange={setTimezone}
                     description={`Common: ${COMMON_TIMEZONES.join(", ")}`}
                   />
+                  <p className="text-xs text-default-400">
+                    Login: {editing?.email ?? "no email"}
+                    {editing?.cognitoUsername ? "" : " · not linked to a login"}
+                  </p>
 
-                  {cognitoUsername.trim() && (
-                    <div className="flex flex-col gap-2 pt-2 border-t border-default-100">
-                      <p className="text-xs font-medium text-default-500 uppercase tracking-wide">
-                        Notifications
-                      </p>
-                      <Switch size="sm" isSelected={notifyWhatsApp} onValueChange={setNotifyWhatsApp}>
-                        <span className="text-sm">WhatsApp messages</span>
-                      </Switch>
-                      <Switch size="sm" isSelected={notifyPush} onValueChange={setNotifyPush}>
-                        <span className="text-sm">App push notifications</span>
-                      </Switch>
-                    </div>
-                  )}
+                  <div className="flex flex-col gap-2 pt-2 border-t border-default-100">
+                    <p className="text-xs font-medium text-default-500 uppercase tracking-wide">
+                      Notifications
+                    </p>
+                    <Switch
+                      size="sm"
+                      isSelected={notifyWhatsApp}
+                      onValueChange={setNotifyWhatsApp}
+                    >
+                      <span className="text-sm">WhatsApp messages</span>
+                    </Switch>
+                    <Switch
+                      size="sm"
+                      isSelected={notifyPush}
+                      onValueChange={setNotifyPush}
+                    >
+                      <span className="text-sm">App push notifications</span>
+                    </Switch>
+                    <Switch
+                      size="sm"
+                      isSelected={active}
+                      onValueChange={setActive}
+                    >
+                      <span className="text-sm">Active</span>
+                    </Switch>
+                  </div>
 
-                  {cognitoUsername.trim() && (
+                  {editing?.cognitoUsername && (
                     <div className="flex flex-col gap-2 pt-2 border-t border-default-100">
                       <p className="text-xs font-medium text-default-500 uppercase tracking-wide">
                         Groups {isAdmin ? "" : "(read-only)"}
@@ -462,7 +446,7 @@ export default function PeoplePage() {
                                 setGroups((prev) =>
                                   prev.includes(g)
                                     ? prev.filter((x) => x !== g)
-                                    : [...prev, g]
+                                    : [...prev, g],
                                 );
                               }}
                             >
@@ -472,16 +456,19 @@ export default function PeoplePage() {
                         })}
                       </div>
                       <p className="text-xs text-default-400">
-                        Cognito changes only take effect on the user&apos;s next
-                        token refresh (sign out + back in).
+                        Without {HOUSEHOLD_GROUP} they leave the household and
+                        can&apos;t see its data. Changes apply on their next
+                        sign-in.
                       </p>
                     </div>
                   )}
                 </ModalBody>
                 <ModalFooter>
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
+                  <Button variant="light" onPress={onClose}>
+                    Cancel
+                  </Button>
                   <Button color="primary" onPress={() => save(onClose)}>
-                    {editing ? "Save" : "Create"}
+                    Save
                   </Button>
                 </ModalFooter>
               </>
@@ -489,111 +476,99 @@ export default function PeoplePage() {
           </ModalContent>
         </Modal>
 
-        {/* Merge target picker */}
+        {/* Invite */}
         <Modal
-          isOpen={mergeModal.isOpen}
-          onOpenChange={mergeModal.onOpenChange}
+          isOpen={inviteModal.isOpen}
+          onOpenChange={inviteModal.onOpenChange}
           scrollBehavior="inside"
         >
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>
-                  Merge {mergeSource?.name} into…
-                </ModalHeader>
+                <ModalHeader>Invite to the household</ModalHeader>
                 <ModalBody>
-                  <p className="text-xs text-default-500 mb-2">
-                    Every reference to {mergeSource?.name} (tasks, events, faces,
-                    documents, reminders, etc.) will be rewritten to point at the
-                    target row, then this row will be deleted.
-                  </p>
-                  <div className="space-y-2">
-                    {people
-                      .filter((p) => p.id !== mergeSource?.id)
-                      .map((p) => (
-                        <Card
-                          key={p.id}
-                          isPressable
-                          onPress={() => performMerge(p)}
-                        >
-                          <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
-                            <div
-                              className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-medium"
-                              style={{ backgroundColor: p.color ?? "#3a5068" }}
-                            >
-                              {p.emoji || p.name[0]}
-                            </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="text-sm font-medium">{p.name}</p>
-                              <div className="flex gap-1 flex-wrap">
-                                {rowGroups(p).map((g) => (
-                                  <Chip key={g} size="sm" variant="flat">
-                                    {g}
-                                  </Chip>
-                                ))}
-                              </div>
-                            </div>
-                          </CardBody>
-                        </Card>
-                      ))}
-                  </div>
+                  <Select
+                    label="Who"
+                    selectedKeys={new Set([invite.personId])}
+                    onSelectionChange={(keys) => {
+                      const id = String(
+                        Array.from(keys as Set<string>)[0] ?? NEW_PERSON,
+                      );
+                      const p = people.find((x) => x.id === id);
+                      setInvite({
+                        ...invite,
+                        personId: id,
+                        email: p?.email ?? invite.email,
+                      });
+                    }}
+                    description="Picking an existing contact keeps their photos, birthday and history."
+                  >
+                    {[
+                      <SelectItem key={NEW_PERSON}>Someone new</SelectItem>,
+                      ...invitable.map((p) => (
+                        <SelectItem key={p.id}>{p.name}</SelectItem>
+                      )),
+                    ]}
+                  </Select>
+                  {invite.personId === NEW_PERSON && (
+                    <Input
+                      label="Name"
+                      value={invite.name}
+                      onValueChange={(v) => setInvite({ ...invite, name: v })}
+                      isRequired
+                    />
+                  )}
+                  <Input
+                    label="Email"
+                    type="email"
+                    value={invite.email}
+                    onValueChange={(v) => setInvite({ ...invite, email: v })}
+                    description="They sign in with this. Cognito emails them a temporary password."
+                    isRequired
+                  />
+                  <Switch
+                    size="sm"
+                    isSelected={invite.admin}
+                    onValueChange={(v) => setInvite({ ...invite, admin: v })}
+                  >
+                    <span className="text-sm">
+                      Admin (can invite and change groups)
+                    </span>
+                  </Switch>
                 </ModalBody>
                 <ModalFooter>
-                  <Button variant="light" onPress={onClose}>Cancel</Button>
+                  <Button variant="light" onPress={onClose}>
+                    Cancel
+                  </Button>
+                  <Button
+                    color="primary"
+                    isLoading={inviting}
+                    onPress={() => sendInvite(onClose)}
+                  >
+                    Send invite
+                  </Button>
                 </ModalFooter>
               </>
             )}
           </ModalContent>
         </Modal>
+
+        <MergeModal
+          client={client}
+          source={mergeSource}
+          people={people}
+          isOpen={mergeModal.isOpen}
+          onOpenChange={mergeModal.onOpenChange}
+          onMerged={() => {
+            setMergeSource(null);
+            loadPeople();
+          }}
+        />
       </div>
     </DefaultLayout>
   );
 }
 
-// ── Section ────────────────────────────────────────────────────────────────
-
-function Section({
-  title,
-  rows,
-  isAdmin,
-  onEdit,
-  onRemove,
-  onMerge,
-}: {
-  title: string;
-  rows: Person[];
-  isAdmin: boolean;
-  onEdit: (p: Person) => void;
-  onRemove: (id: string) => void;
-  onMerge: (p: Person) => void;
-}) {
-  if (rows.length === 0) return null;
-  return (
-    <>
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-default-500 mt-2 mb-2">
-        {title}
-      </h2>
-      <div className="space-y-2 mb-6">
-        {rows.map((p) => (
-          <PersonCard
-            key={p.id}
-            person={p}
-            onEdit={() => onEdit(p)}
-            onRemove={() => onRemove(p.id)}
-            onMerge={() => onMerge(p)}
-            canMerge={isAdmin}
-          />
-        ))}
-      </div>
-    </>
-  );
-}
-
-// ── Helpers ────────────────────────────────────────────────────────────────
-
-function arraysEqual(a: string[], b: string[]): boolean {
-  if (a.length !== b.length) return false;
-  const sa = [...a].sort();
-  const sb = [...b].sort();
-  return sa.every((v, i) => v === sb[i]);
+function sameSet(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v) => b.includes(v));
 }

@@ -337,7 +337,7 @@ export function WeekSectionCards({
         )}
       </Section>
 
-      <Section title="Birthdays" icon={<FaBirthdayCake />} href="/admin/people" linkLabel="People" empty={!s.occasions.length}>
+      <Section title="Birthdays" icon={<FaBirthdayCake />} href="/contacts" linkLabel="Contacts" empty={!s.occasions.length}>
         {s.occasions.map((o) => (
           <Line key={o.personId} left={`${o.name}${o.age ? ` turns ${o.age}` : ""}`} right={<span className="text-default-500">{dayDate(o.date)}</span>} />
         ))}

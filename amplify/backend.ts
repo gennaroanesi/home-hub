@@ -603,6 +603,9 @@ setPersonGroupsLambda.addToRolePolicy(
       "cognito-idp:AdminAddUserToGroup",
       "cognito-idp:AdminRemoveUserFromGroup",
       "cognito-idp:AdminListGroupsForUser",
+      // invitePerson (same Lambda)
+      "cognito-idp:AdminCreateUser",
+      "cognito-idp:AdminGetUser",
     ],
     resources: [userPool.userPoolArn],
   })

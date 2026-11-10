@@ -366,8 +366,8 @@ export default function FacesPage() {
             <CardBody>
               <p className="text-sm text-warning">
                 Add at least one person on{" "}
-                <a className="underline" href="/admin/people">
-                  /admin/people
+                <a className="underline" href="/contacts">
+                  Contacts
                 </a>{" "}
                 before you can assign faces.
               </p>

@@ -254,26 +254,39 @@ export async function getPerson(id: string): Promise<PersonLite | null> {
   return data.getHomePerson;
 }
 
-// ── List all persons (for DM phone-number cache) ────────────────────────────
+// ── List household members (for DM phone-number cache) ──────────────────────
+// Only household members (home-users, active) may DM the bot. homePerson
+// also holds contacts (friends, family) whose phone numbers must not get
+// them a Janet session. Same rule as lib/household.ts.
 
 const LIST_PERSONS_QUERY = `
-  query ListPersons {
-    listHomePeople(limit: 100) {
+  query ListPersons($nextToken: String) {
+    listHomePeople(limit: 1000, nextToken: $nextToken) {
       items {
         id
         name
         phoneNumber
+        groups
+        active
       }
+      nextToken
     }
   }
 `;
 
 export async function listPersons(): Promise<PersonLite[]> {
-  const data = await callAppSync<{ listHomePeople: { items: PersonLite[] } }>(
-    LIST_PERSONS_QUERY,
-    {}
-  );
-  return data.listHomePeople.items ?? [];
+  type Row = PersonLite & { groups: (string | null)[] | null; active: boolean | null };
+  const out: PersonLite[] = [];
+  let nextToken: string | null = null;
+  do {
+    const data: { listHomePeople: { items: Row[]; nextToken: string | null } } = await callAppSync(LIST_PERSONS_QUERY, { nextToken });
+    for (const p of data.listHomePeople.items ?? []) {
+      if (p.active === false || !(p.groups ?? []).includes("home-users")) continue;
+      out.push({ id: p.id, name: p.name, phoneNumber: p.phoneNumber });
+    }
+    nextToken = data.listHomePeople.nextToken;
+  } while (nextToken);
+  return out;
 }
 
 // ── Inbound message + attachment APIs (async pipeline) ──────────────────────

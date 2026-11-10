@@ -12,7 +12,7 @@ export const auth = defineAuth({
       userInvitation: {
         emailSubject: "Welcome to Home Hub!",
         emailBody: (user, code) =>
-          `Welcome! You can login with username ${user()} and temporary password ${code()}`,
+          `You've been invited to Home Hub. Sign in at https://home.cristinegennaro.com with ${user()} and the temporary password ${code()}. You'll be asked to choose a new password.`,
       },
     },
   },
