@@ -13,7 +13,7 @@ import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Select, SelectItem } from "@heroui/select";
 import { Spinner, addToast } from "@heroui/react";
-import { FaChevronDown, FaChevronUp, FaExclamationTriangle, FaHistory, FaPen, FaPlus, FaStop } from "react-icons/fa";
+import { FaChevronDown, FaChevronUp, FaExclamationTriangle, FaHistory, FaPen, FaPlus, FaStop, FaTrash } from "react-icons/fa";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
@@ -26,6 +26,7 @@ import {
   bucketCategories,
   budgetTransactions,
   householdBudget,
+  filterBudgetView,
   listBudgetSeries,
   seedFromHistory,
   type BudgetLine,
@@ -36,6 +37,7 @@ import {
 import { fmtCurrency, fmtDate, monthEnd, monthStart, monthsIn, shiftMonth, todayIso } from "@/lib/finance/dates";
 import { periodContaining } from "@/lib/finance/periods";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
+import { CadenceFilter, useCadenceFilter } from "@/components/finance/cadence-filter";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -80,7 +82,9 @@ export default function BudgetPage() {
     load();
   }, [load]);
 
-  const view = useMemo(() => householdBudget(lines, txs, schedules, range, today), [lines, txs, schedules, range, today]);
+  const { include, setInclude } = useCadenceFilter(period.kind);
+  const fullView = useMemo(() => householdBudget(lines, txs, schedules, range, today), [lines, txs, schedules, range, today]);
+  const view = useMemo(() => filterBudgetView(fullView, include), [fullView, include]);
   const series = useMemo(() => listBudgetSeries(lines, today), [lines, today]);
   const elapsed = view.expenseViews[0]?.elapsed ?? view.incomeViews[0]?.elapsed;
   // New lines and changes start no earlier than this month: past months keep their budget.
@@ -94,6 +98,17 @@ export default function BudgetPage() {
     if ("error" in r) addToast({ title: "Couldn't end it", description: r.error, color: "danger" });
     else {
       addToast({ title: `Ended “${name}”`, color: "success" });
+      load();
+    }
+  }
+
+  async function removeVersion(seriesId: string, v: BudgetLine) {
+    const when = `${fmtDate(v.effectiveFrom, { month: "short", day: "numeric", year: "numeric" })} → ${v.effectiveTo ? fmtDate(v.effectiveTo, { month: "short", day: "numeric", year: "numeric" }) : "open"}`;
+    if (!confirm(`Remove the ${fmtCurrency(v.amount, { cents: false })} version of “${v.name}” (${when})? The version before it takes those days back, if it runs right up to it.`)) return;
+    const r = await callOp(financeClient, "save_finance_budget", { seriesId, removeVersionId: v.id });
+    if ("error" in r) addToast({ title: "Couldn't remove it", description: r.error, color: "danger" });
+    else {
+      addToast({ title: "Version removed", color: "success" });
       load();
     }
   }
@@ -128,8 +143,10 @@ export default function BudgetPage() {
         </Button>
       }
     >
-      <div className="mb-4">
-        <PeriodPicker value={period} onChange={setPeriod} />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        {/* Switching month / quarter / year goes back to that kind's default lines. */}
+        <PeriodPicker value={period} onChange={(p) => setPeriod(p, p.kind !== period.kind ? { dropParams: ["include"] } : {})} />
+        <CadenceFilter value={include} onChange={setInclude} />
       </div>
 
       {loading || refs.loading ? (
@@ -191,18 +208,13 @@ export default function BudgetPage() {
                 </p>
               ) : (
                 view.incomeViews.map((v) => (
-                  <div key={v.line.id} className="flex items-center gap-3">
-                    <div className="w-40 shrink-0">
-                      <PersonChip personId={v.line.personId} people={refs.people} />
-                    </div>
-                    <div className="flex-1">
-                      <BudgetBar spent={v.spent} budgeted={v.budgeted} income />
-                    </div>
-                    <div className="text-sm w-48 text-right tabular-nums">
-                      <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
-                    </div>
-                    <LineActions line={v.line} onEdit={() => setDraft(draftFromLine(v.line, newFrom))} onEnd={() => endSeries(v.line.seriesId, v.line.name)} />
-                  </div>
+                  <PlanRow
+                    key={v.line.id}
+                    v={v}
+                    tag={<PersonChip personId={v.line.personId} people={refs.people} />}
+                    onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
+                    onEnd={() => endSeries(v.line.seriesId, v.line.name)}
+                  />
                 ))
               )}
             </CardBody>
@@ -221,19 +233,13 @@ export default function BudgetPage() {
                 </p>
               ) : (
                 view.savingsViews.map((v) => (
-                  <div key={v.line.id} className="flex items-center gap-3">
-                    <div className="w-40 shrink-0 text-sm">
-                      {v.line.name}
-                      <div className="text-xs text-default-400">{refs.accounts.find((a) => a.id === v.line.accountId)?.name ?? "no account"}</div>
-                    </div>
-                    <div className="flex-1">
-                      <BudgetBar spent={Math.max(0, v.spent)} budgeted={v.budgeted} income />
-                    </div>
-                    <div className="text-sm w-48 text-right tabular-nums">
-                      <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
-                    </div>
-                    <LineActions line={v.line} onEdit={() => setDraft(draftFromLine(v.line, newFrom))} onEnd={() => endSeries(v.line.seriesId, v.line.name)} />
-                  </div>
+                  <PlanRow
+                    key={v.line.id}
+                    v={v}
+                    tag={<span className="text-xs text-default-400">{refs.accounts.find((a) => a.id === v.line.accountId)?.name ?? "no account"}</span>}
+                    onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
+                    onEnd={() => endSeries(v.line.seriesId, v.line.name)}
+                  />
                 ))
               )}
             </CardBody>
@@ -255,20 +261,20 @@ export default function BudgetPage() {
                 </EmptyState>
               ) : (
                 <div className="flex flex-col divide-y divide-default-100">
-                  <div className="hidden md:grid grid-cols-[1fr_6rem_6rem_6rem_6rem_10rem_5rem_4rem] gap-2 text-xs text-default-500 pb-2">
+                  <div className="hidden md:grid grid-cols-[1fr_6rem_6rem_6rem_10rem_6rem_4rem] gap-2 text-xs text-default-500 pb-2">
                     <span>Line</span>
                     <span className="text-right">Budgeted</span>
                     <span className="text-right">Scheduled</span>
                     <span className="text-right">Spent</span>
-                    <span className="text-right">Left</span>
                     <span>Pace</span>
-                    <span className="text-right">Per day</span>
+                    <span className="text-right">Left</span>
                     <span />
                   </div>
                   {view.expenseViews.map((v) => (
                     <ExpenseRow
                       key={v.line.id}
                       v={v}
+                      share={view.allocated > 0 ? v.budgeted / view.allocated : null}
                       open={expanded === v.line.seriesId}
                       onToggle={() => setExpanded(expanded === v.line.seriesId ? null : v.line.seriesId)}
                       txs={expanded === v.line.seriesId ? budgetTransactions(txs, range, bucketCategories(v.line)) : []}
@@ -382,6 +388,11 @@ export default function BudgetPage() {
                           starts {fmtDate(s.startsOn, { month: "short", day: "numeric", year: "numeric" })}
                         </Chip>
                       )}
+                      {s.changesOn && (
+                        <Chip size="sm" color="primary" variant="flat">
+                          changes {fmtDate(s.changesOn, { month: "short", day: "numeric", year: "numeric" })}
+                        </Chip>
+                      )}
                       {s.endedOn && (
                         <Chip size="sm" variant="flat">
                           ended {fmtDate(s.endedOn, { month: "short", day: "numeric", year: "numeric" })}
@@ -393,18 +404,26 @@ export default function BudgetPage() {
                     </summary>
                     <div className="pl-4 py-1 flex flex-col gap-1 text-default-600">
                       {s.versions.map((v) => (
-                        <div key={v.id} className="flex flex-wrap gap-x-3">
+                        <div key={v.id} className="flex flex-wrap items-center gap-x-3">
                           <span className="tabular-nums">
                             {fmtDate(v.effectiveFrom, { month: "short", day: "numeric", year: "numeric" })} → {v.effectiveTo ? fmtDate(v.effectiveTo, { month: "short", day: "numeric", year: "numeric" }) : "open"}
                           </span>
                           <Money value={v.amount} cents={false} />
                           {s.kind === "EXPENSE" && <span className="text-default-400">{bucketCategories(v).join(", ")}</span>}
                           {v.label && <span className="italic">“{v.label}”</span>}
+                          <span className="flex gap-1">
+                            <Button size="sm" isIconOnly variant="light" aria-label="Edit this version" onPress={() => setDraft(draftFromLine(v, newFrom, "correct"))}>
+                              <FaPen />
+                            </Button>
+                            <Button size="sm" isIconOnly variant="light" color="danger" aria-label="Remove this version" isDisabled={s.versions.length < 2} onPress={() => removeVersion(s.seriesId, v)}>
+                              <FaTrash />
+                            </Button>
+                          </span>
                         </div>
                       ))}
                       <div className="flex gap-2 pt-1">
-                        <Button size="sm" variant="flat" startContent={<FaPen />} onPress={() => setDraft(draftFromLine(s.latest, s.startsOn ?? newFrom))}>
-                          Change
+                        <Button size="sm" variant="flat" startContent={<FaPen />} onPress={() => setDraft(draftFromLine(s.latest, s.startsOn ?? newFrom, "range"))}>
+                          New period
                         </Button>
                         {!s.endedOn && (
                           <Button size="sm" variant="flat" color="danger" startContent={<FaStop />} onPress={() => endSeries(s.seriesId, s.name)}>
@@ -462,6 +481,39 @@ function LineActions({ onEdit, onEnd }: { line: BudgetLine; onEdit: () => void; 
   );
 }
 
+/**
+ * A contribution or savings line: its name with the person / account, what
+ * came in of what's planned, and the bar. Stacks on phones.
+ */
+function PlanRow({ v, tag, onEdit, onEnd }: { v: BudgetLineView; tag: React.ReactNode; onEdit: () => void; onEnd: () => void }) {
+  const period = (v.line.period ?? "MONTHLY") as BudgetPeriod;
+  return (
+    <div className="flex flex-col gap-1.5 md:grid md:grid-cols-[16rem_1fr_12rem_4rem] md:items-center md:gap-3">
+      <div className="flex items-start justify-between gap-2 min-w-0">
+        <div className="min-w-0">
+          <div className="text-sm font-medium truncate">
+            {v.line.name}
+            {period !== "MONTHLY" && <span className="text-xs text-default-400 font-normal ml-1">· {BUDGET_PERIOD_LABELS[period].toLowerCase()}</span>}
+          </div>
+          <div className="mt-0.5">{tag}</div>
+        </div>
+        <span className="md:hidden">
+          <LineActions line={v.line} onEdit={onEdit} onEnd={onEnd} />
+        </span>
+      </div>
+      <div className="md:order-none order-2">
+        <BudgetBar spent={Math.max(0, v.spent)} budgeted={v.budgeted} income />
+      </div>
+      <div className="text-sm md:text-right tabular-nums order-1 md:order-none">
+        <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
+      </div>
+      <span className="hidden md:block">
+        <LineActions line={v.line} onEdit={onEdit} onEnd={onEnd} />
+      </span>
+    </div>
+  );
+}
+
 function ExpenseRow({
   v,
   open,
@@ -469,8 +521,11 @@ function ExpenseRow({
   txs,
   onEdit,
   onEnd,
+  share,
 }: {
   v: BudgetLineView;
+  /** This line's budget as a fraction of all spending lines (null when there's no total). */
+  share: number | null;
   open: boolean;
   onToggle: () => void;
   txs: any[];
@@ -478,39 +533,75 @@ function ExpenseRow({
   onEnd: () => void;
 }) {
   const cats = bucketCategories(v.line);
+  const shareText = share != null ? `${share < 0.01 && share > 0 ? "<1" : Math.round(share * 100)}% of total` : null;
+  const paceText = v.pace != null && v.elapsed < 1 ? `${v.pace.toFixed(1)}× pace` : null;
+  const paceClass = v.status === "over" ? "text-danger-500" : "text-default-400";
+  const leftText = v.budgeted > 0 ? `${Math.round((Math.abs(v.remaining) / v.budgeted) * 100)}% ${v.remaining < 0 ? "over" : "left"}` : null;
+  const leftClass = v.remaining < 0 ? "text-danger-500" : "text-default-400";
+  const title = (
+    <button type="button" className="text-left min-w-0" onClick={onToggle}>
+      <span className="font-medium flex items-center gap-1">
+        {open ? <FaChevronUp className="text-xs shrink-0" /> : <FaChevronDown className="text-xs shrink-0" />}
+        <span className="truncate">{v.line.name}</span>
+        {v.status === "over" && (
+          <Chip size="sm" color="danger" variant="flat" className="ml-1 shrink-0">
+            ahead of pace
+          </Chip>
+        )}
+      </span>
+      {(cats.length > 1 || cats[0] !== v.line.name) && <span className="block text-xs text-default-400 truncate">{cats.join(", ")}</span>}
+    </button>
+  );
   return (
-    <div className="py-2">
-      <div className="grid grid-cols-2 md:grid-cols-[1fr_6rem_6rem_6rem_6rem_10rem_5rem_4rem] gap-2 items-center text-sm">
-        <button type="button" className="text-left min-w-0 col-span-2 md:col-span-1" onClick={onToggle}>
-          <span className="font-medium flex items-center gap-1">
-            {open ? <FaChevronUp className="text-xs" /> : <FaChevronDown className="text-xs" />}
-            {v.line.name}
-            {v.status === "over" && (
-              <Chip size="sm" color="danger" variant="flat" className="ml-1">
-                ahead of pace
-              </Chip>
-            )}
-          </span>
-          {(cats.length > 1 || cats[0] !== v.line.name) && <span className="block text-xs text-default-400 truncate">{cats.join(", ")}</span>}
-        </button>
-        <Cell label="Budgeted">
-          <Money value={v.budgeted} cents={false} />
-        </Cell>
-        <Cell label="Scheduled">
-          <span className="text-default-500">{v.committed ? <Money value={v.committed} cents={false} /> : "—"}</span>
-        </Cell>
-        <Cell label="Spent">
-          <Money value={v.spent} />
-        </Cell>
-        <Cell label="Left">
-          <Money value={v.remaining} className={v.remaining < 0 ? "text-danger-600" : ""} />
-        </Cell>
-        <div className="col-span-2 md:col-span-1">
-          <BudgetBar spent={v.spent} budgeted={v.budgeted} elapsed={v.elapsed} />
+    <div className="py-3 md:py-2">
+      {/* Phone: name, spent of budgeted, bar, then the details on one line. */}
+      <div className="md:hidden flex flex-col gap-1.5 text-sm">
+        <div className="flex items-start justify-between gap-2">
+          {title}
+          <LineActions line={v.line} onEdit={onEdit} onEnd={onEnd} />
         </div>
-        <Cell label="Per day left">
-          <span className="text-default-500">{v.safeDailyRemaining > 0 && v.elapsed < 1 ? fmtCurrency(v.safeDailyRemaining, { cents: false }) : "—"}</span>
-        </Cell>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="tabular-nums">
+            <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
+          </span>
+          <span className="tabular-nums text-right">
+            <Money value={v.remaining} cents={false} className={v.remaining < 0 ? "text-danger-600" : ""} />
+            {leftText && <span className={`text-xs ml-1 ${leftClass}`}>{leftText}</span>}
+          </span>
+        </div>
+        <BudgetBar spent={v.spent} budgeted={v.budgeted} elapsed={v.elapsed} />
+        <div className="flex flex-wrap gap-x-3 text-xs text-default-400">
+          {paceText && <span className={paceClass}>{paceText}</span>}
+          {shareText && <span>{shareText}</span>}
+          {v.committed > 0 && (
+            <span>
+              <Money value={v.committed} cents={false} /> scheduled
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Wider screens: one row per line under the column headers. */}
+      <div className="hidden md:grid grid-cols-[1fr_6rem_6rem_6rem_10rem_6rem_4rem] gap-2 items-center text-sm">
+        {title}
+        <span className="text-right">
+          <Money value={v.budgeted} cents={false} />
+          {shareText && <span className="block text-xs text-default-400">{shareText}</span>}
+        </span>
+        <span className="text-right text-default-500">{v.committed ? <Money value={v.committed} cents={false} /> : "—"}</span>
+        <span className="text-right">
+          <Money value={v.spent} />
+          {paceText && (
+            <span className={`block text-xs ${paceClass}`} title="Spent vs what the budget expects by today">
+              {paceText}
+            </span>
+          )}
+        </span>
+        <BudgetBar spent={v.spent} budgeted={v.budgeted} elapsed={v.elapsed} />
+        <span className="text-right">
+          <Money value={v.remaining} className={v.remaining < 0 ? "text-danger-600" : ""} />
+          {leftText && <span className={`block text-xs ${leftClass}`}>{leftText}</span>}
+        </span>
         <LineActions line={v.line} onEdit={onEdit} onEnd={onEnd} />
       </div>
       {open && (
@@ -535,11 +626,3 @@ function ExpenseRow({
   );
 }
 
-function Cell({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <span className="md:text-right flex md:block justify-between">
-      <span className="md:hidden text-xs text-default-400">{label}</span>
-      {children}
-    </span>
-  );
-}

@@ -194,7 +194,10 @@ export default function FinanceOverviewPage() {
                       {budget.incomeViews.map((v) => (
                         <div key={v.line.id} className="flex flex-col gap-1">
                           <div className="flex items-center justify-between text-sm">
-                            <PersonChip personId={v.line.personId} people={refs.people} />
+                            <span className="flex items-center gap-2 min-w-0">
+                              <span className="truncate">{v.line.name}</span>
+                              <PersonChip personId={v.line.personId} people={refs.people} />
+                            </span>
                             <span>
                               <Money value={v.spent} /> <span className="text-default-500">of</span> <Money value={v.budgeted} cents={false} />
                             </span>

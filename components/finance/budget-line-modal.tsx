@@ -1,9 +1,11 @@
 "use client";
 
 // Create / change a budget line (EXPENSE bucket of categories, a member's
-// INCOME contribution, or SAVINGS into an account). Saves through save_finance_budget, which
-// versions the line: a change starts on `effectiveFrom` and closes the old
-// version the day before.
+// INCOME contribution, or SAVINGS into an account). Saves through
+// save_finance_budget, which versions the line. Opened on a version, it
+// either corrects that version in place, or sets the line from a date
+// (optionally until a date); the versions around the range are trimmed or
+// split so the rest of the history keeps its amounts.
 
 import React, { useEffect, useState } from "react";
 import { Button } from "@heroui/button";
@@ -16,9 +18,14 @@ import { financeClient } from "@/components/finance/client";
 import type { PersonLite } from "@/components/finance/ui";
 import { callOp } from "@/lib/ops-client";
 import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, type BudgetLine, type BudgetPeriod } from "@/lib/finance/budget";
+import { fmtDate } from "@/lib/finance/dates";
 
 export type BudgetDraft = {
   seriesId?: string;
+  /** The version this was opened on (an existing line only). */
+  version?: { id: string; from: string | null; to: string | null };
+  /** correct: edit that version in place. range: set the line from effectiveFrom to effectiveTo. */
+  mode: "correct" | "range";
   kind: "INCOME" | "SAVINGS" | "EXPENSE";
   name: string;
   categories: string[];
@@ -27,13 +34,22 @@ export type BudgetDraft = {
   amount: string;
   period: BudgetPeriod;
   effectiveFrom: string;
+  /** "" = until the next version starts (later versions keep theirs). */
+  effectiveTo: string;
   label: string;
   notes: string;
 };
 
-export function draftFromLine(line: BudgetLine, effectiveFrom: string): BudgetDraft {
+/**
+ * A draft opened on a version. `mode` defaults to correcting it when it
+ * starts on or after `effectiveFrom` (nothing before it to keep), else to a
+ * change from `effectiveFrom`.
+ */
+export function draftFromLine(line: BudgetLine, effectiveFrom: string, mode?: BudgetDraft["mode"]): BudgetDraft {
   return {
     seriesId: line.seriesId,
+    version: { id: line.id, from: line.effectiveFrom ?? null, to: line.effectiveTo ?? null },
+    mode: mode ?? ((line.effectiveFrom ?? "") >= effectiveFrom ? "correct" : "range"),
     kind: budgetKind(line),
     name: line.name,
     categories: bucketCategories(line),
@@ -42,13 +58,19 @@ export function draftFromLine(line: BudgetLine, effectiveFrom: string): BudgetDr
     amount: String(line.amount ?? ""),
     period: (line.period ?? "MONTHLY") as BudgetPeriod,
     effectiveFrom,
+    effectiveTo: "",
     label: "",
     notes: line.notes ?? "",
   };
 }
 
 export function emptyDraft(effectiveFrom: string, patch: Partial<BudgetDraft> = {}): BudgetDraft {
-  return { kind: "EXPENSE", name: "", categories: [], personId: "", accountId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ...patch };
+  return { mode: "range", effectiveTo: "", kind: "EXPENSE", name: "", categories: [], personId: "", accountId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ...patch };
+}
+
+function rangeText(from: string | null, to: string | null): string {
+  const f = (iso: string | null) => (iso ? fmtDate(iso, { month: "short", day: "numeric", year: "numeric" }) : "?");
+  return `${f(from)} → ${to ? f(to) : "open"}`;
 }
 
 export function BudgetLineModal({
@@ -80,6 +102,8 @@ export function BudgetLineModal({
     if (!d) return;
     const amount = Number(d.amount);
     if (!Number.isFinite(amount) || amount <= 0) return addToast({ title: "Enter an amount", color: "warning" });
+    const correcting = d.mode === "correct" && !!d.version;
+    if (!correcting && d.effectiveTo && d.effectiveTo < d.effectiveFrom) return addToast({ title: "The end date is before the start", color: "warning" });
     setSaving(true);
     const r = await callOp(financeClient, "save_finance_budget", {
       ...(d.seriesId ? { seriesId: d.seriesId } : {}),
@@ -92,7 +116,9 @@ export function BudgetLineModal({
           : { personId: d.personId || undefined }),
       amount,
       period: d.period,
-      effectiveFrom: d.effectiveFrom,
+      ...(correcting
+        ? { versionId: d.version!.id }
+        : { effectiveFrom: d.effectiveFrom, ...(d.effectiveTo ? { effectiveTo: d.effectiveTo } : {}) }),
       ...(d.label.trim() ? { label: d.label.trim() } : {}),
       ...(d.notes.trim() ? { notes: d.notes.trim() } : {}),
     });
@@ -186,14 +212,36 @@ export function BudgetLineModal({
               ))}
             </Select>
           </div>
-          <Input
-            label={editing ? "Change starts on" : "Starts on"}
-            type="date"
-            placeholder=" "
-            value={d.effectiveFrom}
-            onValueChange={(effectiveFrom) => set({ effectiveFrom })}
-            description={editing ? "Months before this keep the old amount. Same start date as the current version corrects it instead." : undefined}
-          />
+          {d.version && (
+            <div className="flex flex-col gap-1">
+              <div className="flex gap-2">
+                <Button size="sm" variant={d.mode === "correct" ? "solid" : "flat"} color={d.mode === "correct" ? "primary" : "default"} onPress={() => set({ mode: "correct" })}>
+                  Correct this version
+                </Button>
+                <Button size="sm" variant={d.mode === "range" ? "solid" : "flat"} color={d.mode === "range" ? "primary" : "default"} onPress={() => set({ mode: "range" })}>
+                  Change from a date
+                </Button>
+              </div>
+              <span className="text-xs text-default-500">
+                {d.mode === "correct"
+                  ? `Edits the version for ${rangeText(d.version.from, d.version.to)} in place; nothing else changes.`
+                  : "Sets these values for the dates below. Versions around them are trimmed or split, so other months keep their amounts."}
+              </span>
+            </div>
+          )}
+          {(!d.version || d.mode === "range") && (
+            <div className="grid grid-cols-2 gap-3">
+              <Input label={editing ? "From" : "Starts on"} type="date" placeholder=" " value={d.effectiveFrom} onValueChange={(effectiveFrom) => set({ effectiveFrom })} />
+              <Input
+                label="Until (optional)"
+                type="date"
+                placeholder=" "
+                value={d.effectiveTo}
+                onValueChange={(effectiveTo) => set({ effectiveTo })}
+                description={editing ? "Blank: until the next version starts" : "Blank: open-ended"}
+              />
+            </div>
+          )}
           {editing && <Input label="Why it changed (optional)" placeholder="baby arrives" value={d.label} onValueChange={(label) => set({ label })} />}
           <Input label="Notes" value={d.notes} onValueChange={(notes) => set({ notes })} />
         </ModalBody>

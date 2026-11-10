@@ -5,7 +5,17 @@
 
 import { z } from "zod/v4";
 import { listAllPages } from "../list-all";
-import { householdBudget, bucketCategories, planBudgetChange, resolveBudgetLines, budgetKind, type BudgetLine } from "../finance/budget";
+import {
+  householdBudget,
+  bucketCategories,
+  defaultChangeEnd,
+  planRemoveVersion,
+  planSeriesChange,
+  resolveBudgetLines,
+  budgetKind,
+  type BudgetLine,
+  type SeriesWrite,
+} from "../finance/budget";
 import { allCategories, CATEGORY_RULES, effectiveCategory, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoals, listSchedules, listTransactions } from "../finance/data";
@@ -58,7 +68,7 @@ export const getFinanceSummary = defineOp({
   output: z.object({
     month: z.string(),
     accounts: z.array(z.object({ id: z.string(), name: z.string(), type: z.string().nullable(), balance: z.number(), updatedAt: z.string().nullable() })),
-    contributions: z.array(z.object({ person: z.string().nullable(), planned: z.number(), received: z.number() })),
+    contributions: z.array(z.object({ name: z.string(), person: z.string().nullable(), period: z.string(), planned: z.number(), received: z.number() })),
     savings: z.array(z.object({ name: z.string(), account: z.string().nullable(), planned: z.number(), saved: z.number() })),
     budget: z.object({
       planned: z.number().describe("Planned contributions"),
@@ -120,7 +130,7 @@ export const getFinanceSummary = defineOp({
     return {
       month: window.label,
       accounts: active.map((a) => ({ id: a.id, name: a.name, type: a.type ?? null, balance: r2(a.currentBalance ?? 0), updatedAt: a.balanceUpdatedAt ?? null })),
-      contributions: view.incomeViews.map((v) => ({ person: nameOf(folks, v.line.personId) ?? v.line.name, planned: r2(v.budgeted), received: r2(v.spent) })),
+      contributions: view.incomeViews.map((v) => ({ name: v.line.name, person: nameOf(folks, v.line.personId) ?? null, period: v.line.period ?? "MONTHLY", planned: r2(v.budgeted), received: r2(v.spent) })),
       savings: view.savingsViews.map((v) => ({ name: v.line.name, account: accounts.find((a) => a.id === v.line.accountId)?.name ?? null, planned: r2(v.budgeted), saved: r2(v.spent) })),
       budget: {
         planned: r2(view.planned),
@@ -325,12 +335,26 @@ const BudgetOut = z.object({
   effectiveTo: z.string().nullable(),
 });
 
+/** Runs a series plan in order; returns the row the first write produced. */
+async function applySeriesWrites(ctx: { client: any }, writes: SeriesWrite[]): Promise<any> {
+  let first: any = null;
+  for (const [i, w] of writes.entries()) {
+    const r = w.op === "insert" ? await ctx.client.models.homeFinanceBudget.create(w.row) : await ctx.client.models.homeFinanceBudget.update({ id: w.id, ...w.patch });
+    if (r.errors?.length || !r.data) {
+      const msg = r.errors?.[0]?.message ?? "Save failed";
+      throw new Error(i === 0 ? msg : `Saved ${i} of ${writes.length} changes, then: ${msg}`);
+    }
+    if (i === 0) first = r.data;
+  }
+  return first;
+}
+
 export const saveFinanceBudget = defineOp({
   name: "save_finance_budget",
   domain: "finance",
   access: "write",
   description:
-    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month; SAVINGS lines plan what moves into a savings account each month (accountId or accountName), measured by what actually lands there. Budgets are versioned: changing one (pass seriesId) starts a new version on effectiveFrom (default the 1st of this month) and ends the old one the day before, so past months keep the budget they had. Changing a version that starts on that same date corrects it in place. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
+    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month; SAVINGS lines plan what moves into a savings account each month (accountId or accountName), measured by what actually lands there. Budgets are versioned: changing one (pass seriesId) sets it from effectiveFrom (default the 1st of this month) to effectiveTo (default: until the next existing version), trimming or splitting the versions around it, so other months keep the budget they had. A change with exactly a version's dates (or versionId alone) corrects it in place; removeVersionId deletes one. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
   input: z.object({
     seriesId: z.string().optional().describe("Budget to change; leave out to create one."),
     name: z.string().optional(),
@@ -342,12 +366,15 @@ export const saveFinanceBudget = defineOp({
     categories: z.array(z.string()).optional().describe("EXPENSE: categories the line covers."),
     amount: z.number().positive().optional(),
     period: z.enum(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]).optional().describe("Default MONTHLY."),
-    effectiveFrom: DATE.optional(),
+    effectiveFrom: DATE.optional().describe("First day of the change. Default: the start of versionId, else the 1st of this month."),
+    effectiveTo: DATE.nullable().optional().describe("Last day of the change. Leave out to run until the next existing version (later versions keep theirs); null = open-ended, replacing everything after."),
+    versionId: z.string().optional().describe("A version (id from the series' versions) to change; with no dates it's corrected in place."),
+    removeVersionId: z.string().optional().describe("Delete this version; the one before it takes its days back when they're adjacent."),
     endOn: DATE.optional().describe("Last day the budget applies; ends the series."),
     label: z.string().optional().describe("Why it changed, e.g. 'baby arrives'."),
     notes: z.string().optional(),
   }),
-  output: z.object({ action: z.enum(["created", "changed", "corrected", "ended"]), budget: BudgetOut }),
+  output: z.object({ action: z.enum(["created", "changed", "corrected", "ended", "removed"]), budget: BudgetOut }),
   async run(ctx, input) {
     const today = todayIso();
     const lines: BudgetLine[] = await listBudgetLines(ctx.client);
@@ -387,17 +414,33 @@ export const saveFinanceBudget = defineOp({
       return { action: "ended" as const, budget: out(r.data) };
     }
 
+    if (input.removeVersionId) {
+      if (!series.some((v) => v.id === input.removeVersionId)) throw new OpError(`No version ${input.removeVersionId} in budget ${input.seriesId ?? "(pass seriesId)"}`);
+      const removed = series.find((v) => v.id === input.removeVersionId)!;
+      await applySeriesWrites(ctx, planRemoveVersion(series, input.removeVersionId));
+      return { action: "removed" as const, budget: out({ ...removed, active: false }) };
+    }
+
+    const version = input.versionId ? series.find((v) => v.id === input.versionId) : undefined;
+    if (input.versionId && !version) throw new OpError(`No version ${input.versionId} in budget ${input.seriesId ?? "(pass seriesId)"}`);
+    const effectiveFrom =
+      input.effectiveFrom ?? version?.effectiveFrom ?? (latest && latest.effectiveFrom! > monthStart(today) ? latest.effectiveFrom! : monthStart(today));
+    const effectiveTo = input.effectiveTo !== undefined ? input.effectiveTo : defaultChangeEnd(series, effectiveFrom);
+    if (effectiveTo != null && effectiveTo < effectiveFrom) throw new OpError(`effectiveTo ${effectiveTo} is before effectiveFrom ${effectiveFrom}`);
+    // Values not given come from the version being changed: the one named, else the one in force on effectiveFrom, else the latest.
+    const base = version ?? resolveBudgetLines(series, effectiveFrom)[0] ?? latest;
+
     const personId = await personRef(ctx, input);
-    const kind = input.kind ?? (latest ? budgetKind(latest) : "EXPENSE");
-    const name = input.name?.trim() || latest?.name;
-    const amount = input.amount ?? latest?.amount;
-    const categories = (input.categories ?? (latest ? bucketCategories(latest) : [])).map((c) => c.trim()).filter(Boolean);
+    const kind = input.kind ?? (base ? budgetKind(base) : "EXPENSE");
+    const name = input.name?.trim() || base?.name;
+    const amount = input.amount ?? base?.amount;
+    const categories = (input.categories ?? (base ? bucketCategories(base) : [])).map((c) => c.trim()).filter(Boolean);
     if (!name) throw new OpError("name is required");
     if (amount == null) throw new OpError("amount is required");
     if (kind === "EXPENSE" && !categories.length) throw new OpError("A spending line needs at least one category");
-    const contributor = personId === undefined ? latest?.personId ?? null : personId;
+    const contributor = personId === undefined ? base?.personId ?? null : personId;
     if (kind === "INCOME" && !contributor) throw new OpError("An income line needs the person who contributes (personId or personName)");
-    let savingsAccount: string | null = latest?.accountId ?? null;
+    let savingsAccount: string | null = base?.accountId ?? null;
     if (input.accountId || input.accountName) {
       const want = input.accountName?.trim().toLowerCase();
       const acc = accounts.find((a) => (input.accountId ? a.id === input.accountId : a.name.toLowerCase() === want));
@@ -406,17 +449,23 @@ export const saveFinanceBudget = defineOp({
     }
     if (kind === "SAVINGS" && !savingsAccount) throw new OpError("A savings line needs the account the money goes into (accountId or accountName)");
 
-    const effectiveFrom = input.effectiveFrom ?? (latest && latest.effectiveFrom! > monthStart(today) ? latest.effectiveFrom! : monthStart(today));
-
-    // A category may sit in only one spending line at a time.
+    // A category may sit in only one spending line at a time: check every
+    // date in the range where another line's version starts.
     if (kind === "EXPENSE") {
-      const others = resolveBudgetLines(lines, effectiveFrom).filter((l) => l.seriesId !== input.seriesId && budgetKind(l) === "EXPENSE");
-      for (const c of categories) {
-        const clash = others.find((l) => bucketCategories(l).some((x) => x.toLowerCase() === c.toLowerCase()));
-        if (clash) throw new OpError(`"${c}" is already in "${clash.name}". Remove it there first (save_finance_budget with that seriesId and categories), or pick another category.`);
+      const checkDates = [
+        effectiveFrom,
+        ...lines.map((l) => l.effectiveFrom ?? "").filter((d) => d > effectiveFrom && (effectiveTo == null || d <= effectiveTo)),
+      ];
+      for (const d of [...new Set(checkDates)]) {
+        const others = resolveBudgetLines(lines, d).filter((l) => l.seriesId !== input.seriesId && budgetKind(l) === "EXPENSE");
+        for (const c of categories) {
+          const clash = others.find((l) => bucketCategories(l).some((x) => x.toLowerCase() === c.toLowerCase()));
+          if (clash) throw new OpError(`"${c}" is already in "${clash.name}" on ${d}. Remove it there first (save_finance_budget with that seriesId and categories), or pick another category.`);
+        }
       }
     }
 
+    const sameRange = base && base.effectiveFrom === effectiveFrom && (base.effectiveTo ?? null) === effectiveTo;
     const next = {
       seriesId: input.seriesId ?? crypto.randomUUID(),
       name,
@@ -425,28 +474,16 @@ export const saveFinanceBudget = defineOp({
       accountId: kind === "SAVINGS" ? savingsAccount : null,
       categories: kind === "EXPENSE" ? categories : [],
       amount,
-      period: input.period ?? latest?.period ?? "MONTHLY",
-      rollover: latest?.rollover ?? false,
-      label: input.label ?? null,
-      notes: input.notes ?? latest?.notes ?? null,
+      period: input.period ?? base?.period ?? "MONTHLY",
+      rollover: base?.rollover ?? false,
+      label: input.label ?? (sameRange ? base?.label ?? null : null),
+      notes: input.notes ?? base?.notes ?? null,
     };
 
-    if (latest && latest.effectiveFrom === effectiveFrom) {
-      const r = await ctx.client.models.homeFinanceBudget.update({ id: latest.id, ...next, label: input.label ?? latest.label ?? null });
-      if (r.errors?.length) throw new Error(r.errors[0].message);
-      return { action: "corrected" as const, budget: out(r.data) };
-    }
-    if (latest && latest.effectiveFrom && effectiveFrom < latest.effectiveFrom) {
-      throw new OpError(`The latest version starts ${latest.effectiveFrom}; a change has to start on or after it`);
-    }
-    const plan = planBudgetChange(latest, next, effectiveFrom);
-    const created = await ctx.client.models.homeFinanceBudget.create(plan.insert);
-    if (created.errors?.length || !created.data) throw new Error(created.errors?.[0]?.message ?? "Save failed");
-    if (plan.close) {
-      const closed = await ctx.client.models.homeFinanceBudget.update(plan.close);
-      if (closed.errors?.length) throw new Error(`New version saved, but closing the old one failed: ${closed.errors[0].message}`);
-    }
-    return { action: latest ? ("changed" as const) : ("created" as const), budget: out(created.data) };
+    const writes = planSeriesChange(series, next, effectiveFrom, effectiveTo);
+    const first = await applySeriesWrites(ctx, writes);
+    const corrected = writes.length === 1 && writes[0].op === "update";
+    return { action: corrected ? ("corrected" as const) : latest ? ("changed" as const) : ("created" as const), budget: out(first) };
   },
 });
 

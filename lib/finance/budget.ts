@@ -7,7 +7,7 @@
 // is a transfer, so it never counts as spending.
 
 import { effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
-import { daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
+import { addDays, daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 
 export const BUDGET_KINDS = ["INCOME", "SAVINGS", "EXPENSE"] as const;
@@ -168,6 +168,104 @@ export function planBudgetChange(
     },
     close: current && current.effectiveFrom && current.effectiveFrom < effectiveFrom ? { id: current.id, effectiveTo: previousDay(effectiveFrom) } : null,
   };
+}
+
+export type SeriesWrite =
+  | { op: "insert"; row: Omit<BudgetLine, "id"> }
+  | { op: "update"; id: string; patch: Partial<Omit<BudgetLine, "id">> };
+
+type LineValues = Omit<BudgetLine, "id" | "effectiveFrom" | "effectiveTo" | "active">;
+
+const valuesOf = (l: BudgetLine): LineValues => ({
+  seriesId: l.seriesId,
+  name: l.name,
+  kind: l.kind ?? "EXPENSE",
+  personId: l.personId ?? null,
+  accountId: l.accountId ?? null,
+  categories: l.categories ?? [],
+  amount: l.amount ?? 0,
+  period: l.period ?? "MONTHLY",
+  rollover: l.rollover ?? false,
+  label: l.label ?? null,
+  notes: l.notes ?? null,
+});
+
+/** Same budget, ignoring dates and label/notes. */
+function sameValues(a: BudgetLine, b: BudgetLine): boolean {
+  const key = (l: BudgetLine) =>
+    JSON.stringify([budgetKind(l), l.name, l.personId ?? null, l.accountId ?? null, bucketCategories(l).sort(), Number(l.amount ?? 0), l.period ?? "MONTHLY"]);
+  return key(a) === key(b);
+}
+
+const activeVersions = (versions: BudgetLine[]) =>
+  versions.filter((v) => v.active !== false && v.effectiveFrom).sort((a, b) => a.effectiveFrom!.localeCompare(b.effectiveFrom!));
+
+/**
+ * Where a change starting on `from` ends when no end is given: with the
+ * version in force on `from` (so later versions keep theirs), or the day
+ * before the next version when `from` falls in a gap, or open.
+ */
+export function defaultChangeEnd(versions: BudgetLine[], from: string): string | null {
+  const vs = activeVersions(versions);
+  const covering = vs.filter((v) => v.effectiveFrom! <= from && (v.effectiveTo == null || v.effectiveTo >= from)).at(-1);
+  if (covering) return covering.effectiveTo ?? null;
+  const after = vs.find((v) => v.effectiveFrom! > from);
+  return after ? previousDay(after.effectiveFrom!) : null;
+}
+
+/**
+ * The writes that make a series hold `next` from `from` to `to` (null =
+ * open-ended) and leave every other day as it was: versions overlapping the
+ * range are trimmed, split or switched off. A version with exactly that range
+ * is corrected in place. Inserts come first, so a failure part-way leaves
+ * the new values in force (on overlap the later start wins).
+ */
+export function planSeriesChange(versions: BudgetLine[], next: LineValues, from: string, to: string | null): SeriesWrite[] {
+  if (to != null && to < from) throw new Error(`ends ${to}, before it starts ${from}`);
+  const vs = activeVersions(versions);
+  const exact = vs.find((v) => v.effectiveFrom === from && (v.effectiveTo ?? null) === to);
+  if (exact) return [{ op: "update", id: exact.id, patch: { ...next } }];
+
+  const inserts: SeriesWrite[] = [{ op: "insert", row: { ...next, effectiveFrom: from, effectiveTo: to, active: true } }];
+  const updates: SeriesWrite[] = [];
+  const end = (v: BudgetLine) => v.effectiveTo ?? "9999-12-31";
+  for (const v of vs) {
+    const vFrom = v.effectiveFrom!;
+    if (end(v) < from || (to != null && vFrom > to)) continue; // no overlap
+    const startsBefore = vFrom < from;
+    const endsAfter = to != null && end(v) > to;
+    if (startsBefore && endsAfter) {
+      // The change sits inside v: keep v before it, and a copy of v after it.
+      inserts.push({ op: "insert", row: { ...valuesOf(v), effectiveFrom: addDays(to!, 1), effectiveTo: v.effectiveTo ?? null, active: true } });
+      updates.push({ op: "update", id: v.id, patch: { effectiveTo: previousDay(from) } });
+    } else if (startsBefore) updates.push({ op: "update", id: v.id, patch: { effectiveTo: previousDay(from) } });
+    else if (endsAfter) updates.push({ op: "update", id: v.id, patch: { effectiveFrom: addDays(to!, 1) } });
+    else updates.push({ op: "update", id: v.id, patch: { active: false } }); // wholly replaced
+  }
+  return [...inserts, ...updates];
+}
+
+/**
+ * Remove one version. The version before it, when it ran right up to this
+ * one, takes over its days again (undoing the change); otherwise those days
+ * go back to having no budget.
+ */
+export function planRemoveVersion(versions: BudgetLine[], id: string): SeriesWrite[] {
+  const vs = activeVersions(versions);
+  const i = vs.findIndex((v) => v.id === id);
+  if (i < 0) throw new Error("No such version");
+  const v = vs[i];
+  const prev = vs[i - 1];
+  const after = vs[i + 1];
+  const writes: SeriesWrite[] = [];
+  if (prev && prev.effectiveTo === previousDay(v.effectiveFrom!)) {
+    // The version after may be the other half of a split of prev: rejoin them.
+    const rejoin = after && v.effectiveTo != null && after.effectiveFrom === addDays(v.effectiveTo, 1) && sameValues(prev, after);
+    writes.push({ op: "update", id: prev.id, patch: { effectiveTo: rejoin ? after.effectiveTo ?? null : v.effectiveTo ?? null } });
+    if (rejoin) writes.push({ op: "update", id: after.id, patch: { active: false } });
+  }
+  writes.push({ op: "update", id: v.id, patch: { active: false } });
+  return writes;
 }
 
 // ── Scaling a line to a range ─────────────────────────────────────────────────
@@ -408,6 +506,44 @@ export type HouseholdBudgetView = {
   issues: BudgetHistoryIssue[];
 };
 
+/**
+ * The view with only lines repeating on the given periods (e.g. monthly
+ * only, to look at the house's month without the quarterly travel fund or a
+ * yearly budget). One-time lines show only in a period their date falls
+ * in. Lines are computed on the full budget first, so shares
+ * and what counts as unbudgeted don't move; totals are re-added from what's
+ * left. `received` becomes what the shown contribution lines got;
+ * spentTotal (all money out) and unassigned stay as they were.
+ */
+export function filterBudgetView(view: HouseholdBudgetView, periods: ReadonlySet<string>): HouseholdBudgetView {
+  // A one-time line only belongs to the period its date falls in.
+  const keep = (v: BudgetLineView) => {
+    const period = v.line.period ?? "MONTHLY";
+    return periods.has(period) && (period !== "ONCE" || v.budgeted > 0);
+  };
+  const incomeViews = view.incomeViews.filter(keep);
+  const savingsViews = view.savingsViews.filter(keep);
+  const expenseViews = view.expenseViews.filter(keep);
+  const sum = (vs: BudgetLineView[], f: (v: BudgetLineView) => number) => vs.reduce((s, v) => s + f(v), 0);
+  const planned = sum(incomeViews, (v) => v.budgeted);
+  const allocated = sum(expenseViews, (v) => v.budgeted);
+  const savingsPlanned = sum(savingsViews, (v) => v.budgeted);
+  return {
+    ...view,
+    planned,
+    received: sum(incomeViews, (v) => v.spent),
+    allocated,
+    savingsPlanned,
+    saved: sum(savingsViews, (v) => v.spent),
+    spentBudgeted: sum(expenseViews, (v) => v.spent),
+    overspend: sum(expenseViews, (v) => Math.max(0, v.spent - v.budgeted)),
+    unallocated: planned - allocated - savingsPlanned,
+    incomeViews,
+    savingsViews,
+    expenseViews,
+  };
+}
+
 /** Everything the budget page and the finance ops need for one window. */
 export function householdBudget(
   lines: BudgetLine[],
@@ -421,7 +557,28 @@ export function householdBudget(
   const committed = committedByCategory(rules, window);
   const received = receivedByPerson(txs, window);
   const saved = savedByAccount(txs, window);
-  const views = inForce.map((l) => computeLineView(l, window, spentByCat, committed, received, todayIso, saved));
+  // Several lines can share a person (monthly + a quarterly travel fund) or a
+  // savings account. Money isn't tagged to a line, so each gets a share of
+  // what came in proportional to what it plans; otherwise every line would
+  // count the whole amount.
+  const shareOf = (l: BudgetLine, peers: BudgetLine[], total: number) => {
+    const planned = peers.reduce((s, p) => s + budgetedForRange(p, window), 0);
+    return planned > 0 ? (total * budgetedForRange(l, window)) / planned : total / peers.length;
+  };
+  const views = inForce.map((l) => {
+    const kind = budgetKind(l);
+    if (kind === "INCOME") {
+      const peers = inForce.filter((p) => budgetKind(p) === "INCOME" && (p.personId ?? "") === (l.personId ?? ""));
+      const mine = new Map([[l.personId ?? "", shareOf(l, peers, received.get(l.personId ?? "") ?? 0)]]);
+      return computeLineView(l, window, spentByCat, committed, mine, todayIso, saved);
+    }
+    if (kind === "SAVINGS") {
+      const peers = inForce.filter((p) => budgetKind(p) === "SAVINGS" && (p.accountId ?? "") === (l.accountId ?? ""));
+      const mine = new Map([[l.accountId ?? "", shareOf(l, peers, saved.get(l.accountId ?? "") ?? 0)]]);
+      return computeLineView(l, window, spentByCat, committed, received, todayIso, mine);
+    }
+    return computeLineView(l, window, spentByCat, committed, received, todayIso, saved);
+  });
   const incomeViews = views.filter((v) => budgetKind(v.line) === "INCOME").sort((a, b) => a.line.name.localeCompare(b.line.name));
   const savingsViews = views.filter((v) => budgetKind(v.line) === "SAVINGS").sort((a, b) => a.line.name.localeCompare(b.line.name));
   const expenseViews = views.filter((v) => budgetKind(v.line) === "EXPENSE").sort((a, b) => b.budgeted - a.budgeted);
@@ -461,14 +618,18 @@ export type BudgetSeries = {
   latest: BudgetLine;
   versions: BudgetLine[];
   liveNow: boolean;
+  /** First start, when no version has started yet. */
   startsOn: string | null;
+  /** Next staged version, when one is already in force or past. */
+  changesOn: string | null;
   endedOn: string | null;
 };
 
-/** Every budget series, in force or not (staged for later, or ended). */
+/** Every budget series, in force or not (staged for later, or ended). Switched-off versions are left out. */
 export function listBudgetSeries(lines: BudgetLine[], todayIso: string): BudgetSeries[] {
   const bySeries = new Map<string, BudgetLine[]>();
   for (const l of lines) {
+    if (l.active === false) continue;
     if (!bySeries.has(l.seriesId)) bySeries.set(l.seriesId, []);
     bySeries.get(l.seriesId)!.push(l);
   }
@@ -476,16 +637,18 @@ export function listBudgetSeries(lines: BudgetLine[], todayIso: string): BudgetS
   for (const [seriesId, group] of bySeries) {
     const versions = [...group].sort((a, b) => (b.effectiveFrom ?? "").localeCompare(a.effectiveFrom ?? ""));
     const latest = versions[0];
-    const started = !!latest.effectiveFrom && latest.effectiveFrom <= todayIso;
+    const started = versions.some((v) => !!v.effectiveFrom && v.effectiveFrom <= todayIso);
     const ended = latest.effectiveTo != null && latest.effectiveTo < todayIso;
+    const upcoming = versions.filter((v) => (v.effectiveFrom ?? "") > todayIso).at(-1);
     out.push({
       seriesId,
       name: latest.name ?? "(unnamed)",
       kind: budgetKind(latest),
       latest,
       versions,
-      liveNow: latest.active !== false && started && !ended,
-      startsOn: started ? null : latest.effectiveFrom ?? null,
+      liveNow: versions.some((v) => isInForce(v, todayIso)),
+      startsOn: started ? null : upcoming?.effectiveFrom ?? null,
+      changesOn: started ? upcoming?.effectiveFrom ?? null : null,
       endedOn: ended ? latest.effectiveTo ?? null : null,
     });
   }

@@ -78,7 +78,7 @@ describe("get_finance_summary", () => {
     const out: any = await runOp(ctx, "get_finance_summary", {});
     expect(out.error).toBeUndefined();
     const s = out.result;
-    expect(s.contributions).toEqual([{ person: "Cristine", planned: 3000, received: 3000 }]);
+    expect(s.contributions).toEqual([{ name: "Cristine", person: "Cristine", period: "MONTHLY", planned: 3000, received: 3000 }]);
     expect(s.budget.lines[0]).toMatchObject({ name: "Food", spent: 120, budgeted: 900 });
     expect(s.upcoming).toEqual([{ date: addDays(today, 3), description: "Mortgage", amount: -5500, account: "Joint checking" }]);
     expect(s.lowPoint).toMatchObject({ balance: 500, belowBuffer: true });
@@ -126,6 +126,52 @@ describe("save_finance_budget", () => {
     const corrected: any = await runOp(ctx, "save_finance_budget", { seriesId, amount: 1250, effectiveFrom: "2026-06-01" });
     expect(corrected.result.action).toBe("corrected");
     expect(tables.homeFinanceBudget).toHaveLength(2);
+  });
+
+  it("changes any version: December while January is staged, a bounded period, a split, and removing one", async () => {
+    const car = (o: any) => ({ seriesId: "car", name: "Car", kind: "EXPENSE", categories: ["Car"], period: "MONTHLY", active: true, ...o });
+    const { ctx, tables } = setup({
+      homeFinanceBudget: [car({ id: "dec", amount: 4000, effectiveFrom: "2026-12-01", effectiveTo: "2026-12-31" }), car({ id: "jan", amount: 3950, effectiveFrom: "2027-01-01" })],
+    });
+    const rows = () =>
+      tables.homeFinanceBudget
+        .filter((b) => b.active !== false)
+        .sort((a, b) => a.effectiveFrom.localeCompare(b.effectiveFrom))
+        .map((b) => [b.amount, b.effectiveFrom, b.effectiveTo ?? null]);
+
+    // December alone, by version id: corrected in place, January untouched.
+    const dec: any = await runOp(ctx, "save_finance_budget", { seriesId: "car", versionId: "dec", amount: 4100 });
+    expect(dec.result.action).toBe("corrected");
+    expect(rows()).toEqual([[4100, "2026-12-01", "2026-12-31"], [3950, "2027-01-01", null]]);
+
+    // A change from Dec 15 with no end stops where December's version stops.
+    await runOp(ctx, "save_finance_budget", { seriesId: "car", amount: 4200, effectiveFrom: "2026-12-15" });
+    expect(rows()).toEqual([[4100, "2026-12-01", "2026-12-14"], [4200, "2026-12-15", "2026-12-31"], [3950, "2027-01-01", null]]);
+
+    // A bounded period inside January's open version splits it.
+    await runOp(ctx, "save_finance_budget", { seriesId: "car", amount: 5000, effectiveFrom: "2027-03-01", effectiveTo: "2027-03-31" });
+    expect(rows()).toEqual([
+      [4100, "2026-12-01", "2026-12-14"],
+      [4200, "2026-12-15", "2026-12-31"],
+      [3950, "2027-01-01", "2027-02-28"],
+      [5000, "2027-03-01", "2027-03-31"],
+      [3950, "2027-04-01", null],
+    ]);
+
+    // Removing March gives its days back and rejoins January's two halves.
+    const march = tables.homeFinanceBudget.find((b) => b.amount === 5000);
+    const removed: any = await runOp(ctx, "save_finance_budget", { seriesId: "car", removeVersionId: march.id });
+    expect(removed.result.action).toBe("removed");
+    expect(rows()).toEqual([[4100, "2026-12-01", "2026-12-14"], [4200, "2026-12-15", "2026-12-31"], [3950, "2027-01-01", null]]);
+
+    // Removing the Dec 15 split gives its days to Dec 1's version.
+    const mid = tables.homeFinanceBudget.find((b) => b.amount === 4200);
+    await runOp(ctx, "save_finance_budget", { seriesId: "car", removeVersionId: mid.id });
+    expect(rows()).toEqual([[4100, "2026-12-01", "2026-12-31"], [3950, "2027-01-01", null]]);
+
+    // Open-ended from a date replaces everything after it.
+    await runOp(ctx, "save_finance_budget", { seriesId: "car", amount: 3000, effectiveFrom: "2026-12-01", effectiveTo: null });
+    expect(rows()).toEqual([[3000, "2026-12-01", null]]);
   });
 
   it("ends a series that has a change staged for later by cancelling the staged version", async () => {

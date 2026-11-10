@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { classify, effectiveCategory, rulesFromDbRows, CATEGORY_RULES } from "./categories";
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
-import { householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
+import { filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress } from "./goals";
 import { buildDedupIndex, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
@@ -117,6 +117,42 @@ describe("budget", () => {
     expect(v.overspend).toBe(100);
     expect(v.unassigned).toEqual([{ category: "Pets", spent: 60 }]);
     expect(v.spentTotal).toBe(3660);
+  });
+
+  it("splits a person's contributions across their lines by what each plans", () => {
+    const lines = [
+      line({ id: "m", seriesId: "m", name: "Monthly", kind: "INCOME", personId: "gen", amount: 9000 }),
+      line({ id: "t", seriesId: "t", name: "Travel", kind: "INCOME", personId: "gen", amount: 3000, period: "QUARTERLY" }),
+      line({ id: "c", seriesId: "c", name: "Cris", kind: "INCOME", personId: "cris", amount: 1000 }),
+    ];
+    const txs = [tx({ amount: 5000, category: "Contribution", personId: "gen" }), tx({ amount: 1000, category: "Contribution", personId: "cris" })];
+    const v = householdBudget(lines, txs, [], nov, "2026-11-15");
+    // November: Monthly plans 9,000 and Travel 1,000 (3,000 a quarter), so 90% / 10%.
+    expect(Object.fromEntries(v.incomeViews.map((x) => [x.line.id, [x.budgeted, x.spent]]))).toEqual({ m: [9000, 4500], t: [1000, 500], c: [1000, 1000] });
+    expect(v.received).toBe(6000);
+  });
+
+  it("filters lines by how often they repeat without moving shares or unbudgeted spending", () => {
+    const lines = [
+      line({ id: "m", seriesId: "m", name: "Monthly", kind: "INCOME", personId: "gen", amount: 9000 }),
+      line({ id: "t", seriesId: "t", name: "Travel", kind: "INCOME", personId: "gen", amount: 3000, period: "QUARTERLY" }),
+      line({ id: "f", seriesId: "f", name: "Food", categories: ["Groceries"], amount: 900 }),
+      line({ id: "h", seriesId: "h", name: "Home", categories: ["Home"], amount: 6000, period: "ANNUALLY" }),
+    ];
+    const txs = [tx({ amount: 5000, category: "Contribution", personId: "gen" }), tx({ amount: -300, category: "Home" }), tx({ amount: -100, category: "Groceries" })];
+    const full = householdBudget(lines, txs, [], nov, "2026-11-15");
+    const monthly = filterBudgetView(full, new Set(["MONTHLY"]));
+    expect(monthly.incomeViews.map((v) => [v.line.id, v.spent])).toEqual([["m", 4500]]);
+    expect(monthly.expenseViews.map((v) => v.line.id)).toEqual(["f"]);
+    expect(monthly).toMatchObject({ planned: 9000, received: 4500, allocated: 900, spentBudgeted: 100, unallocated: 8100, spentTotal: 400, unassigned: [] });
+    const all = filterBudgetView(full, new Set(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]));
+    expect(all.expenseViews.map((v) => v.line.id).sort()).toEqual(["f", "h"]);
+
+    // A one-time line shows only in a period its date falls in.
+    const once = [...lines, line({ id: "o", seriesId: "o", name: "Crib", categories: ["Baby"], amount: 800, period: "ONCE", effectiveFrom: "2026-10-01" })];
+    const octOnly = (w: typeof nov) => filterBudgetView(householdBudget(once, [], [], w, "2026-11-15"), new Set(["MONTHLY", "ONCE"])).expenseViews.map((v) => v.line.id);
+    expect(octOnly(nov)).not.toContain("o");
+    expect(octOnly(monthRange("2026-10-10"))).toContain("o");
   });
 
   it("plans savings into an account and counts what lands there, net of withdrawals, without interest", () => {

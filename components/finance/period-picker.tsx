@@ -40,8 +40,10 @@ export function usePeriod(fallback: () => Period) {
   const period = useMemo(() => periodFromParam(param) ?? fallback(), [param]);
   const range = useMemo(() => periodRange(period, today), [period, today]);
   const setPeriod = useCallback(
-    (p: Period) => {
-      router.replace({ pathname: router.pathname, query: { ...router.query, period: periodToParam(p) } }, undefined, { shallow: true, scroll: false });
+    (p: Period, opts: { dropParams?: string[] } = {}) => {
+      const query: Record<string, string | string[] | undefined> = { ...router.query, period: periodToParam(p) };
+      for (const k of opts.dropParams ?? []) delete query[k];
+      router.replace({ pathname: router.pathname, query }, undefined, { shallow: true, scroll: false });
     },
     [router],
   );
