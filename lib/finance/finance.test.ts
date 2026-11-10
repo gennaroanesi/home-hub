@@ -4,7 +4,8 @@ import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./d
 import { filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress } from "./goals";
-import { buildDedupIndex, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
+import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
+import type { SfAccount } from "./simplefin";
 import type { RecurringLike, TxLike } from "./types";
 
 describe("categories", () => {
@@ -223,6 +224,76 @@ describe("goals", () => {
       ["b", 2000],
       ["t", 500],
     ]);
+  });
+
+  it("draws a goal from several accounts in order, sharing them with other goals", () => {
+    const out = goalProgress(
+      [
+        { id: "house", name: "House", targetAmount: 50000, fundingAccountIds: ["brk"], priority: 1 },
+        { id: "ret", name: "Retirement", targetAmount: 1000000, fundingAccountIds: ["k1", "k2", "brk"], priority: 2 },
+        // Older single-account field still works.
+        { id: "old", name: "Old", targetAmount: 1000, fundingAccountId: "k2", priority: 3 },
+      ],
+      [
+        { id: "k1", name: "401k", currentBalance: 300000 },
+        { id: "k2", name: "401k 2", currentBalance: 100000 },
+        { id: "brk", name: "Brokerage", currentBalance: 80000 },
+      ],
+      "2026-11-09",
+    );
+    expect(out.map((g) => [g.goal.id, g.current])).toEqual([
+      ["house", 50000],
+      ["ret", 430000],
+      ["old", 0],
+    ]);
+  });
+});
+
+describe("holdings", () => {
+  const acc = (holdings: SfAccount["holdings"]): SfAccount => ({ id: "ACT-1", orgName: "Fidelity", name: "401k", currency: "USD", balance: 0, availableBalance: null, balanceDate: "2026-11-09", transactions: [], holdings });
+  const h = (over: object) => ({ id: "h", symbol: "", description: "", shares: null, marketValue: null, purchasePrice: null, costBasis: null, ...over });
+
+  it("keys funds without a ticker by description and merges repeated rows", () => {
+    expect(holdingKeyOf({ symbol: " vti ", description: "x" })).toBe("VTI");
+    expect(holdingKeyOf({ symbol: "", description: "Target  Date 2055 Trust" })).toBe("FUND:TARGET DATE 2055 TRUST");
+    expect(holdingKeyOf({ symbol: "", description: "" })).toBeNull();
+    const d = desiredHoldingsFromSf(
+      acc([
+        h({ symbol: "VTI", shares: 10, marketValue: 3000, costBasis: 2500 }),
+        h({ symbol: "vti", shares: 5, marketValue: 1500, costBasis: 0 }),
+        h({ symbol: "VOO", shares: 0, marketValue: 0 }),
+        h({ description: "Target 2055", shares: null, marketValue: 7000, costBasis: 0 }),
+      ]),
+    );
+    expect([...d.keys()]).toEqual(["VTI", "FUND:TARGET 2055"]);
+    expect(d.get("VTI")).toMatchObject({ shares: 15, marketValue: 4500, costBasis: 2500, hasCost: true });
+    expect(d.get("FUND:TARGET 2055")).toMatchObject({ ticker: null, hasCost: false, marketValue: 7000 });
+  });
+
+  it("creates, updates, skips unchanged, deletes sold-out SimpleFIN rows and leaves manual ones", () => {
+    const desired = desiredHoldingsFromSf(
+      acc([
+        h({ symbol: "VTI", shares: 10, marketValue: 3000, costBasis: 2500 }),
+        h({ symbol: "VXUS", shares: 4, marketValue: 260 }),
+        h({ symbol: "SCHD", shares: 2, marketValue: 160 }),
+        h({ symbol: "BND", shares: 1, marketValue: 70 }),
+      ]),
+    );
+    const diff = diffHoldings(
+      desired,
+      [
+        { holdingKey: "VTI", quantity: 10, marketValue: 3000, costBasisTotal: 2500, description: null, source: "SIMPLEFIN" },
+        { holdingKey: "VXUS", quantity: 4, marketValue: 250, costBasisTotal: null, description: null, source: "SIMPLEFIN" },
+        { holdingKey: "BND", quantity: 9, marketValue: 600, source: "MANUAL" },
+        { holdingKey: "AAPL", quantity: 3, marketValue: 600, source: "SIMPLEFIN" },
+        { holdingKey: "GOLD", quantity: 1, marketValue: 2000, source: "MANUAL" },
+      ],
+      "2026-11-09",
+    );
+    expect(diff.creates.map((c) => c.holdingKey)).toEqual(["SCHD"]);
+    expect(diff.updates.map((u) => [u.holdingKey, u.fields.marketValue])).toEqual([["VXUS", 260]]);
+    expect(diff.deletes).toEqual(["AAPL"]);
+    expect(diff.creates[0].fields).toMatchObject({ ticker: "SCHD", quantity: 2, costBasisTotal: null, avgCostBasis: null, source: "SIMPLEFIN", asOf: "2026-11-09" });
   });
 });
 

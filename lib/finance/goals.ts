@@ -1,9 +1,10 @@
 // Savings goal progress. A goal either tracks a manual currentAmount or is
-// funded by an account: each funding account's balance is allocated to its
-// goals in priority order (lower first), each capped at its target, so two
-// goals on the joint savings never count the same dollars.
-// Simplified from gennaroanesi.com's computeGoalAllocations (one funding
-// account per goal instead of a many-to-many mapping).
+// funded by one or more accounts (the joint savings; both 401ks for a
+// retirement goal). Goals are filled in priority order (lower first), each
+// drawing on its accounts in the order listed and capped at its target, so
+// two goals on the same account never count the same dollars.
+// Simplified from gennaroanesi.com's computeGoalAllocations (an ordered
+// account list per goal instead of a weighted many-to-many mapping).
 
 import { daysBetween } from "./dates";
 import type { AccountLike, GoalLike } from "./types";
@@ -18,18 +19,32 @@ export type GoalProgress = {
   funded: "manual" | "account";
 };
 
+/** The accounts a goal draws on: fundingAccountIds, else the older single fundingAccountId. */
+export function goalAccountIds(goal: Pick<GoalLike, "fundingAccountId" | "fundingAccountIds">): string[] {
+  const ids = (goal.fundingAccountIds ?? []).filter((x): x is string => !!x);
+  if (!ids.length && goal.fundingAccountId) ids.push(goal.fundingAccountId);
+  return [...new Set(ids)];
+}
+
 export function goalProgress(goals: GoalLike[], accounts: AccountLike[], todayIso: string): GoalProgress[] {
-  const balance = new Map(accounts.map((a) => [a.id, Math.max(0, a.currentBalance ?? 0)]));
-  const left = new Map(balance);
+  const left = new Map(accounts.map((a) => [a.id, Math.max(0, a.currentBalance ?? 0)]));
   const allocated = new Map<string, number>();
   const funded = goals
-    .filter((g) => g.active !== false && g.fundingAccountId && balance.has(g.fundingAccountId))
+    .filter((g) => g.active !== false && goalAccountIds(g).some((id) => left.has(id)))
     .sort((a, b) => (a.priority ?? 100) - (b.priority ?? 100) || a.name.localeCompare(b.name));
   for (const g of funded) {
-    const avail = left.get(g.fundingAccountId!) ?? 0;
-    const take = Math.min(avail, Math.max(0, g.targetAmount ?? 0));
-    allocated.set(g.id, take);
-    left.set(g.fundingAccountId!, avail - take);
+    let need = Math.max(0, g.targetAmount ?? 0);
+    let took = 0;
+    for (const id of goalAccountIds(g)) {
+      if (need <= 0) break;
+      const avail = left.get(id);
+      if (avail == null) continue;
+      const take = Math.min(avail, need);
+      left.set(id, avail - take);
+      need -= take;
+      took += take;
+    }
+    allocated.set(g.id, took);
   }
   return goals.map((goal) => {
     const byAccount = allocated.has(goal.id);

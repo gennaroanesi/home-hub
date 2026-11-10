@@ -879,18 +879,24 @@ const schema = a
     // ── Finance ─────────────────────────────────────────────────────────
     // Household finances: the joint account(s), their transactions (synced
     // from SimpleFIN by the finance-sync Lambda), scheduled transactions,
-    // a versioned budget, savings goals and spend groups. Ported and
-    // trimmed from gennaroanesi.com's finance module (no holdings, RSU,
-    // paychecks or tax). See docs/finance-handoff.md. Pure logic lives in
+    // a versioned budget, savings goals and spend groups, plus positions in
+    // invested accounts. Ported and trimmed from gennaroanesi.com's finance
+    // module (no lots, quotes or RSU). See docs/finance-handoff.md. Pure logic lives in
     // lib/finance/ and is shared by the pages, the ops and the Lambda.
 
     homeFinanceAccount: a
       .model({
         name: a.string().required(),
-        type: a.enum(["CHECKING", "SAVINGS", "CREDIT", "LOAN", "CASH", "OTHER"]),
+        // BROKERAGE / RETIREMENT are invested accounts (401k, IRA, Schwab):
+        // the sync pulls their balance and positions (homeFinanceHolding),
+        // never their transactions, which aren't household cash flow.
+        type: a.enum(["CHECKING", "SAVINGS", "BROKERAGE", "RETIREMENT", "CREDIT", "LOAN", "CASH", "OTHER"]),
+        retirementType: a.enum(["_401K", "TRAD_IRA", "ROTH_IRA", "HSA", "SEP_IRA", "OTHER"]), // RETIREMENT only
         institution: a.string(),
         last4: a.string(),
-        // Signed: positive = asset, negative = owed (cards, loans).
+        // Signed: positive = asset, negative = owed (cards, loans). For an
+        // invested account, the total value (cash + positions), unlike
+        // gennaroanesi.com, which stores cash only there.
         currentBalance: a.float().required().default(0),
         currency: a.string().default("USD"),
         // Empty = joint/household. Set for a member's own account tracked
@@ -1008,11 +1014,13 @@ const schema = a
       .model({
         name: a.string().required(),
         targetAmount: a.float().required(),
-        // Manual progress. Ignored when fundingAccountId is set: progress
-        // is then that account's balance, allocated across its goals in
-        // priority order (lower first), each capped at its target.
+        // Manual progress. Ignored when the goal has funding accounts:
+        // progress is then their balances, allocated across the goals
+        // drawing on them in priority order (lower first), each capped at
+        // its target (lib/finance/goals.ts).
         currentAmount: a.float().default(0),
-        fundingAccountId: a.id(),
+        fundingAccountId: a.id(), // single account (older goals)
+        fundingAccountIds: a.id().array(), // several (both 401ks for retirement)
         priority: a.integer().default(100),
         targetDate: a.date(),
         active: a.boolean().default(true),
@@ -1087,6 +1095,29 @@ const schema = a
         capturedAt: a.datetime().required(),
       })
       .identifier(["accountId", "date"])
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Current position in an invested account (BROKERAGE / RETIREMENT),
+    // one row per fund or ticker. Ported from gennaroanesi.com's
+    // financeHolding, without its live-quote valuation: marketValue is what
+    // SimpleFIN reported at the last sync. holdingKey is the upper-cased
+    // ticker, or "FUND:<description>" for 401k funds that have none.
+    // finance-sync owns SIMPLEFIN rows (creates, updates, deletes sold-out
+    // positions); MANUAL rows are never touched by it.
+    homeFinanceHolding: a
+      .model({
+        accountId: a.id().required(),
+        holdingKey: a.string().required(),
+        ticker: a.string(),
+        description: a.string(),
+        quantity: a.float().required(),
+        marketValue: a.float(),
+        costBasisTotal: a.float(), // null when unknown (common for 401k funds)
+        avgCostBasis: a.float(),
+        source: a.enum(["SIMPLEFIN", "MANUAL"]),
+        asOf: a.date(), // SimpleFIN's balance date for marketValue
+      })
+      .identifier(["accountId", "holdingKey"])
       .authorization((allow) => [allow.group("home-users")]),
 
     // ── Paychecks ───────────────────────────────────────────────────────

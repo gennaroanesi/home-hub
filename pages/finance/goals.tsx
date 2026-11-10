@@ -1,8 +1,9 @@
 "use client";
 
 // /finance/goals — household savings goals. Progress is either manual
-// (currentAmount) or follows a funding account's balance, allocated across
-// that account's goals in priority order (lib/finance/goals.ts). Writes go
+// (currentAmount) or follows one or more accounts' balances (the joint
+// savings; both 401ks for retirement), allocated across the goals drawing
+// on them in priority order (lib/finance/goals.ts). Writes go
 // through the save_finance_goal op. Transactions tagged with a goal (goalId)
 // are totalled on the card as "tagged".
 
@@ -26,23 +27,22 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { callOp } from "@/lib/ops-client";
 import { listGoals, listTransactions } from "@/lib/finance/data";
 import { fmtDate, todayIso } from "@/lib/finance/dates";
-import { goalProgress } from "@/lib/finance/goals";
-
-const MANUAL = "__manual";
+import { accountTypeLabel } from "@/lib/finance/accounts";
+import { goalAccountIds, goalProgress } from "@/lib/finance/goals";
 
 type Form = {
   id?: string;
   name: string;
   targetAmount: string;
   currentAmount: string;
-  fundingAccountId: string;
+  fundingAccountIds: string[]; // empty = tracked by hand
   priority: string;
   targetDate: string;
   notes: string;
 };
 
 function emptyForm(): Form {
-  return { name: "", targetAmount: "", currentAmount: "0", fundingAccountId: MANUAL, priority: "100", targetDate: "", notes: "" };
+  return { name: "", targetAmount: "", currentAmount: "0", fundingAccountIds: [], priority: "100", targetDate: "", notes: "" };
 }
 
 export default function GoalsPage() {
@@ -92,14 +92,14 @@ export default function GoalsPage() {
       addToast({ title: "A name and a positive target are required", color: "warning" });
       return;
     }
-    const manual = form.fundingAccountId === MANUAL;
+    const manual = form.fundingAccountIds.length === 0;
     setSaving(true);
     const r = await callOp(financeClient, "save_finance_goal", {
       ...(form.id ? { goalId: form.id } : {}),
       name: form.name.trim(),
       targetAmount: target,
       ...(manual ? { currentAmount: Math.max(0, Number(form.currentAmount) || 0) } : {}),
-      fundingAccountId: manual ? null : form.fundingAccountId,
+      fundingAccountIds: form.fundingAccountIds,
       priority: Number.parseInt(form.priority, 10) || 100,
       targetDate: form.targetDate || null,
       notes: form.notes.trim() || null,
@@ -152,14 +152,17 @@ export default function GoalsPage() {
         </div>
       ) : shown.length === 0 ? (
         <EmptyState title={showArchived ? "No archived goals" : "No goals yet"}>
-          {!showArchived && "An emergency fund, the baby, a trip — point one at the joint savings account and it tracks itself."}
+          {!showArchived && "An emergency fund, the baby, retirement — point one at the joint savings or the 401ks and it tracks itself."}
         </EmptyState>
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {shown.map((p) => {
             const g = p.goal as any;
             const t = tagged.get(g.id);
-            const fundingName = g.fundingAccountId ? refs.accounts.find((a) => a.id === g.fundingAccountId)?.name : null;
+            const fundingName = goalAccountIds(g)
+              .map((id) => refs.accounts.find((a) => a.id === id)?.name)
+              .filter(Boolean)
+              .join(" + ");
             return (
               <Card key={g.id}>
                 <CardBody className="gap-3">
@@ -167,7 +170,7 @@ export default function GoalsPage() {
                     <div className="min-w-0">
                       <h3 className="font-semibold truncate">{g.name}</h3>
                       <div className="text-xs text-default-500 flex flex-wrap gap-x-2">
-                        <span>{p.funded === "account" ? `From ${fundingName ?? "an account"}` : "Tracked by hand"}</span>
+                        <span>{p.funded === "account" ? `From ${fundingName || "an account"}` : "Tracked by hand"}</span>
                         {g.targetDate && <span>· by {fmtDate(g.targetDate, { month: "short", day: "numeric", year: "numeric" })}</span>}
                         {p.funded === "account" && <span>· priority {g.priority ?? 100}</span>}
                       </div>
@@ -184,7 +187,7 @@ export default function GoalsPage() {
                             name: g.name,
                             targetAmount: String(g.targetAmount ?? ""),
                             currentAmount: String(g.currentAmount ?? 0),
-                            fundingAccountId: g.fundingAccountId ?? MANUAL,
+                            fundingAccountIds: goalAccountIds(g),
                             priority: String(g.priority ?? 100),
                             targetDate: g.targetDate ?? "",
                             notes: g.notes ?? "",
@@ -258,14 +261,25 @@ export default function GoalsPage() {
                   <Input label="Target date (optional)" type="date" value={form.targetDate} onValueChange={(v) => setForm({ ...form, targetDate: v })} />
                   <Select
                     label="Progress comes from"
-                    selectedKeys={[form.fundingAccountId]}
-                    onChange={(e) => e.target.value && setForm({ ...form, fundingAccountId: e.target.value })}
+                    placeholder="Tracked by hand"
+                    selectionMode="multiple"
+                    selectedKeys={new Set(form.fundingAccountIds)}
+                    onSelectionChange={(keys) => {
+                      const picked = new Set(Array.from(keys as Set<string>).map(String));
+                      // Keep the order already chosen; new picks go last (drawn on in this order).
+                      const kept = form.fundingAccountIds.filter((id) => picked.has(id));
+                      setForm({ ...form, fundingAccountIds: [...kept, ...[...picked].filter((id) => !kept.includes(id))] });
+                    }}
                     className="sm:col-span-2"
-                    description="An account's balance is shared among its goals in priority order"
+                    description="None = tracked by hand. Pick several for a goal like retirement (both 401ks); an account's balance is shared among its goals in priority order."
                   >
-                    {[<SelectItem key={MANUAL}>Tracked by hand</SelectItem>, ...refs.accounts.map((a) => <SelectItem key={a.id}>{`${a.name} balance`}</SelectItem>)]}
+                    {refs.accounts.map((a) => (
+                      <SelectItem key={a.id} description={accountTypeLabel(a)}>
+                        {a.name}
+                      </SelectItem>
+                    ))}
                   </Select>
-                  {form.fundingAccountId === MANUAL ? (
+                  {form.fundingAccountIds.length === 0 ? (
                     <Input
                       label="Saved so far"
                       type="number"

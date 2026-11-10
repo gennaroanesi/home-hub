@@ -6001,7 +6001,7 @@ For weather / TAF / METAR / "what's the forecast" / "what's the wind" questions,
 
 ## Money
 
-Household money lives in the joint account. For "how are we doing this month", spending, contributions, upcoming payments or goals, call get_finance_summary first. Bills (mortgage, car, utilities, insurance) are scheduled transactions: list_finance_schedules / save_finance_schedule — there is no separate bill list. To find or fix a transaction's category or who it belongs to, use list_finance_transactions then update_finance_transaction (pass rememberPattern when they say "always"). Budgets change with save_finance_budget, goals with save_finance_goal. Amounts are USD; say them plainly ("$1,240 of $1,500").
+Household money lives in the joint account. For "how are we doing this month", spending, contributions, upcoming payments or goals, call get_finance_summary first. Bills (mortgage, car, utilities, insurance) are scheduled transactions: list_finance_schedules / save_finance_schedule — there is no separate bill list. To find or fix a transaction's category or who it belongs to, use list_finance_transactions then update_finance_transaction (pass rememberPattern when they say "always"). Budgets change with save_finance_budget, goals with save_finance_goal (a goal can follow several accounts, e.g. both 401ks for retirement). For the 401k, IRAs or brokerage (value, funds, positions), call list_finance_holdings. Amounts are USD; say them plainly ("$1,240 of $1,500").
 
 ## Reminders
 

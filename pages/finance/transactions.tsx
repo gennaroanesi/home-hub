@@ -102,13 +102,14 @@ export default function TransactionsPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      setTxs(await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso }));
+      // Invested accounts' rows only when one of them is picked in the filter.
+      setTxs(await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, ...(account ? { accountIds: [account] } : {}) }));
     } catch (e) {
       addToast({ title: "Couldn't load transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
       setLoading(false);
     }
-  }, [range.fromIso, range.toIso]);
+  }, [range.fromIso, range.toIso, account]);
 
   useEffect(() => {
     if (filtersReady) load();

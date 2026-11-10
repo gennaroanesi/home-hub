@@ -10,7 +10,7 @@ A finance section for the household's joint account(s): balances, every
 transaction (synced from SimpleFIN), a budget per month with what each of us
 puts in, scheduled payments (mortgage, car, utilities, contributions), savings
 goals and spend groups. Ported and trimmed from gennaroanesi.com's
-`/finance` (no holdings, RSU, paychecks, tax, loans or simulator), so the
+`/finance` (no tax lots, live quotes, RSU, loans or simulator), so the
 personal finances stay there and household ones live here.
 
 Household differences from gennaroanesi.com:
@@ -31,6 +31,26 @@ Household differences from gennaroanesi.com:
   savings).
 - **Budget pools collapse to one.** INCOME budget lines are per contributor
   (`personId`) instead of salary / bonus / RSU.
+- **Invested accounts are for goals, not cash flow.** BROKERAGE and
+  RETIREMENT accounts (401k, IRA, HSA; `retirementType`) sync their balance,
+  positions (`homeFinanceHolding`, identifier accountId+holdingKey) and
+  transactions. The transactions are rule-classified only (no Haiku, no
+  schedule matching) and stay out of everything budget-like: the budget,
+  overview, review, contributions vs pay, Janet's summary, invoice matching.
+  `listTransactions` without `accountIds` leaves them out, and
+  `householdAccounts()` (lib/finance/accounts.ts) is the account list for
+  budget views; the account page and the Transactions page (filtered to
+  that account) show them. Their `currentBalance` is the total value, positions
+  included (gennaroanesi.com stores cash only and values positions from live
+  quotes; here a position's `marketValue` is what SimpleFIN reported at the
+  last sync). `holdingKey` is the ticker, or `FUND:<description>` for 401k
+  trust funds without one. The sync owns SIMPLEFIN rows (creates, updates,
+  deletes sold-out positions); MANUAL rows are left alone. A savings budget
+  line can't point at an invested account (nothing would count); a goal can.
+- **Goals can draw on several accounts.** `fundingAccountIds` (ordered;
+  the older single `fundingAccountId` still reads): a retirement goal over
+  both 401ks. Goals fill in priority order, each taking from its accounts in
+  order, so two goals never count the same dollars.
 - **homeBill is gone.** Bills are scheduled transactions
   (`homeFinanceRecurring`, with `autopay` and `url`). Prod had no bill rows
   when it was removed (checked 2026-11-09), so there was nothing to migrate.
@@ -39,10 +59,10 @@ Household differences from gennaroanesi.com:
 
 | Where | What |
 |---|---|
-| `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date); `syncFinance` and `listSimplefinAccounts` mutations |
-| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `dates.ts`, `sync-engine.ts`, `simplefin.ts`, `data.ts` (loading through the indexes) |
-| `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, writes a sync log |
-| `lib/ops/finance.ts` | `get_finance_summary`, `list_finance_transactions`, `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule`, `save_finance_goal`, `list_finance_categories` — Janet, the API, `hh` and the pages' writes |
+| `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date), `…Holding` (identifier accountId+holdingKey); `syncFinance` and `listSimplefinAccounts` mutations |
+| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `data.ts` (loading through the indexes) |
+| `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, syncs positions for invested accounts, writes a sync log |
+| `lib/ops/finance.ts` | `get_finance_summary`, `list_finance_transactions`, `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule`, `save_finance_goal` (`fundingAccountIds`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh` and the pages' writes |
 | `pages/finance/` | Overview, Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
 
 ## Paychecks, tax outlook, invoices (2026-11-09)

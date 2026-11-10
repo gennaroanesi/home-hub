@@ -18,8 +18,9 @@ import {
 } from "../finance/budget";
 import { allCategories, CATEGORY_RULES, effectiveCategory, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
-import { listAccounts, listBudgetLines, listCategoryRules, listGoals, listSchedules, listTransactions } from "../finance/data";
-import { goalProgress } from "../finance/goals";
+import { listAccounts, listBudgetLines, listCategoryRules, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
+import { goalAccountIds, goalProgress } from "../finance/goals";
+import { accountTypeLabel, householdAccounts, isInvested } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, projectBalance, upcomingEvents } from "../finance/recurring";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
@@ -67,7 +68,9 @@ export const getFinanceSummary = defineOp({
   }),
   output: z.object({
     month: z.string(),
-    accounts: z.array(z.object({ id: z.string(), name: z.string(), type: z.string().nullable(), balance: z.number(), updatedAt: z.string().nullable() })),
+    accounts: z.array(
+      z.object({ id: z.string(), name: z.string(), type: z.string().nullable(), balance: z.number().describe("Invested accounts: total value, positions included"), updatedAt: z.string().nullable() }),
+    ),
     contributions: z.array(z.object({ name: z.string(), person: z.string().nullable(), period: z.string(), planned: z.number(), received: z.number() })),
     savings: z.array(z.object({ name: z.string(), account: z.string().nullable(), planned: z.number(), saved: z.number() })),
     budget: z.object({
@@ -96,7 +99,9 @@ export const getFinanceSummary = defineOp({
     }),
     upcoming: z.array(z.object({ date: z.string(), description: z.string(), amount: z.number(), account: z.string() })),
     lowPoint: z.object({ account: z.string(), date: z.string(), balance: z.number(), belowBuffer: z.boolean() }).nullable(),
-    goals: z.array(z.object({ name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable() })),
+    goals: z.array(
+      z.object({ name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable(), fundedBy: z.array(z.string()).describe("Accounts whose balance counts; empty = tracked by hand") }),
+    ),
     uncategorizedCount: z.number(),
   }),
   async run(ctx, input) {
@@ -110,7 +115,7 @@ export const getFinanceSummary = defineOp({
       people(ctx),
     ]);
     const active = accounts.filter((a) => a.active !== false);
-    const txs = await listTransactions(ctx.client, { ...window, accountIds: active.map((a) => a.id) });
+    const txs = await listTransactions(ctx.client, { ...window, accountIds: householdAccounts(accounts).map((a) => a.id) });
     const view = householdBudget(lines, txs, schedules, window, today);
 
     // Next 14 days of scheduled money movement on cash accounts.
@@ -158,7 +163,15 @@ export const getFinanceSummary = defineOp({
       lowPoint,
       goals: goalProgress(goals, accounts, today)
         .filter((g) => g.goal.active !== false)
-        .map((g) => ({ name: g.goal.name, current: r2(g.current), target: r2(g.target), pct: Math.round(g.pct * 100) / 100, targetDate: g.goal.targetDate ?? null, monthlyNeeded: g.monthlyNeeded == null ? null : r2(g.monthlyNeeded) })),
+        .map((g) => ({
+          name: g.goal.name,
+          current: r2(g.current),
+          target: r2(g.target),
+          pct: Math.round(g.pct * 100) / 100,
+          targetDate: g.goal.targetDate ?? null,
+          monthlyNeeded: g.monthlyNeeded == null ? null : r2(g.monthlyNeeded),
+          fundedBy: g.funded === "account" ? goalAccountIds(g.goal).map((id) => accounts.find((a) => a.id === id)?.name ?? id) : [],
+        })),
       uncategorizedCount: txs.filter((t) => effectiveCategory(t) === UNCATEGORIZED).length,
     };
   },
@@ -186,7 +199,7 @@ export const listFinanceTransactions = defineOp({
   domain: "finance",
   access: "read",
   description:
-    "Search the household account transactions, newest first. Default: the last 30 days. Filter by words in the description or notes, category, person, account or spend group, or only uncategorized ones. Returns the matching count and their total. Answers 'what did we spend at Costco this month?', 'show the uncategorized transactions', 'when did the mortgage go out?'. Use it to get a transactionId for update_finance_transaction.",
+    "Search the household account transactions, newest first. Default: the last 30 days, every account except 401k / IRA / brokerage ones (pass that accountId to see theirs). Filter by words in the description or notes, category, person, account or spend group, or only uncategorized ones. Returns the matching count and their total. Answers 'what did we spend at Costco this month?', 'show the uncategorized transactions', 'when did the mortgage go out?'. Use it to get a transactionId for update_finance_transaction.",
   input: z.object({
     from: DATE.optional(),
     to: DATE.optional(),
@@ -209,7 +222,7 @@ export const listFinanceTransactions = defineOp({
     const [accounts, folks, ruleRows] = await Promise.all([listAccounts(ctx.client), people(ctx), listCategoryRules(ctx.client)]);
     const rules = rulesFromDbRows(ruleRows);
     const accName = new Map(accounts.map((a) => [a.id, a.name]));
-    const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.map((a) => a.id) });
+    const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.filter((a) => !isInvested(a.type)).map((a) => a.id) });
     const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const matched = txs.filter((t) => {
       const cat = effectiveCategory(t, rules);
@@ -445,6 +458,8 @@ export const saveFinanceBudget = defineOp({
       const want = input.accountName?.trim().toLowerCase();
       const acc = accounts.find((a) => (input.accountId ? a.id === input.accountId : a.name.toLowerCase() === want));
       if (!acc) throw new OpError(`No account ${input.accountId ?? input.accountName}. Accounts: ${accounts.map((a) => a.name).join(", ") || "none"}`);
+      // Inside an invested account, fund buys and dividends would move "saved" around; goals track these.
+      if (isInvested(acc.type)) throw new OpError(`${acc.name} is an investment account, which a savings line can't track (fund buys and dividends would count). Point a goal at it instead.`);
       savingsAccount = acc.id;
     }
     if (kind === "SAVINGS" && !savingsAccount) throw new OpError("A savings line needs the account the money goes into (accountId or accountName)");
@@ -637,23 +652,36 @@ export const saveFinanceGoal = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create or change a household savings goal (emergency fund, baby, a trip, a new car). Progress is either tracked by hand (currentAmount) or follows an account's balance (fundingAccountId); goals sharing an account are filled in priority order (lower first). With goalId, only the fields given change; active false archives it.",
+    "Create or change a household savings goal (emergency fund, baby, a trip, a new car, retirement). Progress is either tracked by hand (currentAmount) or follows the balance of one or more accounts (fundingAccountIds, e.g. both 401ks for a retirement goal; invested accounts count at total value); goals sharing an account are filled in priority order (lower first). With goalId, only the fields given change; active false archives it.",
   input: z.object({
     goalId: z.string().optional(),
     name: z.string().optional(),
     targetAmount: z.number().positive().optional(),
     currentAmount: z.number().min(0).optional(),
-    fundingAccountId: z.string().nullable().optional(),
+    fundingAccountIds: z.array(z.string()).optional().describe("Accounts whose balances fund the goal, in the order drawn on; [] = tracked by hand."),
+    fundingAccountId: z.string().nullable().optional().describe("Single-account shorthand for fundingAccountIds."),
     priority: z.number().int().optional(),
     targetDate: DATE.nullable().optional(),
     active: z.boolean().optional(),
     notes: z.string().nullable().optional(),
   }),
-  output: z.object({ action: z.enum(["created", "updated"]), goal: z.object({ id: z.string(), name: z.string(), targetAmount: z.number(), current: z.number(), pct: z.number(), targetDate: z.string().nullable() }) }),
+  output: z.object({
+    action: z.enum(["created", "updated"]),
+    goal: z.object({ id: z.string(), name: z.string(), targetAmount: z.number(), current: z.number(), pct: z.number(), targetDate: z.string().nullable(), accounts: z.array(z.string()) }),
+  }),
   async run(ctx, input) {
-    const fields = Object.fromEntries(
-      (["name", "targetAmount", "currentAmount", "fundingAccountId", "priority", "targetDate", "active", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, input[k]]),
+    const fields: Record<string, unknown> = Object.fromEntries(
+      (["name", "targetAmount", "currentAmount", "priority", "targetDate", "active", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, input[k]]),
     );
+    const fundingIds = input.fundingAccountIds ?? (input.fundingAccountId !== undefined ? (input.fundingAccountId ? [input.fundingAccountId] : []) : undefined);
+    const accounts = await listAccounts(ctx.client);
+    if (fundingIds) {
+      const unknown = fundingIds.filter((id) => !accounts.some((a) => a.id === id));
+      if (unknown.length) throw new OpError(`No account ${unknown.join(", ")}. Accounts: ${accounts.map((a) => `${a.name} (${a.id})`).join(", ") || "none"}`);
+      // The list is the source of truth from now on; clear the older single field.
+      fields.fundingAccountIds = [...new Set(fundingIds)];
+      fields.fundingAccountId = null;
+    }
     let saved: any;
     let action: "created" | "updated";
     if (input.goalId) {
@@ -669,11 +697,19 @@ export const saveFinanceGoal = defineOp({
       saved = r.data;
       action = "created";
     }
-    const [goals, accounts] = await Promise.all([listGoals(ctx.client), listAccounts(ctx.client)]);
-    const p = goalProgress(goals, accounts, todayIso()).find((g) => g.goal.id === saved.id);
+    const goals = await listGoals(ctx.client);
+    const p =goalProgress(goals, accounts, todayIso()).find((g) => g.goal.id === saved.id);
     return {
       action,
-      goal: { id: saved.id, name: saved.name, targetAmount: saved.targetAmount, current: r2(p?.current ?? saved.currentAmount ?? 0), pct: Math.round((p?.pct ?? 0) * 100) / 100, targetDate: saved.targetDate ?? null },
+      goal: {
+        id: saved.id,
+        name: saved.name,
+        targetAmount: saved.targetAmount,
+        current: r2(p?.current ?? saved.currentAmount ?? 0),
+        pct: Math.round((p?.pct ?? 0) * 100) / 100,
+        targetDate: saved.targetDate ?? null,
+        accounts: goalAccountIds(saved).map((id) => accounts.find((a) => a.id === id)?.name ?? id),
+      },
     };
   },
 });
@@ -695,8 +731,82 @@ export const listFinanceCategories = defineOp({
   },
 });
 
+// ── list_finance_holdings ─────────────────────────────────────────────────────
+
+export const listFinanceHoldings = defineOp({
+  name: "list_finance_holdings",
+  domain: "finance",
+  access: "read",
+  description:
+    "Invested accounts (401k, IRA, brokerage) with their value and positions (fund or ticker, shares, market value, cost basis and gain where known), as SimpleFIN last reported them. Answers 'how much is in the 401k?', 'what funds are we in?', 'how much do we have invested?'.",
+  input: z.object({
+    accountId: z.string().optional(),
+    accountName: z.string().optional(),
+  }),
+  output: z.object({
+    total: z.number().describe("Sum of the invested accounts' balances"),
+    accounts: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        type: z.string(),
+        owners: z.array(z.string()).describe("Empty = joint"),
+        balance: z.number().describe("Total value, cash + positions"),
+        cash: z.number().describe("Balance minus the positions' value"),
+        updatedAt: z.string().nullable(),
+        holdings: z.array(
+          z.object({
+            ticker: z.string().nullable(),
+            description: z.string().nullable(),
+            quantity: z.number(),
+            marketValue: z.number().nullable(),
+            costBasis: z.number().nullable(),
+            gain: z.number().nullable(),
+            asOf: z.string().nullable(),
+          }),
+        ),
+      }),
+    ),
+  }),
+  async run(ctx, input) {
+    const [accounts, folks] = await Promise.all([listAccounts(ctx.client), people(ctx)]);
+    const want = input.accountName?.trim().toLowerCase();
+    const invested = accounts.filter(
+      (a) => a.active !== false && isInvested(a.type) && (!input.accountId || a.id === input.accountId) && (!want || a.name.toLowerCase() === want),
+    );
+    if ((input.accountId || want) && !invested.length) {
+      throw new OpError(`No investment account ${input.accountId ?? input.accountName}. Investment accounts: ${accounts.filter((a) => isInvested(a.type)).map((a) => a.name).join(", ") || "none"}`);
+    }
+    const holdings = await listHoldings(ctx.client);
+    const out = invested.map((a) => {
+      const mine = holdings.filter((h) => h.accountId === a.id);
+      const positions = mine.reduce((s, h) => s + (h.marketValue ?? 0), 0);
+      return {
+        id: a.id,
+        name: a.name,
+        type: accountTypeLabel(a),
+        owners: (a.ownerPersonIds ?? []).map((id: string) => nameOf(folks, id) ?? id),
+        balance: r2(a.currentBalance ?? 0),
+        cash: r2((a.currentBalance ?? 0) - positions),
+        updatedAt: a.balanceUpdatedAt ?? null,
+        holdings: mine.map((h) => ({
+          ticker: h.ticker ?? null,
+          description: h.description ?? null,
+          quantity: h.quantity,
+          marketValue: h.marketValue == null ? null : r2(h.marketValue),
+          costBasis: h.costBasisTotal == null ? null : r2(h.costBasisTotal),
+          gain: h.marketValue != null && h.costBasisTotal != null ? r2(h.marketValue - h.costBasisTotal) : null,
+          asOf: h.asOf ?? null,
+        })),
+      };
+    });
+    return { total: r2(out.reduce((s, a) => s + a.balance, 0)), accounts: out };
+  },
+});
+
 export const financeOps = [
   getFinanceSummary,
+  listFinanceHoldings,
   listFinanceTransactions,
   updateFinanceTransaction,
   saveFinanceBudget,

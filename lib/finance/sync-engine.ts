@@ -1,10 +1,13 @@
 // Pure SimpleFIN → household ledger sync logic (no I/O). Ported from
-// gennaroanesi.com (amplify/functions/simplefinSync/engine.ts) without the
-// brokerage parts (trades, holdings, cash-only balances). The finance-sync
-// Lambda supplies the I/O.
+// gennaroanesi.com (amplify/functions/simplefinSync/engine.ts). Invested
+// accounts get holdings but no transactions here (so no trade parsing), and
+// keep their total value as the balance (no cash-only split). The
+// finance-sync Lambda supplies the I/O.
 
 import { classify, TRANSFER_CATEGORY, type CategoryRule } from "./categories";
-import type { SfAccount, SfTransaction } from "./simplefin";
+import type { SfAccount, SfHolding, SfTransaction } from "./simplefin";
+
+export { isInvested } from "./accounts";
 
 export type TxType = "INCOME" | "EXPENSE" | "TRANSFER";
 export type CategorySource = "RULE" | "LLM" | "MANUAL";
@@ -217,7 +220,117 @@ export function balanceNeedsUpdate(current: number, target: number): boolean {
   return Math.abs(current - target) >= 0.005;
 }
 
-/** Balance for a SimpleFIN account (cash accounts: the reported balance). */
+/** Balance for a SimpleFIN account: the reported total, positions included. */
 export function targetBalance(sfAcc: SfAccount): number {
   return sfAcc.balance;
+}
+
+// ── Holdings ──────────────────────────────────────────────────────────────────
+
+export type DesiredHolding = {
+  holdingKey: string;
+  ticker: string | null;
+  description: string | null;
+  shares: number;
+  costBasis: number;
+  hasCost: boolean;
+  marketValue: number;
+};
+
+/**
+ * Upper-cased ticker, else "FUND:<description>": 401k plans often report
+ * collective trust funds with no symbol, and those are most of the balance.
+ */
+export function holdingKeyOf(h: Pick<SfHolding, "symbol" | "description">): string | null {
+  const symbol = (h.symbol ?? "").trim().toUpperCase();
+  if (symbol) return symbol;
+  const desc = (h.description ?? "").trim().replace(/\s+/g, " ").toUpperCase();
+  return desc ? `FUND:${desc}` : null;
+}
+
+/**
+ * One desired holding per key. SimpleFIN sometimes repeats a position (at
+ * zero shares, or split in pieces): sum by key and drop what nets to zero.
+ * A 0.00 cost basis means unknown (401k funds), not free shares.
+ */
+export function desiredHoldingsFromSf(sfAcc: SfAccount): Map<string, DesiredHolding> {
+  const byKey = new Map<string, DesiredHolding>();
+  for (const h of sfAcc.holdings ?? []) {
+    const key = holdingKeyOf(h);
+    if (!key) continue;
+    const agg = byKey.get(key) ?? { holdingKey: key, ticker: h.symbol.trim().toUpperCase() || null, description: h.description || null, shares: 0, costBasis: 0, hasCost: false, marketValue: 0 };
+    agg.shares += h.shares ?? 0;
+    if (h.costBasis != null && h.costBasis > 0) {
+      agg.costBasis += h.costBasis;
+      agg.hasCost = true;
+    }
+    agg.marketValue += h.marketValue ?? 0;
+    byKey.set(key, agg);
+  }
+  for (const [k, v] of [...byKey]) {
+    // A fund reported by value only (no share count) still counts.
+    if (Math.abs(v.shares) < 1e-9 && Math.abs(v.marketValue) < 0.005) byKey.delete(k);
+  }
+  return byKey;
+}
+
+export type ExistingHolding = {
+  holdingKey: string;
+  quantity?: number | null;
+  marketValue?: number | null;
+  costBasisTotal?: number | null;
+  ticker?: string | null;
+  description?: string | null;
+  source?: string | null;
+};
+
+export type HoldingFields = {
+  ticker: string | null;
+  description: string | null;
+  quantity: number;
+  marketValue: number;
+  costBasisTotal: number | null;
+  avgCostBasis: number | null;
+  source: "SIMPLEFIN";
+  asOf: string | null;
+};
+
+export type HoldingDiff = {
+  creates: Array<{ holdingKey: string; fields: HoldingFields }>;
+  updates: Array<{ holdingKey: string; fields: HoldingFields }>;
+  deletes: string[]; // holdingKeys
+};
+
+/**
+ * SimpleFIN's positions against the stored rows for one account. SimpleFIN
+ * owns its rows: positions that vanished (sold out) are deleted, unchanged
+ * ones skipped. MANUAL rows are never touched, not even when SimpleFIN now
+ * reports the same key.
+ */
+export function diffHoldings(desired: Map<string, DesiredHolding>, existing: ExistingHolding[], asOf: string | null): HoldingDiff {
+  const out: HoldingDiff = { creates: [], updates: [], deletes: [] };
+  const stored = new Map(existing.map((h) => [h.holdingKey, h]));
+  const differs = (a: number | null | undefined, b: number | null) => (a == null || b == null ? (a ?? null) !== b : Math.abs(a - b) >= 0.005);
+  for (const [key, d] of desired) {
+    const fields: HoldingFields = {
+      ticker: d.ticker,
+      description: d.description,
+      quantity: d.shares,
+      marketValue: Math.round(d.marketValue * 100) / 100,
+      costBasisTotal: d.hasCost ? Math.round(d.costBasis * 100) / 100 : null,
+      avgCostBasis: d.hasCost && Math.abs(d.shares) > 1e-9 ? d.costBasis / d.shares : null,
+      source: "SIMPLEFIN",
+      asOf,
+    };
+    const ex = stored.get(key);
+    if (!ex) out.creates.push({ holdingKey: key, fields });
+    else if (ex.source === "MANUAL") continue;
+    else if (Math.abs((ex.quantity ?? 0) - d.shares) >= 1e-6 || differs(ex.marketValue, fields.marketValue) || differs(ex.costBasisTotal, fields.costBasisTotal) || (ex.description ?? null) !== fields.description) {
+      out.updates.push({ holdingKey: key, fields });
+    }
+  }
+  for (const [key, ex] of stored) {
+    if (!desired.has(key) && ex.source !== "MANUAL") out.deletes.push(key);
+  }
+  return out;
 }

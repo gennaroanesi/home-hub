@@ -52,6 +52,7 @@ export type GoalLike = {
   targetAmount?: number | null;
   currentAmount?: number | null;
   fundingAccountId?: string | null;
+  fundingAccountIds?: Array<string | null> | null;
   priority?: number | null;
   targetDate?: string | null;
   active?: boolean | null;

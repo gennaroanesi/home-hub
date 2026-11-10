@@ -38,6 +38,7 @@ import { fmtCurrency, fmtDate, monthEnd, monthStart, monthsIn, shiftMonth, today
 import { periodContaining } from "@/lib/finance/periods";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { CadenceFilter, useCadenceFilter } from "@/components/finance/cadence-filter";
+import { householdAccounts } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -57,7 +58,7 @@ export default function BudgetPage() {
   const [seeding, setSeeding] = useState(false);
   const [pickTarget, setPickTarget] = useState<string>("");
 
-  const activeAccountIds = useMemo(() => refs.accounts.filter((a) => a.active !== false).map((a) => a.id), [refs.accounts]);
+  const activeAccountIds = useMemo(() => householdAccounts(refs.accounts).map((a) => a.id), [refs.accounts]);
 
   const load = useCallback(async () => {
     if (refs.loading) return;

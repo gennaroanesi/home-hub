@@ -39,7 +39,7 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
@@ -203,9 +203,10 @@ describe("save_finance_budget", () => {
 describe("savings lines", () => {
   it("creates a savings line by account name, refuses one without an account, and reports it in the summary", async () => {
     const sav = { id: "sav", name: "Joint savings", type: "SAVINGS", currentBalance: 20000, active: true };
+    const k401 = { id: "k1", name: "Gennaro 401k", type: "RETIREMENT", currentBalance: 300000, active: true };
     const { ctx } = setup({
       homePerson: people,
-      homeFinanceAccount: [joint, sav],
+      homeFinanceAccount: [joint, sav, k401],
       homeFinanceBudget: [{ id: "c", seriesId: "c", name: "Gennaro", kind: "INCOME", personId: "gen", amount: 10000, period: "MONTHLY", effectiveFrom: "2026-01-01" }],
       homeFinanceTransaction: [
         { id: "t1", accountId: "joint", amount: -1000, category: "Transfers", type: "TRANSFER", toAccountId: "sav", date: thisMonth, status: "POSTED" },
@@ -216,6 +217,8 @@ describe("savings lines", () => {
     expect(missing.error).toMatch(/account/);
     const unknown: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", accountName: "Nope", amount: 2000 });
     expect(unknown.error).toMatch(/No account Nope/);
+    const invested: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", accountId: "k1", amount: 2000 });
+    expect(invested.error).toMatch(/investment account/);
     const ok: any = await runOp(ctx, "save_finance_budget", { name: "Savings", kind: "SAVINGS", accountName: "joint SAVINGS", amount: 2000, effectiveFrom: "2026-01-01" });
     expect(ok.result.budget).toMatchObject({ kind: "SAVINGS", account: "Joint savings", categories: [], person: null });
 
@@ -255,5 +258,68 @@ describe("save_finance_goal", () => {
     const { ctx } = setup({ homeFinanceAccount: [{ id: "sav", name: "Savings", type: "SAVINGS", currentBalance: 4000 }] });
     const out: any = await runOp(ctx, "save_finance_goal", { name: "Emergency fund", targetAmount: 10000, fundingAccountId: "sav" });
     expect(out.result).toMatchObject({ action: "created", goal: { current: 4000, pct: 0.4 } });
+  });
+
+  it("funds a goal from several accounts and switches it back to manual", async () => {
+    const { ctx, tables } = setup({
+      homeFinanceAccount: [
+        { id: "k1", name: "Gennaro 401k", type: "RETIREMENT", retirementType: "_401K", currentBalance: 300000 },
+        { id: "k2", name: "Cristine 401k", type: "RETIREMENT", retirementType: "_401K", currentBalance: 150000 },
+      ],
+    });
+    const out: any = await runOp(ctx, "save_finance_goal", { name: "Retirement", targetAmount: 2000000, fundingAccountIds: ["k1", "k2"] });
+    expect(out.result.goal).toMatchObject({ current: 450000, accounts: ["Gennaro 401k", "Cristine 401k"] });
+    expect(tables.homeFinanceSavingsGoal[0]).toMatchObject({ fundingAccountIds: ["k1", "k2"], fundingAccountId: null });
+
+    const manual: any = await runOp(ctx, "save_finance_goal", { goalId: out.result.goal.id, fundingAccountIds: [], currentAmount: 10 });
+    expect(manual.result.goal).toMatchObject({ current: 10, accounts: [] });
+    expect((await runOp(ctx, "save_finance_goal", { name: "X", targetAmount: 1, fundingAccountIds: ["nope"] }) as any).error).toMatch(/No account nope/);
+  });
+});
+
+describe("invested accounts' transactions", () => {
+  it("stay out of the summary and the default transaction search", async () => {
+    const k401 = { id: "k1", name: "Gennaro 401k", type: "RETIREMENT", currentBalance: 300000, active: true };
+    const { ctx } = setup({
+      homePerson: people,
+      homeFinanceAccount: [joint, k401],
+      homeFinanceBudget: [{ id: "c", seriesId: "c", name: "Gennaro", kind: "INCOME", personId: "gen", amount: 10000, period: "MONTHLY", effectiveFrom: "2026-01-01" }],
+      homeFinanceTransaction: [
+        { id: "t1", accountId: "joint", amount: 10000, category: "Contribution", personId: "gen", date: thisMonth, status: "POSTED" },
+        { id: "t2", accountId: "k1", amount: 1500, category: "Contribution", personId: "gen", description: "EMPLOYEE CONTRIBUTION", date: thisMonth, status: "POSTED" },
+        { id: "t3", accountId: "k1", amount: -40, description: "mystery fee", date: thisMonth, status: "POSTED" },
+      ],
+    });
+    const s = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(s.budget.received).toBe(10000);
+    expect(s.uncategorizedCount).toBe(0);
+    const all = ((await runOp(ctx, "list_finance_transactions", {})) as any).result;
+    expect(all.transactions.map((t: any) => t.id)).toEqual(["t1"]);
+    const k = ((await runOp(ctx, "list_finance_transactions", { accountId: "k1" })) as any).result;
+    expect(k.count).toBe(2);
+  });
+});
+
+describe("list_finance_holdings", () => {
+  it("lists invested accounts with positions, cash and gains", async () => {
+    const { ctx } = setup({
+      homePerson: people,
+      homeFinanceAccount: [
+        joint,
+        { id: "k1", name: "Gennaro 401k", type: "RETIREMENT", retirementType: "_401K", currentBalance: 10500, ownerPersonIds: ["gen"], active: true },
+        { id: "old", name: "Closed IRA", type: "RETIREMENT", currentBalance: 0, active: false },
+      ],
+      homeFinanceHolding: [
+        { accountId: "k1", holdingKey: "VTI", ticker: "VTI", quantity: 20, marketValue: 6000, costBasisTotal: 5000 },
+        { accountId: "k1", holdingKey: "FUND:TARGET 2055", description: "Target 2055", quantity: 100, marketValue: 4000, costBasisTotal: null },
+      ],
+    });
+    const out: any = await runOp(ctx, "list_finance_holdings", {});
+    expect(out.error).toBeUndefined();
+    expect(out.result.total).toBe(10500);
+    expect(out.result.accounts).toHaveLength(1);
+    expect(out.result.accounts[0]).toMatchObject({ name: "Gennaro 401k", type: "401(k)", owners: ["Gennaro"], cash: 500 });
+    expect(out.result.accounts[0].holdings.map((h: any) => h.gain)).toEqual([1000, null]);
+    expect((await runOp(ctx, "list_finance_holdings", { accountName: "Joint checking" }) as any).error).toMatch(/No investment account/);
   });
 });

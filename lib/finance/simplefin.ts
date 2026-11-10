@@ -1,11 +1,11 @@
 /**
- * simplefin.ts — thin SimpleFIN Bridge client, ported from gennaroanesi.com
- * (holdings dropped: household accounts are cash accounts).
+ * simplefin.ts — thin SimpleFIN Bridge client, ported from gennaroanesi.com.
  *
  * The access URL is a long-lived credentialed URL of the form
  *   https://<user>:<pass>@bridge.simplefin.org/simplefin
  * Treat it as a secret. GET <accessUrl>/accounts returns every account with
- * balances + transactions in the requested window.
+ * balances + transactions (+ holdings for investment accounts) in the
+ * requested window.
  *
  * Docs: https://beta-bridge.simplefin.org/info/developers
  */
@@ -21,15 +21,26 @@ export type SfTransaction = {
   pending: boolean;
 };
 
+export type SfHolding = {
+  id: string;
+  symbol: string;
+  description: string;
+  shares: number | null;
+  marketValue: number | null;
+  purchasePrice: number | null;
+  costBasis: number | null;
+};
+
 export type SfAccount = {
   id: string;
   orgName: string;
   name: string;
   currency: string;
-  balance: number;
+  balance: number;             // total value (cash + positions for investment accounts)
   availableBalance: number | null;
   balanceDate: string;         // YYYY-MM-DD (UTC)
   transactions: SfTransaction[];
+  holdings: SfHolding[];
 };
 
 /**
@@ -112,6 +123,17 @@ function normalizeAccount(a: any): SfAccount {
   }));
   txs.sort((x, y) => (y.posted ?? "").localeCompare(x.posted ?? ""));
 
+  // Holding money fields come with underscores (market_value), account-level
+  // ones with hyphens; accept either.
+  const holdings: SfHolding[] = (a.holdings ?? []).map((h: any) => ({
+    id: h.id ?? "",
+    symbol: (h.symbol ?? "").trim(),
+    description: (h.description ?? "").trim(),
+    shares: h.shares != null && h.shares !== "" ? parseFloat(h.shares) : null,
+    marketValue: pickNum(h, "market_value", "market-value"),
+    purchasePrice: pickNum(h, "purchase_price", "purchase-price"),
+    costBasis: pickNum(h, "cost_basis", "cost-basis"),
+  }));
 
   return {
     id: a.id,
@@ -122,7 +144,18 @@ function normalizeAccount(a: any): SfAccount {
     availableBalance: a["available-balance"] != null ? parseFloat(a["available-balance"]) : null,
     balanceDate: unixToIsoDate(a["balance-date"]) ?? "",
     transactions: txs,
+    holdings,
   };
+}
+
+function pickNum(obj: any, ...keys: string[]): number | null {
+  for (const k of keys) {
+    if (obj[k] != null && obj[k] !== "") {
+      const n = parseFloat(obj[k]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return null;
 }
 
 function unixToIsoDate(unixSec: string | number | null | undefined): string | null {

@@ -21,6 +21,7 @@ import { effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "@/li
 import { fmtCurrency, fmtDate, monthEnd, monthStart, monthsIn, occurrencesBetween, shiftMonth, todayIso } from "@/lib/finance/dates";
 import { periodContaining, periodNoun, shiftPeriod } from "@/lib/finance/periods";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
+import { isInvested } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -51,7 +52,7 @@ export default function ReviewPage() {
   const [schedules, setSchedules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const accountIds = useMemo(() => refs.accounts.map((a) => a.id), [refs.accounts]);
+  const accountIds = useMemo(() => refs.accounts.filter((a) => !isInvested(a.type)).map((a) => a.id), [refs.accounts]);
   const accountName = useMemo(() => new Map(refs.accounts.map((a) => [a.id, a.name as string])), [refs.accounts]);
   // The trend ends with the period; "usual" looks at the months before it.
   const endMonth = monthStart(range.toIso);

@@ -18,12 +18,10 @@ import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
-import { txIndexQuery } from "@/lib/finance/data";
+import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, RETIREMENT_TYPES, RETIREMENT_TYPE_LABELS, accountTypeLabel, isInvested } from "@/lib/finance/accounts";
+import { listHoldings, txIndexQuery } from "@/lib/finance/data";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-const ACCOUNT_TYPES = ["CHECKING", "SAVINGS", "CREDIT", "LOAN", "CASH", "OTHER"] as const;
-const TYPE_LABELS: Record<string, string> = { CHECKING: "Checking", SAVINGS: "Savings", CREDIT: "Credit card", LOAN: "Loan", CASH: "Cash", OTHER: "Other" };
 
 type SfAccount = { id: string; institution: string; name: string; mappedTo: { id: string; name: string } | null };
 
@@ -31,6 +29,7 @@ type Form = {
   id?: string;
   name: string;
   type: string;
+  retirementType: string;
   institution: string;
   last4: string;
   currentBalance: string;
@@ -49,6 +48,7 @@ type Form = {
 const EMPTY: Form = {
   name: "",
   type: "CHECKING",
+  retirementType: "_401K",
   institution: "",
   last4: "",
   currentBalance: "0",
@@ -96,6 +96,7 @@ export default function FinanceAccountsPage() {
       id: a.id,
       name: a.name ?? "",
       type: a.type ?? "OTHER",
+      retirementType: a.retirementType ?? "_401K",
       institution: a.institution ?? "",
       last4: a.last4 ?? "",
       currentBalance: str(a.currentBalance ?? 0),
@@ -127,13 +128,14 @@ export default function FinanceAccountsPage() {
     const row: any = {
       name: form.name.trim(),
       type: form.type as any,
+      retirementType: form.type === "RETIREMENT" ? (form.retirementType as any) : null,
       institution: form.institution.trim() || null,
       last4: form.last4.trim() || null,
       currentBalance: balance,
       ownerPersonIds: form.ownerPersonIds,
       active: form.active,
       sortOrder: num(form.sortOrder),
-      minBalance: num(form.minBalance),
+      minBalance: form.type === "CHECKING" || form.type === "CASH" ? num(form.minBalance) : null,
       creditLimit: form.type === "CREDIT" ? num(form.creditLimit) : null,
       statementDueDay: form.type === "CREDIT" ? due : null,
       apr: form.type === "CREDIT" || form.type === "LOAN" ? pctOut(form.apr) : null,
@@ -170,6 +172,9 @@ export default function FinanceAccountsPage() {
     if (!confirm(`Delete ${form.name}?`)) return;
     const r = await financeClient.models.homeFinanceAccount.delete({ id: form.id });
     if (r.errors?.length) return addToast({ title: "Couldn't delete", description: r.errors[0].message, color: "danger" });
+    for (const h of await listHoldings(financeClient, form.id)) {
+      await financeClient.models.homeFinanceHolding.delete({ accountId: h.accountId, holdingKey: h.holdingKey });
+    }
     setForm(null);
     await refs.reload();
   }
@@ -197,7 +202,7 @@ export default function FinanceAccountsPage() {
   return (
     <FinanceShell
       title="Accounts"
-      subtitle="The joint account and anything else that pays household bills."
+      subtitle="The joint account, anything else that pays household bills, and the 401k / investment accounts goals draw on."
       onSynced={refs.reload}
       actions={
         <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => edit()}>
@@ -222,7 +227,7 @@ export default function FinanceAccountsPage() {
                       {a.name}
                     </NextLink>
                     <Chip size="sm" variant="flat">
-                      {TYPE_LABELS[a.type ?? "OTHER"] ?? a.type}
+                      {accountTypeLabel(a)}
                     </Chip>
                     {a.active === false && (
                       <Chip size="sm" variant="flat" color="default">
@@ -271,9 +276,16 @@ export default function FinanceAccountsPage() {
                   <Input label="Name" value={form.name} onValueChange={(v) => set("name", v)} isRequired autoFocus />
                   <Select label="Type" selectedKeys={[form.type]} onSelectionChange={(k) => set("type", String(Array.from(k)[0] ?? "OTHER"))}>
                     {ACCOUNT_TYPES.map((t) => (
-                      <SelectItem key={t}>{TYPE_LABELS[t]}</SelectItem>
+                      <SelectItem key={t}>{ACCOUNT_TYPE_LABELS[t]}</SelectItem>
                     ))}
                   </Select>
+                  {form.type === "RETIREMENT" && (
+                    <Select label="Retirement account" selectedKeys={[form.retirementType]} onSelectionChange={(k) => set("retirementType", String(Array.from(k)[0] ?? "OTHER"))}>
+                      {RETIREMENT_TYPES.map((t) => (
+                        <SelectItem key={t}>{RETIREMENT_TYPE_LABELS[t]}</SelectItem>
+                      ))}
+                    </Select>
+                  )}
                   <Input label="Institution" value={form.institution} onValueChange={(v) => set("institution", v)} />
                   <Input label="Last 4" value={form.last4} maxLength={4} onValueChange={(v) => set("last4", v.replace(/\D/g, ""))} />
                   <Input
@@ -281,7 +293,7 @@ export default function FinanceAccountsPage() {
                     type="number"
                     value={form.currentBalance}
                     onValueChange={(v) => set("currentBalance", v)}
-                    description={form.simplefinAccountId ? "Overwritten by each sync" : "Negative for money owed"}
+                    description={form.simplefinAccountId ? "Overwritten by each sync" : isInvested(form.type) ? "Total value, positions included" : "Negative for money owed"}
                     startContent={<span className="text-default-400 text-sm">$</span>}
                   />
                   <Input label="Sort order" type="number" value={form.sortOrder} onValueChange={(v) => set("sortOrder", v)} />
@@ -329,7 +341,7 @@ export default function FinanceAccountsPage() {
                     value={form.simplefinAccountId}
                     onValueChange={(v) => set("simplefinAccountId", v)}
                     placeholder="ACT-…"
-                    description="Linked accounts sync balance and transactions 3×/day"
+                    description={isInvested(form.type) ? "Syncs value, positions and transactions 3×/day; its transactions stay out of the budget" : "Linked accounts sync balance and transactions 3×/day"}
                     className="flex-1"
                   />
                   <Button variant="flat" startContent={<FaLink />} onPress={openSimplefin} className="mb-6">

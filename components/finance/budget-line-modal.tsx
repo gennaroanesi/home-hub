@@ -18,6 +18,7 @@ import { financeClient } from "@/components/finance/client";
 import type { PersonLite } from "@/components/finance/ui";
 import { callOp } from "@/lib/ops-client";
 import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, type BudgetLine, type BudgetPeriod } from "@/lib/finance/budget";
+import { isInvested } from "@/lib/finance/accounts";
 import { fmtDate } from "@/lib/finance/dates";
 
 export type BudgetDraft = {
@@ -84,7 +85,7 @@ export function BudgetLineModal({
   draft: BudgetDraft | null;
   categories: string[];
   people: PersonLite[];
-  accounts?: { id: string; name: string; active?: boolean | null }[];
+  accounts?: { id: string; name: string; type?: string | null; active?: boolean | null }[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -188,7 +189,8 @@ export function BudgetLineModal({
               description="Counts what lands in this account (minus withdrawals, not interest)."
             >
               {accounts
-                .filter((a) => a.active !== false || a.id === d.accountId)
+                // Inside an invested account, fund buys and dividends would count; goals track those.
+                .filter((a) => (a.active !== false && !isInvested(a.type)) || a.id === d.accountId)
                 .map((a) => (
                   <SelectItem key={a.id} textValue={a.name}>
                     {a.name}

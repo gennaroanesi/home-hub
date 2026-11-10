@@ -6,6 +6,7 @@
 // month view is a handful of Queries instead of a table Scan.
 
 import { householdMembers } from "../household";
+import { isInvested } from "./accounts";
 import { listAllPages } from "../list-all";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -87,12 +88,16 @@ export async function listAccountTransactions(client: Client, accountId: string,
   return out;
 }
 
-/** Transactions across accounts (all accounts when accountIds is omitted), newest first. */
+/**
+ * Transactions across accounts, newest first. Without accountIds: every
+ * account except invested ones (401k, brokerage), whose rows aren't
+ * household cash flow; pass their ids (or includeInvested) to see them.
+ */
 export async function listTransactions(
   client: Client,
-  opts: { fromIso?: string; toIso?: string; accountIds?: string[] } = {},
+  opts: { fromIso?: string; toIso?: string; accountIds?: string[]; includeInvested?: boolean } = {},
 ): Promise<any[]> {
-  const ids = opts.accountIds ?? (await listAccounts(client)).map((a) => a.id);
+  const ids = opts.accountIds ?? (await listAccounts(client)).filter((a) => opts.includeInvested || !isInvested(a.type)).map((a) => a.id);
   const per = await Promise.all(ids.map((id) => listAccountTransactions(client, id, opts)));
   return per.flat().sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 }
@@ -112,6 +117,14 @@ export async function listBudgetLines(client: Client): Promise<any[]> {
 
 export async function listGoals(client: Client): Promise<any[]> {
   return listAllPages<any>(client.models.homeFinanceSavingsGoal);
+}
+
+/** Positions in invested accounts (one account, or all), largest first. */
+export async function listHoldings(client: Client, accountId?: string): Promise<any[]> {
+  const rows = accountId
+    ? await listAllPages<any>({ list: (opts: any) => client.models.homeFinanceHolding.list({ ...opts, accountId }) })
+    : await listAllPages<any>(client.models.homeFinanceHolding);
+  return rows.sort((a, b) => (b.marketValue ?? 0) - (a.marketValue ?? 0));
 }
 
 export async function listSpendGroups(client: Client): Promise<any[]> {

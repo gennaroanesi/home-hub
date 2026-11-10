@@ -25,6 +25,7 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { PaycheckForm, parseJsonLayers, type PaycheckFormInit } from "@/components/finance/paycheck-form";
 import { listAllPages } from "@/lib/list-all";
+import { isInvested } from "@/lib/finance/accounts";
 import { listPaychecks, listTransactions } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
 import { periodContaining } from "@/lib/finance/periods";
@@ -84,7 +85,7 @@ export default function PaychecksPage() {
   const { period, range, setPeriod } = usePeriod(() => periodContaining("year", today));
   const [txs, setTxs] = useState<any[]>([]);
   const [txLoading, setTxLoading] = useState(true);
-  const accountIds = useMemo(() => refs.accounts.map((a) => a.id), [refs.accounts]);
+  const accountIds = useMemo(() => refs.accounts.filter((a) => !isInvested(a.type)).map((a) => a.id), [refs.accounts]);
   useEffect(() => {
     if (refs.loading) return;
     let cancelled = false;

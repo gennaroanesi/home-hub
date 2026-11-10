@@ -16,6 +16,7 @@ import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { BudgetBar, EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
+import { householdAccounts } from "@/lib/finance/accounts";
 import { householdBudget, type HouseholdBudgetView } from "@/lib/finance/budget";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, todayIso } from "@/lib/finance/dates";
@@ -51,7 +52,7 @@ export default function FinanceOverviewPage() {
     if (refs.loading) return;
     setLoading(true);
     try {
-      const active = refs.accounts.filter((a) => a.active !== false);
+      const active = householdAccounts(refs.accounts);
       const [lines, sched, goalRows, txs, logs] = await Promise.all([
         listBudgetLines(financeClient),
         listSchedules(financeClient),

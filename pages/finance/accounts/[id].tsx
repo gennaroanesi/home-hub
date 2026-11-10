@@ -1,7 +1,8 @@
 "use client";
 
 // /finance/accounts/[id] — one account: balance and sync status, balance
-// history from daily snapshots, a month of transactions, recent sync runs.
+// history from daily snapshots, positions (401k / IRA / brokerage), a
+// month of transactions, recent sync runs.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import NextLink from "next/link";
@@ -19,7 +20,8 @@ import { EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "@/lib/finance/dates";
-import { listAccountTransactions } from "@/lib/finance/data";
+import { accountTypeLabel, isInvested } from "@/lib/finance/accounts";
+import { listAccountTransactions, listHoldings } from "@/lib/finance/data";
 import { listAllPages } from "@/lib/list-all";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -54,6 +56,7 @@ export default function FinanceAccountDetailPage() {
   const [missing, setMissing] = useState(false);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [txs, setTxs] = useState<any[] | null>(null);
+  const [holdings, setHoldings] = useState<any[] | null>(null);
   const [logs, setLogs] = useState<Array<{ log: any; entry: any }>>([]);
 
   const loadAccount = useCallback(async () => {
@@ -61,6 +64,7 @@ export default function FinanceAccountDetailPage() {
     const { data } = await financeClient.models.homeFinanceAccount.get({ id });
     if (!data) return setMissing(true);
     setAccount(data);
+    setHoldings(isInvested(data.type) ? await listHoldings(financeClient, id) : null);
     const snaps: any[] = [];
     let nextToken: string | null | undefined;
     do {
@@ -136,7 +140,8 @@ export default function FinanceAccountDetailPage() {
       title={account.name}
       subtitle={
         <span>
-          {account.institution ?? ""}
+          {accountTypeLabel(account)}
+          {account.institution ? ` · ${account.institution}` : ""}
           {account.last4 ? ` ••${account.last4}` : ""}
           {account.active === false ? " · inactive" : ""}
         </span>
@@ -171,8 +176,10 @@ export default function FinanceAccountDetailPage() {
                     <div>
                       {details.fromIso} → {details.toIso}: {details.txNew ?? 0} new, {details.txUpdated ?? 0} updated
                       {details.linked ? `, ${details.linked} matched` : ""} of {details.txTotal ?? 0}
+                      {details.holdingsChanged ? `; ${details.holdingsChanged} position${details.holdingsChanged === 1 ? "" : "s"} changed` : ""}
                     </div>
                   )}
+                  {isInvested(account.type) && <div>Investment account: its transactions stay out of the budget and overview.</div>}
                 </>
               ) : (
                 "Not linked to SimpleFIN (manual balance)"
@@ -211,6 +218,8 @@ export default function FinanceAccountDetailPage() {
           </CardBody>
         </Card>
       </div>
+
+      {holdings && <HoldingsCard balance={account.currentBalance ?? 0} holdings={holdings} />}
 
       <Card shadow="sm" className="mb-4">
         <CardHeader className="flex flex-wrap justify-between gap-2">
@@ -294,6 +303,7 @@ export default function FinanceAccountDetailPage() {
                     <span className="flex-1 text-xs">
                       {entry.txNew ?? 0} new · {entry.txUpdated ?? 0} updated · {entry.txTotal ?? 0} seen
                       {entry.linked ? ` · ${entry.linked} matched` : ""}
+                      {entry.holdingsChanged ? ` · ${entry.holdingsChanged} position${entry.holdingsChanged === 1 ? "" : "s"} changed` : ""}
                       {entry.balanceAfter !== entry.balanceBefore && ` · ${fmtCurrency(entry.balanceBefore)} → ${fmtCurrency(entry.balanceAfter)}`}
                     </span>
                     {(log.errorCount ?? 0) > 0 && <span className="text-xs text-danger">{log.errorCount} error(s)</span>}
@@ -305,5 +315,59 @@ export default function FinanceAccountDetailPage() {
         </Card>
       )}
     </FinanceShell>
+  );
+}
+
+/** Positions in an invested account, as SimpleFIN last reported them. */
+function HoldingsCard({ balance, holdings }: { balance: number; holdings: any[] }) {
+  const positions = holdings.reduce((s, h) => s + (h.marketValue ?? 0), 0);
+  const cash = balance - positions;
+  const asOf = holdings.map((h) => h.asOf).filter(Boolean).sort().pop();
+  return (
+    <Card shadow="sm" className="mb-4">
+      <CardHeader className="flex flex-wrap justify-between gap-2">
+        <span className="font-semibold text-sm">Positions</span>
+        <span className="text-xs text-default-500">{asOf ? `as of ${fmtDate(asOf, { month: "short", day: "numeric", year: "numeric" })}` : ""}</span>
+      </CardHeader>
+      <CardBody className="pt-0">
+        {holdings.length === 0 ? (
+          <div className="text-sm text-default-500 py-6 text-center">No positions yet. They arrive with the next sync of a linked account.</div>
+        ) : (
+          <ul className="flex flex-col divide-y divide-default-100">
+            {holdings.map((h) => {
+              const gain = h.marketValue != null && h.costBasisTotal != null ? h.marketValue - h.costBasisTotal : null;
+              return (
+                <li key={h.holdingKey} className="flex items-center gap-3 py-2 text-sm">
+                  <div className="flex-1 min-w-0">
+                    <div className="truncate">
+                      {h.ticker && <span className="font-medium mr-2">{h.ticker}</span>}
+                      <span className={h.ticker ? "text-default-500" : ""}>{h.description}</span>
+                    </div>
+                    <div className="text-xs text-default-500">
+                      {h.quantity ? `${Number(h.quantity).toLocaleString("en-US", { maximumFractionDigits: 4 })} shares` : "value only"}
+                      {h.source === "MANUAL" && " · manual"}
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <Money value={h.marketValue ?? 0} />
+                    {gain != null && (
+                      <div className={`text-xs ${gain >= 0 ? "text-success-600" : "text-danger"}`}>
+                        <Money value={gain} sign />
+                      </div>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+            {Math.abs(cash) >= 0.01 && (
+              <li className="flex items-center gap-3 py-2 text-sm">
+                <div className="flex-1 text-default-500">Cash</div>
+                <Money value={cash} />
+              </li>
+            )}
+          </ul>
+        )}
+      </CardBody>
+    </Card>
   );
 }

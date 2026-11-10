@@ -3,7 +3,11 @@
 // (rules, then a Haiku fallback), reconciles pending → posted in place,
 // links posted rows to their scheduled transaction, upserts today's
 // balance snapshot for every active account, and writes a
-// homeFinanceSyncLog row. Ported from gennaroanesi.com's simplefinSync.
+// homeFinanceSyncLog row. Invested accounts (401k, IRA, brokerage) also
+// get their positions (homeFinanceHolding); their transactions are stored
+// and rule-classified, but skip the Haiku fallback and schedule matching
+// (they aren't household cash flow; lib/finance/accounts.ts).
+// Ported from gennaroanesi.com's simplefinSync.
 //
 // Entry points:
 //   EventBridge schedule (3×/day)        → 14-day window
@@ -24,12 +28,16 @@ import { fetchAccounts, maskAccessUrl } from "../../../lib/finance/simplefin.js"
 import {
   balanceNeedsUpdate,
   buildDedupIndex,
+  desiredHoldingsFromSf,
+  diffHoldings,
+  isInvested,
   markSelfTransfers,
   reconcileDraft,
   sfTxToDraft,
   syncedTransactionId,
   targetBalance,
   type DedupIndex,
+  type HoldingDiff,
   type Reconciliation,
   type TxDraft,
 } from "../../../lib/finance/sync-engine.js";
@@ -70,6 +78,21 @@ async function txsForAccount(c: DataClient, accountId: string, date: Record<stri
   return out;
 }
 
+/** Stored positions for one account (partition-key read). Throws when a read fails. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function holdingsForAccount(c: DataClient, accountId: string): Promise<any[]> {
+  const out = [];
+  let nextToken: string | null | undefined;
+  do {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const res: any = await c.models.homeFinanceHolding.list({ accountId, limit: 1000, nextToken } as any);
+    if (res.errors?.length) throw new Error(`reading holdings for ${accountId}: ${res.errors[0].message}`);
+    out.push(...(res.data ?? []));
+    nextToken = res.nextToken;
+  } while (nextToken);
+  return out;
+}
+
 // Amplify's create refuses an id that exists (DynamoDB conditional check).
 function isAlreadyStored(err: { message?: string; errorType?: string }): boolean {
   return /ConditionalCheckFailed/i.test(err.errorType ?? "") || /conditional request failed/i.test(err.message ?? "");
@@ -90,6 +113,7 @@ type PerAccount = {
   balanceBefore: number;
   balanceAfter: number;
   linked: number;
+  holdingsChanged?: number; // invested accounts only
 };
 
 export type SyncSummary = {
@@ -101,6 +125,7 @@ export type SyncSummary = {
   txUpdated: number;
   balancesUpdated: number;
   linked: number;
+  holdingsChanged?: number;
   errors: string[];
 };
 
@@ -234,8 +259,9 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const updates = plans.filter((p): p is Extract<Reconciliation, { action: "update" }> => p.action === "update");
   const txDuplicate = plans.filter((p) => p.action === "skip").length;
 
-  // LLM fallback for money out that no rule recognized.
-  const toClassify = fresh.filter((d) => !d.category && d.type === "EXPENSE");
+  // LLM fallback for household money out that no rule recognized.
+  const investedIds = new Set(mapped.filter((a) => isInvested(a.type)).map((a) => a.id));
+  const toClassify = fresh.filter((d) => !d.category && d.type === "EXPENSE" && !investedIds.has(d.accountId));
   if (toClassify.length) {
     const cats = await classifyTransactionsLLM(
       toClassify.map((d) => ({ description: d.description, amount: d.amount })),
@@ -254,7 +280,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const links = new Map<TxDraft, RecurringLike>();
   const claimed = new Set<string>();
   for (const d of fresh) {
-    if (d.status !== "POSTED") continue;
+    if (d.status !== "POSTED" || investedIds.has(d.accountId)) continue;
     const best = findScheduleMatches({ id: "", ...d }, schedules, MATCH_AUTO_THRESHOLD).find((m) => !claimed.has(m.rule.id));
     if (best) {
       links.set(d, best.rule);
@@ -269,6 +295,21 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     if (balanceNeedsUpdate(acc.currentBalance ?? 0, target)) balanceTarget.set(acc.id, target);
   }
 
+  // Positions in invested accounts. An account whose stored rows can't be
+  // read is skipped (a diff against nothing would recreate every row).
+  const holdingDiffs = new Map<string, HoldingDiff>();
+  for (const sfAcc of sfAccounts) {
+    const acc = byId.get(sfAcc.id)!;
+    if (!isInvested(acc.type)) continue;
+    try {
+      holdingDiffs.set(acc.id, diffHoldings(desiredHoldingsFromSf(sfAcc), await holdingsForAccount(c, acc.id), sfAcc.balanceDate || null));
+    } catch (e) {
+      errors.push(`holdings ${acc.name}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const diffSize = (d: HoldingDiff) => d.creates.length + d.updates.length + d.deletes.length;
+  const holdingsPlanned = [...holdingDiffs.values()].reduce((n, d) => n + diffSize(d), 0);
+
   const perAccount = new Map<string, PerAccount>(
     mapped.map((a) => [
       a.id,
@@ -279,10 +320,11 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   for (const d of fresh) perAccount.get(d.accountId)!.txNew++;
   for (const u of updates) perAccount.get(u.draft.accountId)!.txUpdated++;
   for (const d of links.keys()) perAccount.get(d.accountId)!.linked++;
+  for (const [id, d] of holdingDiffs) perAccount.get(id)!.holdingsChanged = diffSize(d);
   const perAccountArr = [...perAccount.values()];
 
   if (opts.dryRun) {
-    const counts = { accountsChecked: mapped.length, txPulled, txInserted: fresh.length, txUpdated: updates.length, balancesUpdated: balanceTarget.size, linked: links.size };
+    const counts = { accountsChecked: mapped.length, txPulled, txInserted: fresh.length, txUpdated: updates.length, balancesUpdated: balanceTarget.size, linked: links.size, holdingsChanged: holdingsPlanned };
     await log("DRY_RUN", { ...counts, txDuplicate }, perAccountArr);
     return { ok: true, status: "DRY_RUN", ...counts, errors };
   }
@@ -351,6 +393,24 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     if (e?.length) errors.push(`schedule ${rule.description}: ${e[0].message}`);
   }
 
+  let holdingsChanged = 0;
+  for (const [accountId, d] of holdingDiffs) {
+    for (const w of [...d.creates, ...d.updates]) {
+      const row = { accountId, holdingKey: w.holdingKey, ...w.fields };
+      const isNew = d.creates.includes(w);
+      let r = isNew ? await c.models.homeFinanceHolding.create(row) : await c.models.homeFinanceHolding.update(row);
+      // Created by a concurrent run since we read: update it instead.
+      if (isNew && r.errors?.length && isAlreadyStored(r.errors[0])) r = await c.models.homeFinanceHolding.update(row);
+      if (r.errors?.length) errors.push(`holding ${w.holdingKey}: ${r.errors[0].message}`);
+      else holdingsChanged++;
+    }
+    for (const holdingKey of d.deletes) {
+      const { errors: e } = await c.models.homeFinanceHolding.delete({ accountId, holdingKey });
+      if (e?.length) errors.push(`holding ${holdingKey} delete: ${e[0].message}`);
+      else holdingsChanged++;
+    }
+  }
+
   let balancesUpdated = 0;
   const seen = new Set(sfAccounts.map((s) => byId.get(s.id)!.id));
   for (const a of mapped) {
@@ -359,7 +419,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     const { errors: e } = await c.models.homeFinanceAccount.update({
       id: a.id,
       lastSyncAt: nowIso,
-      lastSyncDetails: JSON.stringify({ fromIso: windowFrom, toIso: windowTo, txTotal: s.txTotal, txNew: s.txNew, txUpdated: s.txUpdated, linked: s.linked }),
+      lastSyncDetails: JSON.stringify({ fromIso: windowFrom, toIso: windowTo, txTotal: s.txTotal, txNew: s.txNew, txUpdated: s.txUpdated, linked: s.linked, ...(s.holdingsChanged !== undefined ? { holdingsChanged: s.holdingsChanged } : {}) }),
       ...(bal !== undefined ? { currentBalance: bal } : {}),
       ...(seen.has(a.id) ? { balanceUpdatedAt: nowIso } : {}),
     });
@@ -373,7 +433,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   await upsertSnapshots(c, allAccounts, today, errors);
 
   const status = txFailed > 0 || errors.length > 0 ? "PARTIAL" : "OK";
-  const counts = { accountsChecked: mapped.length, txPulled, txInserted, txUpdated, balancesUpdated, linked: links.size };
+  const counts = { accountsChecked: mapped.length, txPulled, txInserted, txUpdated, balancesUpdated, linked: links.size, holdingsChanged };
   console.log(`[finance-sync] ${status}: ${JSON.stringify(counts)} errors=${errors.length}`);
   await log(status, { ...counts, txDuplicate: txDuplicate + txAlreadyStored, txFailed }, perAccountArr);
   return { ok: true, status, ...counts, errors };
