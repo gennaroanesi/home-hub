@@ -12,6 +12,13 @@ export type WardrobeItem = Schema["homeWardrobeItem"]["type"];
 export type WardrobeLook = Schema["homeWardrobeLook"]["type"];
 export type WardrobeProfile = Schema["homeWardrobeProfile"]["type"];
 
+// Bottom sheet on phones. Height follows the visible viewport (HeroUI sets
+// --visual-viewport-height on the wrapper), so with the keyboard up the sheet
+// shrinks instead of pushing its header off screen.
+export const SHEET_MODAL_CLASSES = {
+  base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[calc(var(--visual-viewport-height,100dvh)*0.92)]",
+};
+
 export const STATUS_CHIP: Record<WardrobeStatus, string> = {
   KEEP: "bg-primary-100 text-primary-700",
   NEW: "bg-success-100 text-success-700",

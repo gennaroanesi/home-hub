@@ -11,7 +11,7 @@ import { FaArrowDown, FaArrowUp, FaTimes } from "react-icons/fa";
 
 import { CATEGORY_PRESETS } from "@/lib/wardrobe";
 import type { Schema } from "@/amplify/data/resource";
-import { uploadWardrobePhotos, type WardrobeProfile } from "./shared";
+import { SHEET_MODAL_CLASSES, uploadWardrobePhotos, type WardrobeProfile } from "./shared";
 import { photoUrl } from "@/lib/image-loader";
 import { wardrobeTryOnAvailable, wardrobeTryOnSetupMessage } from "@/lib/wardrobe-capabilities";
 
@@ -82,7 +82,7 @@ export function ProfileModal({
   }
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}>
+    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={SHEET_MODAL_CLASSES}>
       <ModalContent>
         <ModalHeader>{personName}&apos;s closet settings</ModalHeader>
         <ModalBody className="gap-4">

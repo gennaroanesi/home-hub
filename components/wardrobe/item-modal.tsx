@@ -23,7 +23,7 @@ import {
   makeMain,
 } from "@/lib/wardrobe";
 import type { Schema } from "@/amplify/data/resource";
-import { uploadWardrobePhotos, type WardrobeItem } from "./shared";
+import { SHEET_MODAL_CLASSES, uploadWardrobePhotos, type WardrobeItem } from "./shared";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -150,7 +150,7 @@ export function ItemModal({
   const cats = categories.includes(f.category) || !f.category ? categories : [...categories, f.category];
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}>
+    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" classNames={SHEET_MODAL_CLASSES}>
       <ModalContent>
         <ModalHeader>{editing ? "Edit item" : "Add item"}</ModalHeader>
         <ModalBody className="gap-3">

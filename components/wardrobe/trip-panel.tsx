@@ -67,7 +67,7 @@ export function TripPanel({
   onTripChange,
   byId,
   onOpenItem,
-  onSave,
+  onOpenLook,
 }: {
   personId: string;
   personName: string;
@@ -75,8 +75,10 @@ export function TripPanel({
   onTripChange: (id: string) => void;
   byId: Map<string, WardrobeItem>;
   onOpenItem: (it: WardrobeItem) => void;
-  // Opens the save dialog; `done` gets the saved look so the plan can pin it.
-  onSave: (look: TripLook, done: (saved?: SavedLook) => void) => void;
+  // Opens the look dialog: the saved look when `look.lookId` is set, else a
+  // draft to save. `done` gets the saved look (undefined when deleted) so the
+  // plan can pin it; `packItemIds` scopes the pieces picker to the trip.
+  onOpenLook: (look: TripLook, packItemIds: string[], done: (saved?: SavedLook) => void) => void;
 }) {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [tripsLoaded, setTripsLoaded] = useState(false);
@@ -272,6 +274,7 @@ export function TripPanel({
   const looks = parseJsonField<TripLook[]>(ready?.looks, []);
   const pack = (ready?.packItemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
   const packed = new Set((ready?.packedItemIds ?? []).filter(Boolean) as string[]);
+  const packIds = pack.map((it) => it.id);
   const packGroups = useMemo(() => {
     const m = new Map<string, WardrobeItem[]>();
     for (const it of pack) m.set(it.category, [...(m.get(it.category) ?? []), it]);
@@ -541,12 +544,15 @@ export function TripPanel({
                       <span className="text-xs text-success flex items-center gap-1" title="Saved to Looks; planning again or tweaking keeps it as it is">
                         <FaThumbtack size={10} /> Saved, kept on re-plan
                       </span>
+                      <Button size="sm" variant="flat" onPress={() => onOpenLook(l, packIds, (saved) => pinLook(n, saved ?? null))} isDisabled={working}>
+                        Open
+                      </Button>
                       <Button size="sm" variant="light" onPress={() => pinLook(n, null)} isDisabled={working}>
                         Unpin
                       </Button>
                     </div>
                   ) : (
-                    <Button size="sm" variant="flat" color="primary" isDisabled={working} onPress={() => onSave(l, (saved) => saved && pinLook(n, saved))}>
+                    <Button size="sm" variant="flat" color="primary" isDisabled={working} onPress={() => onOpenLook(l, packIds, (saved) => saved && pinLook(n, saved))}>
                       Save as look
                     </Button>
                   )

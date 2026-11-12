@@ -118,6 +118,7 @@ export default function WardrobePage() {
   const [lookDraft, setLookDraft] = useState<LookDraft | null>(null);
   // Set while saving a trip look, so the trip plan can pin the saved look.
   const afterLookSave = useRef<((saved?: WardrobeLook) => void) | null>(null);
+  const [lookScope, setLookScope] = useState<{ label: string; itemIds: string[] } | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => {
@@ -263,8 +264,13 @@ export default function WardrobePage() {
     setEditingItem(it);
     setItemOpen(true);
   }
-  function openLook(l: WardrobeLook | null, draft: LookDraft | null = null) {
-    if (!draft) afterLookSave.current = null;
+  function openLook(
+    l: WardrobeLook | null,
+    draft: LookDraft | null = null,
+    opts: { after?: (saved?: WardrobeLook) => void; scope?: { label: string; itemIds: string[] } } = {},
+  ) {
+    afterLookSave.current = opts.after ?? null;
+    setLookScope(opts.scope ?? null);
     setEditingLook(l);
     setLookDraft(draft);
     setLookOpen(true);
@@ -482,9 +488,15 @@ export default function WardrobePage() {
             onTripChange={setTripId}
             byId={byId}
             onOpenItem={openItem}
-            onSave={(l, done) => {
-              afterLookSave.current = done;
-              openLook(null, { title: l.title, occasion: l.occasion, note: l.why, itemIds: l.itemIds, source: "SUGGESTED" });
+            onOpenLook={(l, packItemIds, done) => {
+              const opts = { after: done, scope: { label: "Packed for the trip", itemIds: packItemIds } };
+              const saved = l.lookId ? looks.find((x) => x.id === l.lookId) : undefined;
+              if (l.lookId && !saved) {
+                addToast({ title: "That saved look was deleted", description: "Unpin it to let the planner change it.", color: "warning" });
+                return;
+              }
+              if (saved) openLook(saved, null, opts);
+              else openLook(null, { title: l.title, occasion: l.occasion, note: l.why, itemIds: l.itemIds, source: "SUGGESTED" }, opts);
             }}
           />
         ) : (
@@ -523,6 +535,7 @@ export default function WardrobePage() {
             items={mine}
             categories={categories}
             nextSortOrder={(myLooks[myLooks.length - 1]?.sortOrder ?? myLooks.length) + 1}
+            scope={lookScope}
             onSaved={(saved) => {
               afterLookSave.current?.(saved);
               afterLookSave.current = null;

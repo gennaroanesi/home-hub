@@ -13,7 +13,7 @@ import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import { mainImage } from "@/lib/wardrobe";
 import { wardrobeTryOnAvailable } from "@/lib/wardrobe-capabilities";
 import type { Schema } from "@/amplify/data/resource";
-import { Swatch, type WardrobeItem, type WardrobeLook } from "./shared";
+import { SHEET_MODAL_CLASSES, Swatch, type WardrobeItem, type WardrobeLook } from "./shared";
 import { TryOnPreview } from "./try-on-preview";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -50,6 +50,7 @@ export function LookModal({
   categories,
   nextSortOrder,
   onSaved,
+  scope,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -60,10 +61,13 @@ export function LookModal({
   categories: string[];
   nextSortOrder: number;
   onSaved: (saved?: WardrobeLook) => void; // the saved look, when one was created or updated
+  // Opened from a trip: the pieces picker starts on what's packed for it.
+  scope?: { label: string; itemIds: string[] } | null;
 }) {
   const [f, setF] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<string[]>([]);
   const [cat, setCat] = useState("");
+  const [scoped, setScoped] = useState(true);
   const [saving, setSaving] = useState(false);
   // Edited in place: a regenerated image replaces this, and only reaches the
   // look when it's saved (Cancel discards it).
@@ -81,13 +85,18 @@ export function LookModal({
     });
     const ids = ((src?.itemIds ?? []) as (string | null)[]).filter((x): x is string => !!x);
     setPicked(ids);
-    setCat(categories[0] ?? "");
+    const start = scope ? items.filter((i) => scope.itemIds.includes(i.id)) : items;
+    setCat(categories.find((c) => start.some((i) => i.category === c)) ?? categories[0] ?? "");
+    setScoped(true);
     setPreview(src?.previewImageKey ? { key: src.previewImageKey, jobId: src.tryOnJobId ?? null, itemIds: ids } : null);
     setInstructions(src?.stylingInstructions ?? "");
   }, [isOpen, editing, draft]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
-  const choices = items.filter((i) => i.status !== "RETIRE" && (!cat || i.category === cat));
+  const scopeItems = scope ? items.filter((i) => scope.itemIds.includes(i.id)) : items;
+  const pool = scope && scoped ? scopeItems : items;
+  const shownCategories = scope && scoped ? categories.filter((c) => pool.some((i) => i.category === c)) : categories;
+  const choices = pool.filter((i) => i.status !== "RETIRE" && (!cat || i.category === cat));
   const set = (k: string) => (v: string) => setF((p) => ({ ...p, [k]: v }));
   const toggle = (id: string) => setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -148,7 +157,7 @@ export function LookModal({
       onClose={onClose}
       size="3xl"
       scrollBehavior="inside"
-      classNames={{ base: "max-sm:m-0 max-sm:rounded-b-none max-sm:max-h-[92dvh]" }}
+      classNames={SHEET_MODAL_CLASSES}
     >
       <ModalContent>
         <ModalHeader>{editing ? "Edit look" : "New look"}</ModalHeader>
@@ -198,8 +207,31 @@ export function LookModal({
             </div>
           </div>
 
+          {scope && (
+            <div className="flex items-center gap-2 text-xs">
+              {[
+                [true, scope.label],
+                [false, "Whole closet"],
+              ].map(([v, label]) => (
+                <button
+                  key={String(v)}
+                  type="button"
+                  onClick={() => {
+                    setScoped(v as boolean);
+                    if (v && !scopeItems.some((i) => i.category === cat)) {
+                      const first = categories.find((c) => scopeItems.some((i) => i.category === c));
+                      if (first) setCat(first);
+                    }
+                  }}
+                  className={`px-2.5 py-0.5 rounded-full border ${scoped === v ? "border-primary text-primary" : "border-default-200 text-default-500"}`}
+                >
+                  {label as string}
+                </button>
+              ))}
+            </div>
+          )}
           <div className="flex flex-wrap gap-1.5">
-            {categories.map((c) => (
+            {shownCategories.map((c) => (
               <button
                 key={c}
                 type="button"
