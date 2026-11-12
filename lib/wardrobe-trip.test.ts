@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_TRIP_DAYS,
   buildTripPrompt,
+  mergePinned,
   capacityRule,
   fetchTripWeather,
   packCount,
@@ -185,5 +186,41 @@ describe("prompt", () => {
     expect(tweak).toContain("Tips: Wear the boots.");
     expect(tweak).toContain("Change requested: The jacket is too specific\nRevise the current plan");
     expect(tweak).not.toContain("Plan the trip with");
+  });
+});
+
+describe("pinned (saved) looks", () => {
+  const saved = { date: "2026-11-12", title: "Dinner", occasion: "Dinner", itemIds: ["a", "b"], why: "Saved.", lookId: "L1" };
+  it("puts saved looks back, drops model duplicates, and packs their pieces", () => {
+    const plan = {
+      packItemIds: ["c", "d"],
+      looks: [
+        { date: "2026-11-12", title: "dinner", occasion: null, itemIds: ["c", "d"], why: null }, // same day + title
+        { date: "2026-11-12", title: "Night out", occasion: null, itemIds: ["b", "a"], why: null }, // same day + pieces
+        { date: "2026-11-11", title: "Travel", occasion: null, itemIds: ["c", "d"], why: null },
+      ],
+      tips: null,
+    };
+    const out = mergePinned(plan, [saved]);
+    expect(out.looks.map((l) => l.title)).toEqual(["Travel", "Dinner"]);
+    expect(out.looks[1].lookId).toBe("L1");
+    expect(out.packItemIds).toEqual(["c", "d", "a", "b"]);
+    expect(mergePinned(plan, [])).toBe(plan);
+  });
+
+  it("tells the model the saved looks are decided", () => {
+    const ctx: TripPlanContext = {
+      person: { id: "p", name: "Gennaro" },
+      styleNotes: null,
+      trip: { id: "t", name: "Lisbon", type: null, startDate: "2026-11-12", endDate: "2026-11-12", notes: null },
+      location: null,
+      dates: ["2026-11-12"],
+      weather: [],
+      reservations: [],
+      items,
+    };
+    const { user } = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], pinned: [{ ...saved, itemIds: [items[0].id, items[1].id] }] });
+    expect(user).toContain(`Already decided (saved looks; keep them exactly as they are):\n- 2026-11-12 · Dinner (Dinner): [${items[0].id}]`);
+    expect(user).toContain("Don't return these looks");
   });
 });

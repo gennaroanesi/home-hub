@@ -127,11 +127,13 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
     if (saved.errors?.length || !saved.data) throw new Error(saved.errors?.[0]?.message ?? "Couldn't save the plan");
     planId = saved.data.id;
 
+    const savedLooks = parseJsonField<TripLook[]>(before?.looks, []);
+    const pinned = await loadPinned(savedLooks);
     const current: TripPlan | null =
       before?.status === "READY"
         ? {
             packItemIds: (before.packItemIds ?? []).filter((id): id is string => !!id),
-            looks: parseJsonField<TripLook[]>(before.looks, []),
+            looks: savedLooks.filter((l) => !l.lookId),
             tips: before.tips ?? null,
           }
         : null;
@@ -143,6 +145,7 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       request,
       feedback,
       revise: change && current ? { current, change } : null,
+      pinned,
     });
     const ok = plan.looks.length > 0;
     const noLooks = context.startsWith("Add more") ? context : "No looks came back. Try again or loosen the request.";
@@ -151,7 +154,8 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       await client.models.homeWardrobeTripPlan.update({ id: planId, status: "READY", error: noLooks });
       return { planId, error: noLooks };
     }
-    const snapshot: TripPlanSnapshot | null = current ? { ...current, feedback } : null;
+    // Undo restores the whole plan as it was, saved looks included.
+    const snapshot: TripPlanSnapshot | null = current ? { ...current, looks: savedLooks, feedback } : null;
     const r = await client.models.homeWardrobeTripPlan.update({
       id: planId,
       status: ok ? "READY" : "FAILED",
@@ -179,4 +183,18 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
     }
     return { planId, error: message };
   }
+}
+
+// Saved trip looks, as they are now in the closet: edits made since saving
+// carry over, and a look deleted from the closet is no longer pinned.
+async function loadPinned(looks: TripLook[]): Promise<TripLook[]> {
+  const out: TripLook[] = [];
+  for (const l of looks) {
+    if (!l.lookId) continue;
+    const { data } = await client.models.homeWardrobeLook.get({ id: l.lookId });
+    if (!data) continue;
+    const itemIds = (data.itemIds ?? []).filter((x): x is string => !!x);
+    out.push({ ...l, title: data.title || l.title, occasion: data.occasion ?? l.occasion, why: data.note ?? l.why, itemIds: itemIds.length ? itemIds : l.itemIds });
+  }
+  return out;
 }

@@ -11,7 +11,7 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaListUl, FaMagic, FaPlus, FaTimes, FaUndo } from "react-icons/fa";
+import { FaCheck, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaUndo } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -38,6 +38,7 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Trip = Schema["homeTrip"]["type"];
 type Plan = Schema["homeWardrobeTripPlan"]["type"];
+type SavedLook = Pick<Schema["homeWardrobeLook"]["type"], "id" | "title" | "occasion" | "note" | "itemIds">;
 
 const POLL_MS = 4000;
 const POLL_LIMIT_MS = 150_000;
@@ -74,7 +75,8 @@ export function TripPanel({
   onTripChange: (id: string) => void;
   byId: Map<string, WardrobeItem>;
   onOpenItem: (it: WardrobeItem) => void;
-  onSave: (look: TripLook) => void;
+  // Opens the save dialog; `done` gets the saved look so the plan can pin it.
+  onSave: (look: TripLook, done: (saved?: SavedLook) => void) => void;
 }) {
   const [trips, setTrips] = useState<Trip[]>([]);
   const [tripsLoaded, setTripsLoaded] = useState(false);
@@ -220,6 +222,21 @@ export function TripPanel({
     setPlan({ ...plan, ...patch });
     const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, ...patch });
     if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+  }
+
+  // Pin look `n` to a saved closet look (taking any edits made while saving), or unpin it.
+  async function pinLook(n: number, saved: SavedLook | null) {
+    if (!plan) return;
+    const list = parseJsonField<TripLook[]>(plan.looks, []);
+    const l = list[n];
+    if (!l) return;
+    const itemIds = saved ? (saved.itemIds ?? []).filter((x): x is string => !!x) : l.itemIds;
+    list[n] = saved
+      ? { ...l, lookId: saved.id, title: saved.title || l.title, occasion: saved.occasion ?? l.occasion, why: saved.note ?? l.why, itemIds: itemIds.length ? itemIds : l.itemIds }
+      : { ...l, lookId: null };
+    const pack = (plan.packItemIds ?? []).filter((x): x is string => !!x);
+    for (const id of list[n].itemIds) if (!pack.includes(id)) pack.push(id);
+    await savePlan({ looks: JSON.stringify(list) as any, packItemIds: pack }); // eslint-disable-line @typescript-eslint/no-explicit-any
   }
 
   // Swap the plan with the one before the last tweak or re-plan, so undo can be undone.
@@ -466,7 +483,7 @@ export function TripPanel({
 
           <section className="rounded-xl border border-default-200 bg-content1 p-4 flex flex-col gap-2">
             <h2 className="text-lg font-semibold">Tweak the plan</h2>
-            <p className="text-xs text-default-500">Say what to change; everything else stays as it is. Changes are remembered, so planning again from scratch still follows them.</p>
+            <p className="text-xs text-default-500">Say what to change; everything else stays as it is. Changes are remembered, so planning again from scratch still follows them. Looks you saved stay fixed either way (Unpin to let them change).</p>
             <Textarea
               aria-label="Change to make"
               placeholder="The field jacket is too specific, pack something more low-profile…"
@@ -519,9 +536,20 @@ export function TripPanel({
                 byId={byId}
                 onOpenItem={onOpenItem}
                 actions={
-                  <Button size="sm" variant="flat" color="primary" onPress={() => onSave(l)}>
-                    Save as look
-                  </Button>
+                  l.lookId ? (
+                    <div className="flex items-center gap-1">
+                      <span className="text-xs text-success flex items-center gap-1" title="Saved to Looks; planning again or tweaking keeps it as it is">
+                        <FaThumbtack size={10} /> Saved, kept on re-plan
+                      </span>
+                      <Button size="sm" variant="light" onPress={() => pinLook(n, null)} isDisabled={working}>
+                        Unpin
+                      </Button>
+                    </div>
+                  ) : (
+                    <Button size="sm" variant="flat" color="primary" isDisabled={working} onPress={() => onSave(l, (saved) => saved && pinLook(n, saved))}>
+                      Save as look
+                    </Button>
+                  )
                 }
               />
             ))}

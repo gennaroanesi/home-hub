@@ -116,6 +116,8 @@ export default function WardrobePage() {
   const [lookOpen, setLookOpen] = useState(false);
   const [editingLook, setEditingLook] = useState<WardrobeLook | null>(null);
   const [lookDraft, setLookDraft] = useState<LookDraft | null>(null);
+  // Set while saving a trip look, so the trip plan can pin the saved look.
+  const afterLookSave = useRef<((saved?: WardrobeLook) => void) | null>(null);
   const [profileOpen, setProfileOpen] = useState(false);
 
   useEffect(() => {
@@ -262,6 +264,7 @@ export default function WardrobePage() {
     setItemOpen(true);
   }
   function openLook(l: WardrobeLook | null, draft: LookDraft | null = null) {
+    if (!draft) afterLookSave.current = null;
     setEditingLook(l);
     setLookDraft(draft);
     setLookOpen(true);
@@ -479,7 +482,10 @@ export default function WardrobePage() {
             onTripChange={setTripId}
             byId={byId}
             onOpenItem={openItem}
-            onSave={(l) => openLook(null, { title: l.title, occasion: l.occasion, note: l.why, itemIds: l.itemIds, source: "SUGGESTED" })}
+            onSave={(l, done) => {
+              afterLookSave.current = done;
+              openLook(null, { title: l.title, occasion: l.occasion, note: l.why, itemIds: l.itemIds, source: "SUGGESTED" });
+            }}
           />
         ) : (
           <SuggestPanel
@@ -517,7 +523,11 @@ export default function WardrobePage() {
             items={mine}
             categories={categories}
             nextSortOrder={(myLooks[myLooks.length - 1]?.sortOrder ?? myLooks.length) + 1}
-            onSaved={loadAll}
+            onSaved={(saved) => {
+              afterLookSave.current?.(saved);
+              afterLookSave.current = null;
+              loadAll();
+            }}
           />
           <ProfileModal
             isOpen={profileOpen}

@@ -59,7 +59,7 @@ export function LookModal({
   items: WardrobeItem[];
   categories: string[];
   nextSortOrder: number;
-  onSaved: () => void;
+  onSaved: (saved?: WardrobeLook) => void; // the saved look, when one was created or updated
 }) {
   const [f, setF] = useState<Record<string, string>>({});
   const [picked, setPicked] = useState<string[]>([]);
@@ -122,7 +122,7 @@ export function LookModal({
         : await client.models.homeWardrobeLook.create({ ...body, source: draft?.source ?? "MANUAL", sortOrder: nextSortOrder });
       if (r.errors?.length) throw new Error(r.errors[0].message);
       addToast({ title: "Look saved", color: "success" });
-      onSaved();
+      onSaved(r.data ?? undefined);
       onClose();
     } catch (err: any) {
       addToast({ title: "Save failed", description: err?.message ?? String(err), color: "danger" });
