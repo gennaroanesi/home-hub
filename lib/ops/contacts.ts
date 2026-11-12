@@ -25,6 +25,17 @@ const RelationOut = z.object({
 
 const PEOPLE_PREFIX = "home/people/";
 
+const SavedRelationship = z.object({
+  relationshipId: z.string(),
+  personId: z.string(),
+  personName: z.string(),
+  kind: z.enum(RELATION_KINDS).describe("What person is to relatedPerson"),
+  relatedPersonId: z.string(),
+  relatedPersonName: z.string(),
+  label: z.string().nullable(),
+  inverseLabel: z.string().nullable(),
+});
+
 const ContactOut = z.object({
   id: z.string(),
   name: z.string(),
@@ -168,7 +179,8 @@ export const saveContact = defineOp({
       else if (photoSources.length) fields.photoKey = await storePhoto(ctx, input);
       const r = await ctx.client.models.homePerson.update({ id: p.id, ...fields });
       if (r.errors?.length) throw new Error(r.errors[0].message);
-      return { action: "updated" as const, contact: contactOut(r.data, today) };
+      const [people, rels] = await Promise.all([allPeople(ctx), allRelationships(ctx).catch(() => [] as RelationshipRow[])]);
+      return { action: "updated" as const, contact: contactOut(r.data, today, rels, new Map(people.map((x) => [x.id, x]))) };
     }
     const name = (input.name ?? "").trim();
     if (!name) throw new OpError("name is required to add a contact");
@@ -275,8 +287,9 @@ export const saveRelationship = defineOp({
   domain: "contacts",
   access: "write",
   description:
-    "Record how two people relate: '<person> is the <kind> of <relatedPerson>'. The inverse is implied, so record each pair once (Priscilla PARENT of Eva also means Eva is Priscilla's child). label is the word for person, inverseLabel the word for relatedPerson, e.g. person Eva, kind CHILD, relatedPerson Priscilla, label 'daughter'. One relationship per pair: saving a pair that's already linked replaces it. remove: true unlinks the pair. Both people must already exist (household or contacts).",
+    "Record how two people relate: '<person> is the <kind> of <relatedPerson>'. The inverse is implied, so record each pair once (Priscilla PARENT of Eva also means Eva is Priscilla's child). label is the word for person, inverseLabel the word for relatedPerson, e.g. person Eva, kind CHILD, relatedPerson Priscilla, label 'daughter'. One relationship per pair: saving a pair that's already linked replaces it. remove: true unlinks the pair. Instead of naming both people you can pass relationshipId (from list_relationships / list_contacts) to change or remove that link. Both people must already exist (household or contacts); returns the saved link with its id.",
   input: z.object({
+    relationshipId: z.string().optional().describe("An existing link; its two people are used when no person is named."),
     personId: z.string().optional(),
     personName: z.string().optional(),
     kind: z.enum(RELATION_KINDS).optional().describe("What person is to relatedPerson. Required unless remove."),
@@ -286,18 +299,26 @@ export const saveRelationship = defineOp({
     inverseLabel: z.string().nullable().optional().describe("Word for relatedPerson"),
     remove: z.boolean().optional(),
   }),
-  output: z.object({ action: z.enum(["created", "updated", "removed", "unchanged"]), summary: z.string() }),
+  output: z.object({
+    action: z.enum(["created", "updated", "removed", "unchanged"]),
+    summary: z.string(),
+    relationship: SavedRelationship.nullable().describe("The link as saved, read as 'person is kind of relatedPerson'; null when removed or unchanged"),
+  }),
   async run(ctx, input) {
     const [people, rels] = await Promise.all([allPeople(ctx), allRelationships(ctx)]);
-    const a = pickPerson(people, input.personId, input.personName, "person");
-    const b = pickPerson(people, input.relatedPersonId, input.relatedPersonName, "related person");
+    const byRow = input.relationshipId ? rels.find((r) => r.id === input.relationshipId) : undefined;
+    if (input.relationshipId && !byRow) throw new OpError(`No relationship with id ${input.relationshipId}`);
+    const named = input.personId || input.personName || input.relatedPersonId || input.relatedPersonName;
+    const a = pickPerson(people, input.personId ?? (named ? undefined : byRow?.personId), input.personName, "person");
+    const b = pickPerson(people, input.relatedPersonId ?? (named ? undefined : byRow?.relatedPersonId), input.relatedPersonName, "related person");
     if (a.id === b.id) throw new OpError("A person can't be related to themselves");
     const model = ctx.client.models.homePersonRelationship;
     const existing = findPairRow(rels, a.id, b.id);
+    if (byRow && existing?.id !== byRow.id) throw new OpError(`Relationship ${byRow.id} doesn't link ${a.name} and ${b.name}`);
     if (input.remove) {
-      if (!existing) return { action: "unchanged" as const, summary: `${a.name} and ${b.name} weren't linked` };
+      if (!existing) return { action: "unchanged" as const, summary: `${a.name} and ${b.name} weren't linked`, relationship: null };
       await model.delete({ id: existing.id });
-      return { action: "removed" as const, summary: `Unlinked ${a.name} and ${b.name}` };
+      return { action: "removed" as const, summary: `Unlinked ${a.name} and ${b.name}`, relationship: null };
     }
     if (!input.kind) throw new OpError("kind is required");
     const row = normalizeRelationship({
@@ -310,7 +331,20 @@ export const saveRelationship = defineOp({
     const r = existing ? await model.update({ id: existing.id, ...row }) : await model.create(row);
     if (r.errors?.length) throw new Error(r.errors[0].message);
     const word = input.label?.trim() || RELATION_LABELS[input.kind];
-    return { action: existing ? ("updated" as const) : ("created" as const), summary: `${a.name} is ${b.name}'s ${word}` };
+    return {
+      action: existing ? ("updated" as const) : ("created" as const),
+      summary: `${a.name} is ${b.name}'s ${word}`,
+      relationship: {
+        relationshipId: (r.data as any)?.id ?? existing?.id ?? "",
+        personId: a.id,
+        personName: a.name,
+        kind: input.kind,
+        relatedPersonId: b.id,
+        relatedPersonName: b.name,
+        label: input.label?.trim() || null,
+        inverseLabel: input.inverseLabel?.trim() || null,
+      },
+    };
   },
 });
 

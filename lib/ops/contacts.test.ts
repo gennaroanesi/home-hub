@@ -144,7 +144,17 @@ describe("relationships ops", () => {
   it("records a pair once and shows it from both sides", async () => {
     const { ctx, relationships } = setup({ people: [pri, gab, eva] });
     const s1: any = await runOp(ctx, "save_relationship", { personName: "Priscilla", kind: "SPOUSE", relatedPersonName: "gabrielle" });
-    expect(s1.result).toEqual({ action: "created", summary: "Priscilla is Gabrielle's spouse" });
+    expect(s1.result).toMatchObject({ action: "created", summary: "Priscilla is Gabrielle's spouse" });
+    expect(s1.result.relationship).toEqual({
+      relationshipId: "new-0",
+      personId: "pri",
+      personName: "Priscilla",
+      kind: "SPOUSE",
+      relatedPersonId: "gab",
+      relatedPersonName: "Gabrielle",
+      label: null,
+      inverseLabel: null,
+    });
     const s2: any = await runOp(ctx, "save_relationship", { personName: "Eva", kind: "CHILD", relatedPersonName: "Priscilla", label: "daughter" });
     expect(s2.result.summary).toBe("Eva is Priscilla's daughter");
     expect(relationships).toHaveLength(2);
@@ -166,5 +176,28 @@ describe("relationships ops", () => {
     const rm: any = await runOp(ctx, "save_relationship", { personName: "Priscilla", relatedPersonName: "Gabrielle", remove: true });
     expect(rm.result.action).toBe("removed");
     expect(relationships).toHaveLength(0);
+  });
+
+  it("changes and removes a link by relationshipId", async () => {
+    const { ctx, relationships } = setup({
+      people: [pri, gab, eva],
+      relationships: [{ id: "r1", personId: "pri", relatedPersonId: "eva", kind: "PARENT" }],
+    });
+    const up: any = await runOp(ctx, "save_relationship", { relationshipId: "r1", kind: "PARENT", label: "mom", inverseLabel: "daughter" });
+    expect(up.result).toMatchObject({ action: "updated", relationship: { relationshipId: "r1", personName: "Priscilla", relatedPersonName: "Eva", label: "mom" } });
+    expect(relationships[0]).toMatchObject({ label: "mom", inverseLabel: "daughter" });
+    const wrong: any = await runOp(ctx, "save_relationship", { relationshipId: "r1", personId: "gab", relatedPersonId: "eva", kind: "FRIEND" });
+    expect(wrong.error).toMatch(/doesn't link/);
+    const missing: any = await runOp(ctx, "save_relationship", { relationshipId: "nope", remove: true });
+    expect(missing.error).toMatch(/No relationship/);
+    const rm: any = await runOp(ctx, "save_relationship", { relationshipId: "r1", remove: true });
+    expect(rm.result).toMatchObject({ action: "removed", relationship: null });
+    expect(relationships).toHaveLength(0);
+  });
+
+  it("save_contact returns the contact's links", async () => {
+    const { ctx } = setup({ people: [pri, eva], relationships: [{ id: "r1", personId: "pri", relatedPersonId: "eva", kind: "PARENT" }] });
+    const out: any = await runOp(ctx, "save_contact", { contactId: "eva", notes: "x" });
+    expect(out.result.contact.relations).toEqual([{ relationshipId: "r1", personId: "pri", name: "Priscilla", kind: "PARENT", role: "parent" }]);
   });
 });
