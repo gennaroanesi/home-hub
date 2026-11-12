@@ -11,7 +11,7 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaMagic, FaPlus, FaTimes } from "react-icons/fa";
+import { FaCheck, FaListUl, FaMagic, FaPlus, FaTimes } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -31,6 +31,7 @@ import {
 import type { Schema } from "@/amplify/data/resource";
 import type { WardrobeItem } from "./shared";
 import { LookCard } from "./look-card";
+import { PackChecklistModal } from "./pack-checklist-modal";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -83,6 +84,7 @@ export function TripPanel({
   const [request, setRequest] = useState("");
   const [busy, setBusy] = useState(false); // the mutation call is in flight
   const [polling, setPolling] = useState(false); // waiting on a saved GENERATING plan
+  const [checklistOpen, setChecklistOpen] = useState(false);
   const pollUntil = useRef(0);
 
   useEffect(() => {
@@ -364,11 +366,18 @@ export function TripPanel({
           <section className="rounded-xl border border-default-200 bg-content1 p-4 flex flex-col gap-3">
             <div className="flex items-baseline justify-between gap-2 flex-wrap">
               <h2 className="text-lg font-semibold">Packing list</h2>
-              <span className="text-xs text-default-500">
-                {pack.reduce((n, p) => n + packCount(p, looks), 0)} pieces ·{" "}
-                {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
-                {ready.capacity === "PIECES" && ready.maxPieces ? ` · limit ${ready.maxPieces}` : ready.capacity ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}` : ""}
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-default-500">
+                  {pack.reduce((n, p) => n + packCount(p, looks), 0)} pieces ·{" "}
+                  {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
+                  {ready.capacity === "PIECES" && ready.maxPieces ? ` · limit ${ready.maxPieces}` : ready.capacity ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}` : ""}
+                </span>
+                {pack.length > 0 && (
+                  <Button size="sm" variant="flat" startContent={<FaListUl size={11} />} onPress={() => setChecklistOpen(true)}>
+                    Add to checklist
+                  </Button>
+                )}
+              </div>
             </div>
             {packGroups.map(([cat, list]) => (
               <div key={cat}>
@@ -433,6 +442,19 @@ export function TripPanel({
               />
             ))}
           </div>
+
+          {trip && (
+            <PackChecklistModal
+              isOpen={checklistOpen}
+              onClose={() => setChecklistOpen(false)}
+              tripId={trip.id}
+              tripName={trip.name}
+              personId={personId}
+              personName={personName}
+              groups={packGroups}
+              copies={(it) => packCount(it, looks)}
+            />
+          )}
         </>
       )}
     </div>

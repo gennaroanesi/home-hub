@@ -186,6 +186,36 @@ describe("get_trip_plan", () => {
     expect(((await runOp(tripSetup(null), "get_trip_plan", { tripName: "Seattle" })) as any).result).toMatchObject({ status: "NONE" });
     expect(((await runOp(tripSetup(null), "get_trip_plan", { tripName: "Lisbon" })) as any).error).toMatch(/No trip matching/);
   });
+
+  it("copies the packing list into a new trip checklist, by category, with copies", async () => {
+    const ctx = tripSetup("READY");
+    const out: any = await runOp(ctx, "add_trip_pack_to_checklist", { tripId: "t1" });
+    expect(out.result).toMatchObject({ checklistName: "Packing · Gennaro", created: true, added: ["Cotton piqué polo ×2", "Todd Snyder Chino (Stone)"], skipped: [] });
+    const lists = (await ctx.client.models.homeChecklist.list({})).data;
+    expect(lists).toEqual([expect.objectContaining({ entityType: "TRIP", entityId: "t1" })]);
+    const items = (await ctx.client.models.homeChecklistItem.list({})).data;
+    expect(items.map((i: any) => [i.text, i.section, i.sortOrder])).toEqual([
+      ["Cotton piqué polo ×2", "Tops", 0],
+      ["Todd Snyder Chino (Stone)", "Pants", 1],
+    ]);
+  });
+
+  it("adds picked pieces to an existing trip checklist, skipping lines already there", async () => {
+    const ctx = tripSetup("READY");
+    await ctx.client.models.homeChecklist.create({ id: "cl", entityType: "TRIP", entityId: "t1", name: "Packing" });
+    await ctx.client.models.homeChecklistItem.create({ checklistId: "cl", text: "todd snyder chino (stone)", sortOrder: 4 });
+    await ctx.client.models.homeChecklist.create({ id: "other", entityType: "TRIP", entityId: "t2", name: "Elsewhere" });
+
+    const out: any = await runOp(ctx, "add_trip_pack_to_checklist", { tripName: "Seattle", checklistId: "cl", itemIds: ["i2"] });
+    expect(out.result).toMatchObject({ created: false, added: [], skipped: ["Todd Snyder Chino (Stone)"] });
+    const more: any = await runOp(ctx, "add_trip_pack_to_checklist", { tripName: "Seattle", checklistId: "cl" });
+    expect(more.result.added).toEqual(["Cotton piqué polo ×2"]);
+    const items = (await ctx.client.models.homeChecklistItem.list({ filter: { checklistId: { eq: "cl" } } })).data;
+    expect(items.at(-1)).toMatchObject({ text: "Cotton piqué polo ×2", sortOrder: 5 });
+
+    expect(((await runOp(ctx, "add_trip_pack_to_checklist", { tripId: "t1", checklistId: "other" })) as any).error).toMatch(/isn't on Seattle/);
+    expect(((await runOp(tripSetup("GENERATING"), "add_trip_pack_to_checklist", { tripId: "t1" })) as any).error).toMatch(/No finished/);
+  });
 });
 
 describe("registry", () => {

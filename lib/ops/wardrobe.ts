@@ -279,33 +279,16 @@ export const getTripPlan = defineOp({
   }),
   async run(ctx, input) {
     const p = await resolvePerson(ctx, input);
-    const today = ymdInTz(new Date(), await getHouseholdTimezone(ctx.client));
-    const trips = (await listAllPages<any>(ctx.client.models.homeTrip)).filter((t) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-      const ids = (t.participantIds ?? []).filter(Boolean);
-      return !ids.length || ids.includes(p.id);
-    });
-    const want = (input.tripName ?? "").toLowerCase().trim();
-    const trip = want
-      ? trips
-          .filter((t) => [t.name, t.destination?.city].filter(Boolean).join(" ").toLowerCase().includes(want))
-          .sort((x, y) => y.startDate.localeCompare(x.startDate))[0]
-      : trips.filter((t) => t.endDate >= today).sort((x, y) => x.startDate.localeCompare(y.startDate))[0];
-    if (!trip) throw new OpError(want ? `No trip matching "${input.tripName}"` : "No upcoming trips");
+    const trip = await findTrip(ctx, p.id, input);
     const dates = `${trip.startDate} to ${trip.endDate}`;
 
-    const plans = await listAllPages<any>(ctx.client.models.homeWardrobeTripPlan, { // eslint-disable-line @typescript-eslint/no-explicit-any
-      filter: { tripId: { eq: trip.id }, personId: { eq: p.id } },
-    });
-    const plan = plans.sort((x, y) => y.updatedAt.localeCompare(x.updatedAt))[0];
+    const plan = await latestPlan(ctx, trip.id, p.id);
     if (!plan || plan.status !== "READY") {
       return { trip: trip.name, dates, status: plan?.status ?? "NONE", note: "No finished plan yet. Make one on the wardrobe page's Trip looks tab." };
     }
 
     const byId = new Map((await itemsOf(ctx, p.id)).map((i) => [i.id, i]));
-    const label = (id: string) => {
-      const i = byId.get(id);
-      return i ? [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ") : null;
-    };
+    const label = (id: string) => (byId.has(id) ? itemLabel(byId.get(id)) : null);
     const packed = new Set((plan.packedItemIds ?? []).filter(Boolean));
     const looks = parseJsonField<TripLook[]>(plan.looks, []);
     return {
@@ -331,4 +314,119 @@ export const getTripPlan = defineOp({
   },
 });
 
-export const wardrobeOps = [listWardrobe, saveWardrobeItem, getTripPlan];
+// ── add_trip_pack_to_checklist ─────────────────────────────────────────────
+
+export const addTripPackToChecklist = defineOp({
+  name: "add_trip_pack_to_checklist",
+  domain: "wardrobe",
+  access: "write",
+  description:
+    "Copy a finished trip-looks packing list (see get_trip_plan) into a checklist on that trip: one line per piece, '×2' when more than one copy goes, grouped by wardrobe category. Pass checklistId to add to one of the trip's checklists, or leave it out to create a new one (checklistName, default 'Packing · <name>'). itemIds limits it to some pieces; default is the whole list. Lines already on the checklist are skipped, so running it again only adds what's new.",
+  input: z.object({
+    ...person,
+    tripId: z.string().optional().describe("The trip, by id. Or use tripName."),
+    tripName: z.string().optional().describe("Fuzzy trip name or city. Defaults to the next upcoming trip."),
+    itemIds: z.array(z.string()).optional().describe("Pieces from the packing list to add; default all"),
+    checklistId: z.string().optional().describe("One of the trip's checklists to add to; omit to create a new one"),
+    checklistName: z.string().optional().describe("Name for a new checklist"),
+  }),
+  output: z.object({
+    checklistId: z.string(),
+    checklistName: z.string(),
+    created: z.boolean(),
+    added: z.array(z.string()),
+    skipped: z.array(z.string()).describe("Already on the checklist"),
+  }),
+  async run(ctx, input) {
+    const p = await resolvePerson(ctx, input);
+    const trip = await findTrip(ctx, p.id, input);
+    const plan = await latestPlan(ctx, trip.id, p.id);
+    if (plan?.status !== "READY") throw new OpError(`No finished trip-looks plan for ${p.name} on ${trip.name} yet.`);
+
+    const byId = new Map((await itemsOf(ctx, p.id)).map((i) => [i.id, i]));
+    const pack: string[] = (plan.packItemIds ?? []).filter((id: string | null): id is string => !!id && byId.has(id));
+    const want = input.itemIds ? new Set(input.itemIds) : null;
+    const picked = want ? pack.filter((id) => want.has(id)) : pack;
+    if (!picked.length) throw new OpError("None of those pieces are on the packing list.");
+    const looks = parseJsonField<TripLook[]>(plan.looks, []);
+
+    let checklist: any; // eslint-disable-line @typescript-eslint/no-explicit-any
+    if (input.checklistId) {
+      checklist = (await ctx.client.models.homeChecklist.get({ id: input.checklistId })).data;
+      if (!checklist || checklist.entityType !== "TRIP" || checklist.entityId !== trip.id) {
+        throw new OpError(`That checklist isn't on ${trip.name}.`);
+      }
+    } else {
+      const name = input.checklistName?.trim() || `Packing · ${p.name}`;
+      const r = await ctx.client.models.homeChecklist.create({ entityType: "TRIP", entityId: trip.id, name, sortOrder: 0 });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Couldn't create the checklist");
+      checklist = r.data;
+    }
+
+    const existing = input.checklistId
+      ? await listAllPages<any>(ctx.client.models.homeChecklistItem, { filter: { checklistId: { eq: checklist.id } } }) // eslint-disable-line @typescript-eslint/no-explicit-any
+      : [];
+    const have = new Set(existing.map((i) => String(i.text).trim().toLowerCase()));
+    let order = Math.max(-1, ...existing.map((i) => i.sortOrder ?? 0));
+    const added: string[] = [];
+    const skipped: string[] = [];
+    for (const id of picked) {
+      const item = byId.get(id);
+      const copies = packCount(item, looks);
+      const text = copies > 1 ? `${itemLabel(item)} ×${copies}` : itemLabel(item);
+      if (have.has(text.toLowerCase())) {
+        skipped.push(text);
+        continue;
+      }
+      have.add(text.toLowerCase());
+      const r = await ctx.client.models.homeChecklistItem.create({
+        checklistId: checklist.id,
+        text,
+        section: item.category || null,
+        isDone: false,
+        sortOrder: ++order,
+      });
+      if (r.errors?.length) throw new Error(r.errors[0].message);
+      added.push(text);
+    }
+    return { checklistId: checklist.id, checklistName: checklist.name, created: !input.checklistId, added, skipped };
+  },
+});
+
+// ── Shared trip lookup ─────────────────────────────────────────────────────
+
+// "Todd Snyder Chino (Stone)"
+function itemLabel(i: { brand?: string | null; name?: string | null; color?: string | null }): string {
+  return [i.brand, i.name, i.color && `(${i.color})`].filter(Boolean).join(" ");
+}
+
+// The trip by id, else by fuzzy name/city (latest match), else the next upcoming one; only trips the person is on.
+async function findTrip(ctx: OpContext, personId: string, input: { tripId?: string; tripName?: string }) {
+  const trips = (await listAllPages<any>(ctx.client.models.homeTrip)).filter((t) => { // eslint-disable-line @typescript-eslint/no-explicit-any
+    const ids = (t.participantIds ?? []).filter(Boolean);
+    return !ids.length || ids.includes(personId);
+  });
+  if (input.tripId) {
+    const t = trips.find((x) => x.id === input.tripId);
+    if (!t) throw new OpError(`No trip ${input.tripId} for this person`);
+    return t;
+  }
+  const today = ymdInTz(new Date(), await getHouseholdTimezone(ctx.client));
+  const want = (input.tripName ?? "").toLowerCase().trim();
+  const trip = want
+    ? trips
+        .filter((t) => [t.name, t.destination?.city].filter(Boolean).join(" ").toLowerCase().includes(want))
+        .sort((x, y) => y.startDate.localeCompare(x.startDate))[0]
+    : trips.filter((t) => t.endDate >= today).sort((x, y) => x.startDate.localeCompare(y.startDate))[0];
+  if (!trip) throw new OpError(want ? `No trip matching "${input.tripName}"` : "No upcoming trips");
+  return trip;
+}
+
+async function latestPlan(ctx: OpContext, tripId: string, personId: string) {
+  const plans = await listAllPages<any>(ctx.client.models.homeWardrobeTripPlan, { // eslint-disable-line @typescript-eslint/no-explicit-any
+    filter: { tripId: { eq: tripId }, personId: { eq: personId } },
+  });
+  return plans.sort((x, y) => y.updatedAt.localeCompare(x.updatedAt))[0] ?? null;
+}
+
+export const wardrobeOps = [listWardrobe, saveWardrobeItem, getTripPlan, addTripPackToChecklist];
