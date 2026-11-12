@@ -8,6 +8,7 @@ import { listAllPages } from "../list-all";
 import { BUSINESS_CATEGORIES, businessMatches, businessRow, healthProviderRow } from "../businesses";
 import { CIRCLES, daysToBirthday, inHousehold } from "../people";
 import { todayIso } from "../finance/dates";
+import { originalPhotoUrl, photoUrl } from "../image-loader";
 import { RELATION_KINDS, RELATION_LABELS, findPairRow, normalizeRelationship, relationsOf, type RelationshipRow } from "../relationships";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
@@ -22,6 +23,8 @@ const RelationOut = z.object({
   role: z.string().describe("Display word, e.g. 'daughter' (falls back to the kind)"),
 });
 
+const PEOPLE_PREFIX = "home/people/";
+
 const ContactOut = z.object({
   id: z.string(),
   name: z.string(),
@@ -31,6 +34,8 @@ const ContactOut = z.object({
   phoneNumber: z.string().nullable(),
   email: z.string().nullable(),
   notes: z.string().nullable(),
+  photoUrl: z.string().nullable().describe("Profile picture, resized to 400px wide"),
+  photoOriginalUrl: z.string().nullable().describe("Profile picture, full size"),
   relations: z.array(RelationOut).describe("How other people relate to them"),
 });
 
@@ -51,6 +56,8 @@ function contactOut(p: any, today: string, rels: RelationshipRow[] = [], byId: M
     phoneNumber: p.phoneNumber ?? null,
     email: p.email ?? null,
     notes: p.notes ?? null,
+    photoUrl: p.photoKey ? photoUrl(p.photoKey, 400) : null,
+    photoOriginalUrl: p.photoKey ? originalPhotoUrl(p.photoKey) : null,
     relations: relationsOut(p.id, rels, byId),
   };
 }
@@ -86,6 +93,12 @@ function pickPerson(people: any[], id: string | undefined, name: string | undefi
   const p = people.find((x) => x.name.toLowerCase() === n);
   if (!p) throw new OpError(`No person named "${name}"; add them with save_contact first`);
   return p;
+}
+
+/** Stores a contact picture from an https link or an API upload; returns its key. */
+async function storePhoto(ctx: OpContext, input: { imageUrl?: string; s3Key?: string }): Promise<string> {
+  if (input.imageUrl) return ctx.storage.storeFromUrl(input.imageUrl.trim(), PEOPLE_PREFIX);
+  return ctx.storage.copyUpload(input.s3Key!.trim(), PEOPLE_PREFIX);
 }
 
 export const listContacts = defineOp({
@@ -124,7 +137,7 @@ export const saveContact = defineOp({
   domain: "contacts",
   access: "write",
   description:
-    "Add a person to the contact book or change one. Without contactId it creates one (name required) and refuses a name that already exists. With contactId it updates only what's given; null clears a field. Household members can't be changed here.",
+    "Add a person to the contact book or change one. Without contactId it creates one (name required) and refuses a name that already exists. With contactId it updates only what's given; null clears a field. Picture: imageUrl (an https link the server downloads) or s3Key (from POST /uploads after PUTting the image there) sets or replaces it, on create or update; removePhoto clears it. Household members can't be changed here.",
   input: z.object({
     contactId: z.string().optional(),
     name: z.string().optional(),
@@ -133,18 +146,26 @@ export const saveContact = defineOp({
     phoneNumber: z.string().nullable().optional().describe("E.164, e.g. +15125551234"),
     email: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    imageUrl: z.string().optional().describe("https link to a picture of them; downloaded and stored as their profile picture (JPEG, PNG, WebP, HEIC or GIF, up to 10 MB)."),
+    s3Key: z.string().optional().describe("Key returned by POST /uploads after the picture was PUT there; becomes their profile picture."),
+    removePhoto: z.boolean().optional().describe("true removes the profile picture."),
   }),
   output: z.object({ action: z.enum(["created", "updated"]), contact: ContactOut }),
   async run(ctx, input) {
     const today = todayIso();
-    const fields = Object.fromEntries(
+    const fields: Record<string, any> = Object.fromEntries(
       (["name", "circle", "birthday", "phoneNumber", "email", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, typeof input[k] === "string" ? (input[k] as string).trim() || null : input[k]]),
     );
+    const photoSources = [input.imageUrl, input.s3Key, input.removePhoto ? true : undefined].filter((x) => x !== undefined && x !== "");
+    if (photoSources.length > 1) throw new OpError("Send one of imageUrl, s3Key or removePhoto");
+    if (input.removePhoto && !input.contactId) throw new OpError("removePhoto needs contactId");
     if (input.contactId) {
       const { data: p } = await ctx.client.models.homePerson.get({ id: input.contactId });
       if (!p) throw new OpError(`No contact with id ${input.contactId}`);
       if (inHousehold(p)) throw new OpError(`${p.name} is a household member; change them on the Household page`);
       if ("name" in fields && !fields.name) throw new OpError("name can't be empty");
+      if (input.removePhoto) fields.photoKey = null;
+      else if (photoSources.length) fields.photoKey = await storePhoto(ctx, input);
       const r = await ctx.client.models.homePerson.update({ id: p.id, ...fields });
       if (r.errors?.length) throw new Error(r.errors[0].message);
       return { action: "updated" as const, contact: contactOut(r.data, today) };
@@ -153,6 +174,7 @@ export const saveContact = defineOp({
     if (!name) throw new OpError("name is required to add a contact");
     const dup = (await allPeople(ctx)).find((p) => p.name.toLowerCase() === name.toLowerCase());
     if (dup) throw new OpError(`${dup.name} is already in the app; pass contactId to change them`, { contactId: dup.id });
+    if (photoSources.length) fields.photoKey = await storePhoto(ctx, input);
     const r = await ctx.client.models.homePerson.create({ ...fields, name, active: true, groups: [] });
     if (r.errors?.length) throw new Error(r.errors[0].message);
     return { action: "created" as const, contact: contactOut(r.data, today) };

@@ -219,7 +219,8 @@ agentLambda.addToRolePolicy(
 // under home/inventory/ — the same prefix the web uploader uses — and
 // checks (HeadObject → GetObject permission) images API clients uploaded
 // there through a presigned URL. save_wardrobe_item does the same for
-// wardrobe photos under home/wardrobe/, copying API uploads over.
+// wardrobe photos under home/wardrobe/, copying API uploads over, and
+// save_contact for contact pictures under home/people/.
 agentLambda.addToRolePolicy(
   new PolicyStatement({
     effect: Effect.ALLOW,
@@ -227,6 +228,7 @@ agentLambda.addToRolePolicy(
     resources: [
       `arn:aws:s3:::${HOME_HUB_BUCKET}/home/inventory/*`,
       `arn:aws:s3:::${HOME_HUB_BUCKET}/home/wardrobe/*`,
+      `arn:aws:s3:::${HOME_HUB_BUCKET}/home/people/*`,
     ],
   })
 );
@@ -347,15 +349,16 @@ wardrobeTryOnLambda.addToRolePolicy(new PolicyStatement({
 }));
 
 // ── Operations (runOp) ─────────────────────────────────────────────────────
-// lib/ops for web and mobile. Saves wardrobe photos fetched from a URL and
-// copies API uploads out of home/inventory/ (string ARNs only: this Lambda
-// is an AppSync handler in the data stack, see the cycle note above).
+// lib/ops for web and mobile. Saves wardrobe and contact photos fetched from
+// a URL and copies API uploads out of home/inventory/ (string ARNs only: this
+// Lambda is an AppSync handler in the data stack, see the cycle note above).
 const opsLambda = backend.ops.resources.lambda as LambdaFunction;
 opsLambda.addEnvironment("HOME_HUB_BUCKET", HOME_HUB_BUCKET);
 opsLambda.addToRolePolicy(new PolicyStatement({
   actions: ["s3:GetObject", "s3:PutObject"],
   resources: [
     `arn:aws:s3:::${HOME_HUB_BUCKET}/home/wardrobe/*`,
+    `arn:aws:s3:::${HOME_HUB_BUCKET}/home/people/*`,
     `arn:aws:s3:::${HOME_HUB_BUCKET}/home/inventory/*`,
   ],
 }));

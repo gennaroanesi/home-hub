@@ -18,6 +18,7 @@ import { addToast } from "@heroui/react";
 import { FaTimes } from "react-icons/fa";
 
 import { callOp } from "@/lib/ops-client";
+import { photoUrl } from "@/lib/image-loader";
 import {
   RELATION_KINDS,
   RELATION_LABELS,
@@ -33,9 +34,15 @@ export function PersonAvatar({
   person,
   size = 32,
 }: {
-  person: Pick<Person, "name" | "color" | "emoji">;
+  person: Pick<Person, "name" | "color" | "emoji"> & { photoKey?: string | null };
   size?: number;
 }) {
+  if (person.photoKey) {
+    return (
+      // eslint-disable-next-line @next/next/no-img-element
+      <img src={photoUrl(person.photoKey, size * 3)} alt={person.name} className="rounded-full object-cover shrink-0" style={{ width: size, height: size }} />
+    );
+  }
   return (
     <div
       className="rounded-full flex items-center justify-center text-white text-sm font-medium shrink-0"

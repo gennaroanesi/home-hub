@@ -81,6 +81,29 @@ describe("save_contact", () => {
     await runOp(ctx, "save_contact", { contactId: "c1", phoneNumber: null, notes: "Met at work" });
     expect(people[0]).toMatchObject({ name: "Marco", circle: "FRIEND", phoneNumber: null, notes: "Met at work" });
   });
+
+  it("sets, replaces and removes the picture", async () => {
+    const { ctx, people } = setup({ people: [household, marco] });
+    ctx.storage = {
+      storeFromUrl: async (url, prefix) => `${prefix}from-url.jpg`,
+      copyUpload: async (key, prefix) => `${prefix}copied-${key.split("/").pop()}`,
+    };
+    const made: any = await runOp(ctx, "save_contact", { name: "Lucia", imageUrl: "https://cdn/x.jpg" });
+    expect(people[2].photoKey).toBe("home/people/from-url.jpg");
+    expect(made.result.contact.photoUrl).toMatch(/\/home\/people\/from-url\.jpg\?.*width=400/);
+    expect(made.result.contact.photoOriginalUrl).toMatch(/\/home\/people\/from-url\.jpg$/);
+
+    await runOp(ctx, "save_contact", { contactId: "c1", s3Key: "home/inventory/abc.png" });
+    expect(people[1]).toMatchObject({ name: "Marco", photoKey: "home/people/copied-abc.png" });
+
+    const both: any = await runOp(ctx, "save_contact", { contactId: "c1", s3Key: "home/inventory/abc.png", removePhoto: true });
+    expect(both.error).toMatch(/one of/);
+    const rm: any = await runOp(ctx, "save_contact", { contactId: "c1", removePhoto: true });
+    expect(people[1].photoKey).toBeNull();
+    expect(rm.result.contact.photoUrl).toBeNull();
+    const member: any = await runOp(ctx, "save_contact", { contactId: "h1", imageUrl: "https://cdn/y.jpg" });
+    expect(member.error).toMatch(/household member/);
+  });
 });
 
 describe("businesses", () => {

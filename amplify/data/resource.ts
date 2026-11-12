@@ -99,6 +99,8 @@ const schema = a
         // relate to each other is homePersonRelationship.
         circle: a.string(),
         notes: a.string(),
+        // Profile picture: S3 key under home/people/ (save_contact stores it).
+        photoKey: a.string(),
       })
       .authorization((allow) => [
         allow.group("home-users"),
