@@ -18,6 +18,9 @@ import {
   planTripOutfits,
   type TripActivity,
   type TripCapacity,
+  type TripLook,
+  type TripPlan,
+  type TripPlanSnapshot,
 } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
 
@@ -47,6 +50,7 @@ interface TripArgs {
   maxPieces?: number | null;
   activities?: unknown; // AWSJSON: string or parsed
   request?: string | null;
+  revision?: string | null;
 }
 
 interface TripResult {
@@ -84,63 +88,94 @@ async function suggest(args: SuggestArgs): Promise<SuggestResult> {
 type PlanRow = Schema["homeWardrobeTripPlan"]["type"];
 
 async function planTrip(args: TripArgs): Promise<TripResult> {
-  const capacity: TripCapacity = (TRIP_CAPACITIES as readonly string[]).includes(args.capacity)
-    ? (args.capacity as TripCapacity)
-    : "CARRY_ON";
-  const activities = parseJsonField<TripActivity[]>(args.activities, []).filter(
-    (a) => a && typeof a.text === "string" && a.text.trim(),
-  );
-  const maxPieces = capacity === "PIECES" ? Math.max(1, Math.min(60, args.maxPieces ?? 12)) : null;
-
+  const change = args.revision?.trim() || null;
   // One plan per (trip, person): reuse the row so the page finds it by
   // trip + person even if this call outlives AppSync's timeout.
   let planId: string | null = null;
+  let before: PlanRow | undefined;
   try {
     const existing = await listAllPages<PlanRow>(client.models.homeWardrobeTripPlan, {
       filter: { tripId: { eq: args.tripId }, personId: { eq: args.personId } },
     });
+    before = existing[0];
+    if (change && before?.status !== "READY") throw new Error("There's no finished plan to tweak yet.");
+
+    // A tweak keeps the saved inputs; a fresh plan takes the form's.
+    const capacity: TripCapacity = change
+      ? ((before!.capacity as TripCapacity | null) ?? "CARRY_ON")
+      : (TRIP_CAPACITIES as readonly string[]).includes(args.capacity)
+        ? (args.capacity as TripCapacity)
+        : "CARRY_ON";
+    const activities = parseJsonField<TripActivity[]>(change ? before!.activities : args.activities, []).filter(
+      (a) => a && typeof a.text === "string" && a.text.trim(),
+    );
+    const maxPieces = capacity === "PIECES" ? Math.max(1, Math.min(60, (change ? before!.maxPieces : args.maxPieces) ?? 12)) : null;
+    const request = (change ? before!.request : args.request)?.trim() || null;
+    const feedback = (before?.feedback ?? []).filter((f): f is string => !!f);
+
     const inputs = {
       capacity,
       maxPieces,
       activities: JSON.stringify(activities) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      request: args.request?.trim() || null,
+      request,
       status: "GENERATING" as const,
       error: null,
     };
-    const saved = existing[0]
-      ? await client.models.homeWardrobeTripPlan.update({ id: existing[0].id, ...inputs })
+    const saved = before
+      ? await client.models.homeWardrobeTripPlan.update({ id: before.id, ...inputs })
       : await client.models.homeWardrobeTripPlan.create({ tripId: args.tripId, personId: args.personId, ...inputs });
     if (saved.errors?.length || !saved.data) throw new Error(saved.errors?.[0]?.message ?? "Couldn't save the plan");
     planId = saved.data.id;
 
+    const current: TripPlan | null =
+      before?.status === "READY"
+        ? {
+            packItemIds: (before.packItemIds ?? []).filter((id): id is string => !!id),
+            looks: parseJsonField<TripLook[]>(before.looks, []),
+            tips: before.tips ?? null,
+          }
+        : null;
     const ctx = await loadTripPlanContext(client, { tripId: args.tripId, personId: args.personId });
     const { plan, context } = await planTripOutfits(anthropic, ctx, {
       capacity,
       maxPieces,
       activities,
-      request: args.request,
+      request,
+      feedback,
+      revise: change && current ? { current, change } : null,
     });
     const ok = plan.looks.length > 0;
+    const noLooks = context.startsWith("Add more") ? context : "No looks came back. Try again or loosen the request.";
+    if (!ok && change) {
+      // A failed tweak leaves the plan as it was.
+      await client.models.homeWardrobeTripPlan.update({ id: planId, status: "READY", error: noLooks });
+      return { planId, error: noLooks };
+    }
+    const snapshot: TripPlanSnapshot | null = current ? { ...current, feedback } : null;
     const r = await client.models.homeWardrobeTripPlan.update({
       id: planId,
       status: ok ? "READY" : "FAILED",
-      error: ok ? null : context.startsWith("Add more") ? context : "No looks came back. Try again or loosen the request.",
+      error: ok ? null : noLooks,
       context,
       weather: JSON.stringify(ctx.weather) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       looks: JSON.stringify(plan.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       packItemIds: plan.packItemIds,
       // Keep ticks for pieces still on the list.
-      packedItemIds: (existing[0]?.packedItemIds ?? []).filter((id): id is string => !!id && plan.packItemIds.includes(id)),
+      packedItemIds: (before?.packedItemIds ?? []).filter((id): id is string => !!id && plan.packItemIds.includes(id)),
       tips: plan.tips,
       generatedAt: new Date().toISOString(),
+      feedback: change ? [...feedback, change] : feedback,
+      ...(ok && snapshot ? { previousPlan: JSON.stringify(snapshot) as any } : {}), // eslint-disable-line @typescript-eslint/no-explicit-any
     });
     if (r.errors?.length) throw new Error(r.errors[0].message);
-    return { planId, error: ok ? null : "No looks came back. Try again or loosen the request." };
+    return { planId, error: ok ? null : noLooks };
   } catch (err) {
     console.error("[wardrobe-suggest] planTripOutfits", err);
     const message = err instanceof Error ? err.message : String(err);
     if (planId) {
-      await client.models.homeWardrobeTripPlan.update({ id: planId, status: "FAILED", error: message }).catch(() => {});
+      // A tweak that blew up leaves the old plan showing, with the error.
+      const status = change && before?.status === "READY" ? ("READY" as const) : ("FAILED" as const);
+      await client.models.homeWardrobeTripPlan.update({ id: planId, status, error: message }).catch(() => {});
     }
     return { planId, error: message };
   }

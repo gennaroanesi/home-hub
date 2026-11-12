@@ -745,6 +745,11 @@ const schema = a
         packedItemIds: a.id().array(), // ticked off while packing
         tips: a.string(),
         generatedAt: a.datetime(),
+        // Tweaks asked for so far ("pack something more low-profile than
+        // the field jacket"); re-planning from scratch still follows them.
+        feedback: a.string().array(),
+        // The plan before the last tweak or re-plan (TripPlanSnapshot), for undo.
+        previousPlan: a.json(),
       })
       .secondaryIndexes((index) => [index("tripId")])
       .authorization((allow) => [
@@ -2257,6 +2262,9 @@ const schema = a
         maxPieces: a.integer(),
         activities: a.json(), // [{ date?, text }]
         request: a.string(),
+        // Tweak the saved plan instead of re-planning; the other inputs
+        // then come from the saved plan.
+        revision: a.string(),
       })
       .returns(a.ref("wardrobeTripPlanResponse"))
       .handler(a.handler.function(wardrobeSuggest)),

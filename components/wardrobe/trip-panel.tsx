@@ -11,7 +11,7 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaListUl, FaMagic, FaPlus, FaTimes } from "react-icons/fa";
+import { FaCheck, FaListUl, FaMagic, FaPlus, FaTimes, FaUndo } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -27,6 +27,7 @@ import {
   type TripCapacity,
   type TripDayWeather,
   type TripLook,
+  type TripPlanSnapshot,
 } from "@/lib/wardrobe-trip";
 import type { Schema } from "@/amplify/data/resource";
 import type { WardrobeItem } from "./shared";
@@ -85,6 +86,8 @@ export function TripPanel({
   const [busy, setBusy] = useState(false); // the mutation call is in flight
   const [polling, setPolling] = useState(false); // waiting on a saved GENERATING plan
   const [checklistOpen, setChecklistOpen] = useState(false);
+  const [change, setChange] = useState("");
+  const [tweaking, setTweaking] = useState(false); // the running job is a tweak, not a fresh plan
   const pollUntil = useRef(0);
 
   useEffect(() => {
@@ -167,11 +170,16 @@ export function TripPanel({
     pollUntil.current = 0;
     setPolling(false);
     if (p?.status === "FAILED") addToast({ title: "No trip plan", description: p.error ?? undefined, color: "danger" });
+    // A tweak that didn't work leaves the old plan READY, with the error.
+    else if (tweaking && p?.error) addToast({ title: "Couldn't make that change", description: p.error, color: "danger" });
+    else if (tweaking) setChange("");
   }
 
-  async function generate() {
+  // A fresh plan from the form, or (with `revision`) a tweak of the saved one.
+  async function generate(revision?: string) {
     if (!trip) return;
     setBusy(true);
+    setTweaking(!!revision);
     try {
       const { data, errors } = await client.mutations.planTripOutfits({
         tripId: trip.id,
@@ -180,12 +188,13 @@ export function TripPanel({
         maxPieces: capacity === "PIECES" ? Number(maxPieces) || 12 : null,
         activities: JSON.stringify(activities.filter((a) => a.text.trim())),
         request: request.trim() || null,
+        revision: revision ?? null,
       });
       if (errors?.length) throw new Error(errors[0].message);
       const p = await loadPlan();
-      if (p?.status === "FAILED" || (data?.error && p?.status !== "READY")) {
-        addToast({ title: "No trip plan", description: data?.error ?? p?.error ?? undefined, color: "danger" });
-      }
+      if (p?.status === "FAILED" || data?.error) {
+        addToast({ title: revision ? "Couldn't make that change" : "No trip plan", description: data?.error ?? p?.error ?? undefined, color: "danger" });
+      } else if (revision) setChange("");
     } catch (err) {
       // Usually AppSync's 30s timeout: the Lambda is still running and will
       // save the plan, so poll for it.
@@ -206,11 +215,42 @@ export function TripPanel({
     if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
   }
 
+  async function savePlan(patch: Partial<Plan>) {
+    if (!plan) return;
+    setPlan({ ...plan, ...patch });
+    const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, ...patch });
+    if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+  }
+
+  // Swap the plan with the one before the last tweak or re-plan, so undo can be undone.
+  async function undo() {
+    const prev = parseJsonField<TripPlanSnapshot | null>(plan?.previousPlan, null);
+    if (!plan || !prev) return;
+    const now: TripPlanSnapshot = {
+      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
+      looks: parseJsonField<TripLook[]>(plan.looks, []),
+      tips: plan.tips ?? null,
+      feedback: (plan.feedback ?? []).filter((x): x is string => !!x),
+    };
+    await savePlan({
+      packItemIds: prev.packItemIds,
+      looks: JSON.stringify(prev.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      tips: prev.tips,
+      feedback: prev.feedback,
+      packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && prev.packItemIds.includes(id)),
+      previousPlan: JSON.stringify(now) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      error: null,
+    });
+  }
+
   const setActivity = (n: number, patch: Partial<TripActivity>) =>
     setActivities((list) => list.map((a, i) => (i === n ? { ...a, ...patch } : a)));
 
   const working = busy || polling;
-  const ready = plan?.status === "READY" ? plan : null;
+  // While a tweak or re-plan runs, keep showing the plan it started from.
+  const ready = plan?.status === "READY" || (plan?.status === "GENERATING" && plan.generatedAt) ? plan : null;
+  const feedback = (plan?.feedback ?? []).filter((x): x is string => !!x);
+  const canUndo = !!plan?.previousPlan && !working;
   const weather = parseJsonField<TripDayWeather[]>(ready?.weather, []);
   const looks = parseJsonField<TripLook[]>(ready?.looks, []);
   const pack = (ready?.packItemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
@@ -333,8 +373,8 @@ export function TripPanel({
           minRows={2}
         />
         <div>
-          <Button color="primary" startContent={!working && <FaMagic size={12} />} onPress={generate} isLoading={working} isDisabled={!trip}>
-            {working ? "Planning…" : ready ? "Plan again" : "Plan trip looks"}
+          <Button color="primary" startContent={!working && <FaMagic size={12} />} onPress={() => generate()} isLoading={working && !tweaking} isDisabled={!trip || working}>
+            {working && !tweaking ? "Planning…" : ready ? "Plan again from scratch" : "Plan trip looks"}
           </Button>
         </div>
       </div>
@@ -342,7 +382,7 @@ export function TripPanel({
       {plan?.status === "FAILED" && !working && <p role="alert" className="text-sm text-danger">{plan.error ?? "Planning failed. Try again."}</p>}
 
       {ready && (
-        <>
+        <div className={`flex flex-col gap-5 ${working ? "opacity-50 pointer-events-none" : ""}`}>
           {ready.context && <p className="text-xs text-default-500">Based on: {ready.context}</p>}
 
           {weather.length > 0 && (
@@ -424,6 +464,50 @@ export function TripPanel({
 
           {ready.tips && <p className="text-sm text-default-600 rounded-lg bg-default-100 px-3 py-2">{ready.tips}</p>}
 
+          <section className="rounded-xl border border-default-200 bg-content1 p-4 flex flex-col gap-2">
+            <h2 className="text-lg font-semibold">Tweak the plan</h2>
+            <p className="text-xs text-default-500">Say what to change; everything else stays as it is. Changes are remembered, so planning again from scratch still follows them.</p>
+            <Textarea
+              aria-label="Change to make"
+              placeholder="The field jacket is too specific, pack something more low-profile…"
+              value={change}
+              onValueChange={setChange}
+              minRows={2}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && change.trim()) generate(change.trim());
+              }}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button color="primary" variant="flat" onPress={() => generate(change.trim())} isLoading={working && tweaking} isDisabled={!change.trim() || working}>
+                {working && tweaking ? "Changing…" : "Apply change"}
+              </Button>
+              {canUndo && (
+                <Button variant="light" startContent={<FaUndo size={11} />} onPress={undo}>
+                  Undo last change
+                </Button>
+              )}
+            </div>
+            {feedback.length > 0 && (
+              <div className="flex flex-col gap-1 mt-1">
+                <span className="text-[11px] uppercase tracking-wider text-default-400">Changes so far</span>
+                {feedback.map((f, n) => (
+                  <div key={n} className="flex items-start gap-2 text-sm text-default-600">
+                    <span className="flex-1">{f}</span>
+                    <button
+                      type="button"
+                      aria-label="Forget this change"
+                      title="Forget this change (the next plan won't follow it)"
+                      className="text-default-400 hover:text-danger mt-0.5"
+                      onClick={() => savePlan({ feedback: feedback.filter((_, i) => i !== n) })}
+                    >
+                      <FaTimes size={11} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             {looks.map((l, n) => (
               <LookCard
@@ -455,7 +539,7 @@ export function TripPanel({
               copies={(it) => packCount(it, looks)}
             />
           )}
-        </>
+        </div>
       )}
     </div>
   );

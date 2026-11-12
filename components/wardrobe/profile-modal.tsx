@@ -115,7 +115,7 @@ export function ProfileModal({
                 finally { setUploading(false); }
               }} />
             </label>}
-            <Textarea label="Fit preferences" placeholder="Relaxed trousers; shirts usually tucked in…" value={fitNotes} onValueChange={setFitNotes} maxLength={2000} minRows={2} />
+            <Textarea label="Fit preferences" description="Only for try-on previews: how clothes should sit on you in the generated image. The outfit suggester doesn't read this; put what to pick or avoid in the style brief." placeholder="Relaxed trousers; shirts usually tucked in…" value={fitNotes} onValueChange={setFitNotes} maxLength={2000} minRows={2} />
           </section>}
           <div>
             <p className="text-sm font-medium mb-2">Categories</p>
@@ -152,7 +152,7 @@ export function ProfileModal({
           </div>
           <Textarea
             label="Style brief"
-            description="The outfit suggester follows this: palettes you like, rules, things to avoid."
+            description="What the outfit suggester and trip planner follow when picking clothes: palettes you like, rules, things to avoid. (How things should fit in try-on previews goes in Fit preferences.)"
             placeholder="Old-money British leaning. Earth tones, navy, grey, olive. No black on top. Sneakers OK at the office."
             value={notes}
             onValueChange={setNotes}

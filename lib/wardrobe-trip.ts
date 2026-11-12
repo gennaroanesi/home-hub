@@ -77,6 +77,16 @@ export interface TripPlanOptions {
   maxPieces?: number | null;
   activities: TripActivity[];
   request?: string | null;
+  // Changes asked for on earlier versions ("pack something more low-key
+  // than the field jacket"); they still apply when re-planning from scratch.
+  feedback?: string[];
+  // Set to tweak an existing plan instead of planning from scratch.
+  revise?: { current: TripPlan; change: string } | null;
+}
+
+/** A plan as saved before a tweak or re-plan, so it can be undone. */
+export interface TripPlanSnapshot extends TripPlan {
+  feedback: string[];
 }
 
 // ── Dates ──────────────────────────────────────────────────────────────────
@@ -374,6 +384,8 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
     return `- ${d}: ${w ? describeTripDay(w) : "weather unknown"}`;
   });
   const activities = opts.activities.filter((a) => a.text.trim());
+  const feedback = (opts.feedback ?? []).map((f) => f.trim()).filter(Boolean);
+  const revise = opts.revise?.change.trim() ? opts.revise : null;
   const user = [
     `Trip: ${ctx.trip.name}${ctx.trip.type ? ` (${ctx.trip.type.toLowerCase()})` : ""}, ${ctx.trip.startDate} to ${ctx.trip.endDate}`,
     ctx.location ? `Destination: ${ctx.location.label}` : "Destination: unknown",
@@ -389,13 +401,36 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
           .join("\n")}`
       : "",
     opts.request?.trim() ? `\nRequest: ${opts.request.trim()}` : "",
+    feedback.length ? `\nFeedback on earlier versions of this plan (still applies):\n${feedback.map((f) => `- ${f}`).join("\n")}` : "",
     `\nWardrobe:\n${ctx.items.map(itemLine).join("\n")}`,
-    "\nPlan the trip with the propose_trip_plan tool.",
+    revise ? revisionBlock(ctx, revise.current, revise.change) : "\nPlan the trip with the propose_trip_plan tool.",
   ]
     .filter(Boolean)
     .join("\n");
 
   return { system, user };
+}
+
+// The current plan plus the change asked for: a tweak, not a fresh plan.
+function revisionBlock(ctx: TripPlanContext, current: TripPlan, change: string): string {
+  const byId = new Map(ctx.items.map((i) => [i.id, i]));
+  const name = (id: string) => {
+    const i = byId.get(id);
+    return i ? `[${id}] ${[i.brand, i.name].filter(Boolean).join(" ")}` : null;
+  };
+  const names = (ids: string[]) => ids.map(name).filter(Boolean).join("; ");
+  const looks = current.looks.map((l) => `- ${l.date ?? "Any day"} · ${l.title}${l.occasion ? ` (${l.occasion})` : ""}: ${names(l.itemIds)}`);
+  return [
+    "\nCurrent plan:",
+    `Packing list: ${names(current.packItemIds)}`,
+    `Looks:\n${looks.join("\n")}`,
+    current.tips ? `Tips: ${current.tips}` : "",
+    `\nChange requested: ${change.trim()}`,
+    "Revise the current plan to make this change. Keep everything the change doesn't touch exactly as it is: the same looks, days, titles and pieces. When you swap a piece, swap it in every look that used it and drop it from the packing list. Stay within the luggage limit and the rules. Update `why` for looks that changed and `tips` if they no longer fit.",
+    "Return the whole revised plan with the propose_trip_plan tool.",
+  ]
+    .filter(Boolean)
+    .join("\n");
 }
 
 export const PROPOSE_TRIP_PLAN_TOOL: Anthropic.Tool = {

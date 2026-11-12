@@ -162,4 +162,28 @@ describe("prompt", () => {
     expect(user).not.toContain("Chino | owns");
     expect(capacityRule("CARRY_ON")).toMatch(/Carry-on/);
   });
+
+  it("a tweak sends the current plan and the change; earlier changes always ride along", () => {
+    const ctx: TripPlanContext = {
+      person: { id: "p", name: "Gennaro" },
+      styleNotes: null,
+      trip: { id: "t", name: "Lisbon", type: null, startDate: "2026-11-12", endDate: "2026-11-12", notes: null },
+      location: null,
+      dates: ["2026-11-12"],
+      weather: [],
+      reservations: [],
+      items,
+    };
+    const current = { packItemIds: [items[0].id, items[1].id], looks: [{ date: "2026-11-12", title: "Travel", occasion: null, itemIds: [items[0].id, items[1].id], why: null }], tips: "Wear the boots." };
+    const fresh = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], feedback: ["No shorts", " "] }).user;
+    expect(fresh).toContain("Feedback on earlier versions of this plan (still applies):\n- No shorts");
+    expect(fresh).not.toContain("Current plan");
+    expect(fresh).toMatch(/Plan the trip with the propose_trip_plan tool\.$/);
+
+    const tweak = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], feedback: ["No shorts"], revise: { current, change: " The jacket is too specific " } }).user;
+    expect(tweak).toContain(`- 2026-11-12 · Travel: [${items[0].id}]`);
+    expect(tweak).toContain("Tips: Wear the boots.");
+    expect(tweak).toContain("Change requested: The jacket is too specific\nRevise the current plan");
+    expect(tweak).not.toContain("Plan the trip with");
+  });
 });
