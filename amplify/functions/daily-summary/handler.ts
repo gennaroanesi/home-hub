@@ -24,6 +24,8 @@ import {
 import { sendExpoPush, type ExpoPushMessage } from "../../../lib/expo-push.js";
 import { careUrgency, gestationalAge } from "../../../lib/pregnancy.js";
 import { isHouseholdMember } from "../../../lib/household.js";
+import { listAllPages } from "../../../lib/list-all.js";
+import { eventsFor, type FeedSettings } from "../../../lib/calendar-feeds.js";
 
 const PUSH_KIND = "daily_summary";
 
@@ -165,10 +167,14 @@ async function gatherData(): Promise<SummaryData> {
 
   // ── Today's events: startAt within today ──
   // Query a wider window then filter by TZ-local date string
-  const { data: allEvents } = await client.models.homeCalendarEvent.list({
-    limit: 500,
-  });
-  const todayEvents = (allEvents ?? [])
+  // Every page (one page stops short once feeds add hundreds of events),
+  // then only feeds meant for the summary, owners filled in from the feed.
+  const [eventRows, feedRows] = await Promise.all([
+    listAllPages<Schema["homeCalendarEvent"]["type"]>(client.models.homeCalendarEvent, { limit: 1000 }),
+    listAllPages<FeedSettings>(client.models.homeCalendarFeed),
+  ]);
+  const allEvents = eventsFor(eventRows, feedRows, "SUMMARY");
+  const todayEvents = allEvents
     .filter((e) => isoDate(new Date(e.startAt)) === todayStr)
     .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
     .map((e) => ({

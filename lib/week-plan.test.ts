@@ -61,6 +61,7 @@ describe("the plan", () => {
         ev({ id: "feed", title: "Appt Dr. Crozier", startAt: "2026-11-19T16:00:00.000Z", feedId: "apple" }),
         ev({ id: "dog", title: "Dolce Barkin Creek", startAt: "2026-11-20T14:00:00.000Z", feedId: "apple" }),
         ev({ id: "native", title: "Dinner", startAt: "2026-11-20T00:00:00.000Z" }), // household on purpose
+        ev({ id: "work", title: "Busy", startAt: "2026-11-20T19:00:00.000Z", feedId: "work", feedOwned: true }), // the feed says whose
       ],
       days: [
         { id: "d1", date: "2026-11-16", personId: "gen", status: "WORKING_OFFICE" },

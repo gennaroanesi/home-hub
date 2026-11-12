@@ -6,6 +6,8 @@ import ical from "node-ical";
 import { env } from "$amplify/env/ics-sync";
 import type { Schema } from "../../data/resource";
 import { cascadeDeleteRemindersFor } from "../../../lib/reminder-parent.js";
+import { listAllPages } from "../../../lib/list-all.js";
+import { duplicateFeedRows } from "../../../lib/calendar-feeds.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -20,6 +22,7 @@ interface FeedResult {
   updated: number;
   unchanged: number;
   deleted: number;
+  duplicatesRemoved: number;
 }
 
 function toHttps(url: string): string {
@@ -104,15 +107,17 @@ async function syncFeed(feed: Feed): Promise<FeedResult> {
   ) as Record<string, unknown>[];
 
   // Load what we already have for this feed so we can tell create vs
-  // update vs delete. One page should cover a normal shared calendar;
-  // if a feed has >1000 events we'd need to paginate.
-  const { data: existing } = await client.models.homeCalendarEvent.list({
+  // update vs delete. Every page: the filter runs after DynamoDB's limit,
+  // so a single page held only part of the feed and the rest got imported
+  // again on every run. Rows that share a UID from that are removed here.
+  const existing = await listAllPages<CalendarEvent>(client.models.homeCalendarEvent, {
     filter: { feedId: { eq: feed.id } },
     limit: 1000,
   });
-  const existingByUid = new Map<string, CalendarEvent>();
-  for (const e of existing ?? []) {
-    if (e.externalUid) existingByUid.set(e.externalUid, e);
+  const { keep: existingByUid, extra } = duplicateFeedRows(existing);
+  for (const e of extra) {
+    await cascadeDeleteRemindersFor(client, e.id);
+    await client.models.homeCalendarEvent.delete({ id: e.id });
   }
 
   let created = 0;
@@ -177,6 +182,7 @@ async function syncFeed(feed: Feed): Promise<FeedResult> {
     updated,
     unchanged,
     deleted,
+    duplicatesRemoved: extra.length,
   };
 }
 
@@ -191,7 +197,7 @@ interface SyncSummary {
 
 export const handler: Handler<unknown, SyncSummary> = async () => {
   console.log("ics-sync: starting at", new Date().toISOString());
-  const { data: feeds, errors } = await client.models.homeCalendarFeed.list();
+  const { data: feeds, errors } = await client.models.homeCalendarFeed.list({ limit: 1000 });
   if (errors?.length) {
     console.error("ics-sync: failed to list feeds", errors);
     throw new Error(errors[0].message);
@@ -214,7 +220,7 @@ export const handler: Handler<unknown, SyncSummary> = async () => {
       aggregate.totalEvents += result.total;
       aggregate.created += result.created;
       aggregate.updated += result.updated;
-      aggregate.deleted += result.deleted;
+      aggregate.deleted += result.deleted + result.duplicatesRemoved;
       await client.models.homeCalendarFeed.update({
         id: feed.id,
         lastSyncedAt: new Date().toISOString(),

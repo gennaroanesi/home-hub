@@ -44,6 +44,7 @@ function setup(seed: Record<string, any[]> = {}) {
       "homePerson",
       "homePet",
       "homeCalendarEvent",
+      "homeCalendarFeed",
       "homeCalendarDay",
       "homePetDay",
       "homeTrip",

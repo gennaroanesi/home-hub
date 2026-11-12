@@ -25,6 +25,8 @@ import { EventModal } from "@/components/event-modal";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { TRIP_TYPE_CONFIG, type TripType, type LegMode, LEG_MODE_LABEL, LEG_MODE_EMOJI, legIsoToLocalDate } from "@/lib/trip";
 import { householdMembers } from "@/lib/household";
+import { listAllPages } from "@/lib/list-all";
+import { eventsFor } from "@/lib/calendar-feeds";
 import type { Schema } from "@/amplify/data/resource";
 
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -184,20 +186,21 @@ export default function CalendarPage() {
     ] = await Promise.all([
       client.models.homePerson.list(),
       client.models.homeTrip.list(),
-      client.models.homeCalendarEvent.list(),
+      // Every page: a single list() stops at 100 rows.
+      listAllPages<Event>(client.models.homeCalendarEvent, { limit: 1000 }),
       client.models.homeCalendarDay.list({ limit: 1000 }),
       client.models.homeTripLeg.list({ limit: 1000 }),
       client.models.homeTripReservation.list({ limit: 1000 }),
       client.models.homePhoto.list({ limit: 1000 }),
       client.models.homeAlbum.list({ limit: 500 }),
       client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      client.models.homeCalendarFeed.list(),
+      listAllPages<Schema["homeCalendarFeed"]["type"]>(client.models.homeCalendarFeed),
     ]);
 
     setPeople((peopleRes.data ?? []).filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
-    setEvents(eventsRes.data ?? []);
-    setFeeds(feedsRes.data ?? []);
+    setEvents(eventsFor(eventsRes, feedsRes, "CALENDAR"));
+    setFeeds(feedsRes);
     setAllLegs(legsRes.data ?? []);
     setAllReservations(reservationsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);

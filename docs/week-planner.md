@@ -41,6 +41,7 @@ so a Sunday review lands on the coming week.
 |---|---|
 | `homeCalendarDay` (existing) | One row per person per day: office / home / PTO / travel / vacation / choice day / holiday. Existed before but had no rows; trips imply travel for their participants when nothing is set. |
 | `homeCalendarEvent` (existing) | Events, native and from the Apple family calendar feed. The planner can set `assignedPersonIds` on feed events; ics-sync never writes that field, so the assignment survives syncs (it's lost only if the event's UID changes). |
+| `homeCalendarFeed` (existing) | Per-feed settings (`lib/calendar-feeds.ts`): `ownerMode` ASK (default: the planner asks "who is it for?") / HOUSEHOLD / PEOPLE + `ownerPersonIds`, and `uses` (CALENDAR, WEEK, SUMMARY, AGENT; empty = all). Every event reader goes through `eventsFor(events, feeds, use)`, which drops feeds not used there and fills an unassigned event's people from its feed (`feedOwned`, so nothing asks). Set on Calendar feeds. |
 | `homePetDay` (new) | Where a pet is on a day: daycare / boarding / sitter / with us. |
 | `homeWeekReview` (new, key `weekStart`) | Reviewed at / by, notes, and `summary` for the AI summary later. |
 

@@ -49,6 +49,8 @@ export type EventRow = {
   assignedPersonIds?: (string | null)[] | null;
   recurrence?: string | null;
   feedId?: string | null;
+  /** The feed's owner setting decides who it's for (lib/calendar-feeds.ts eventsFor). */
+  feedOwned?: boolean;
   location?: { city?: string | null } | null;
 };
 export type DayRow = { id: string; date: string; personId: string; status?: string | null; notes?: string | null };
@@ -72,6 +74,8 @@ export type WeekEvent = {
   /** Pets named in the title ("Dolce Barkin Creek"). */
   petIds: string[];
   fromFeed: boolean;
+  /** Its feed says whose it is, so the planner doesn't ask. */
+  feedOwned: boolean;
   recurring: boolean;
   location: string | null;
 };
@@ -175,6 +179,7 @@ export function eventsInWeek(events: EventRow[], weekStart: string, timeZone: st
       personIds,
       petIds: pets.filter((p) => mentionsPet(e.title, p)).map((p) => p.id),
       fromFeed: !!e.feedId,
+      feedOwned: !!e.feedOwned,
       recurring,
       location: e.location?.city?.trim() || null,
     };
@@ -300,7 +305,7 @@ export function buildWeekPlan(input: {
   // Family-calendar events nobody is assigned to. Native events with no one
   // assigned are household events on purpose; feed events just don't say.
   for (const e of events) {
-    if (e.fromFeed && e.personIds.length === 0 && e.petIds.length === 0) {
+    if (e.fromFeed && !e.feedOwned && e.personIds.length === 0 && e.petIds.length === 0) {
       attention.push({ kind: "unassigned", date: e.date, eventKeys: [e.key], detail: `“${e.title}” on ${fmtDay(e.date)}${e.start ? ` ${e.start}` : ""}: who is it for?` });
     }
   }

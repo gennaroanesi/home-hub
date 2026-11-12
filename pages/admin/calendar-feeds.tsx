@@ -9,6 +9,8 @@ import { Input } from "@heroui/input";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Switch } from "@heroui/switch";
+import { Checkbox, CheckboxGroup } from "@heroui/checkbox";
+import { Radio, RadioGroup } from "@heroui/radio";
 import {
   Modal,
   ModalContent,
@@ -21,11 +23,33 @@ import { addToast } from "@heroui/react";
 import { FaArrowLeft, FaPlus, FaTrash, FaPen, FaSyncAlt, FaCalendarAlt } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
+import { listAllPages } from "@/lib/list-all";
+import { householdMembers } from "@/lib/household";
+import { FEED_USES, FEED_USE_LABELS, feedOwnerMode, type FeedUse } from "@/lib/calendar-feeds";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Feed = Schema["homeCalendarFeed"]["type"];
+type Person = Schema["homePerson"]["type"];
+
+// Owner radio value: "ASK", "HOUSEHOLD", or a household member's id.
+function ownerValue(feed: Feed): string {
+  const mode = feedOwnerMode(feed);
+  return mode === "PEOPLE" ? (feed.ownerPersonIds ?? []).find(Boolean)! : mode;
+}
+
+function ownerLabel(feed: Feed, people: Person[]): string {
+  const v = ownerValue(feed);
+  if (v === "ASK") return "Assign each event";
+  if (v === "HOUSEHOLD") return "Household";
+  return people.find((p) => p.id === v)?.name ?? "Someone";
+}
+
+function usesOf(feed: Feed | null): FeedUse[] {
+  const saved = (feed?.uses ?? []).filter((u): u is FeedUse => (FEED_USES as readonly string[]).includes(u ?? ""));
+  return saved.length ? saved : [...FEED_USES];
+}
 
 const DEFAULT_COLOR = "#8B5CF6";
 
@@ -39,6 +63,9 @@ export default function CalendarFeedsPage() {
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const [color, setColor] = useState(DEFAULT_COLOR);
+  const [owner, setOwner] = useState("ASK");
+  const [uses, setUses] = useState<string[]>([...FEED_USES]);
+  const [people, setPeople] = useState<Person[]>([]);
 
   useEffect(() => {
     (async () => {
@@ -54,8 +81,12 @@ export default function CalendarFeedsPage() {
 
   const loadFeeds = useCallback(async () => {
     setLoading(true);
-    const { data } = await client.models.homeCalendarFeed.list();
-    setFeeds((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+    const [rows, persons] = await Promise.all([
+      listAllPages<Feed>(client.models.homeCalendarFeed),
+      listAllPages<Person>(client.models.homePerson),
+    ]);
+    setFeeds(rows.sort((a, b) => a.name.localeCompare(b.name)));
+    setPeople(householdMembers(persons).sort((a, b) => a.name.localeCompare(b.name)));
     setLoading(false);
   }, []);
 
@@ -64,6 +95,8 @@ export default function CalendarFeedsPage() {
     setName("");
     setUrl("");
     setColor(DEFAULT_COLOR);
+    setOwner("ASK");
+    setUses([...FEED_USES]);
     modal.onOpen();
   }
 
@@ -72,6 +105,8 @@ export default function CalendarFeedsPage() {
     setName(feed.name);
     setUrl(feed.url);
     setColor(feed.color ?? DEFAULT_COLOR);
+    setOwner(ownerValue(feed));
+    setUses(usesOf(feed));
     modal.onOpen();
   }
 
@@ -80,6 +115,15 @@ export default function CalendarFeedsPage() {
       addToast({ title: "Name and URL are required", color: "warning" });
       return;
     }
+    if (!uses.length) {
+      addToast({ title: "Pick at least one place to use it (or pause the feed)", color: "warning" });
+      return;
+    }
+    const settings = {
+      ownerMode: owner === "ASK" || owner === "HOUSEHOLD" ? owner : "PEOPLE",
+      ownerPersonIds: owner === "ASK" || owner === "HOUSEHOLD" ? [] : [owner],
+      uses,
+    };
     try {
       if (editing) {
         const { errors } = await client.models.homeCalendarFeed.update({
@@ -87,6 +131,7 @@ export default function CalendarFeedsPage() {
           name: name.trim(),
           url: url.trim(),
           color,
+          ...settings,
         });
         if (errors?.length) throw new Error(errors[0].message);
       } else {
@@ -95,13 +140,14 @@ export default function CalendarFeedsPage() {
           url: url.trim(),
           color,
           active: true,
+          ...settings,
         });
         if (errors?.length) throw new Error(errors[0].message);
       }
       addToast({
         title: editing ? "Feed updated" : "Feed added",
         description: editing
-          ? "Changes will take effect on the next sync"
+          ? "Owner and where it's used apply right away; URL changes on the next sync"
           : "First sync runs within 15 minutes",
         color: "success",
       });
@@ -275,6 +321,10 @@ export default function CalendarFeedsPage() {
                         Last sync: {formatLastSync(feed.lastSyncedAt)}
                       </span>
                     </div>
+                    <p className="text-xs text-default-500 mt-0.5">
+                      Whose: {ownerLabel(feed, people)} · Used in:{" "}
+                      {usesOf(feed).map((u) => FEED_USE_LABELS[u]).join(", ")}
+                    </p>
                     <p className="text-xs text-default-400 mt-0.5 truncate font-mono">
                       {feed.url}
                     </p>
@@ -308,7 +358,7 @@ export default function CalendarFeedsPage() {
           })}
         </div>
 
-        <Modal isOpen={modal.isOpen} onOpenChange={modal.onOpenChange}>
+        <Modal isOpen={modal.isOpen} onOpenChange={modal.onOpenChange} scrollBehavior="inside">
           <ModalContent>
             {(onClose) => (
               <>
@@ -336,6 +386,36 @@ export default function CalendarFeedsPage() {
                     onValueChange={setColor}
                     description="Used to tint imported events on the calendar."
                   />
+                  <RadioGroup
+                    label="Whose events are these?"
+                    value={owner}
+                    onValueChange={setOwner}
+                    description="Where they go in the week planner. Assigning a single event still overrides this."
+                    size="sm"
+                  >
+                    <Radio value="ASK" description="The week planner asks who each event is for">
+                      Assign each event
+                    </Radio>
+                    {people.map((p) => (
+                      <Radio key={p.id} value={p.id}>
+                        {p.name}
+                      </Radio>
+                    ))}
+                    <Radio value="HOUSEHOLD">Household</Radio>
+                  </RadioGroup>
+                  <CheckboxGroup
+                    label="Use it in"
+                    value={uses}
+                    onValueChange={setUses}
+                    size="sm"
+                    orientation="horizontal"
+                  >
+                    {FEED_USES.map((u) => (
+                      <Checkbox key={u} value={u}>
+                        {FEED_USE_LABELS[u]}
+                      </Checkbox>
+                    ))}
+                  </CheckboxGroup>
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>

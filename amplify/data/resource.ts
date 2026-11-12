@@ -1407,6 +1407,14 @@ const schema = a
         // How many events are currently imported from this feed.
         // Maintained by the sync for the admin UI.
         eventCount: a.integer(),
+        // Who the feed's events belong to (lib/calendar-feeds.ts): ASK
+        // (null) = assign each event by hand, HOUSEHOLD, or PEOPLE =
+        // ownerPersonIds. A per-event assignment still wins.
+        ownerMode: a.string(),
+        ownerPersonIds: a.id().array(),
+        // Which features read this feed (FEED_USES: CALENDAR, WEEK,
+        // SUMMARY, AGENT). Empty = all of them.
+        uses: a.string().array(),
       })
       .authorization((allow) => [
         allow.group("home-users"),

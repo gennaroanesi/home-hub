@@ -201,7 +201,7 @@ export default function WeekPage() {
         type="button"
         onClick={() => setAssigning(assigning === e.key ? null : e.key)}
         className={`text-left text-xs rounded-md px-1.5 py-1 bg-default-100 hover:bg-default-200 ${flagged.has(e.key) ? "ring-1 ring-warning-400" : ""}`}
-        title={e.fromFeed ? "From the family calendar: tap to say who it's for" : "Tap to change who it's for"}
+        title={e.fromFeed ? "From a calendar feed: tap to say who it's for" : "Tap to change who it's for"}
       >
         {!e.allDay && <span className="tabular-nums text-default-500 mr-1">{fmtTime(e.start)}</span>}
         <span className="font-medium">{e.title}</span>

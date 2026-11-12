@@ -6,6 +6,7 @@
 
 import { z } from "zod/v4";
 import { listAllPages } from "../list-all";
+import { eventsFor, type FeedSettings } from "../calendar-feeds";
 import { householdMembers } from "../household";
 import { getHouseholdTimezone } from "../household-settings";
 import { addDays, todayIso } from "../finance/dates";
@@ -99,7 +100,9 @@ export async function loadWeekPlan(client: any, weekStartInput?: string): Promis
   const [allPeople, pets, events, days, petDays, trips, review] = await Promise.all([
     listAllPages<Person & { birthday?: string | null }>(client.models.homePerson),
     listAllPages<Pet>(client.models.homePet).then((p) => p.filter((x) => x.active !== false)),
-    listAllPages<EventRow>(client.models.homeCalendarEvent),
+    Promise.all([listAllPages<EventRow>(client.models.homeCalendarEvent), listAllPages<FeedSettings>(client.models.homeCalendarFeed)]).then(([rows, feeds]) =>
+      eventsFor(rows, feeds, "WEEK"),
+    ),
     listAllPages<DayRow>(client.models.homeCalendarDay, { filter: { date: between } }),
     listAllPages<PetDayRow>(client.models.homePetDay, { filter: { date: between } }),
     listAllPages<TripRow>(client.models.homeTrip),
@@ -249,7 +252,8 @@ const WeekEventOut = z.object({
   allDay: z.boolean(),
   personIds: z.array(z.string()),
   petIds: z.array(z.string()),
-  fromFeed: z.boolean().describe("From the Apple family calendar (read-only except who it's for)"),
+  fromFeed: z.boolean().describe("From a subscribed calendar feed (read-only except who it's for)"),
+  feedOwned: z.boolean().describe("Its feed's owner setting decides who it's for; personIds come from there unless set on the event"),
   recurring: z.boolean(),
   location: z.string().nullable(),
 });

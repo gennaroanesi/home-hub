@@ -49,6 +49,7 @@ import { isHouseholdMember } from "../../../lib/household.js";
 import { approveDrafts, categoryAndDescendants, categoryTree, deleteInventoryItems, isLowStock, matchCategory, sizeRank, wishlistSummary } from "../../../lib/inventory.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
 import { listAllPages } from "../../../lib/list-all.js";
+import { eventsFor, type FeedSettings } from "../../../lib/calendar-feeds.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import { decodeBase64Image, extensionForImage, type ImageBytes } from "../../../lib/inventory-images.js";
 import { OPS, findOp, opJsonSchemas, runOp, toolDefinition } from "../../../lib/ops/registry.js";
@@ -2478,8 +2479,12 @@ async function executeTool(
     }
 
     case "list_calendar_events": {
-      const { data: events } = await client.models.homeCalendarEvent.list();
-      let filtered = events ?? [];
+      // Every page, only feeds Janet is meant to read, owners from the feed.
+      const [eventRows, feedRows] = await Promise.all([
+        listAllPages<Schema["homeCalendarEvent"]["type"]>(client.models.homeCalendarEvent, { limit: 1000 }),
+        listAllPages<FeedSettings>(client.models.homeCalendarFeed),
+      ]);
+      let filtered = eventsFor(eventRows, feedRows, "AGENT");
 
       // Default startDate to today (local CT) if not provided so we don't
       // dump every past event into the model context. Use the same TZ as
@@ -3359,7 +3364,7 @@ async function executeTool(
       // care about the next 2 days.
       const [legsRes, eventsRes] = await Promise.all([
         client.models.homeTripLeg.list({ limit: 500 }),
-        client.models.homeCalendarEvent.list({ limit: 500 }),
+        listAllPages<Schema["homeCalendarEvent"]["type"]>(client.models.homeCalendarEvent, { limit: 1000 }).then((data) => ({ data })),
       ]);
       const briefing = await getMorningWeatherBriefing(icao, {
         tripLegs: (legsRes.data ?? []).map((l) => ({

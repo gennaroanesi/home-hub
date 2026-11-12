@@ -37,6 +37,7 @@ import { TaskModal } from "@/components/task-modal";
 import { EventModal } from "@/components/event-modal";
 import { ShoppingListModal } from "@/components/shopping-list-modal";
 import { listAllPages } from "@/lib/list-all";
+import { eventsFor, type FeedSettings } from "@/lib/calendar-feeds";
 import {
   ENTITY_TYPE_SINGULAR,
   isArchived,
@@ -175,7 +176,11 @@ export default function HomeDashboard() {
     const todayStart = startOfLocalDay(now);
     guard(setEvents, async () =>
       eventOccurrences(
-        await listAllPages<CalEvent>(client.models.homeCalendarEvent),
+        eventsFor(
+          await listAllPages<CalEvent>(client.models.homeCalendarEvent),
+          await listAllPages<FeedSettings>(client.models.homeCalendarFeed),
+          "CALENDAR",
+        ),
         todayStart,
         addLocalDays(todayStart, EVENT_DAYS),
       ),
