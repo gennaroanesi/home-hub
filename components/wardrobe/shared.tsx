@@ -5,6 +5,7 @@ import { addToast } from "@heroui/react";
 import { FaChevronLeft, FaChevronRight } from "react-icons/fa";
 
 import { photoUrl } from "@/lib/image-loader";
+import { uploadImages } from "@/lib/upload-images";
 import { imagesOf, WARDROBE_STATUS_LABELS, type WardrobeStatus } from "@/lib/wardrobe";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -115,27 +116,6 @@ export function PhotoCarousel({
 }
 
 /** Presign → PUT straight to S3 under home/wardrobe/ → return the keys. */
-export async function uploadWardrobePhotos(files: File[]): Promise<string[]> {
-  const keys: string[] = [];
-  for (const file of files) {
-    const contentType = file.type || "image/jpeg";
-    try {
-      const urlRes = await fetch("/api/documents/upload-url", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contentType, prefix: "wardrobe" }),
-      });
-      if (!urlRes.ok) {
-        const err = await urlRes.json().catch(() => ({}));
-        throw new Error(err.error ?? `Upload URL failed: ${urlRes.status}`);
-      }
-      const { uploadUrl, s3key } = await urlRes.json();
-      const putRes = await fetch(uploadUrl, { method: "PUT", headers: { "Content-Type": contentType }, body: file });
-      if (!putRes.ok) throw new Error(`Upload failed: ${putRes.status}`);
-      keys.push(s3key);
-    } catch (err: any) {
-      addToast({ title: `Couldn't upload ${file.name}`, description: err?.message ?? String(err), color: "danger" });
-    }
-  }
-  return keys;
+export function uploadWardrobePhotos(files: File[]): Promise<string[]> {
+  return uploadImages(files, "wardrobe");
 }

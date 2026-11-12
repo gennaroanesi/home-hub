@@ -8,7 +8,13 @@
 //   - Businesses: service people and businesses (homeBusiness) plus
 //     health providers; components/businesses-tab.tsx.
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+} from "react";
 import { fetchAuthSession, getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -43,6 +49,11 @@ import DefaultLayout from "@/layouts/default";
 import { listAllPages } from "@/lib/list-all";
 import { todayIso } from "@/lib/finance/dates";
 import {
+  MAX_WEB_IMAGE_BYTES,
+  WEB_IMAGE_TYPES,
+  uploadImages,
+} from "@/lib/upload-images";
+import {
   CIRCLES,
   CIRCLE_LABELS,
   birthdayLabel,
@@ -74,6 +85,7 @@ const EMPTY_FORM = {
   notes: "",
   color: "#3a5068",
   emoji: "",
+  photoKey: "",
 };
 
 export default function ContactsPage() {
@@ -87,6 +99,8 @@ export default function ContactsPage() {
   const [sort, setSort] = useState<Sort>("name");
   const [editing, setEditing] = useState<Person | null>(null);
   const [form, setForm] = useState(EMPTY_FORM);
+  const [uploading, setUploading] = useState(false);
+  const photoInput = useRef<HTMLInputElement>(null);
   const editModal = useDisclosure();
   const mergeModal = useDisclosure();
   const [mergeSource, setMergeSource] = useState<Person | null>(null);
@@ -173,6 +187,7 @@ export default function ContactsPage() {
       notes: p.notes ?? "",
       color: p.color ?? "#3a5068",
       emoji: p.emoji ?? "",
+      photoKey: p.photoKey ?? "",
     });
     editModal.onOpen();
   }
@@ -188,6 +203,7 @@ export default function ContactsPage() {
       notes: form.notes.trim() || null,
       color: form.color,
       emoji: form.emoji || null,
+      photoKey: form.photoKey || null,
     };
     const res = editing
       ? await client.models.homePerson.update({ id: editing.id, ...payload })
@@ -456,6 +472,67 @@ export default function ContactsPage() {
                   {editing ? `Edit ${editing.name}` : "New contact"}
                 </ModalHeader>
                 <ModalBody>
+                  <div className="flex items-center gap-3">
+                    <PersonAvatar
+                      person={{
+                        name: form.name || "?",
+                        color: form.color,
+                        emoji: form.emoji,
+                        photoKey: form.photoKey,
+                      }}
+                      size={64}
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="flat"
+                        isLoading={uploading}
+                        onPress={() => photoInput.current?.click()}
+                      >
+                        {form.photoKey ? "Change photo" : "Add photo"}
+                      </Button>
+                      <input
+                        ref={photoInput}
+                        type="file"
+                        accept={WEB_IMAGE_TYPES.join(",")}
+                        className="hidden"
+                        disabled={uploading}
+                        onChange={async (e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = "";
+                          if (!file) return;
+                          if (
+                            !WEB_IMAGE_TYPES.includes(file.type) ||
+                            file.size > MAX_WEB_IMAGE_BYTES
+                          ) {
+                            addToast({
+                              title:
+                                "Use a JPEG, PNG or WebP photo under 10 MB",
+                              color: "warning",
+                            });
+                            return;
+                          }
+                          setUploading(true);
+                          try {
+                            const [key] = await uploadImages([file], "people");
+                            if (key) setForm((f) => ({ ...f, photoKey: key }));
+                          } finally {
+                            setUploading(false);
+                          }
+                        }}
+                      />
+                      {form.photoKey && (
+                        <Button
+                          size="sm"
+                          variant="light"
+                          color="danger"
+                          onPress={() => setForm({ ...form, photoKey: "" })}
+                        >
+                          Remove photo
+                        </Button>
+                      )}
+                    </div>
+                  </div>
                   <Input
                     label="Name"
                     value={form.name}
@@ -534,7 +611,11 @@ export default function ContactsPage() {
                   <Button variant="light" onPress={onClose}>
                     Cancel
                   </Button>
-                  <Button color="primary" onPress={() => save(onClose)}>
+                  <Button
+                    color="primary"
+                    onPress={() => save(onClose)}
+                    isDisabled={uploading}
+                  >
                     {editing ? "Save" : "Create"}
                   </Button>
                 </ModalFooter>
