@@ -72,7 +72,6 @@ shows.
 
 Computed in `lib/week-plan.ts` (`buildWeekPlan`):
 
-- **Double-booked:** two timed events assigned to the same person overlap.
 - **Who's it for?:** a family-calendar event with no one assigned. Native
   events with no one assigned are household events on purpose and aren't
   flagged; neither are events whose title names a pet ("Dolce Barkin

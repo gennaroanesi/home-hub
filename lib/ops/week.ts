@@ -296,7 +296,7 @@ export const getWeekPlan = defineOp({
     events: z.array(WeekEventOut),
     attention: z.array(
       z.object({
-        kind: z.enum(["overlap", "unassigned", "no-status", "overdue", "care", "trip-prep"]),
+        kind: z.enum(["unassigned", "no-status", "overdue", "care", "trip-prep"]),
         detail: z.string(),
         date: z.string().optional(),
         dates: z.array(z.string()).optional(),

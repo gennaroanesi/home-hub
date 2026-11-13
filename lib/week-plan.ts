@@ -94,7 +94,6 @@ export type PersonDay = {
 export type PetDay = { date: string; status: PetDayStatus | null; notes: string | null; petDayId: string | null };
 
 export type Attention =
-  | { kind: "overlap"; date: string; personId: string; eventKeys: string[]; detail: string }
   | { kind: "unassigned"; date: string; eventKeys: string[]; detail: string }
   | { kind: "no-status"; personId: string; dates: string[]; detail: string };
 
@@ -152,7 +151,6 @@ export function localParts(instant: Date, timeZone: string): { date: string; tim
   return { date: `${get("year")}-${get("month")}-${get("day")}`, time: `${get("hour")}:${get("minute")}` };
 }
 
-const toMinutes = (hhmm: string) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
 
 // ── Events ───────────────────────────────────────────────────────────────────
 
@@ -280,28 +278,6 @@ export function buildWeekPlan(input: {
 
   const attention: Attention[] = [];
 
-  // Someone double-booked: two timed events of theirs overlap.
-  for (const p of input.people) {
-    for (const date of dates) {
-      const mine = events.filter((e) => !e.allDay && e.date === date && e.personIds.includes(p.id));
-      for (let i = 0; i < mine.length; i++) {
-        for (let j = i + 1; j < mine.length; j++) {
-          const a = mine[i];
-          const b = mine[j];
-          if (toMinutes(a.start!) < toMinutes(b.end!) && toMinutes(b.start!) < toMinutes(a.end!)) {
-            attention.push({
-              kind: "overlap",
-              date,
-              personId: p.id,
-              eventKeys: [a.key, b.key],
-              detail: `${p.name} has “${a.title}” (${a.start}–${a.end}) and “${b.title}” (${b.start}–${b.end}) on ${fmtDay(date)}`,
-            });
-          }
-        }
-      }
-    }
-  }
-
   // Family-calendar events nobody is assigned to. Native events with no one
   // assigned are household events on purpose; feed events just don't say.
   for (const e of events) {
@@ -361,7 +337,6 @@ export function weekNudgeText(
   if (glance.length) lines.push("", ...glance);
 
   const todo: string[] = [];
-  for (const a of plan.attention.filter((a) => a.kind === "overlap")) todo.push(`⚠️ ${a.detail}`);
   const unassigned = plan.attention.filter((a) => a.kind === "unassigned");
   if (unassigned.length) todo.push(`👤 ${unassigned.length} family-calendar event${unassigned.length === 1 ? "" : "s"} with nobody assigned`);
   const noStatus = plan.attention.filter((a) => a.kind === "no-status");

@@ -57,7 +57,7 @@ describe("the plan", () => {
       events: [
         ev({ id: "a", title: "OB visit", startAt: "2026-11-17T15:00:00.000Z", endAt: "2026-11-17T16:00:00.000Z", assignedPersonIds: ["cris"] }),
         ev({ id: "b", title: "PT", startAt: "2026-11-17T15:30:00.000Z", endAt: "2026-11-17T16:30:00.000Z", assignedPersonIds: ["cris"] }),
-        ev({ id: "c", title: "Dentist", startAt: "2026-11-17T16:00:00.000Z", assignedPersonIds: ["cris"] }), // starts as OB ends: no overlap
+        ev({ id: "c", title: "Dentist", startAt: "2026-11-17T16:00:00.000Z", assignedPersonIds: ["cris"] }),
         ev({ id: "feed", title: "Appt Dr. Crozier", startAt: "2026-11-19T16:00:00.000Z", feedId: "apple" }),
         ev({ id: "dog", title: "Dolce Barkin Creek", startAt: "2026-11-20T14:00:00.000Z", feedId: "apple" }),
         ev({ id: "native", title: "Dinner", startAt: "2026-11-20T00:00:00.000Z" }), // household on purpose
@@ -83,8 +83,6 @@ describe("the plan", () => {
     expect(plan.pets[0].days.map((d) => d.status)).toEqual([null, null, "DAYCARE", null, null, null, null]);
 
     expect(plan.attention.map((a) => [a.kind, "eventKeys" in a ? a.eventKeys : a.dates])).toEqual([
-      ["overlap", ["a", "b"]],
-      ["overlap", ["b", "c"]],
       ["unassigned", ["feed"]], // the Dolce one is tied to the pet; the native one is household
       ["no-status", ["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20"]], // Cris
     ]);
@@ -114,7 +112,6 @@ describe("the Sunday nudge", () => {
         "🐾 Dolce: daycare Wed",
         "",
         "*Needs a decision*",
-        "⚠️ Cris has “OB visit” (09:00–10:00) and “PT” (09:30–10:30) on Tue",
         "👤 1 family-calendar event with nobody assigned",
         "🏢 Office/home not set: Cris (5 days)",
         "",

@@ -167,6 +167,36 @@ export function eventOccurrences<E extends EventLike>(
   });
 }
 
+// A busy day (a work calendar full of "Busy" blocks) collapses to its
+// first timed event, a "+N more" line and the one that ends last; all-day
+// events always show. Small days show everything.
+export type DayLine<E> =
+  | { kind: "event"; occ: EventOccurrence<E> }
+  | { kind: "more"; count: number };
+
+export function condenseDay<E>(occs: EventOccurrence<E>[], expanded = false): DayLine<E>[] {
+  const line = (occ: EventOccurrence<E>): DayLine<E> => ({ kind: "event", occ });
+  const allDay = occs.filter((o) => o.allDay);
+  const timed = occs.filter((o) => !o.allDay).sort((a, b) => a.start.getTime() - b.start.getTime());
+  if (expanded || timed.length <= 3) return [...allDay, ...timed].map(line);
+  const [first, ...rest] = timed;
+  const last = rest.reduce((a, b) => (b.end.getTime() >= a.end.getTime() ? b : a));
+  return [...allDay.map(line), line(first), { kind: "more", count: timed.length - 2 }, line(last)];
+}
+
+// "10:35–11:00 AM", "11:30 AM–1:00 PM"; the meridiem shows once when shared.
+export function fmtTimeRange(start: Date, end: Date): string {
+  const parts = (d: Date) => {
+    const p = new Intl.DateTimeFormat("en-US", { hour: "numeric", minute: "2-digit" }).formatToParts(d);
+    const get = (t: string) => p.find((x) => x.type === t)?.value ?? "";
+    return { time: `${get("hour")}:${get("minute")}`, mer: get("dayPeriod") };
+  };
+  const a = parts(start);
+  if (end.getTime() <= start.getTime()) return `${a.time} ${a.mer}`;
+  const b = parts(end);
+  return a.mer === b.mer ? `${a.time}–${b.time} ${b.mer}` : `${a.time} ${a.mer}–${b.time} ${b.mer}`;
+}
+
 // ── Trips ────────────────────────────────────────────────────────────────────
 
 export interface TripLike {

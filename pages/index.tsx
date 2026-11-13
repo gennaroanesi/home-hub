@@ -60,6 +60,8 @@ import {
   type EventOccurrence,
   type TaskBuckets,
   type UpcomingTrip,
+  condenseDay,
+  fmtTimeRange,
 } from "@/lib/dashboard";
 import { householdMembers } from "@/lib/household";
 import { formatUsd, wishlistSummary, type WishlistSummary } from "@/lib/inventory";
@@ -545,6 +547,7 @@ function Row({
   onPress,
   leading,
   left,
+  leftWidth = "w-16",
   title,
   right,
 }: {
@@ -552,12 +555,13 @@ function Row({
   onPress?: () => void;
   leading?: React.ReactNode;
   left?: React.ReactNode;
+  leftWidth?: string;
   title: React.ReactNode;
   right?: React.ReactNode;
 }) {
   const content = (
     <>
-      {left && <span className="w-16 shrink-0 text-xs text-default-500">{left}</span>}
+      {left && <span className={`${leftWidth} shrink-0 text-xs text-default-500`}>{left}</span>}
       <span className="flex-1 min-w-0 truncate text-sm text-foreground">{title}</span>
       {right}
     </>
@@ -685,6 +689,9 @@ function TasksCard({
 
 // ── Calendar ─────────────────────────────────────────────────────────────────
 
+// Lines the This week card holds before the remaining days move behind a link.
+const MAX_EVENT_LINES = 12;
+
 function EventsCard({
   data,
   now,
@@ -698,6 +705,7 @@ function EventsCard({
   onOpen: (event: CalEvent) => void;
   onNew: () => void;
 }) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
   return (
     <Section
       title="This week"
@@ -717,20 +725,53 @@ function EventsCard({
             if (!days.has(key)) days.set(key, { label: relativeDayLabel(day, now), rows: [] });
             days.get(key)!.rows.push(occ);
           }
-          return Array.from(days.entries()).map(([key, { label, rows }]) => (
-            <div key={key}>
-              <GroupLabel>{label}</GroupLabel>
-              {rows.map((occ) => (
-                <Row
-                  key={`${occ.event.id}-${occ.start.getTime()}`}
-                  onPress={() => onOpen(occ.event)}
-                  left={occ.allDay ? "All day" : fmtTime(occ.start)}
-                  title={occ.event.title}
-                  right={<PersonDots ids={occ.event.assignedPersonIds} peopleById={peopleById} />}
-                />
+          // Whole days until the card holds MAX_EVENT_LINES; the first day always shows.
+          const shown: { key: string; label: string; lines: ReturnType<typeof condenseDay<CalEvent>> }[] = [];
+          let used = 0;
+          let hidden = 0;
+          for (const [key, { label, rows }] of days) {
+            const lines = condenseDay(rows, expanded.has(key));
+            if (shown.length > 0 && used + lines.length > MAX_EVENT_LINES) {
+              hidden += rows.length;
+              continue;
+            }
+            shown.push({ key, label, lines });
+            used += lines.length;
+          }
+          return (
+            <>
+              {shown.map(({ key, label, lines }) => (
+                <div key={key}>
+                  <GroupLabel>{label}</GroupLabel>
+                  {lines.map((line, i) =>
+                    line.kind === "more" ? (
+                      <Row
+                        key={`more-${i}`}
+                        onPress={() => setExpanded((s) => new Set(s).add(key))}
+                        leftWidth="w-32"
+                        left={"\u00a0"}
+                        title={<span className="text-default-400">+{line.count} more</span>}
+                      />
+                    ) : (
+                      <Row
+                        key={`${line.occ.event.id}-${line.occ.start.getTime()}`}
+                        onPress={() => onOpen(line.occ.event)}
+                        leftWidth="w-32"
+                        left={line.occ.allDay ? "All day" : line.occ.event.endAt ? fmtTimeRange(line.occ.start, line.occ.end) : fmtTime(line.occ.start)}
+                        title={line.occ.event.title}
+                        right={<PersonDots ids={line.occ.event.assignedPersonIds} peopleById={peopleById} />}
+                      />
+                    ),
+                  )}
+                </div>
               ))}
-            </div>
-          ));
+              {hidden > 0 && (
+                <NextLink href="/calendar" className="mt-2 block text-xs text-default-400 hover:text-default-600">
+                  {hidden} more event{hidden === 1 ? "" : "s"} later this week →
+                </NextLink>
+              )}
+            </>
+          );
         }}
       </SectionBody>
     </Section>

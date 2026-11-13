@@ -41,7 +41,6 @@ type EventModalState = { event: EventRow | null; defaults?: { startAt?: string; 
 type TaskModalState = { defaults?: { dueDate?: string; assignedPersonIds?: string[] } } | null;
 
 const ATTENTION_LABELS: Record<string, string> = {
-  overlap: "Double-booked",
   unassigned: "Who's it for?",
   "no-status": "Not set",
   overdue: "Overdue",
@@ -388,7 +387,7 @@ export default function WeekPage() {
                 const e = a.kind === "unassigned" ? plan.events.find((x) => x.key === a.eventKeys?.[0]) : undefined;
                 return (
                   <div key={i} className="flex flex-wrap items-center gap-2">
-                    <Chip size="sm" variant="flat" color={a.kind === "overlap" || a.kind === "overdue" ? "danger" : "warning"}>
+                    <Chip size="sm" variant="flat" color={a.kind === "overdue" ? "danger" : "warning"}>
                       {ATTENTION_LABELS[a.kind] ?? a.kind}
                     </Chip>
                     <span>{a.detail}</span>

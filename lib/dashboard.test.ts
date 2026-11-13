@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   bucketTasks,
+  condenseDay,
+  fmtTimeRange,
   eventOccurrences,
   relativeDayLabel,
   upcomingTrips,
@@ -128,5 +130,34 @@ describe("relativeDayLabel", () => {
     expect(relativeDayLabel(at(2026, 9, 24, 1), NOW)).toBe("Tomorrow");
     expect(relativeDayLabel(at(2026, 9, 26), NOW)).toBe("Sat");
     expect(relativeDayLabel(at(2026, 10, 12), NOW)).toBe("Oct 12");
+  });
+});
+
+describe("condenseDay", () => {
+  const occ = (id: string, h: number, m: number, mins: number, allDay = false) => ({
+    event: { id },
+    start: at(2026, 11, 16, h, m),
+    end: new Date(at(2026, 11, 16, h, m).getTime() + mins * 60_000),
+    allDay,
+  });
+  const ids = (lines: ReturnType<typeof condenseDay<{ id: string }>>) =>
+    lines.map((l) => (l.kind === "more" ? `+${l.count}` : l.occ.event.id));
+
+  it("keeps small days whole", () => {
+    expect(ids(condenseDay([occ("a", 9, 0, 30), occ("b", 11, 0, 30), occ("c", 14, 0, 30)]))).toEqual(["a", "b", "c"]);
+  });
+
+  it("shows the first event, a count and the one ending last; all-day always shows", () => {
+    const day = [occ("hol", 0, 0, 1440, true), occ("a", 9, 0, 30), occ("b", 10, 0, 30), occ("long", 15, 0, 180), occ("c", 16, 0, 30)];
+    expect(ids(condenseDay(day))).toEqual(["hol", "a", "+2", "long"]);
+    expect(ids(condenseDay(day, true))).toEqual(["hol", "a", "b", "long", "c"]);
+  });
+});
+
+describe("fmtTimeRange", () => {
+  it("shows the meridiem once when both ends share it", () => {
+    expect(fmtTimeRange(at(2026, 11, 16, 10, 35), at(2026, 11, 16, 11, 0))).toBe("10:35–11:00 AM");
+    expect(fmtTimeRange(at(2026, 11, 16, 11, 30), at(2026, 11, 16, 13, 0))).toBe("11:30 AM–1:00 PM");
+    expect(fmtTimeRange(at(2026, 11, 16, 9, 0), at(2026, 11, 16, 9, 0))).toBe("9:00 AM");
   });
 });

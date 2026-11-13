@@ -198,7 +198,7 @@ export default function WeekPlanner() {
             const e = a.kind === "unassigned" ? plan.events.find((x) => x.key === a.eventKeys?.[0]) : undefined;
             return (
               <Pressable key={i} disabled={!e} onPress={() => e && pickPeople(e)} style={styles.attention}>
-                <Ionicons name={a.kind === "overlap" ? "warning-outline" : a.kind === "unassigned" ? "person-add-outline" : "business-outline"} size={16} color={a.kind === "overlap" ? "#c0392b" : "#b7791f"} />
+                <Ionicons name={a.kind === "unassigned" ? "person-add-outline" : "business-outline"} size={16} color="#b7791f" />
                 <Text style={styles.attentionText}>{a.detail}</Text>
               </Pressable>
             );
