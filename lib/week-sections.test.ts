@@ -78,12 +78,12 @@ describe("sections", () => {
             mode: "COMMERCIAL_FLIGHT",
             airline: "AA",
             flightNumber: "1234",
-            departAt: "2026-11-20T14:30:00.000Z",
+            departAt: "2026-11-20T19:07:00.000Z", // 7:07 PM at DFW: wall clock, not UTC,
             fromLocation: { airportCode: "DFW", timezone: "America/Chicago" },
             toLocation: { airportCode: "AUS" },
           },
         ],
-        reservations: [{ id: "h", tripId: "aus", type: "HOTEL", name: "Hotel Van Zandt", startAt: "2026-11-20T21:00:00.000Z" }],
+        reservations: [{ id: "h", tripId: "aus", type: "HOTEL", name: "Hotel Van Zandt", startAt: "2026-11-20T15:00:00.000Z" }],
         checklists: [{ id: "pack", entityType: "TRIP", entityId: "aus", name: "Packing" }],
         checklistItems: [
           { id: "1", checklistId: "pack", text: "Charger", isDone: true },
@@ -126,7 +126,7 @@ describe("sections", () => {
     ]);
 
     expect(s.travel.trips[0]).toMatchObject({ name: "Austin", starts: true, ends: true, checklist: { done: 1, total: 2 } });
-    expect(s.travel.legs).toEqual([{ id: "l1", tripName: "Austin", date: "2026-11-20", time: "08:30", label: "AA 1234 DFW → AUS", mode: "COMMERCIAL_FLIGHT" }]);
+    expect(s.travel.legs).toEqual([{ id: "l1", tripName: "Austin", date: "2026-11-20", time: "19:07", label: "AA 1234 DFW → AUS", mode: "COMMERCIAL_FLIGHT" }]);
     expect(s.travel.reservations.map((r) => [r.name, r.date, r.time])).toEqual([["Hotel Van Zandt", "2026-11-20", "15:00"]]);
 
     expect(s.care.pets.map((p) => [p.title, p.overdue])).toEqual([

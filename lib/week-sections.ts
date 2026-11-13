@@ -7,6 +7,7 @@
 // Pure: lib/ops/week.ts loads the rows and passes them in.
 
 import { gestationalAge, careUrgency } from "./pregnancy";
+import { parseLegIso } from "./trip";
 import { nextOccurrence, parseItems } from "./reminder-schedule";
 import { effectiveCategory, isExcludedFromBudget } from "./finance/categories";
 import { occurrencesBetween } from "./finance/dates";
@@ -261,12 +262,21 @@ export function buildWeekSections(
   }
   const tripName = (id: string) => (rows.trips ?? []).find((t) => t.id === id)?.name ?? "Trip";
   const place = (l: Row | null | undefined) => l?.airportCode || l?.city || "?";
+  // Leg and reservation times are the local wall clock at that place; the
+  // trailing Z is a placeholder (see lib/trip.ts). Read them as written,
+  // never through a timezone conversion.
+  const wallClock = (iso: string) => {
+    const p = parseLegIso(iso);
+    if (!p) return null;
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return { date: `${p.year}-${pad(p.month)}-${pad(p.day)}`, time: `${pad(p.hour)}:${pad(p.minute)}` };
+  };
   const legs: WeekSections["travel"]["legs"] = [];
   for (const l of rows.legs ?? []) {
     const at = l.departAt ?? l.arriveAt;
     if (!at) continue;
-    const p = localParts(new Date(at), l.fromLocation?.timezone || timeZone);
-    if (!inWeek(p.date)) continue;
+    const p = wallClock(at);
+    if (!p || !inWeek(p.date)) continue;
     const route = `${place(l.fromLocation)} → ${place(l.toLocation)}`;
     const what = l.mode === "COMMERCIAL_FLIGHT" ? [l.airline, l.flightNumber].filter(Boolean).join(" ") || "Flight" : l.mode === "PERSONAL_FLIGHT" ? `Flight${l.aircraft ? ` ${l.aircraft}` : ""}` : l.mode === "CAR" ? "Drive" : (l.mode ?? "Leg").toLowerCase().replace(/^./, (c: string) => c.toUpperCase());
     legs.push({ id: l.id, tripName: tripName(l.tripId), date: p.date, time: l.departAt ? p.time : null, label: `${what} ${route}`, mode: l.mode ?? null });
@@ -275,8 +285,8 @@ export function buildWeekSections(
   const reservations: WeekSections["travel"]["reservations"] = [];
   for (const r of rows.reservations ?? []) {
     if (!r.startAt) continue;
-    const p = localParts(new Date(r.startAt), timeZone);
-    if (!inWeek(p.date)) continue;
+    const p = wallClock(r.startAt);
+    if (!p || !inWeek(p.date)) continue;
     reservations.push({ id: r.id, tripName: tripName(r.tripId), date: p.date, time: p.time === "00:00" ? null : p.time, type: r.type ?? null, name: r.name });
   }
   reservations.sort((a, b) => a.date.localeCompare(b.date));

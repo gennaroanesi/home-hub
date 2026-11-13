@@ -57,6 +57,8 @@ const at = (date: string, hhmm: string) => {
   const [h, m] = hhmm.split(":").map(Number);
   return new Date(zonedMidnight(date, TZ).getTime() + (h * 60 + m) * 60_000).toISOString();
 };
+// Trip legs and reservations store the local wall clock with a placeholder Z (lib/trip.ts).
+const wall = (date: string, hhmm: string) => `${date}T${hhmm}:00.000Z`;
 
 async function removeMock(m: any) {
   const del = async (model: string, rows: any[]) => {
@@ -178,8 +180,8 @@ async function main() {
     mode: "COMMERCIAL_FLIGHT",
     airline: "AA",
     flightNumber: "2311",
-    departAt: at(day(N, 3), "07:30"),
-    arriveAt: at(day(N, 3), "08:35"),
+    departAt: wall(day(N, 3), "07:30"),
+    arriveAt: wall(day(N, 3), "08:35"),
     fromLocation: { airportCode: "DFW", city: "Dallas", timezone: TZ },
     toLocation: { airportCode: "AUS", city: "Austin", timezone: TZ },
     sortOrder: 0,
@@ -189,13 +191,13 @@ async function main() {
     mode: "COMMERCIAL_FLIGHT",
     airline: "AA",
     flightNumber: "2874",
-    departAt: at(day(N, 5), "16:10"),
-    arriveAt: at(day(N, 5), "17:15"),
+    departAt: wall(day(N, 5), "16:10"),
+    arriveAt: wall(day(N, 5), "17:15"),
     fromLocation: { airportCode: "AUS", city: "Austin", timezone: TZ },
     toLocation: { airportCode: "DFW", city: "Dallas", timezone: TZ },
     sortOrder: 1,
   });
-  await make("homeTripReservation", { tripId: trip.id, type: "HOTEL", name: "Hotel Van Zandt", startAt: at(day(N, 3), "15:00"), endAt: at(day(N, 5), "11:00"), sortOrder: 0 });
+  await make("homeTripReservation", { tripId: trip.id, type: "HOTEL", name: "Hotel Van Zandt", startAt: wall(day(N, 3), "15:00"), endAt: wall(day(N, 5), "11:00"), sortOrder: 0 });
   const list = await make("homeChecklist", { entityType: "TRIP", entityId: trip.id, name: "Packing" });
   for (const [i, [text, done]] of ([["Laptop + charger", true], ["Suit", false], ["Badge", false]] as const).entries()) {
     await make("homeChecklistItem", { checklistId: list.id, text, isDone: done, sortOrder: i });
