@@ -27,6 +27,7 @@ import { addToast } from "@heroui/react";
 import { FaPlus, FaTrash } from "react-icons/fa";
 
 import { SchedulePicker } from "@/components/schedule-picker";
+import { PeoplePicker } from "@/components/people-picker";
 import {
   type ReminderItem,
   parseItems as parseReminderItems,
@@ -271,16 +272,14 @@ export function ReminderModal({
                   <SelectItem key="PERSON">Person</SelectItem>
                 </Select>
                 {formTargetKind === "PERSON" && (
-                  <Select
+                  <PeoplePicker
+                    single
                     label="Person"
-                    selectedKeys={formPersonId ? [formPersonId] : []}
-                    onChange={(e) => setFormPersonId(e.target.value)}
+                    people={people}
+                    selectedIds={formPersonId ? [formPersonId] : []}
+                    onChange={(ids) => setFormPersonId(ids[0] ?? "")}
                     className="flex-1"
-                  >
-                    {people.map((p) => (
-                      <SelectItem key={p.id}>{p.name}</SelectItem>
-                    ))}
-                  </Select>
+                  />
                 )}
               </div>
 

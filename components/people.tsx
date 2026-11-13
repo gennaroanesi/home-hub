@@ -18,6 +18,7 @@ import { addToast } from "@heroui/react";
 import { FaTimes } from "react-icons/fa";
 
 import { callOp } from "@/lib/ops-client";
+import { PeoplePicker } from "@/components/people-picker";
 import { photoUrl } from "@/lib/image-loader";
 import {
   RELATION_KINDS,
@@ -268,20 +269,14 @@ export function RelationshipsEditor({
         </div>
       ))}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-end">
-        <Select
+        <PeoplePicker
+          single
           size="sm"
           label="Who"
-          selectedKeys={otherId ? new Set([otherId]) : new Set<string>()}
-          onSelectionChange={(k) =>
-            setOtherId(String(Array.from(k as Set<string>)[0] ?? ""))
-          }
-        >
-          {people
-            .filter((p) => p.id !== person.id)
-            .map((p) => (
-              <SelectItem key={p.id}>{p.name}</SelectItem>
-            ))}
-        </Select>
+          people={people.filter((p) => p.id !== person.id)}
+          selectedIds={otherId ? [otherId] : []}
+          onChange={(ids) => setOtherId(ids[0] ?? "")}
+        />
         <Select
           size="sm"
           label={`is ${person.name}'s`}

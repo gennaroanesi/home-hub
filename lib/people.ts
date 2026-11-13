@@ -30,6 +30,45 @@ export function inHousehold(p: { groups?: (string | null)[] | null }): boolean {
   return (p.groups ?? []).includes(HOUSEHOLD_GROUP);
 }
 
+export interface PickerPerson {
+  id: string;
+  name: string;
+  groups?: (string | null)[] | null;
+  circle?: string | null;
+}
+
+export interface PickerSection<P> {
+  key: "HOUSEHOLD" | Circle;
+  label: string;
+  people: P[];
+}
+
+/** Lowercase without accents, so "jose" finds "José". */
+function fold(s: string): string {
+  return s.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase();
+}
+
+/**
+ * People pickers list the household first, then the contact book by circle
+ * (Family, Friends, Work, Other; no circle counts as Other), A–Z within each,
+ * keeping only names that match `query`. Empty sections are left out.
+ */
+export function pickerSections<P extends PickerPerson>(people: P[], query = ""): PickerSection<P>[] {
+  const q = fold(query.trim());
+  const sections: PickerSection<P>[] = [
+    { key: "HOUSEHOLD", label: "Household", people: [] },
+    ...CIRCLES.map((c) => ({ key: c, label: CIRCLE_LABELS[c], people: [] as P[] })),
+  ];
+  const byKey = new Map(sections.map((s) => [s.key, s]));
+  for (const p of people) {
+    if (q && !fold(p.name).includes(q)) continue;
+    const key = inHousehold(p) ? "HOUSEHOLD" : circleLabel(p.circle) ? (p.circle as Circle) : "OTHER";
+    byKey.get(key)!.people.push(p);
+  }
+  for (const s of sections) s.people.sort((a, b) => a.name.localeCompare(b.name));
+  return sections.filter((s) => s.people.length > 0);
+}
+
 /** "Mar 4", plus the age they turn this year when the year is known (1900 = unknown). */
 export function birthdayLabel(birthday: string | null | undefined, todayIso: string): string | null {
   if (!birthday) return null;

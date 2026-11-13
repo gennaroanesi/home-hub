@@ -20,6 +20,7 @@ import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import { toggleTaskCompleted } from "@/lib/task-actions";
 import type { Schema } from "@/amplify/data/resource";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -53,8 +54,8 @@ export default function TasksPage() {
   }
 
   const loadPeople = useCallback(async () => {
-    const { data } = await client.models.homePerson.list();
-    setPeople((data ?? []).filter((p) => p.active));
+    const data = await listAllPages<Person>(client.models.homePerson, { limit: 1000 });
+    setPeople(data.filter((p) => p.active));
   }, []);
 
   const loadTasks = useCallback(async () => {

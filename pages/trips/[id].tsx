@@ -11,6 +11,7 @@ import DefaultLayout from "@/layouts/default";
 import { TripForm, type TripFormHandle } from "@/components/trip-form";
 import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -57,14 +58,14 @@ export default function TripDetailPage() {
     setLoading(true);
     const [peopleRes, legsRes, reservationsRes, photosRes, albumsRes, albumPhotosRes] =
       await Promise.all([
-        client.models.homePerson.list(),
+        listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
         client.models.homeTripLeg.list({ limit: 1000 }),
         client.models.homeTripReservation.list({ limit: 1000 }),
         client.models.homePhoto.list({ limit: 1000 }),
         client.models.homeAlbum.list({ limit: 500 }),
         client.models.homeAlbumPhoto.list({ limit: 5000 }),
       ]);
-    setPeople((peopleRes.data ?? []).filter((p) => p.active));
+    setPeople(peopleRes.filter((p) => p.active));
     setAllLegs(legsRes.data ?? []);
     setAllReservations(reservationsRes.data ?? []);
     setAllPhotos(photosRes.data ?? []);

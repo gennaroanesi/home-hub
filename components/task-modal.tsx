@@ -20,6 +20,7 @@ import { Select, SelectItem } from "@heroui/select";
 import dayjs from "dayjs";
 
 import { AttachmentSection } from "@/components/attachment-section";
+import { PeoplePicker } from "@/components/people-picker";
 import { RemindersSection } from "@/components/reminders-section";
 import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForTask } from "@/lib/reminder-defaults";
@@ -169,17 +170,14 @@ export function TaskModal({ isOpen, onOpenChange, task, people, onSaved, default
                 value={formDescription}
                 onValueChange={setFormDescription}
               />
-              <Select
+              <PeoplePicker
                 label="Assigned to"
-                selectionMode="multiple"
-                selectedKeys={new Set(formAssignedIds)}
-                onSelectionChange={(keys) => setFormAssignedIds(Array.from(keys as Set<string>))}
+                people={people}
+                selectedIds={formAssignedIds}
+                onChange={setFormAssignedIds}
+                placeholder="Household"
                 description="Leave empty for household"
-              >
-                {people.map((p) => (
-                  <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
-                ))}
-              </Select>
+              />
               <Input
                 label="Due date"
                 type="datetime-local"

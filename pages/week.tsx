@@ -27,6 +27,7 @@ import type { Schema } from "@/amplify/data/resource";
 import { callOp, type OpCallResult } from "@/lib/ops-client";
 import { resolveCurrentPerson } from "@/lib/current-person";
 import { DAY_STATUS_LABELS, DAY_STATUSES, PET_DAY_LABELS, PET_DAY_STATUSES, mondayOf, type DayStatus, type PetDayStatus } from "@/lib/week-plan";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -101,16 +102,16 @@ export default function WeekPage() {
     setLoading(true);
     const [r, folks, tripRows] = await Promise.all([
       callOp(client, "get_week_plan", weekParam ? { weekStart: weekParam } : {}),
-      client.models.homePerson.list(),
+      listAllPages<PersonRow>(client.models.homePerson, { limit: 1000 }),
       client.models.homeTrip.list(),
     ]);
     setLoading(false);
     if ("error" in r) return addToast({ title: "Couldn't load the week", description: r.error, color: "danger" });
     setPlan(r.result);
     setNotes(r.result.review?.notes ?? "");
-    setPersonRows(folks.data ?? []);
+    setPersonRows(folks);
     setTrips(tripRows.data ?? []);
-    setLooks((folks.data ?? []).map((p) => ({ id: p.id, name: p.name, color: p.color, emoji: p.emoji })));
+    setLooks(folks.map((p) => ({ id: p.id, name: p.name, color: p.color, emoji: p.emoji })));
   }, [weekParam]);
 
   // Quick actions: new event on a day (for someone), edit an event, new task, tick a task, add to a shopping list.

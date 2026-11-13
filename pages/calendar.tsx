@@ -184,7 +184,7 @@ export default function CalendarPage() {
       albumPhotosRes,
       feedsRes,
     ] = await Promise.all([
-      client.models.homePerson.list(),
+      listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
       client.models.homeTrip.list(),
       // Every page: a single list() stops at 100 rows.
       listAllPages<Event>(client.models.homeCalendarEvent, { limit: 1000 }),
@@ -197,7 +197,7 @@ export default function CalendarPage() {
       listAllPages<Schema["homeCalendarFeed"]["type"]>(client.models.homeCalendarFeed),
     ]);
 
-    setPeople((peopleRes.data ?? []).filter((p) => p.active));
+    setPeople(peopleRes.filter((p) => p.active));
     setTrips(tripsRes.data ?? []);
     setEvents(eventsFor(eventsRes, feedsRes, "CALENDAR"));
     setFeeds(feedsRes);

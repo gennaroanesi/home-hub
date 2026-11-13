@@ -23,6 +23,7 @@ import {
 import { FaTrash } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
+import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { AttachmentSection } from "@/components/attachment-section";
 import { RemindersSection } from "@/components/reminders-section";
@@ -334,20 +335,15 @@ export function EventModal({
                   }
                 />
               )}
-              <Select
+              <PeoplePicker
                 label="Assigned to"
-                selectionMode="multiple"
-                selectedKeys={new Set(eventForm.assignedPersonIds)}
-                onSelectionChange={(keys) =>
-                  setEventForm((f) => ({ ...f, assignedPersonIds: Array.from(keys as Set<string>) }))
-                }
+                people={people}
+                selectedIds={eventForm.assignedPersonIds}
+                onChange={(ids) => setEventForm((f) => ({ ...f, assignedPersonIds: ids }))}
+                placeholder="Household"
                 description="Leave empty for household"
                 isDisabled={isImported}
-              >
-                {people.map((p) => (
-                  <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
-                ))}
-              </Select>
+              />
               <Select
                 label="Linked trip (optional)"
                 selectedKeys={eventForm.tripId ? [eventForm.tripId] : []}

@@ -14,6 +14,7 @@ import { FaArrowLeft, FaPlus, FaImages, FaPlane } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { TRIP_TYPE_CONFIG, type TripType } from "@/lib/trip";
 import type { Schema } from "@/amplify/data/resource";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -55,13 +56,13 @@ export default function TripsListPage() {
       client.models.homeTripLeg.list({ limit: 1000 }),
       client.models.homeAlbum.list({ limit: 500 }),
       client.models.homeAlbumPhoto.list({ limit: 5000 }),
-      client.models.homePerson.list(),
+      listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
     ]);
     setTrips(tripsRes.data ?? []);
     setLegs(legsRes.data ?? []);
     setAlbums(albumsRes.data ?? []);
     setAlbumPhotos(albumPhotosRes.data ?? []);
-    setPeople((peopleRes.data ?? []).filter((p) => p.active));
+    setPeople(peopleRes.filter((p) => p.active));
     setLoading(false);
   }, []);
 

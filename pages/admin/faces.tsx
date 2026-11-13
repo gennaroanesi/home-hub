@@ -6,12 +6,13 @@ import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Card, CardBody } from "@heroui/card";
-import { Select, SelectItem } from "@heroui/select";
+import { PeoplePicker } from "@/components/people-picker";
 import { FaArrowLeft } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { photoUrl } from "@/lib/image-loader";
 import type { Schema } from "@/amplify/data/resource";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -127,8 +128,8 @@ export default function FacesPage() {
     setVisibleGroupCount(PAGE_SIZE);
 
     // People for the dropdown
-    const peopleRes = await client.models.homePerson.list();
-    const sortedPeople = (peopleRes.data ?? []).sort((a, b) => a.name.localeCompare(b.name));
+    const peopleRes = await listAllPages<Person>(client.models.homePerson, { limit: 1000 });
+    const sortedPeople = peopleRes.sort((a, b) => a.name.localeCompare(b.name));
     setPeople(sortedPeople);
 
     // First page of unmatched faces. Subsequent pages are loaded lazily as
@@ -425,21 +426,15 @@ export default function FacesPage() {
                               no bbox
                             </div>
                           )}
-                          <Select
+                          <PeoplePicker
+                            single
                             size="sm"
+                            ariaLabel="Assign face to person"
                             placeholder="Assign to…"
-                            selectedKeys={
-                              pendingAssign[face.id] ? [pendingAssign[face.id]] : []
-                            }
-                            onSelectionChange={(keys) => {
-                              const id = Array.from(keys)[0] as string | undefined;
-                              setPendingAssign((m) => ({ ...m, [face.id]: id ?? "" }));
-                            }}
-                          >
-                            {people.map((p) => (
-                              <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
-                            ))}
-                          </Select>
+                            people={people}
+                            selectedIds={pendingAssign[face.id] ? [pendingAssign[face.id]] : []}
+                            onChange={(ids) => setPendingAssign((m) => ({ ...m, [face.id]: ids[0] ?? "" }))}
+                          />
                           <div className="flex gap-1">
                             <Button
                               size="sm"

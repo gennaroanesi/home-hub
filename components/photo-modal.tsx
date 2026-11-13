@@ -4,7 +4,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 import { Button } from "@heroui/button";
 import { Link } from "@heroui/link";
-import { Select, SelectItem } from "@heroui/select";
+import { PeoplePicker } from "@/components/people-picker";
 import { addToast } from "@heroui/react";
 import { FaTrash, FaDownload, FaHeart, FaRegHeart } from "react-icons/fa";
 import dayjs from "dayjs";
@@ -24,6 +24,10 @@ export type PhotoModalPerson = {
   name: string;
   emoji?: string | null;
   color?: string | null;
+  // For the assign picker's grouping (household first, then circles).
+  groups?: (string | null)[] | null;
+  circle?: string | null;
+  photoKey?: string | null;
 };
 
 type BBox = { Width: number; Height: number; Left: number; Top: number };
@@ -333,7 +337,7 @@ export function PhotoModal({
 // ── FaceRow ────────────────────────────────────────────────────────────
 // One row in the Faces list. Renders the crop on the left, then either:
 //   • the matched person's emoji + name (read-only), or
-//   • a Select populated from the passed `people` array with an Assign button.
+//   • a PeoplePicker over the passed `people` array with an Assign button.
 function FaceRow({
   face,
   photo,
@@ -384,25 +388,17 @@ function FaceRow({
         </div>
       ) : (
         <div className="flex items-center gap-2 flex-1 min-w-0">
-          <Select
+          <PeoplePicker
+            single
             size="sm"
-            aria-label="Assign face to person"
+            ariaLabel="Assign face to person"
             placeholder="Assign to…"
-            className="max-w-[220px]"
-            selectedKeys={pending ? [pending] : []}
-            onSelectionChange={(keys) => {
-              const id = Array.from(keys)[0] as string | undefined;
-              onPendingChange(id ?? "");
-            }}
+            className="w-full max-w-[220px]"
+            people={people}
+            selectedIds={pending ? [pending] : []}
+            onChange={(ids) => onPendingChange(ids[0] ?? "")}
             isDisabled={busy || people.length === 0}
-          >
-            {people.map((p) => (
-              <SelectItem key={p.id} textValue={p.name}>
-                {p.emoji ? `${p.emoji} ` : ""}
-                {p.name}
-              </SelectItem>
-            ))}
-          </Select>
+          />
           <Button
             size="sm"
             variant="flat"

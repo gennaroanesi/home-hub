@@ -29,6 +29,7 @@ import {
   formatScheduleLabel,
 } from "@/lib/reminder-schedule";
 import type { Schema } from "@/amplify/data/resource";
+import { listAllPages } from "@/lib/list-all";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -75,13 +76,13 @@ export default function RemindersPage() {
     setLoading(true);
     const [remRes, peopleRes] = await Promise.all([
       client.models.homeReminder.list({ limit: 200 }),
-      client.models.homePerson.list(),
+      listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
     ]);
     const sorted = [...(remRes.data ?? [])].sort(
       (a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime()
     );
     setReminders(sorted);
-    setPeople((peopleRes.data ?? []).filter((p) => p.active));
+    setPeople(peopleRes.filter((p) => p.active));
     setLoading(false);
   }, []);
 

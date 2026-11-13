@@ -10,6 +10,7 @@ import { addToast } from "@heroui/react";
 import { FaPlus, FaTrash, FaCalendarPlus, FaSave } from "react-icons/fa";
 
 import { CityAutocomplete } from "@/components/city-autocomplete";
+import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { RemindersSection } from "@/components/reminders-section";
 import { NotesSection } from "@/components/notes-section";
@@ -313,18 +314,12 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
           }))
         }
       />
-      <Select
+      <PeoplePicker
         label="Participants"
-        selectionMode="multiple"
-        selectedKeys={new Set(form.participantIds)}
-        onSelectionChange={(keys) =>
-          setForm((f) => ({ ...f, participantIds: Array.from(keys as Set<string>) }))
-        }
-      >
-        {people.map((p) => (
-          <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
-        ))}
-      </Select>
+        people={people}
+        selectedIds={form.participantIds}
+        onChange={(ids) => setForm((f) => ({ ...f, participantIds: ids }))}
+      />
       <Textarea
         label="Notes"
         value={form.notes}

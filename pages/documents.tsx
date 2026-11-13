@@ -31,6 +31,7 @@ import {
 
 import DefaultLayout from "@/layouts/default";
 import { Markdown } from "@/components/markdown";
+import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
 import { resolveCurrentPerson } from "@/lib/current-person";
@@ -797,21 +798,14 @@ export default function DocumentsPage() {
                   </Select>
                 </div>
                 {form.scope === "PERSONAL" && (
-                  <Select
+                  <PeoplePicker
+                    single
                     label="Owner"
                     isRequired
-                    selectedKeys={form.ownerPersonId ? [form.ownerPersonId] : []}
-                    onSelectionChange={(keys) => {
-                      const k = Array.from(keys as Set<string>)[0] ?? "";
-                      setForm((f) => ({ ...f, ownerPersonId: k }));
-                    }}
-                  >
-                    {people.map((p) => (
-                      <SelectItem key={p.id} textValue={p.name}>
-                        {p.emoji ?? "👤"} {p.name}
-                      </SelectItem>
-                    ))}
-                  </Select>
+                    people={people}
+                    selectedIds={form.ownerPersonId ? [form.ownerPersonId] : []}
+                    onChange={(ids) => setForm((f) => ({ ...f, ownerPersonId: ids[0] ?? "" }))}
+                  />
                 )}
                 <Input
                   label="Issuer"
