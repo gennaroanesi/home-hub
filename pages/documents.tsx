@@ -10,6 +10,7 @@ import { DateInput } from "../components/date-input";
 import { Select, SelectItem } from "@heroui/select";
 import { Card, CardBody } from "@heroui/card";
 import { Tooltip } from "@heroui/tooltip";
+import { Switch } from "@heroui/switch";
 import {
   Modal,
   ModalContent,
@@ -34,6 +35,7 @@ import { Markdown } from "@/components/markdown";
 import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
+import { documentFileUrl, documentIsSensitive } from "@/lib/documents";
 import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -129,6 +131,7 @@ interface FormState {
   issuedDate: string;
   expiresDate: string;
   notes: string;
+  isSensitive: boolean;
 }
 
 function emptyForm(): FormState {
@@ -142,6 +145,7 @@ function emptyForm(): FormState {
     issuedDate: "",
     expiresDate: "",
     notes: "",
+    isSensitive: true,
   };
 }
 
@@ -156,6 +160,7 @@ function docToForm(doc: HomeDocument): FormState {
     issuedDate: doc.issuedDate ?? "",
     expiresDate: doc.expiresDate ?? "",
     notes: doc.notes ?? "",
+    isSensitive: documentIsSensitive(doc),
   };
 }
 
@@ -249,6 +254,11 @@ export default function DocumentsPage() {
   }, []);
 
   const handleDownload = useCallback(async (doc: HomeDocument) => {
+    if (!documentIsSensitive(doc)) {
+      if (doc.s3Key) window.open(documentFileUrl(doc.s3Key), "_blank");
+      else if (doc.documentNumber) addToast({ title: doc.title, description: `Number: ${doc.documentNumber}`, color: "primary" });
+      return;
+    }
     if (!myDuoUsername) {
       addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
       return;
@@ -293,6 +303,11 @@ export default function DocumentsPage() {
   }, [myDuoUsername]);
 
   const handleView = useCallback(async (doc: HomeDocument) => {
+    if (!documentIsSensitive(doc) && doc.s3Key) {
+      setViewerDoc(doc);
+      setViewerUrl(documentFileUrl(doc.s3Key));
+      return;
+    }
     if (!myDuoUsername) {
       addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
       return;
@@ -329,6 +344,13 @@ export default function DocumentsPage() {
       setViewing(false);
     }
   }, [myDuoUsername]);
+
+  const gateTip = (doc: HomeDocument) =>
+    !documentIsSensitive(doc)
+      ? "Not sensitive: opens without Duo"
+      : myDuoUsername
+      ? "Requires Duo push approval"
+      : "Link your Duo account in /security first";
 
   const personById = useMemo(() => {
     const map = new Map<string, Person>();
@@ -488,6 +510,7 @@ export default function DocumentsPage() {
         issuedDate: form.issuedDate || null,
         expiresDate: form.expiresDate || null,
         notes: form.notes.trim() || null,
+        isSensitive: form.isSensitive,
         s3Key: s3key,
         contentType,
         sizeBytes,
@@ -696,17 +719,22 @@ export default function DocumentsPage() {
                                   metadata only
                                 </span>
                               )}
+                              {!documentIsSensitive(doc) && (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-default-100 text-default-600">
+                                  no Duo
+                                </span>
+                              )}
                             </div>
                           </div>
                           {(doc.s3Key || doc.documentNumber) && (
                             <div className="flex items-center gap-1">
                               {doc.s3Key && (
-                                <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                                <Tooltip content={gateTip(doc)}>
                                   <div>
                                     <Button
                                       size="sm"
                                       variant="flat"
-                                      isDisabled={!myDuoUsername || viewing}
+                                      isDisabled={(documentIsSensitive(doc) && !myDuoUsername) || viewing}
                                       isLoading={viewing}
                                       startContent={!viewing ? <FaEye size={10} /> : undefined}
                                       onPress={() => handleView(doc)}
@@ -716,12 +744,12 @@ export default function DocumentsPage() {
                                   </div>
                                 </Tooltip>
                               )}
-                              <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                              <Tooltip content={gateTip(doc)}>
                                 <div>
                                   <Button
                                     size="sm"
                                     variant="flat"
-                                    isDisabled={!myDuoUsername || downloading}
+                                    isDisabled={(documentIsSensitive(doc) && !myDuoUsername) || downloading}
                                     isLoading={downloading}
                                     startContent={!downloading ? <FaDownload size={10} /> : undefined}
                                     onPress={() => handleDownload(doc)}
@@ -819,6 +847,18 @@ export default function DocumentsPage() {
                   value={form.documentNumber}
                   onValueChange={(v) => setForm((f) => ({ ...f, documentNumber: v }))}
                 />
+                <Switch
+                  size="sm"
+                  isSelected={form.isSensitive}
+                  onValueChange={(v) => setForm((f) => ({ ...f, isSensitive: v }))}
+                >
+                  <span className="text-sm">Sensitive</span>
+                  <span className="block text-xs text-default-500">
+                    {form.isSensitive
+                      ? "Opening the file or number needs Duo approval (Face ID on the phone)."
+                      : "Opens without Duo, on the web, the phone and from Janet."}
+                  </span>
+                </Switch>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <DateInput
                     label="Issued date"
@@ -919,7 +959,9 @@ export default function DocumentsPage() {
                       <span className="font-mono">{detailDoc.documentNumber}</span>
                       <div className="text-xs text-default-400 mt-0.5">
                         Visible here because you&apos;re authenticated in the web UI.
-                        Retrieval via Janet (WhatsApp) will require Duo approval.
+                        {documentIsSensitive(detailDoc)
+                          ? "Retrieval via Janet (WhatsApp) will require Duo approval."
+                          : "Not sensitive: Janet sends it without Duo."}
                       </div>
                     </div>
                   )}
@@ -970,12 +1012,12 @@ export default function DocumentsPage() {
                   {detailDoc && (detailDoc.s3Key || detailDoc.documentNumber) && (
                     <div className="pt-2 flex items-center gap-2">
                       {detailDoc.s3Key && (
-                        <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                        <Tooltip content={gateTip(detailDoc)}>
                           <div className="inline-block">
                             <Button
                               size="sm"
                               variant="flat"
-                              isDisabled={!myDuoUsername || viewing}
+                              isDisabled={(documentIsSensitive(detailDoc) && !myDuoUsername) || viewing}
                               isLoading={viewing}
                               startContent={!viewing ? <FaEye size={10} /> : undefined}
                               onPress={() => handleView(detailDoc)}
@@ -985,14 +1027,14 @@ export default function DocumentsPage() {
                           </div>
                         </Tooltip>
                       )}
-                      <Tooltip content={myDuoUsername ? "Requires Duo push approval" : "Link your Duo account in /security first"}>
+                      <Tooltip content={gateTip(detailDoc)}>
                         <div className="inline-block">
                           <Button
                             size="sm"
                             variant="flat"
-                            isDisabled={!myDuoUsername || downloading}
+                            isDisabled={(documentIsSensitive(detailDoc) && !myDuoUsername) || downloading}
                             isLoading={downloading}
-                            startContent={!downloading ? <FaLock size={10} /> : undefined}
+                            startContent={!downloading ? (documentIsSensitive(detailDoc) ? <FaLock size={10} /> : <FaDownload size={10} />) : undefined}
                             onPress={() => handleDownload(detailDoc)}
                           >
                             Download

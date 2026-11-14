@@ -1588,7 +1588,8 @@ const schema = a
     // File reads are Duo-Push-gated at the agent tool layer (see wave 2).
     // The metadata itself (titles, types, expiration dates) is readable
     // without a challenge — only documentNumber and s3Key require Duo
-    // approval before being surfaced.
+    // approval before being surfaced, and not even those when
+    // isSensitive is false.
     homeDocument: a
       .model({
         title: a.string().required(),
@@ -1620,6 +1621,9 @@ const schema = a
         originalFilename: a.string(),
         notes: a.string(),
         uploadedBy: a.string(),
+        // false = opening it needs no Duo / Face ID (floor plans,
+        // warranties). Unset counts as sensitive (lib/documents.ts).
+        isSensitive: a.boolean(),
       })
       .secondaryIndexes((index) => [
         index("ownerPersonId"),

@@ -21,6 +21,7 @@ import { requireLocalAuth, type LocalAuthOutcome } from "./local-auth";
 import { getClient } from "./amplify";
 import { resolveCurrentPerson } from "./current-person";
 import { authedFetch } from "./authed-fetch";
+import { documentIsSensitive } from "./documents";
 
 const WEB_BASE_URL =
   process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
@@ -29,10 +30,11 @@ export interface DownloadInput {
   documentId: string;
   s3Key?: string | null;
   documentNumber?: string | null;
+  isSensitive?: boolean | null;
 }
 
 export type DownloadResult =
-  | { ok: true; url?: string; documentNumber?: string; via: "faceid" | "duo" }
+  | { ok: true; url?: string; documentNumber?: string; via: "faceid" | "duo" | "open" }
   | { ok: false; error: string };
 
 /** Construct the short-link redirect URL from an s3 key. The redirect
@@ -68,6 +70,8 @@ async function runGated(
   mode: RevealMode,
   promptMessage: string
 ): Promise<DownloadResult> {
+  // Marked not sensitive (floor plans, warranties): no Face ID / Duo.
+  if (!documentIsSensitive(input)) return revealAfterAuth(input, mode, "open");
   const localAuth = await requireLocalAuth({ promptMessage });
 
   if (localAuth.ok) {
@@ -87,7 +91,7 @@ async function runGated(
 function revealAfterAuth(
   input: DownloadInput,
   mode: RevealMode,
-  via: "faceid" | "duo"
+  via: "faceid" | "duo" | "open"
 ): DownloadResult {
   if (mode === "number") {
     if (!input.documentNumber) {

@@ -30,6 +30,7 @@ import {
   DOCUMENT_TYPE_LABEL,
   type Document,
   type DocumentType,
+  documentIsSensitive,
   expiryLabel,
   isExpiringSoon,
   ownerLabel,
@@ -81,6 +82,7 @@ export default function DocumentDetail() {
         documentId: doc.id,
         s3Key: doc.s3Key,
         documentNumber: doc.documentNumber,
+        isSensitive: doc.isSensitive,
       });
       if (!result.ok) {
         Alert.alert("Couldn't reveal", result.error);
@@ -103,6 +105,7 @@ export default function DocumentDetail() {
         documentId: doc.id,
         s3Key: doc.s3Key,
         documentNumber: doc.documentNumber,
+        isSensitive: doc.isSensitive,
       });
       if (!result.ok) {
         Alert.alert("Download failed", result.error);
@@ -199,10 +202,12 @@ export default function DocumentDetail() {
               onPress={async () => {
                 // Edit form exposes documentNumber + (now) inline file
                 // preview. Same Face ID gate as Reveal/Download.
-                const auth = await requireLocalAuth({
-                  promptMessage: "Edit document",
-                });
-                if (!auth.ok && auth.reason === "cancelled") return;
+                if (documentIsSensitive(doc)) {
+                  const auth = await requireLocalAuth({
+                    promptMessage: "Edit document",
+                  });
+                  if (!auth.ok && auth.reason === "cancelled") return;
+                }
                 setEditOpen(true);
               }}
               style={styles.secondaryBtn}
@@ -212,8 +217,9 @@ export default function DocumentDetail() {
             </Pressable>
           </View>
           <Text style={styles.openHint}>
-            Confirms with Face ID. Falls back to Duo Push if Face ID isn't
-            set up.
+            {documentIsSensitive(doc)
+              ? "Confirms with Face ID. Falls back to Duo Push if Face ID isn't set up."
+              : "Not sensitive: opens without Face ID."}
           </Text>
 
           <View style={styles.metaCard}>

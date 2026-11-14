@@ -26,6 +26,7 @@ import {
   getMorningWeatherBriefing,
 } from "../../../lib/aviation-weather.js";
 import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flags.js";
+import { documentIsSensitive } from "../../../lib/documents.js";
 import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus } from "./duo.js";
 import { HassClient, entityDomain } from "./hass-client.js";
 import { canPerform, type Sensitivity, type Action, type PolicyContext } from "../../../lib/devicePolicy.js";
@@ -1249,7 +1250,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "list_documents",
     description:
-      "List household documents with metadata (title, type, owner, issuer, expiration). Returns documentNumber as `<REDACTED>` — never returns actual document numbers or file links. Use this for answering questions like 'what documents do we have' or 'find the passport'. If the user wants the actual file or number, follow up with `request_document_download`.",
+      "List household documents with metadata (title, type, owner, issuer, expiration). Returns documentNumber as `<REDACTED>` — never returns actual document numbers or file links. Use this for answering questions like 'what documents do we have' or 'find the passport'. If the user wants the actual file or number, follow up with `request_document_download`. `sensitive: false` documents (floor plans, warranties…) are released without Duo.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1295,7 +1296,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "request_document_download",
     description:
-      "Initiate a Duo-Push-gated document release. Looks up the requester by sender name, verifies they're enrolled in Duo, creates a pending challenge, and sends an ASYNC Duo push to their phone. Returns PUSH_SENT with a challengeId — you MUST then immediately call check_document_auth with that challengeId to poll for the result. Tell the user to approve the push on their phone while you wait. If the user isn't enrolled, returns DENIED with reason not_enrolled — guide them to /security to link their Duo username.",
+      "Release a document's file or number by DM. Documents marked not sensitive are delivered right away (returns DELIVERED, no Duo). Otherwise it's a Duo-Push-gated release: Looks up the requester by sender name, verifies they're enrolled in Duo, creates a pending challenge, and sends an ASYNC Duo push to their phone. Returns PUSH_SENT with a challengeId — you MUST then immediately call check_document_auth with that challengeId to poll for the result. Tell the user to approve the push on their phone while you wait. If the user isn't enrolled, returns DENIED with reason not_enrolled — guide them to /security to link their Duo username.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -3441,13 +3442,14 @@ async function executeTool(
         // Intentionally omit documentNumber, s3Key, contentType.
         documentNumber: "<REDACTED>",
         hasFile: !!d.s3Key,
+        sensitive: documentIsSensitive(d),
       }));
 
       return JSON.stringify({
         documents: shaped,
         count: shaped.length,
         note:
-          "Metadata only. To release a document number or file URL, use request_document_download (it requires Duo Push approval).",
+          "Metadata only. To release a document number or file URL, use request_document_download (Duo Push approval for sensitive documents; ones with sensitive=false are sent straight away).",
       });
     }
 
@@ -3512,6 +3514,117 @@ async function executeTool(
       const ownerPerson = doc.ownerPersonId
         ? people.find((p) => p.id === doc.ownerPersonId) ?? null
         : null;
+
+      // Steps 7–12: hand the file / number over by DM. Runs after Duo
+      // approval, or straight away for a document marked not sensitive.
+      const deliver = async (authRowId: string | null, challengeId: string | null): Promise<string> => {
+        // 7. Build payload — either a CloudFront URL (file-backed) or the
+        //    raw documentNumber (metadata-only entries like Global Entry).
+        //    CloudFront serves the entire S3 bucket; the UUID in the key is
+        //    the effective unguessability gate (same security model as photos).
+        let dmText = "";
+        let deliveryKind: "file" | "number" = "number";
+        if (doc.s3Key) {
+          // Direct S3 URL — the bucket allows public reads on home/* and
+          // the UUID in the key is the unguessability gate (same model as
+          // photos). Presigned URLs failed due to bucket policy conflicts.
+          // Short URL via /api/d/[key] redirector — keeps WA links under
+          // ~80 chars so iOS doesn't truncate them. The redirector maps
+          // the filename back to home/documents/{key} and 302s to S3.
+          const docFilename = doc.s3Key.replace("home/documents/", "");
+          const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
+          dmText = `Here's your document: ${doc.title}\n${url}`;
+          deliveryKind = "file";
+        } else if (doc.documentNumber) {
+          dmText = `${doc.title}: ${doc.documentNumber}`;
+          deliveryKind = "number";
+        } else {
+          return JSON.stringify({
+            status: "ERROR",
+            reason: "Document has no s3Key and no documentNumber to release",
+          });
+        }
+
+        // 8. Deliver via PERSON-target homeOutboundMessage. The WA bot's
+        //    outbound poller resolves personId → phoneNumber and DMs it.
+        //    This is the critical security gate: URLs/numbers NEVER go
+        //    back to Claude in the tool result, only to the WA DM.
+        await client.models.homeOutboundMessage.create({
+          channel: "WHATSAPP",
+          target: "PERSON",
+          personId: requester.id,
+          text: dmText,
+          status: "PENDING",
+          kind: "document_release",
+        });
+
+        // 9. LINK_ISSUED access log + lastUsedAt bump
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "LINK_ISSUED",
+          result: "SUCCESS",
+        });
+        if (authRowId) {
+          await client.models.homePersonAuth.update({
+            id: authRowId,
+            lastUsedAt: new Date().toISOString(),
+          });
+        }
+
+        // 10. Optional transparency DM to the owner (feature-flag gated).
+        //     Only fires for PERSONAL-scope docs when the requester isn't
+        //     the owner. Disabled by default; flip the flag in lib/feature-flags.ts.
+        if (
+          DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED &&
+          doc.scope === "PERSONAL" &&
+          doc.ownerPersonId &&
+          doc.ownerPersonId !== requester.id &&
+          ownerPerson
+        ) {
+          const docTypeLabel = doc.type
+            ? (doc.type as string).toLowerCase().replace(/_/g, " ")
+            : "document";
+          await client.models.homeOutboundMessage.create({
+            channel: "WHATSAPP",
+            target: "PERSON",
+            personId: doc.ownerPersonId,
+            text: `Heads up: ${requester.name} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let an admin know.`,
+            status: "PENDING",
+            kind: "document_access_notification",
+          });
+        }
+
+        // 11. Clean up the challenge row (done)
+        if (challengeId) {
+          await client.models.homePendingAuthChallenge.delete({ id: challengeId });
+        }
+
+        // 12. Sanitized result to the agent. No URL, no number — the DM
+        //     is on its way via the outbound poller. Claude should say
+        //     something like "Sent to your DM".
+        return JSON.stringify({
+          status: "DELIVERED",
+          deliveredVia: "DM",
+          deliveryKind,
+          documentTitle: doc.title,
+          ownerName: ownerPerson?.name ?? null,
+        });
+      };
+
+      // Not sensitive (floor plans, warranties…): no Duo push.
+      if (!documentIsSensitive(doc)) {
+        await client.models.homeDocumentAccessLog.create({
+          documentId,
+          personId: requester.id,
+          channel: channelForLog,
+          action: "DOWNLOAD_REQUEST",
+          result: "SUCCESS",
+          error: "not_sensitive",
+        });
+        return deliver(null, null);
+      }
 
       const { data: auths } = await client.models.homePersonAuth.list({
         filter: { personId: { eq: requester.id } },
@@ -3655,97 +3768,7 @@ async function executeTool(
         result: "SUCCESS",
       });
 
-      // 7. Build payload — either a CloudFront URL (file-backed) or the
-      //    raw documentNumber (metadata-only entries like Global Entry).
-      //    CloudFront serves the entire S3 bucket; the UUID in the key is
-      //    the effective unguessability gate (same security model as photos).
-      let dmText = "";
-      let deliveryKind: "file" | "number" = "number";
-      if (doc.s3Key) {
-        // Direct S3 URL — the bucket allows public reads on home/* and
-        // the UUID in the key is the unguessability gate (same model as
-        // photos). Presigned URLs failed due to bucket policy conflicts.
-        // Short URL via /api/d/[key] redirector — keeps WA links under
-        // ~80 chars so iOS doesn't truncate them. The redirector maps
-        // the filename back to home/documents/{key} and 302s to S3.
-        const docFilename = doc.s3Key.replace("home/documents/", "");
-        const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
-        dmText = `Here's your document: ${doc.title}\n${url}`;
-        deliveryKind = "file";
-      } else if (doc.documentNumber) {
-        dmText = `${doc.title}: ${doc.documentNumber}`;
-        deliveryKind = "number";
-      } else {
-        return JSON.stringify({
-          status: "ERROR",
-          reason: "Document has no s3Key and no documentNumber to release",
-        });
-      }
-
-      // 8. Deliver via PERSON-target homeOutboundMessage. The WA bot's
-      //    outbound poller resolves personId → phoneNumber and DMs it.
-      //    This is the critical security gate: URLs/numbers NEVER go
-      //    back to Claude in the tool result, only to the WA DM.
-      await client.models.homeOutboundMessage.create({
-        channel: "WHATSAPP",
-        target: "PERSON",
-        personId: requester.id,
-        text: dmText,
-        status: "PENDING",
-        kind: "document_release",
-      });
-
-      // 9. LINK_ISSUED access log + lastUsedAt bump
-      await client.models.homeDocumentAccessLog.create({
-        documentId,
-        personId: requester.id,
-        channel: channelForLog,
-        action: "LINK_ISSUED",
-        result: "SUCCESS",
-      });
-      await client.models.homePersonAuth.update({
-        id: auth.id,
-        lastUsedAt: new Date().toISOString(),
-      });
-
-      // 10. Optional transparency DM to the owner (feature-flag gated).
-      //     Only fires for PERSONAL-scope docs when the requester isn't
-      //     the owner. Disabled by default; flip the flag in lib/feature-flags.ts.
-      if (
-        DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED &&
-        doc.scope === "PERSONAL" &&
-        doc.ownerPersonId &&
-        doc.ownerPersonId !== requester.id &&
-        ownerPerson
-      ) {
-        const docTypeLabel = doc.type
-          ? (doc.type as string).toLowerCase().replace(/_/g, " ")
-          : "document";
-        await client.models.homeOutboundMessage.create({
-          channel: "WHATSAPP",
-          target: "PERSON",
-          personId: doc.ownerPersonId,
-          text: `Heads up: ${requester.name} just accessed your ${docTypeLabel}: '${doc.title}'. If this wasn't expected, let an admin know.`,
-          status: "PENDING",
-          kind: "document_access_notification",
-        });
-      }
-
-      // 11. Clean up the challenge row (done)
-      if (challenge?.id) {
-        await client.models.homePendingAuthChallenge.delete({ id: challenge.id });
-      }
-
-      // 12. Sanitized result to the agent. No URL, no number — the DM
-      //     is on its way via the outbound poller. Claude should say
-      //     something like "Sent to your DM".
-      return JSON.stringify({
-        status: "DELIVERED",
-        deliveredVia: "DM",
-        deliveryKind,
-        documentTitle: doc.title,
-        ownerName: ownerPerson?.name ?? null,
-      });
+      return deliver(auth.id, challenge?.id ?? null);
     }
 
     // ── check_document_auth ──────────────────────────────────────────────
@@ -6044,7 +6067,9 @@ questions ("when does my passport expire?", "what's expiring this month?").
 These return redacted metadata only.
 
 When a user asks for the actual file or document number ("send me my
-passport", "what's my Global Entry number?"), use the two-step flow:
+passport", "what's my Global Entry number?"), call request_document_download.
+For a document with sensitive=false it delivers straight away (DELIVERED) —
+don't mention Duo. Otherwise it's the two-step flow:
 
 1. Call request_document_download — it fires an ASYNC Duo push and
    returns {status: "PUSH_SENT", challengeId, txid}. Tell the user to
