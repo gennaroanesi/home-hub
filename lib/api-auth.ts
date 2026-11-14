@@ -8,6 +8,8 @@ export type AuthedUser = {
   sub: string;
   username: string;
   groups: string[];
+  // The caller's Cognito access token, for calling AppSync as them.
+  accessToken: string;
 };
 
 export type AuthedHandler = (
@@ -25,13 +27,13 @@ const jwtVerifier = CognitoJwtVerifier.create({
   clientId: outputs.auth.user_pool_client_id,
 });
 
-function userFromPayload(payload: Record<string, unknown>): AuthedUser | null {
+function userFromPayload(payload: Record<string, unknown>, accessToken: string): AuthedUser | null {
   const sub = String(payload.sub ?? "");
   if (!sub) return null;
   const username = String(payload.username ?? sub);
   const groupsRaw = payload["cognito:groups"];
   const groups = Array.isArray(groupsRaw) ? (groupsRaw as string[]) : [];
-  return { sub, username, groups };
+  return { sub, username, groups, accessToken };
 }
 
 async function getAuthedUser(
@@ -44,7 +46,7 @@ async function getAuthedUser(
     const token = auth.slice(7).trim();
     try {
       const payload = await jwtVerifier.verify(token);
-      return userFromPayload(payload as unknown as Record<string, unknown>);
+      return userFromPayload(payload as unknown as Record<string, unknown>, token);
     } catch {
       return null;
     }
@@ -58,7 +60,7 @@ async function getAuthedUser(
     });
     const accessToken = session.tokens?.accessToken;
     if (!accessToken) return null;
-    return userFromPayload(accessToken.payload as Record<string, unknown>);
+    return userFromPayload(accessToken.payload as Record<string, unknown>, accessToken.toString());
   } catch {
     return null;
   }

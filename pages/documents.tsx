@@ -35,7 +35,7 @@ import { Markdown } from "@/components/markdown";
 import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
-import { documentFileUrl, documentIsSensitive } from "@/lib/documents";
+import { documentIsSensitive } from "@/lib/documents";
 import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -253,46 +253,52 @@ export default function DocumentsPage() {
     }
   }, []);
 
+  // GET /content; a sensitive document answers duo_required, so ask for
+  // a push (POST /approval) and poll /content with the approval until
+  // the phone answers. Returns null after telling the user why.
+  const fetchContent = useCallback(async (doc: HomeDocument, download: boolean): Promise<{ url?: string; documentNumber?: string } | null> => {
+    const path = `/api/documents/${doc.id}/content${download ? "?download=1" : ""}`;
+    const fail = (description: string) => {
+      addToast({ title: `Couldn't open ${doc.title}`, description, color: "danger" });
+      return null;
+    };
+    let res = await fetch(path);
+    if (res.ok) return res.json();
+    const first = await readDownloadResponse(res);
+    if (res.status !== 403 || first.error !== "duo_required") return fail(first.error ?? `Error ${res.status}`);
+
+    const ask = await fetch(`/api/documents/${doc.id}/approval`, { method: "POST" });
+    const asked = (await ask.json().catch(() => ({}))) as { approval?: string | null; duoUsername?: string; error?: string };
+    if (!ask.ok) return fail(asked.error ?? `Error ${ask.status}`);
+    if (!asked.approval) {
+      res = await fetch(path);
+      return res.ok ? res.json() : fail((await readDownloadResponse(res)).error ?? `Error ${res.status}`);
+    }
+    addToast({ title: "Sending Duo push", description: `To ${asked.duoUsername}'s phone — approve it there…`, color: "primary" });
+    const deadline = Date.now() + 90_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 2000));
+      res = await fetch(path, { headers: { "X-Document-Approval": asked.approval } });
+      if (res.status === 202) continue;
+      if (res.ok) return res.json();
+      return fail((await readDownloadResponse(res)).error ?? `Error ${res.status}`);
+    }
+    return fail("No answer from your phone — try again.");
+  }, []);
+
   const handleDownload = useCallback(async (doc: HomeDocument) => {
-    if (!documentIsSensitive(doc)) {
-      if (doc.s3Key) window.open(documentFileUrl(doc.s3Key), "_blank");
-      else if (doc.documentNumber) addToast({ title: doc.title, description: `Number: ${doc.documentNumber}`, color: "primary" });
-      return;
-    }
-    if (!myDuoUsername) {
-      addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
-      return;
-    }
     if (!doc.s3Key && !doc.documentNumber) {
       addToast({ title: "Nothing to download", description: "This document has no file or number.", color: "warning" });
       return;
     }
     setDownloading(true);
-    addToast({ title: "Sending Duo push", description: `To ${myDuoUsername}'s phone — approve it there…`, color: "primary" });
     try {
-      const res = await fetch("/api/documents/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentId: doc.id,
-          duoUsername: myDuoUsername,
-          s3Key: doc.s3Key ?? undefined,
-          originalFilename: doc.originalFilename ?? undefined,
-          documentNumber: doc.s3Key ? undefined : (doc.documentNumber ?? undefined),
-        }),
-      });
-      const data = await readDownloadResponse(res);
-      if (!res.ok) {
-        addToast({ title: "Download denied", description: data.error ?? "Unknown error", color: "danger" });
-        return;
-      }
-      if (data.url) {
-        window.open(data.url, "_blank");
-        addToast({
-          title: "Download started",
-          description: data.expiresAt ? `Link expires at ${new Date(data.expiresAt).toLocaleTimeString()}` : undefined,
-        });
-      } else if (data.documentNumber) {
+      const data = await fetchContent(doc, true);
+      if (data?.url) {
+        // Same tab: the link downloads (attachment), and a window.open
+        // after an await gets blocked on iOS.
+        window.location.href = data.url;
+      } else if (data?.documentNumber) {
         addToast({ title: doc.title, description: `Number: ${data.documentNumber}`, color: "primary" });
       }
     } catch (err) {
@@ -300,41 +306,17 @@ export default function DocumentsPage() {
     } finally {
       setDownloading(false);
     }
-  }, [myDuoUsername]);
+  }, [fetchContent]);
 
   const handleView = useCallback(async (doc: HomeDocument) => {
-    if (!documentIsSensitive(doc) && doc.s3Key) {
-      setViewerDoc(doc);
-      setViewerUrl(documentFileUrl(doc.s3Key));
-      return;
-    }
-    if (!myDuoUsername) {
-      addToast({ title: "Duo not linked", description: "Go to /security to link your Duo username first.", color: "warning" });
-      return;
-    }
     if (!doc.s3Key) {
       addToast({ title: "Nothing to view", description: "This document has no file.", color: "warning" });
       return;
     }
     setViewing(true);
-    addToast({ title: "Sending Duo push", description: `To ${myDuoUsername}'s phone — approve it there…`, color: "primary" });
     try {
-      const res = await fetch("/api/documents/download", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          documentId: doc.id,
-          duoUsername: myDuoUsername,
-          s3Key: doc.s3Key,
-          originalFilename: doc.originalFilename ?? undefined,
-        }),
-      });
-      const data = await readDownloadResponse(res);
-      if (!res.ok) {
-        addToast({ title: "View denied", description: data.error ?? "Unknown error", color: "danger" });
-        return;
-      }
-      if (data.url) {
+      const data = await fetchContent(doc, false);
+      if (data?.url) {
         setViewerDoc(doc);
         setViewerUrl(data.url);
       }
@@ -343,14 +325,9 @@ export default function DocumentsPage() {
     } finally {
       setViewing(false);
     }
-  }, [myDuoUsername]);
+  }, [fetchContent]);
 
-  const gateTip = (doc: HomeDocument) =>
-    !documentIsSensitive(doc)
-      ? "Not sensitive: opens without Duo"
-      : myDuoUsername
-      ? "Requires Duo push approval"
-      : "Link your Duo account in /security first";
+  const gateTip = (doc: HomeDocument) => (documentIsSensitive(doc) ? "Asks for a Duo push on your phone" : "Not sensitive: opens without Duo");
 
   const personById = useMemo(() => {
     const map = new Map<string, Person>();
@@ -754,7 +731,7 @@ export default function DocumentsPage() {
                                     <Button
                                       size="sm"
                                       variant="flat"
-                                      isDisabled={(documentIsSensitive(doc) && !myDuoUsername) || viewing}
+                                      isDisabled={viewing}
                                       isLoading={viewing}
                                       startContent={!viewing ? <FaEye size={10} /> : undefined}
                                       onPress={() => handleView(doc)}
@@ -769,7 +746,7 @@ export default function DocumentsPage() {
                                   <Button
                                     size="sm"
                                     variant="flat"
-                                    isDisabled={(documentIsSensitive(doc) && !myDuoUsername) || downloading}
+                                    isDisabled={downloading}
                                     isLoading={downloading}
                                     startContent={!downloading ? <FaDownload size={10} /> : undefined}
                                     onPress={() => handleDownload(doc)}
@@ -1039,7 +1016,7 @@ export default function DocumentsPage() {
                             <Button
                               size="sm"
                               variant="flat"
-                              isDisabled={(documentIsSensitive(detailDoc) && !myDuoUsername) || viewing}
+                              isDisabled={viewing}
                               isLoading={viewing}
                               startContent={!viewing ? <FaEye size={10} /> : undefined}
                               onPress={() => handleView(detailDoc)}
@@ -1054,7 +1031,7 @@ export default function DocumentsPage() {
                           <Button
                             size="sm"
                             variant="flat"
-                            isDisabled={(documentIsSensitive(detailDoc) && !myDuoUsername) || downloading}
+                            isDisabled={downloading}
                             isLoading={downloading}
                             startContent={!downloading ? (documentIsSensitive(detailDoc) ? <FaLock size={10} /> : <FaDownload size={10} />) : undefined}
                             onPress={() => handleDownload(detailDoc)}

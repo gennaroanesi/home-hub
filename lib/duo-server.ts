@@ -145,6 +145,11 @@ async function duoRequest<T>(
   return json.response as T;
 }
 
+/** Server-only key for signing short-lived approval tokens (the Duo integration secret). */
+export async function approvalSigningKey(): Promise<string> {
+  return (await getCredentials()).secretKey;
+}
+
 export async function preauth(username: string): Promise<PreauthResponse> {
   return duoRequest<PreauthResponse>("POST", "/auth/v2/preauth", { username });
 }
