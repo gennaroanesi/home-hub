@@ -445,9 +445,29 @@ export default function DocumentsPage() {
       addToast({ title: "Personal documents need an owner", color: "warning" });
       return;
     }
+    // Loosening protection (now opens without Duo) needs a Duo push first.
+    const loosening = !form.isSensitive && (!editingDoc || documentIsSensitive(editingDoc));
+    if (loosening && !myDuoUsername) {
+      addToast({ title: "Duo not linked", description: "Marking a document not sensitive needs Duo. Link it in /security first.", color: "warning" });
+      return;
+    }
 
     setSubmitting(true);
     try {
+      if (loosening) {
+        addToast({ title: "Sending Duo push", description: `To ${myDuoUsername}'s phone — approve marking it not sensitive…`, color: "primary" });
+        const res = await fetch("/api/documents/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ duoUsername: myDuoUsername, documentTitle: form.title.trim() }),
+        });
+        const data = await readDownloadResponse(res);
+        if (!res.ok) {
+          addToast({ title: "Not saved", description: data.error ?? "Duo approval failed", color: "danger" });
+          return;
+        }
+      }
+
       let s3key: string | null = editingDoc?.s3Key ?? null;
       let contentType: string | null = editingDoc?.contentType ?? null;
       let sizeBytes: number | null = editingDoc?.sizeBytes ?? null;
@@ -856,7 +876,9 @@ export default function DocumentsPage() {
                   <span className="block text-xs text-default-500">
                     {form.isSensitive
                       ? "Opening the file or number needs Duo approval (Face ID on the phone)."
-                      : "Opens without Duo, on the web, the phone and from Janet."}
+                      : editingDoc && !documentIsSensitive(editingDoc)
+                      ? "Opens without Duo, on the web, the phone and from Janet."
+                      : "Opens without Duo, on the web, the phone and from Janet. Saving asks for a Duo push."}
                   </span>
                 </Switch>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
