@@ -557,6 +557,58 @@ export function mergePinned(plan: TripPlan, pinned: TripLook[]): TripPlan {
   return { ...plan, packItemIds: pack, looks };
 }
 
+// ── Direct edits ───────────────────────────────────────────────────────────
+
+type PieceName = Pick<WardrobeItemLike, "id" | "brand" | "name">;
+
+function pieceLabel(i: PieceName): string {
+  return [i.brand, i.name].filter(Boolean).join(" ");
+}
+
+// Swaps the old piece's name for the new one in a `why` sentence, trying
+// "brand name" first and the bare name after; untouched when neither appears.
+function renamePiece(why: string | null, from: PieceName, to: PieceName): string | null {
+  if (!why) return why;
+  for (const old of [pieceLabel(from), from.name]) {
+    if (!old) continue;
+    const re = new RegExp(old.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    if (re.test(why)) return why.replace(re, pieceLabel(to));
+  }
+  return why;
+}
+
+/**
+ * Replaces one piece with another everywhere in the plan, with no model
+ * call: the packing list and every look that wore it. Saved (pinned) looks
+ * are left as they are, since the closet is their source of truth; the old
+ * piece stays on the packing list while one of them still wears it.
+ */
+export function swapTripPlanItem(plan: TripPlan, from: PieceName, to: PieceName): { plan: TripPlan; changedLooks: number; pinnedKept: number } {
+  if (from.id === to.id) return { plan, changedLooks: 0, pinnedKept: 0 };
+  const replace = (ids: string[]) => {
+    const out: string[] = [];
+    for (const id of ids) {
+      const next = id === from.id ? to.id : id;
+      if (!out.includes(next)) out.push(next);
+    }
+    return out;
+  };
+  let changedLooks = 0;
+  let pinnedKept = 0;
+  const looks = plan.looks.map((l) => {
+    if (!l.itemIds.includes(from.id)) return l;
+    if (l.lookId) {
+      pinnedKept++;
+      return l;
+    }
+    changedLooks++;
+    return { ...l, itemIds: replace(l.itemIds), why: renamePiece(l.why, from, to) };
+  });
+  const packItemIds = replace(plan.packItemIds);
+  if (pinnedKept && !packItemIds.includes(from.id)) packItemIds.push(from.id);
+  return { plan: { ...plan, packItemIds, looks }, changedLooks, pinnedKept };
+}
+
 export function tripContextLine(ctx: TripPlanContext): string {
   const where = ctx.location?.label ?? "unknown destination";
   if (!ctx.weather.length) return `${where}; weather unavailable`;

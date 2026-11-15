@@ -9,6 +9,7 @@ import {
   parseTripPlan,
   resolveTripLocation,
   sameDayYearsAgo,
+  swapTripPlanItem,
   tripDates,
   typicalWeather,
   type TripPlanContext,
@@ -205,6 +206,46 @@ describe("prompt", () => {
     expect(tweak).toContain("Tips: Wear the boots.");
     expect(tweak).toContain("Change requested: The jacket is too specific\nRevise the current plan");
     expect(tweak).not.toContain("Plan the trip with");
+  });
+});
+
+describe("swapTripPlanItem", () => {
+  const plan = {
+    packItemIds: ["shirt", "chino", "boots"],
+    looks: [
+      { date: "2026-11-16", title: "Travel", occasion: null, itemIds: ["shirt", "chino", "boots"], why: "The Oxford with chinos and the Red Wing Boots." },
+      { date: "2026-11-17", title: "Office", occasion: null, itemIds: ["shirt", "chino"], why: "Oxford and chinos." },
+      { date: "2026-11-18", title: "Dinner", occasion: null, itemIds: ["chino", "boots"], why: null, lookId: "saved-1" },
+    ],
+    tips: "Wear the boots on the plane.",
+  };
+  const boots = { id: "boots", brand: "Red Wing", name: "Boots" };
+  const sneakers = { id: "sneakers", brand: "Nike", name: "AF1" };
+
+  it("replaces the piece on the packing list and in every unpinned look, renaming it in why", () => {
+    const { plan: next, changedLooks, pinnedKept } = swapTripPlanItem({ ...plan, looks: plan.looks.slice(0, 2) }, boots, sneakers);
+    expect(next.packItemIds).toEqual(["shirt", "chino", "sneakers"]);
+    expect(next.looks[0].itemIds).toEqual(["shirt", "chino", "sneakers"]);
+    expect(next.looks[0].why).toBe("The Oxford with chinos and the Nike AF1.");
+    expect(next.looks[1]).toBe(plan.looks[1]);
+    expect(next.tips).toBe(plan.tips);
+    expect(changedLooks).toBe(1);
+    expect(pinnedKept).toBe(0);
+  });
+
+  it("leaves a saved look alone and keeps the old piece packed for it", () => {
+    const { plan: next, changedLooks, pinnedKept } = swapTripPlanItem(plan, boots, sneakers);
+    expect(next.looks[2]).toBe(plan.looks[2]);
+    expect(next.packItemIds).toEqual(["shirt", "chino", "sneakers", "boots"]);
+    expect(changedLooks).toBe(1);
+    expect(pinnedKept).toBe(1);
+  });
+
+  it("doesn't duplicate a piece already in the look or on the list", () => {
+    const { plan: next } = swapTripPlanItem({ ...plan, looks: plan.looks.slice(0, 2) }, boots, { id: "shirt", name: "Oxford" });
+    expect(next.packItemIds).toEqual(["shirt", "chino"]);
+    expect(next.looks[0].itemIds).toEqual(["shirt", "chino"]);
+    expect(swapTripPlanItem(plan, boots, boots).plan).toBe(plan);
   });
 });
 

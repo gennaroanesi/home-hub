@@ -11,28 +11,31 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
+import { FaCheck, FaExchangeAlt, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
-import { mainImage } from "@/lib/wardrobe";
+import { isWearable, mainImage } from "@/lib/wardrobe";
 import { formatTripRange } from "@/lib/trip";
 import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
   packCount,
   parseJsonField,
+  swapTripPlanItem,
   tripDates,
   type TripActivity,
   type TripCapacity,
   type TripDayWeather,
   type TripLook,
+  type TripPlan,
   type TripPlanSnapshot,
 } from "@/lib/wardrobe-trip";
 import type { Schema } from "@/amplify/data/resource";
 import type { WardrobeItem } from "./shared";
 import { LookCard } from "./look-card";
 import { PackChecklistModal } from "./pack-checklist-modal";
+import { SwapItemModal } from "./swap-item-modal";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -92,6 +95,8 @@ export function TripPanel({
   const [checklistOpen, setChecklistOpen] = useState(false);
   const [change, setChange] = useState("");
   const [tweaking, setTweaking] = useState(false); // the running job is a tweak, not a fresh plan
+  const [replacing, setReplacing] = useState<WardrobeItem | null>(null); // packed piece being swapped
+  const [swapBusy, setSwapBusy] = useState(false);
   const pollUntil = useRef(0);
 
   useEffect(() => {
@@ -219,11 +224,12 @@ export function TripPanel({
     if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
   }
 
-  async function savePlan(patch: Partial<Plan>) {
-    if (!plan) return;
+  async function savePlan(patch: Partial<Plan>): Promise<boolean> {
+    if (!plan) return false;
     setPlan({ ...plan, ...patch });
     const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, ...patch });
     if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+    return !r.errors?.length;
   }
 
   // Pin look `n` to a saved closet look (taking any edits made while saving), or unpin it.
@@ -262,6 +268,40 @@ export function TripPanel({
     });
   }
 
+  // Replace a packed piece with a specific one, everywhere, without the model.
+  // Goes through previousPlan like a tweak does, so "Undo last change" works.
+  async function replaceItem(from: WardrobeItem, to: WardrobeItem) {
+    if (!plan) return;
+    const current: TripPlan = {
+      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
+      looks: parseJsonField<TripLook[]>(plan.looks, []),
+      tips: plan.tips ?? null,
+    };
+    const { plan: next, changedLooks, pinnedKept } = swapTripPlanItem(current, from, to);
+    const snapshot: TripPlanSnapshot = { ...current, feedback: (plan.feedback ?? []).filter((x): x is string => !!x) };
+    setSwapBusy(true);
+    try {
+      const ok = await savePlan({
+        packItemIds: next.packItemIds,
+        looks: JSON.stringify(next.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && next.packItemIds.includes(id) && id !== to.id),
+        previousPlan: JSON.stringify(snapshot) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+        error: null,
+      });
+      if (!ok) return;
+      setReplacing(null);
+      addToast({
+        title: `${to.name} replaces ${from.name}`,
+        description:
+          `${changedLooks} look${changedLooks === 1 ? "" : "s"} changed` +
+          (pinnedKept ? `; ${pinnedKept} saved look${pinnedKept === 1 ? " keeps" : "s keep"} the ${from.name}` : ""),
+        color: "success",
+      });
+    } finally {
+      setSwapBusy(false);
+    }
+  }
+
   // Remove the saved plan altogether: looks, packing list, packed ticks and the
   // feedback that every later plan would still follow. The form keeps its
   // values, so the next "Plan trip looks" starts clean from them.
@@ -290,6 +330,11 @@ export function TripPanel({
   const pack = (ready?.packItemIds ?? []).map((id) => (id ? byId.get(id) : undefined)).filter((x): x is WardrobeItem => !!x);
   const packed = new Set((ready?.packedItemIds ?? []).filter(Boolean) as string[]);
   const packIds = pack.map((it) => it.id);
+  // What a packed piece can be replaced with: this person's wearable closet.
+  const closet = useMemo(
+    () => Array.from(byId.values()).filter((i) => i.ownerPersonId === personId && isWearable(i)),
+    [byId, personId],
+  );
   const packGroups = useMemo(() => {
     const m = new Map<string, WardrobeItem[]>();
     for (const it of pack) m.set(it.category, [...(m.get(it.category) ?? []), it]);
@@ -489,6 +534,15 @@ export function TripPanel({
                             )}
                           </span>
                         </label>
+                        <button
+                          type="button"
+                          onClick={() => setReplacing(p)}
+                          disabled={working}
+                          title="Replace with a specific piece, in every look"
+                          className="mt-1 flex items-center gap-1 text-[11px] text-primary hover:underline disabled:opacity-50"
+                        >
+                          <FaExchangeAlt size={9} /> Replace
+                        </button>
                       </div>
                     );
                   })}
@@ -580,6 +634,16 @@ export function TripPanel({
               />
             ))}
           </div>
+
+          <SwapItemModal
+            isOpen={!!replacing}
+            onClose={() => setReplacing(null)}
+            item={replacing}
+            items={closet}
+            packIds={packIds}
+            busy={swapBusy}
+            onPick={(to) => replacing && replaceItem(replacing, to)}
+          />
 
           {trip && (
             <PackChecklistModal
