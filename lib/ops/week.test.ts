@@ -125,5 +125,18 @@ describe("week ops", () => {
     expect(after.result.pets[0].days[2].status).toBe("DAYCARE");
     expect(after.result.people.find((p: any) => p.name === "Gennaro").days[1].status).toBe("WORKING_OFFICE");
     expect(after.result.review).toMatchObject({ reviewedBy: "Gennaro", notes: "light week" });
+
+    // Notes save on their own and leave the review mark alone; empty clears them.
+    const noted: any = await runOp(ctx, "set_week_notes", { weekStart: "2026-11-18", notes: "- Cris drives **Thursday**" });
+    expect(noted.result).toEqual({ weekStart: "2026-11-16", notes: "- Cris drives **Thursday**" });
+    const review = tables.homeWeekReview.find((r) => r.weekStart === "2026-11-16");
+    expect(review).toMatchObject({ reviewedBy: "Gennaro", notes: "- Cris drives **Thursday**" });
+    expect(review.reviewedAt).toBe(reviewed.result.reviewedAt);
+    await runOp(ctx, "set_week_notes", { weekStart: "2026-11-16", notes: "  " });
+    expect(tables.homeWeekReview.find((r) => r.weekStart === "2026-11-16")).toMatchObject({ reviewedBy: "Gennaro", notes: null });
+    // A week with no review row yet gets one, unreviewed.
+    await runOp(ctx, "set_week_notes", { weekStart: "2026-11-24", notes: "next week" });
+    expect(tables.homeWeekReview.find((r) => r.weekStart === "2026-11-23")).toMatchObject({ notes: "next week" });
+    expect(tables.homeWeekReview.find((r) => r.weekStart === "2026-11-23").reviewedAt ?? null).toBeNull();
   });
 });

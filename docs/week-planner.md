@@ -11,7 +11,8 @@ double-booked, who each family-calendar event is for, and where Dolce is
 (daycare is booked by hand, there's no rule for when she needs it).
 
 - **Web:** `/week` (sidebar: right under Janet). Notes + "Mark reviewed"
-  first, then what needs attention, then a grid of people, pets and
+  first (notes are markdown, edited in place with their own Save; the
+  review mark is separate and can be undone), then what needs attention, then a grid of people, pets and
   household × Monday–Sunday (each person's appointments on one row, their
   office/home status on the row below, with a "home?" hint when a weekday
   has an appointment in working hours); a card per day on phones; then the
@@ -43,7 +44,7 @@ so a Sunday review lands on the coming week.
 | `homeCalendarEvent` (existing) | Events, native and from the Apple family calendar feed. The planner can set `assignedPersonIds` on feed events; ics-sync never writes that field, so the assignment survives syncs (it's lost only if the event's UID changes). |
 | `homeCalendarFeed` (existing) | Per-feed settings (`lib/calendar-feeds.ts`): `ownerMode` ASK (default: the planner asks "who is it for?") / HOUSEHOLD / PEOPLE + `ownerPersonIds`, and `uses` (CALENDAR, WEEK, SUMMARY, AGENT; empty = all). Every event reader goes through `eventsFor(events, feeds, use)`, which drops feeds not used there and fills an unassigned event's people from its feed (`feedOwned`, so nothing asks). Set on Calendar feeds. |
 | `homePetDay` (new) | Where a pet is on a day: daycare / boarding / sitter / with us. |
-| `homeWeekReview` (new, key `weekStart`) | Reviewed at / by, notes, and `summary` for the AI summary later. |
+| `homeWeekReview` (new, key `weekStart`) | Reviewed at / by, notes (markdown; `set_week_notes` writes them alone, `mark_week_reviewed` only touches them when given), and `summary` for the AI summary later. |
 
 ## Sections
 
@@ -93,7 +94,8 @@ Computed in `lib/week-plan.ts` (`buildWeekPlan`):
 |---|---|
 | `lib/week-sections.ts` | Pure: the sections and their attention items, payday projection |
 | `lib/week-plan.ts` | Pure: week dates, event expansion (recurring via rrule, local time in the household timezone), the plan, the attention list, the nudge text |
-| `lib/ops/week.ts` | `get_week_plan`, `set_day_status`, `assign_event_people`, `set_pet_day`, `mark_week_reviewed`; `loadWeekPlan` shared with the Lambda |
+| `lib/ops/week.ts` | `get_week_plan`, `set_day_status`, `assign_event_people`, `set_pet_day`, `mark_week_reviewed`, `set_week_notes`; `loadWeekPlan` shared with the Lambda |
+| `components/week/week-notes.tsx` | The week's notes on the web page: markdown rendered in place, click to edit, saved with `set_week_notes` (never through the review mark) |
 | `pages/week.tsx`, `components/week/week-sections.tsx` | Web page and its section cards |
 | `mobile/app/(tabs)/more/week.tsx`, `mobile/lib/ops.ts` | Mobile screen; `callOp` over raw GraphQL (the bundled outputs predate `runOp`) |
 | `amplify/functions/week-review/` | Sunday nudge. Invoke with `{"dryRun": true}` to log the message without sending |

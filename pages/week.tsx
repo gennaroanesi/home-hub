@@ -14,12 +14,12 @@ import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
-import { Input } from "@heroui/input";
 import { Spinner, addToast } from "@heroui/react";
 import { FaCheck, FaChevronLeft, FaChevronRight, FaExclamationTriangle, FaPaw, FaPen, FaPlus, FaSyncAlt } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { WeekSectionCards } from "@/components/week/week-sections";
+import { WeekNotes } from "@/components/week/week-notes";
 import { EventModal } from "@/components/event-modal";
 import { TaskModal } from "@/components/task-modal";
 import { toggleTaskCompleted } from "@/lib/task-actions";
@@ -346,31 +346,27 @@ export default function WeekPage() {
           </div>
         </div>
 
-        {/* The review itself: notes for the week and "reviewed", first thing on the page */}
+        {/* The review itself: notes for the week (markdown, edited in place, saved on their own) and "reviewed", first thing on the page */}
         <Card>
-          <CardBody className="flex flex-col sm:flex-row sm:items-end gap-3">
-            <Input
-              label="Notes for the week"
-              placeholder="Cris drives Thursday; book Dolce for Wednesday"
-              value={notes}
-              onValueChange={setNotes}
-              className="flex-1"
-            />
-            <div className="flex items-center gap-2">
-              {reviewed && (
-                <span className="text-xs text-default-500">
-                  Reviewed{plan.review?.reviewedBy ? ` by ${plan.review.reviewedBy}` : ""}{" "}
-                  {new Date(plan.review!.reviewedAt!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-                </span>
+          <CardBody className="flex flex-col sm:flex-row sm:items-start gap-3">
+            <WeekNotes key={plan.weekStart} value={notes} onSave={(n) => run("set_week_notes", { weekStart: plan.weekStart, notes: n }, "Notes saved")} />
+            <div className="flex items-center gap-2 shrink-0 sm:pt-5">
+              {reviewed ? (
+                <>
+                  <span className="text-xs text-default-500 flex items-center gap-1">
+                    <FaCheck className="text-success" />
+                    Reviewed{plan.review?.reviewedBy ? ` by ${plan.review.reviewedBy}` : ""}{" "}
+                    {new Date(plan.review!.reviewedAt!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                  </span>
+                  <Button size="sm" variant="light" className="h-7 min-w-0 px-2 text-xs" onPress={() => run("mark_week_reviewed", { weekStart: plan.weekStart, reviewed: false }, "Review cleared")}>
+                    Undo
+                  </Button>
+                </>
+              ) : (
+                <Button color="primary" startContent={<FaCheck />} onPress={() => run("mark_week_reviewed", { weekStart: plan.weekStart, ...(me ? { personName: me } : {}) }, "Week reviewed")}>
+                  Mark reviewed
+                </Button>
               )}
-              <Button
-                color={reviewed ? "default" : "primary"}
-                variant={reviewed ? "flat" : "solid"}
-                startContent={<FaCheck />}
-                onPress={() => run("mark_week_reviewed", { weekStart: plan.weekStart, notes, ...(me ? { personName: me } : {}) }, reviewed ? "Notes saved" : "Week reviewed")}
-              >
-                {reviewed ? "Save notes" : "Mark reviewed"}
-              </Button>
             </div>
           </CardBody>
         </Card>

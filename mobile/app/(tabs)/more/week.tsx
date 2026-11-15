@@ -1,6 +1,6 @@
 // Week planner — the Sunday review on the phone. Same data and writes as
 // the web page (/week): get_week_plan, set_day_status, assign_event_people,
-// set_pet_day, mark_week_reviewed (lib/ops/week.ts). Tap a person's day to
+// set_pet_day, mark_week_reviewed, set_week_notes (lib/ops/week.ts). Tap a person's day to
 // set office/home/PTO, tap an event to say who it's for, tap the pet's day
 // to mark daycare.
 
@@ -167,7 +167,7 @@ export default function WeekPlanner() {
             value={notes}
             onChangeText={setNotes}
             onEndEditing={() => {
-              if (notes !== (plan.review?.notes ?? "")) void write("mark_week_reviewed", { weekStart: plan.weekStart, reviewed, notes, ...(me ? { personName: me } : {}) });
+              if (notes !== (plan.review?.notes ?? "")) void write("set_week_notes", { weekStart: plan.weekStart, notes });
             }}
             multiline
           />

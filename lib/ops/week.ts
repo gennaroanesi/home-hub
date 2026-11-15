@@ -461,4 +461,26 @@ export const markWeekReviewed = defineOp({
   },
 });
 
-export const weekOps = [getWeekPlan, setDayStatus, assignEventPeople, setPetDay, markWeekReviewed] as const;
+// ── set_week_notes ────────────────────────────────────────────────────────────
+
+export const setWeekNotes = defineOp({
+  name: "set_week_notes",
+  domain: "calendar",
+  description: "Save the notes for a week (markdown) without changing whether it's reviewed. Empty notes clear them.",
+  access: "write",
+  input: z.object({
+    weekStart: DATE.describe("Any date in the week; snapped to its Monday."),
+    notes: z.string(),
+  }),
+  output: z.object({ weekStart: z.string(), notes: z.string().nullable() }),
+  async run(ctx, input) {
+    const weekStart = mondayOf(input.weekStart);
+    const notes = input.notes.trim() ? input.notes : null;
+    const { data: existing } = await ctx.client.models.homeWeekReview.get({ weekStart });
+    const r = existing ? await ctx.client.models.homeWeekReview.update({ weekStart, notes }) : await ctx.client.models.homeWeekReview.create({ weekStart, notes });
+    if (r.errors?.length) throw new Error(r.errors[0].message);
+    return { weekStart, notes };
+  },
+});
+
+export const weekOps = [getWeekPlan, setDayStatus, assignEventPeople, setPetDay, markWeekReviewed, setWeekNotes] as const;
