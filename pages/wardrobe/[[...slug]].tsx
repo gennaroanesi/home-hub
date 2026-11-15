@@ -339,7 +339,11 @@ export default function WardrobePage() {
         </div>
 
         {/* View tabs */}
-        <div className="flex gap-1 mb-5 border-b border-default-200 overflow-x-auto">
+        {/* The scroll wrapper is separate from the bordered row: the tabs'
+            -mb-px overlap would otherwise count as vertical overflow and show
+            a scrollbar. */}
+        <div className="overflow-x-auto mb-5">
+        <div className="flex gap-1 border-b border-default-200 w-max min-w-full">
           {(
             [
               ["CLOSET", `Closet · ${counts.owned}`],
@@ -359,6 +363,7 @@ export default function WardrobePage() {
               {label}
             </button>
           ))}
+        </div>
         </div>
 
         {loading ? (
@@ -488,6 +493,7 @@ export default function WardrobePage() {
             onTripChange={setTripId}
             byId={byId}
             onOpenItem={openItem}
+            lookPreview={(lookId) => looks.find((x) => x.id === lookId)?.previewImageKey ?? null}
             onOpenLook={(l, packItemIds, done) => {
               const opts = { after: done, scope: { label: "Packed for the trip", itemIds: packItemIds } };
               const saved = l.lookId ? looks.find((x) => x.id === l.lookId) : undefined;

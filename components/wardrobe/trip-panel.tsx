@@ -73,6 +73,7 @@ export function TripPanel({
   onTripChange,
   byId,
   onOpenItem,
+  lookPreview,
   onOpenLook,
 }: {
   personId: string;
@@ -81,6 +82,8 @@ export function TripPanel({
   onTripChange: (id: string) => void;
   byId: Map<string, WardrobeItem>;
   onOpenItem: (it: WardrobeItem) => void;
+  // The saved look's try-on image, if it has one (shown collapsed on a pinned trip look).
+  lookPreview?: (lookId: string) => string | null;
   // Opens the look dialog: the saved look when `look.lookId` is set, else a
   // draft to save. `done` gets the saved look (undefined when deleted) so the
   // plan can pin it; `packItemIds` scopes the pieces picker to the trip.
@@ -655,6 +658,8 @@ export function TripPanel({
                 key={`${ready.generatedAt}-${n}`}
                 title={l.date ? `${dayLabel(l.date)} · ${l.title}` : l.title}
                 occasion={l.occasion}
+                previewImageKey={l.lookId ? lookPreview?.(l.lookId) : null}
+                previewCollapsible
                 note={l.why}
                 itemIds={l.itemIds}
                 byId={byId}
