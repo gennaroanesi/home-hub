@@ -8,6 +8,9 @@ import {
   packCount,
   parseTripPlan,
   resolveTripLocation,
+  addTripPlanItem,
+  moveTripLook,
+  removeTripPlanItem,
   sameDayYearsAgo,
   swapTripPlanItem,
   tripDates,
@@ -246,6 +249,43 @@ describe("swapTripPlanItem", () => {
     expect(next.packItemIds).toEqual(["shirt", "chino"]);
     expect(next.looks[0].itemIds).toEqual(["shirt", "chino"]);
     expect(swapTripPlanItem(plan, boots, boots).plan).toBe(plan);
+  });
+
+  it("remove drops the piece from the list and unpinned looks; a saved look keeps it packed", () => {
+    const r = removeTripPlanItem({ ...plan, looks: plan.looks.slice(0, 2) }, "boots");
+    expect(r.plan.packItemIds).toEqual(["shirt", "chino"]);
+    expect(r.plan.looks[0].itemIds).toEqual(["shirt", "chino"]);
+    expect(r.plan.looks[1]).toBe(plan.looks[1]);
+    expect(r.changedLooks).toBe(1);
+    expect(r.pinnedKept).toBe(0);
+
+    const kept = removeTripPlanItem(plan, "boots");
+    expect(kept.plan.packItemIds).toEqual(["shirt", "chino", "boots"]);
+    expect(kept.plan.looks[2]).toBe(plan.looks[2]);
+    expect(kept.pinnedKept).toBe(1);
+  });
+
+  it("add puts a piece on the list only, once", () => {
+    const next = addTripPlanItem(plan, "jacket");
+    expect(next.packItemIds).toEqual(["shirt", "chino", "boots", "jacket"]);
+    expect(next.looks).toBe(plan.looks);
+    expect(addTripPlanItem(plan, "boots")).toBe(plan);
+  });
+
+  it("move swaps days with the look already there, or just moves to a free day", () => {
+    const swapped = moveTripLook(plan, 2, "2026-11-16");
+    expect(swapped.swappedWith?.title).toBe("Travel");
+    expect(swapped.plan.looks.map((l) => `${l.date} ${l.title}`)).toEqual(["2026-11-16 Dinner", "2026-11-17 Office", "2026-11-18 Travel"]);
+    expect(swapped.plan.looks[0].lookId).toBe("saved-1");
+
+    const moved = moveTripLook(plan, 0, "2026-11-20");
+    expect(moved.swappedWith).toBeNull();
+    expect(moved.plan.looks.map((l) => l.date)).toEqual(["2026-11-17", "2026-11-18", "2026-11-20"]);
+
+    const anyDay = moveTripLook(plan, 1, null);
+    expect(anyDay.plan.looks.at(-1)).toMatchObject({ title: "Office", date: null });
+    expect(moveTripLook(plan, 1, "2026-11-17").plan).toBe(plan);
+    expect(moveTripLook(plan, 9, "2026-11-17").plan).toBe(plan);
   });
 });
 

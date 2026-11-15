@@ -1,7 +1,8 @@
-// Trip looks: replace one packed piece with a specific closet item, in the
-// packing list and every look that wore it, without going through the model
-// (swapTripPlanItem in lib/wardrobe-trip.ts). Starts on the piece's own
-// category; a search looks across the whole closet.
+// Trip looks: pick a closet piece for the packing list, without going through
+// the model. Two uses: replace one packed piece with a specific item (in the
+// list and every look that wore it: swapTripPlanItem) or add a piece to the
+// list (addTripPlanItem), both in lib/wardrobe-trip.ts. Starts on a category;
+// a search looks across the whole closet.
 
 import React, { useEffect, useMemo, useState } from "react";
 import { Input } from "@heroui/input";
@@ -11,36 +12,37 @@ import { photoUrl } from "@/lib/image-loader";
 import { mainImage } from "@/lib/wardrobe";
 import { SHEET_MODAL_CLASSES, Swatch, type WardrobeItem } from "./shared";
 
-export function SwapItemModal({
-  isOpen,
+export type PackPickerMode = { kind: "replace"; item: WardrobeItem } | { kind: "add" };
+
+export function PackPieceModal({
+  mode,
   onClose,
-  item,
   items,
   packIds,
   onPick,
   busy,
 }: {
-  isOpen: boolean;
+  mode: PackPickerMode | null; // open while set
   onClose: () => void;
-  item: WardrobeItem | null; // the piece being replaced
   items: WardrobeItem[]; // the person's wearable closet
-  packIds: string[]; // already on the packing list (shown, flagged)
+  packIds: string[]; // already on the packing list (flagged when replacing, hidden when adding)
   onPick: (to: WardrobeItem) => void;
   busy: boolean;
 }) {
   const [cat, setCat] = useState("");
   const [q, setQ] = useState("");
+  const categories = useMemo(() => Array.from(new Set(items.map((i) => i.category))).sort(), [items]);
 
   useEffect(() => {
-    if (!isOpen) return;
-    setCat(item?.category ?? "");
+    if (!mode) return;
+    setCat(mode.kind === "replace" ? mode.item.category : (categories[0] ?? ""));
     setQ("");
-  }, [isOpen, item]);
+  }, [mode, categories]);
 
-  const categories = useMemo(() => Array.from(new Set(items.map((i) => i.category))).sort(), [items]);
+  const replacing = mode?.kind === "replace" ? mode.item : null;
   const words = q.toLowerCase().split(/\s+/).filter(Boolean);
   const choices = items.filter((i) => {
-    if (i.id === item?.id) return false;
+    if (replacing ? i.id === replacing.id : packIds.includes(i.id)) return false;
     if (words.length) {
       const hay = [i.brand, i.name, i.color, i.category].filter(Boolean).join(" ").toLowerCase();
       return words.every((w) => hay.includes(w));
@@ -49,11 +51,15 @@ export function SwapItemModal({
   });
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside" placement="bottom-center" classNames={SHEET_MODAL_CLASSES}>
+    <Modal isOpen={!!mode} onClose={onClose} size="2xl" scrollBehavior="inside" placement="bottom-center" classNames={SHEET_MODAL_CLASSES}>
       <ModalContent>
         <ModalHeader className="flex flex-col gap-0.5">
-          <span>Replace {item ? [item.brand, item.name].filter(Boolean).join(" ") : "piece"}</span>
-          <span className="text-xs font-normal text-default-500">Swapped in the packing list and in every look that wears it. Saved looks keep it; open them to change.</span>
+          <span>{replacing ? `Replace ${[replacing.brand, replacing.name].filter(Boolean).join(" ")}` : "Add to the packing list"}</span>
+          <span className="text-xs font-normal text-default-500">
+            {replacing
+              ? "Swapped in the packing list and in every look that wears it. Saved looks keep it; open them to change."
+              : "Goes on the packing list only. To wear it, open a look or ask for a tweak."}
+          </span>
         </ModalHeader>
         <ModalBody className="pb-5 gap-3">
           <Input size="sm" aria-label="Search the closet" placeholder="Search the whole closet…" value={q} onValueChange={setQ} isClearable onClear={() => setQ("")} />

@@ -11,7 +11,7 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaExchangeAlt, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
+import { FaCheck, FaExchangeAlt, FaListUl, FaMagic, FaMinus, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -20,8 +20,11 @@ import { formatTripRange } from "@/lib/trip";
 import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
+  addTripPlanItem,
+  moveTripLook,
   packCount,
   parseJsonField,
+  removeTripPlanItem,
   swapTripPlanItem,
   tripDates,
   type TripActivity,
@@ -35,7 +38,7 @@ import type { Schema } from "@/amplify/data/resource";
 import type { WardrobeItem } from "./shared";
 import { LookCard } from "./look-card";
 import { PackChecklistModal } from "./pack-checklist-modal";
-import { SwapItemModal } from "./swap-item-modal";
+import { PackPieceModal, type PackPickerMode } from "./pack-piece-modal";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -95,8 +98,8 @@ export function TripPanel({
   const [checklistOpen, setChecklistOpen] = useState(false);
   const [change, setChange] = useState("");
   const [tweaking, setTweaking] = useState(false); // the running job is a tweak, not a fresh plan
-  const [replacing, setReplacing] = useState<WardrobeItem | null>(null); // packed piece being swapped
-  const [swapBusy, setSwapBusy] = useState(false);
+  const [picker, setPicker] = useState<PackPickerMode | null>(null); // replacing a packed piece, or adding one
+  const [editBusy, setEditBusy] = useState(false); // a direct packing-list edit is saving
   const pollUntil = useRef(0);
 
   useEffect(() => {
@@ -268,38 +271,68 @@ export function TripPanel({
     });
   }
 
-  // Replace a packed piece with a specific one, everywhere, without the model.
-  // Goes through previousPlan like a tweak does, so "Undo last change" works.
-  async function replaceItem(from: WardrobeItem, to: WardrobeItem) {
+  // Direct packing-list edits (replace / remove / add) without the model. Each
+  // goes through previousPlan like a tweak does, so "Undo last change" works.
+  async function editPack(edit: (current: TripPlan) => { plan: TripPlan; changedLooks?: number; pinnedKept?: number }, title: string, keptName?: string) {
     if (!plan) return;
     const current: TripPlan = {
       packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
       looks: parseJsonField<TripLook[]>(plan.looks, []),
       tips: plan.tips ?? null,
     };
-    const { plan: next, changedLooks, pinnedKept } = swapTripPlanItem(current, from, to);
+    const { plan: next, changedLooks = 0, pinnedKept = 0 } = edit(current);
+    if (next === current) return;
     const snapshot: TripPlanSnapshot = { ...current, feedback: (plan.feedback ?? []).filter((x): x is string => !!x) };
-    setSwapBusy(true);
+    setEditBusy(true);
     try {
       const ok = await savePlan({
         packItemIds: next.packItemIds,
         looks: JSON.stringify(next.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && next.packItemIds.includes(id) && id !== to.id),
+        // Ticks only survive for pieces still on the list; a new piece starts unticked.
+        packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && next.packItemIds.includes(id) && current.packItemIds.includes(id)),
         previousPlan: JSON.stringify(snapshot) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
         error: null,
       });
       if (!ok) return;
-      setReplacing(null);
+      setPicker(null);
       addToast({
-        title: `${to.name} replaces ${from.name}`,
+        title,
         description:
           `${changedLooks} look${changedLooks === 1 ? "" : "s"} changed` +
-          (pinnedKept ? `; ${pinnedKept} saved look${pinnedKept === 1 ? " keeps" : "s keep"} the ${from.name}` : ""),
+          (pinnedKept && keptName ? `; ${pinnedKept} saved look${pinnedKept === 1 ? " keeps" : "s keep"} the ${keptName}` : ""),
         color: "success",
       });
     } finally {
-      setSwapBusy(false);
+      setEditBusy(false);
     }
+  }
+
+  const replaceItem = (from: WardrobeItem, to: WardrobeItem) => editPack((c) => swapTripPlanItem(c, from, to), `${to.name} replaces ${from.name}`, from.name);
+  const removeItem = (it: WardrobeItem) => editPack((c) => removeTripPlanItem(c, it.id), `${it.name} removed`, it.name);
+  const addItem = (it: WardrobeItem) => editPack((c) => ({ plan: addTripPlanItem(c, it.id) }), `${it.name} added to the packing list`);
+  async function moveLook(n: number, date: string | null) {
+    if (!plan) return;
+    const current = parseJsonField<TripLook[]>(plan.looks, []);
+    const { plan: next, swappedWith } = moveTripLook({ packItemIds: [], looks: current, tips: null }, n, date);
+    if (next.looks === current) return;
+    const snapshot: TripPlanSnapshot = {
+      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
+      looks: current,
+      tips: plan.tips ?? null,
+      feedback: (plan.feedback ?? []).filter((x): x is string => !!x),
+    };
+    const ok = await savePlan({
+      looks: JSON.stringify(next.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      previousPlan: JSON.stringify(snapshot) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      error: null,
+    });
+    if (!ok) return;
+    const where = date ? dayLabel(date) : "any day";
+    addToast({
+      title: `${current[n].title} moved to ${where}`,
+      description: swappedWith ? `${swappedWith.title} takes ${current[n].date ? dayLabel(current[n].date!) : "no day"}` : undefined,
+      color: "success",
+    });
   }
 
   // Remove the saved plan altogether: looks, packing list, packed ticks and the
@@ -497,6 +530,9 @@ export function TripPanel({
                   {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
                   {ready.capacity === "PIECES" && ready.maxPieces ? ` · limit ${ready.maxPieces}` : ready.capacity ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}` : ""}
                 </span>
+                <Button size="sm" variant="flat" startContent={<FaPlus size={10} />} onPress={() => setPicker({ kind: "add" })} isDisabled={working}>
+                  Add piece
+                </Button>
                 {pack.length > 0 && (
                   <Button size="sm" variant="flat" startContent={<FaListUl size={11} />} onPress={() => setChecklistOpen(true)}>
                     Add to checklist
@@ -534,15 +570,26 @@ export function TripPanel({
                             )}
                           </span>
                         </label>
-                        <button
-                          type="button"
-                          onClick={() => setReplacing(p)}
-                          disabled={working}
-                          title="Replace with a specific piece, in every look"
-                          className="mt-1 flex items-center gap-1 text-[11px] text-primary hover:underline disabled:opacity-50"
-                        >
-                          <FaExchangeAlt size={9} /> Replace
-                        </button>
+                        <div className="mt-1 flex items-center gap-2.5 text-[11px]">
+                          <button
+                            type="button"
+                            onClick={() => setPicker({ kind: "replace", item: p })}
+                            disabled={working || editBusy}
+                            title="Replace with a specific piece, in every look"
+                            className="flex items-center gap-1 text-primary hover:underline disabled:opacity-50"
+                          >
+                            <FaExchangeAlt size={9} /> Replace
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeItem(p)}
+                            disabled={working || editBusy}
+                            title="Take it off the list and out of every look"
+                            className="flex items-center gap-1 text-default-500 hover:text-danger hover:underline disabled:opacity-50"
+                          >
+                            <FaMinus size={9} /> Remove
+                          </button>
+                        </div>
                       </div>
                     );
                   })}
@@ -613,36 +660,54 @@ export function TripPanel({
                 byId={byId}
                 onOpenItem={onOpenItem}
                 actions={
-                  l.lookId ? (
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs text-success flex items-center gap-1" title="Saved to Looks; planning again or tweaking keeps it as it is">
-                        <FaThumbtack size={10} /> Saved, kept on re-plan
-                      </span>
-                      <Button size="sm" variant="flat" onPress={() => onOpenLook(l, packIds, (saved) => pinLook(n, saved ?? null))} isDisabled={working}>
-                        Open
+                  <>
+                    {l.lookId ? (
+                      <div className="flex items-center gap-1">
+                        <span className="text-xs text-success flex items-center gap-1" title="Saved to Looks; planning again or tweaking keeps it as it is">
+                          <FaThumbtack size={10} /> Saved, kept on re-plan
+                        </span>
+                        <Button size="sm" variant="flat" onPress={() => onOpenLook(l, packIds, (saved) => pinLook(n, saved ?? null))} isDisabled={working}>
+                          Open
+                        </Button>
+                        <Button size="sm" variant="light" onPress={() => pinLook(n, null)} isDisabled={working}>
+                          Unpin
+                        </Button>
+                      </div>
+                    ) : (
+                      <Button size="sm" variant="flat" color="primary" isDisabled={working} onPress={() => onOpenLook(l, packIds, (saved) => saved && pinLook(n, saved))}>
+                        Save as look
                       </Button>
-                      <Button size="sm" variant="light" onPress={() => pinLook(n, null)} isDisabled={working}>
-                        Unpin
-                      </Button>
-                    </div>
-                  ) : (
-                    <Button size="sm" variant="flat" color="primary" isDisabled={working} onPress={() => onOpenLook(l, packIds, (saved) => saved && pinLook(n, saved))}>
-                      Save as look
-                    </Button>
-                  )
+                    )}
+                    <label className="ml-auto flex items-center gap-1.5 text-xs text-default-500" title="Move this look to another day; the look already there takes this one's day">
+                      Day
+                      <select
+                        aria-label="Move look to a day"
+                        value={l.date ?? ""}
+                        disabled={working}
+                        onChange={(e) => moveLook(n, e.target.value || null)}
+                        className="rounded-md border border-default-200 bg-content1 px-1.5 py-1 text-xs text-foreground"
+                      >
+                        <option value="">Any day</option>
+                        {dates.map((d) => (
+                          <option key={d} value={d}>
+                            {dayLabel(d)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </>
                 }
               />
             ))}
           </div>
 
-          <SwapItemModal
-            isOpen={!!replacing}
-            onClose={() => setReplacing(null)}
-            item={replacing}
+          <PackPieceModal
+            mode={picker}
+            onClose={() => setPicker(null)}
             items={closet}
             packIds={packIds}
-            busy={swapBusy}
-            onPick={(to) => replacing && replaceItem(replacing, to)}
+            busy={editBusy}
+            onPick={(to) => (picker?.kind === "replace" ? replaceItem(picker.item, to) : addItem(to))}
           />
 
           {trip && (

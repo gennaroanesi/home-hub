@@ -609,6 +609,46 @@ export function swapTripPlanItem(plan: TripPlan, from: PieceName, to: PieceName)
   return { plan: { ...plan, packItemIds, looks }, changedLooks, pinnedKept };
 }
 
+/**
+ * Drops a piece from the packing list and every look that wore it. Saved
+ * (pinned) looks keep it, and then so does the packing list. Looks are kept
+ * even when they get thin; the person chose this.
+ */
+export function removeTripPlanItem(plan: TripPlan, id: string): { plan: TripPlan; changedLooks: number; pinnedKept: number } {
+  let changedLooks = 0;
+  let pinnedKept = 0;
+  const looks = plan.looks.map((l) => {
+    if (!l.itemIds.includes(id)) return l;
+    if (l.lookId) {
+      pinnedKept++;
+      return l;
+    }
+    changedLooks++;
+    return { ...l, itemIds: l.itemIds.filter((x) => x !== id) };
+  });
+  const packItemIds = pinnedKept ? plan.packItemIds : plan.packItemIds.filter((x) => x !== id);
+  return { plan: { ...plan, packItemIds, looks }, changedLooks, pinnedKept };
+}
+
+/** Puts a piece on the packing list (not in any look); a no-op when it's already there. */
+export function addTripPlanItem(plan: TripPlan, id: string): TripPlan {
+  return plan.packItemIds.includes(id) ? plan : { ...plan, packItemIds: [...plan.packItemIds, id] };
+}
+
+/**
+ * Moves look `n` to another day (null = not tied to a day). When that day
+ * already has a look, the first one there takes the moved look's old day, so
+ * two day looks swap. Looks come back in date order, like parseTripPlan's.
+ */
+export function moveTripLook(plan: TripPlan, n: number, date: string | null): { plan: TripPlan; swappedWith: TripLook | null } {
+  const look = plan.looks[n];
+  if (!look || look.date === date) return { plan, swappedWith: null };
+  const other = date ? plan.looks.find((l, i) => i !== n && l.date === date) ?? null : null;
+  const looks = plan.looks.map((l, i) => (i === n ? { ...l, date } : l === other ? { ...l, date: look.date } : l));
+  looks.sort((a, b) => (a.date ?? "9999").localeCompare(b.date ?? "9999"));
+  return { plan: { ...plan, looks }, swappedWith: other };
+}
+
 export function tripContextLine(ctx: TripPlanContext): string {
   const where = ctx.location?.label ?? "unknown destination";
   if (!ctx.weather.length) return `${where}; weather unavailable`;
