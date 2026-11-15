@@ -82,7 +82,10 @@ export const handler: AppSyncResolverHandler<SetGroupsArgs | InviteArgs, Person 
   if (!callerGroups.includes("admins")) {
     throw new Error("Forbidden: admins only");
   }
-  if (event.info.fieldName === "invitePerson") return invitePerson(event.arguments as InviteArgs);
+  // Amplify's function resolver puts fieldName at the top of the event;
+  // `info` is undefined there.
+  const e = event as unknown as { fieldName?: string; info?: { fieldName?: string } };
+  if ((e.fieldName ?? e.info?.fieldName) === "invitePerson") return invitePerson(event.arguments as InviteArgs);
   return setPersonGroups(event.arguments as SetGroupsArgs);
 };
 
