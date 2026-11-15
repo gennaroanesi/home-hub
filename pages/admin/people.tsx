@@ -10,6 +10,9 @@
 // homePerson.groups). Taking someone out of home-users moves them to
 // Contacts. Non-admin members can still edit names, colors, timezones
 // and notification flags via the regular update path.
+//
+// A kid can't accept an invite, so "No login" adds someone to the
+// household without one: setPersonGroups only writes homePerson.groups.
 
 import React, { useState, useEffect, useCallback, useMemo } from "react";
 import { fetchAuthSession, getCurrentUser } from "aws-amplify/auth";
@@ -165,6 +168,7 @@ export default function HouseholdPage() {
     name: "",
     email: "",
     admin: false,
+    noLogin: false,
   });
   const [inviting, setInviting] = useState(false);
 
@@ -240,11 +244,7 @@ export default function HouseholdPage() {
     }
 
     // Group changes route through the admin mutation so Cognito stays in sync.
-    if (
-      isAdmin &&
-      saved.cognitoUsername &&
-      !sameSet(rowGroups(saved), groups)
-    ) {
+    if (isAdmin && !sameSet(rowGroups(saved), groups)) {
       try {
         const res = await client.mutations.setPersonGroups({
           personId: saved.id,
@@ -254,7 +254,9 @@ export default function HouseholdPage() {
         addToast({
           title: "Groups updated",
           description: groups.includes(HOUSEHOLD_GROUP)
-            ? "Takes effect on their next sign-in."
+            ? saved.cognitoUsername
+              ? "Takes effect on their next sign-in."
+              : undefined
             : `${saved.name} is no longer in the household; they're under Contacts now.`,
         });
       } catch (err) {
@@ -271,13 +273,21 @@ export default function HouseholdPage() {
   }
 
   function openInvite() {
-    setInvite({ personId: NEW_PERSON, name: "", email: "", admin: false });
+    setInvite({
+      personId: NEW_PERSON,
+      name: "",
+      email: "",
+      admin: false,
+      noLogin: false,
+    });
     inviteModal.onOpen();
   }
 
   async function sendInvite(onClose: () => void) {
     const existing = invite.personId !== NEW_PERSON ? invite.personId : null;
-    if (!invite.email.trim() || (!existing && !invite.name.trim())) return;
+    if (!existing && !invite.name.trim()) return;
+    if (invite.noLogin) return addWithoutLogin(existing, onClose);
+    if (!invite.email.trim()) return;
     setInviting(true);
     try {
       const res = await client.mutations.invitePerson({
@@ -296,6 +306,38 @@ export default function HouseholdPage() {
     } catch (err) {
       addToast({
         title: "Invite failed",
+        description: err instanceof Error ? err.message : String(err),
+        color: "danger",
+      });
+    } finally {
+      setInviting(false);
+    }
+  }
+
+  async function addWithoutLogin(existing: string | null, onClose: () => void) {
+    setInviting(true);
+    try {
+      let personId = existing;
+      if (!personId) {
+        const created = await client.models.homePerson.create({
+          name: invite.name.trim(),
+          active: true,
+        });
+        if (created.errors?.length || !created.data)
+          throw new Error(created.errors?.[0]?.message ?? "Couldn't create");
+        personId = created.data.id;
+      }
+      const res = await client.mutations.setPersonGroups({
+        personId,
+        groups: [HOUSEHOLD_GROUP],
+      });
+      if (res.errors?.length) throw new Error(res.errors[0].message);
+      addToast({ title: `${res.data?.name ?? "They"} joined the household` });
+      onClose();
+      await loadPeople();
+    } catch (err) {
+      addToast({
+        title: "Couldn't add",
         description: err instanceof Error ? err.message : String(err),
         color: "danger",
       });
@@ -449,13 +491,16 @@ export default function HouseholdPage() {
                     </Switch>
                   </div>
 
-                  {editing?.cognitoUsername && (
+                  {editing && (
                     <div className="flex flex-col gap-2 pt-2 border-t border-default-100">
                       <p className="text-xs font-medium text-default-500 uppercase tracking-wide">
                         Groups {isAdmin ? "" : "(read-only)"}
                       </p>
                       <div className="flex gap-2 flex-wrap">
-                        {ASSIGNABLE_GROUPS.map((g) => {
+                        {(editing.cognitoUsername
+                          ? ASSIGNABLE_GROUPS
+                          : [HOUSEHOLD_GROUP]
+                        ).map((g) => {
                           const on = groups.includes(g);
                           return (
                             <Chip
@@ -479,9 +524,9 @@ export default function HouseholdPage() {
                         })}
                       </div>
                       <p className="text-xs text-default-400">
-                        Without {HOUSEHOLD_GROUP} they leave the household and
-                        can&apos;t see its data. Changes apply on their next
-                        sign-in.
+                        {editing.cognitoUsername
+                          ? `Without ${HOUSEHOLD_GROUP} they leave the household and can't see its data. Changes apply on their next sign-in.`
+                          : `No login, so ${HOUSEHOLD_GROUP} is the only group. Without it they move to Contacts.`}
                       </p>
                     </div>
                   )}
@@ -517,7 +562,9 @@ export default function HouseholdPage() {
           <ModalContent>
             {(onClose) => (
               <>
-                <ModalHeader>Invite to the household</ModalHeader>
+                <ModalHeader>
+                  {invite.noLogin ? "Add to the household" : "Invite to the household"}
+                </ModalHeader>
                 <ModalBody>
                   <Select
                     label="Who"
@@ -550,23 +597,36 @@ export default function HouseholdPage() {
                       isRequired
                     />
                   )}
-                  <Input
-                    label="Email"
-                    type="email"
-                    value={invite.email}
-                    onValueChange={(v) => setInvite({ ...invite, email: v })}
-                    description="They sign in with this. Cognito emails them a temporary password."
-                    isRequired
-                  />
                   <Switch
                     size="sm"
-                    isSelected={invite.admin}
-                    onValueChange={(v) => setInvite({ ...invite, admin: v })}
+                    isSelected={invite.noLogin}
+                    onValueChange={(v) => setInvite({ ...invite, noLogin: v })}
                   >
                     <span className="text-sm">
-                      Admin (can invite and change groups)
+                      No login (a kid): household member, no invite
                     </span>
                   </Switch>
+                  {!invite.noLogin && (
+                    <>
+                      <Input
+                        label="Email"
+                        type="email"
+                        value={invite.email}
+                        onValueChange={(v) => setInvite({ ...invite, email: v })}
+                        description="They sign in with this. Cognito emails them a temporary password."
+                        isRequired
+                      />
+                      <Switch
+                        size="sm"
+                        isSelected={invite.admin}
+                        onValueChange={(v) => setInvite({ ...invite, admin: v })}
+                      >
+                        <span className="text-sm">
+                          Admin (can invite and change groups)
+                        </span>
+                      </Switch>
+                    </>
+                  )}
                 </ModalBody>
                 <ModalFooter>
                   <Button variant="light" onPress={onClose}>
@@ -577,7 +637,7 @@ export default function HouseholdPage() {
                     isLoading={inviting}
                     onPress={() => sendInvite(onClose)}
                   >
-                    Send invite
+                    {invite.noLogin ? "Add" : "Send invite"}
                   </Button>
                 </ModalFooter>
               </>

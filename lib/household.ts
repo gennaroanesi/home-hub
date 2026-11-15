@@ -3,7 +3,8 @@
 // homePerson holds more than the household: face-tagging-only people
 // (friends, extended family), invited guests with a login, and later
 // kids. Household membership is the `home-users` Cognito group, mirrored
-// onto homePerson.groups by the admin-only setPersonGroups mutation —
+// onto homePerson.groups by the admin-only setPersonGroups mutation (a
+// kid without a login carries `home-users` in groups alone) —
 // NOT the presence of cognitoUsername (guests have one too; see the
 // comment on homePerson in amplify/data/resource.ts).
 //

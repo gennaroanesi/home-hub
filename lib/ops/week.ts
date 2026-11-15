@@ -33,7 +33,7 @@ import { OpError, defineOp } from "./define";
 
 const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 
-type Person = { id: string; name: string; active?: boolean | null; groups?: (string | null)[] | null };
+type Person = { id: string; name: string; active?: boolean | null; groups?: (string | null)[] | null; cognitoUsername?: string | null };
 type Pet = { id: string; name: string; active?: boolean | null };
 
 async function household(ctx: OpContext): Promise<Person[]> {
@@ -54,8 +54,14 @@ async function personIds(ctx: OpContext, ids: string[] | undefined, names: strin
   }
   for (const n of names ?? []) {
     const want = n.trim().toLowerCase();
-    if (want === "both" || want === "everyone" || want === "household") {
+    if (want === "everyone" || want === "household") {
       out.push(...folks.map((p) => p.id));
+      continue;
+    }
+    if (want === "both") {
+      // The adults: a kid in the household has no login.
+      const adults = folks.filter((p) => p.cognitoUsername);
+      out.push(...(adults.length ? adults : folks).map((p) => p.id));
       continue;
     }
     const p = folks.find((x) => x.name.toLowerCase() === want);

@@ -13,6 +13,9 @@
 //   remove = current \ desired
 // then write the desired list back to homePerson.groups.
 //
+// A person without a login (a kid) can still be in the household: the
+// only group they may hold is home-users, written to the cache alone.
+//
 // invitePerson creates the Cognito login (Cognito emails a temporary
 // password; self sign-up is off), links it to a new or existing
 // homePerson, and sets its groups through the same diff.
@@ -39,6 +42,7 @@ import {
 // process.env directly (see below).
 import { env } from "$amplify/env/set-person-groups";
 import type { Schema } from "../../data/resource";
+import { HOUSEHOLD_GROUP } from "../../../lib/household.js";
 
 const { resourceConfig, libraryOptions } = await getAmplifyDataClientConfig(env);
 Amplify.configure(resourceConfig, libraryOptions);
@@ -100,10 +104,13 @@ async function setPersonGroups({ personId, groups }: SetGroupsArgs): Promise<Per
   if (!personId) throw new Error("personId and groups[] are required");
   const desired = cleanGroups(groups);
   const person = await getPerson(personId);
-  if (!person.cognitoUsername) {
-    throw new Error("Cannot set groups: homePerson has no cognitoUsername link");
+  if (person.cognitoUsername) {
+    await syncCognitoGroups(person.cognitoUsername, desired);
+  } else if (desired.some((g) => g !== HOUSEHOLD_GROUP)) {
+    // No login (a kid): household membership is all the row can carry,
+    // and it lives only in the cache since there's no Cognito user.
+    throw new Error(`${person.name} has no login; they can only be in ${HOUSEHOLD_GROUP}`);
   }
-  await syncCognitoGroups(person.cognitoUsername, desired);
 
   // Write the cache only after Cognito accepts every change. If a
   // Cognito call throws above, the homePerson.groups cache stays

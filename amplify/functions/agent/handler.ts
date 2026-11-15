@@ -276,6 +276,8 @@ interface PersonLite {
   id: string;
   name: string;
   household: boolean;
+  // Has an app login. A kid can be in the household without one.
+  login: boolean;
 }
 
 let _peopleCache: PersonLite[] | null = null;
@@ -288,6 +290,7 @@ async function getPeople(): Promise<PersonLite[]> {
     id: p.id,
     name: p.name,
     household: isHouseholdMember(p),
+    login: !!p.cognitoUsername,
   }));
   return _peopleCache;
 }
@@ -303,8 +306,15 @@ async function getHouseholdMembers(): Promise<PersonLite[]> {
 async function resolvePersonIds(names?: string[] | null): Promise<string[]> {
   if (!names || names.length === 0) return [];
   const people = await getPeople();
-  // "both", "all", "household" → the household members, not every person row
-  if (names.some((n) => ["both", "all", "household", "everyone"].includes(n.toLowerCase()))) {
+  // "all", "household" → the household members, not every person row;
+  // "both" is the adults, so a kid in the household isn't handed chores.
+  const lower = names.map((n) => n.toLowerCase());
+  if (lower.includes("both")) {
+    const members = await getHouseholdMembers();
+    const adults = members.filter((p) => p.login);
+    return (adults.length > 0 ? adults : members).map((p) => p.id);
+  }
+  if (lower.some((n) => ["all", "household", "everyone"].includes(n))) {
     return (await getHouseholdMembers()).map((p) => p.id);
   }
   const ids: string[] = [];
@@ -5967,7 +5977,9 @@ export const handler = async (event: any, context?: any): Promise<AgentResponse 
 
   const now = new Date();
   const people = await getPeople();
-  const peopleNames = (await getHouseholdMembers()).map((p) => p.name).join(", ");
+  const peopleNames = (await getHouseholdMembers())
+    .map((p) => (p.login ? p.name : `${p.name} (no login, e.g. a kid; not part of "both")`))
+    .join(", ");
 
   // Format date and time consistently in the household's local timezone.
   // Mixing `now.toISOString()` (UTC) with a localized weekday previously
