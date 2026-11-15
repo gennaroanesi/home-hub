@@ -378,7 +378,8 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
     "- Match formality to the activity and the trip type.",
     "- Golf-category items are only for golf.",
     "- Respect the luggage limit.",
-    "- `why` is one sentence naming the pieces. `tips` is two or three short sentences: what to wear on the plane, anything missing from the closet that the trip needs, and what to leave at home.",
+    "- The request is an instruction, not a suggestion: a piece it names (even as 'consider' or 'ideally') is packed and worn in at least one look, and its counts (pairs of bottoms, number of tops…) replace the luggage defaults. Make room by dropping something else. Leave a named piece out only when the weather makes it unwearable, and then say so in `tips`.",
+    "- `why` is one sentence naming the pieces by their brand and name exactly as listed in the wardrobe; never rename or nickname them. `tips` is two or three short sentences: what to wear on the plane, anything missing from the closet that the trip needs, and what to leave at home.",
     ctx.styleNotes ? `\nThis person's style brief (follow it):\n${ctx.styleNotes}` : "",
   ]
     .filter(Boolean)
@@ -407,7 +408,7 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
           .map((r) => `- ${r.date ?? "?"}${r.time ? ` ${r.time}` : ""}: ${r.type ? `${r.type.toLowerCase()} ` : ""}${r.name}`)
           .join("\n")}`
       : "",
-    opts.request?.trim() ? `\nRequest: ${opts.request.trim()}` : "",
+    opts.request?.trim() ? `\nRequest (follow it; pieces it names go in the plan):\n${opts.request.trim()}` : "",
     pinned.length ? pinnedBlock(ctx, pinned) : "",
     feedback.length ? `\nFeedback on earlier versions of this plan (still applies):\n${feedback.map((f) => `- ${f}`).join("\n")}` : "",
     `\nWardrobe:\n${ctx.items.map(itemLine).join("\n")}`,

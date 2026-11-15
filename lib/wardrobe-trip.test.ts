@@ -164,6 +164,25 @@ describe("prompt", () => {
     expect(capacityRule("CARRY_ON")).toMatch(/Carry-on/);
   });
 
+  it("the request is an instruction the model must follow, and pieces keep their wardrobe names", () => {
+    const ctx: TripPlanContext = {
+      person: { id: "p", name: "Gennaro" },
+      styleNotes: null,
+      trip: { id: "t", name: "Seattle", type: "WORK", startDate: "2026-11-16", endDate: "2026-11-17", notes: null },
+      location: null,
+      dates: ["2026-11-16", "2026-11-17"],
+      weather: [],
+      reservations: [],
+      items,
+    };
+    const { system, user } = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], request: "  Consider the Beaufort jacket.  " });
+    expect(user).toContain("Request (follow it; pieces it names go in the plan):\nConsider the Beaufort jacket.");
+    expect(system).toContain("The request is an instruction, not a suggestion");
+    expect(system).toContain("even as 'consider' or 'ideally'");
+    expect(system).toContain("exactly as listed in the wardrobe; never rename");
+    expect(buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], request: " " }).user).not.toContain("Request (");
+  });
+
   it("a tweak sends the current plan and the change; earlier changes always ride along", () => {
     const ctx: TripPlanContext = {
       person: { id: "p", name: "Gennaro" },

@@ -11,7 +11,7 @@ import { addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import { FaCheck, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaUndo } from "react-icons/fa";
+import { FaCheck, FaListUl, FaMagic, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -262,6 +262,21 @@ export function TripPanel({
     });
   }
 
+  // Remove the saved plan altogether: looks, packing list, packed ticks and the
+  // feedback that every later plan would still follow. The form keeps its
+  // values, so the next "Plan trip looks" starts clean from them.
+  async function deletePlan() {
+    if (!plan || !trip) return;
+    if (!confirm(`Delete the plan for ${trip.name}? The looks, packing list and earlier changes go; the form keeps what's typed in it.`)) return;
+    const r = await client.models.homeWardrobeTripPlan.delete({ id: plan.id });
+    if (r.errors?.length) {
+      addToast({ title: "Couldn't delete the plan", description: r.errors[0].message, color: "danger" });
+      return;
+    }
+    setPlan(null);
+    setChange("");
+  }
+
   const setActivity = (n: number, patch: Partial<TripActivity>) =>
     setActivities((list) => list.map((a, i) => (i === n ? { ...a, ...patch } : a)));
 
@@ -392,10 +407,15 @@ export function TripPanel({
           onValueChange={setRequest}
           minRows={2}
         />
-        <div>
+        <div className="flex items-center gap-2 flex-wrap">
           <Button color="primary" startContent={!working && <FaMagic size={12} />} onPress={() => generate()} isLoading={working && !tweaking} isDisabled={!trip || working}>
             {working && !tweaking ? "Planning…" : ready ? "Plan again from scratch" : "Plan trip looks"}
           </Button>
+          {plan && !working && (
+            <Button variant="light" color="danger" startContent={<FaTrash size={11} />} onPress={deletePlan}>
+              Delete plan
+            </Button>
+          )}
         </div>
       </div>
 
