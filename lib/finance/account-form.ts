@@ -171,24 +171,59 @@ export function parseSimplefinListing(raw: unknown): SfListing {
 }
 
 export type SfPickerRow = SfAccount & { selected: boolean; taken: boolean };
-export type SfPickerGroup = SfConnection & { rows: SfPickerRow[] };
+/** `rows` after the filter; `total` is the connection's whole list. */
+export type SfPickerGroup = SfConnection & { rows: SfPickerRow[]; total: number };
+
+export type SfPickerFilter = {
+  /** Matches name, institution or id, case-insensitively, every word. */
+  query?: string;
+  /** Only this connection's group; null / undefined = all. */
+  connection?: string | null;
+  /** Only accounts at this institution; null / undefined = all. */
+  institution?: string | null;
+  /** Leave out accounts already linked to another account here. */
+  hideLinked?: boolean;
+};
+
+export const EMPTY_SF_FILTER: SfPickerFilter = { query: "", connection: null, institution: null, hideLinked: false };
+
+/** Institutions in the listing, sorted, for the picker's filter. */
+export function simplefinInstitutions(accounts: Pick<SfAccount, "institution">[]): string[] {
+  return [...new Set(accounts.map((a) => a.institution).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
 
 /**
  * One group per connection (every configured one when the listing names
  * none), each with its accounts: `selected` when it's the form's current
- * link, `taken` when another account already uses it.
+ * link, `taken` when another account already uses it. With a filter, only
+ * the chosen connection's group and the rows that match are returned (the
+ * form's current pick is always kept, so it can't disappear).
  */
-export function simplefinPickerGroups(listing: Pick<SfListing, "accounts" | "connections">, form: Pick<AccountForm, "id" | "simplefinAccountId" | "simplefinConnection"> | null): SfPickerGroup[] {
+export function simplefinPickerGroups(
+  listing: Pick<SfListing, "accounts" | "connections">,
+  form: Pick<AccountForm, "id" | "simplefinAccountId" | "simplefinConnection"> | null,
+  filter: SfPickerFilter = {},
+): SfPickerGroup[] {
   const conns: SfConnection[] = listing.connections.length ? listing.connections : SIMPLEFIN_CONNECTIONS.map((c) => ({ key: c.key, label: c.label, ok: true, error: null }));
-  return conns.map((conn) => ({
-    ...conn,
-    rows: listing.accounts
-      .filter((s) => s.connection === conn.key)
-      .map((s) => {
-        const mine = !!form?.id && s.mappedTo?.id === form.id;
-        return { ...s, selected: form?.simplefinAccountId === s.id && form?.simplefinConnection === s.connection, taken: !!s.mappedTo && !mine };
-      }),
-  }));
+  const words = (filter.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (r: SfPickerRow) => {
+    if (r.selected) return true;
+    if (filter.institution && r.institution !== filter.institution) return false;
+    if (filter.hideLinked && r.taken) return false;
+    const hay = `${r.name} ${r.institution} ${r.id}`.toLowerCase();
+    return words.every((w) => hay.includes(w));
+  };
+  return conns
+    .filter((conn) => !filter.connection || conn.key === filter.connection)
+    .map((conn) => {
+      const all = listing.accounts
+        .filter((s) => s.connection === conn.key)
+        .map((s) => {
+          const mine = !!form?.id && s.mappedTo?.id === form.id;
+          return { ...s, selected: form?.simplefinAccountId === s.id && form?.simplefinConnection === s.connection, taken: !!s.mappedTo && !mine };
+        });
+      return { ...conn, rows: all.filter(matches), total: all.length };
+    });
 }
 
 /** The form after picking a SimpleFIN account: its id and connection, and its institution when none is set. */

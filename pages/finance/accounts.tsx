@@ -28,7 +28,10 @@ import {
   parseSimplefinListing,
   pickSimplefinAccount,
   saveAccountForm,
+  simplefinInstitutions,
   simplefinPickerGroups,
+  EMPTY_SF_FILTER,
+  type SfPickerFilter,
   type AccountForm as Form,
   type SfAccount,
   type SfConnection,
@@ -46,8 +49,9 @@ export default function FinanceAccountsPage() {
   const [sfAccounts, setSfAccounts] = useState<SfAccount[]>([]);
   const [sfConnections, setSfConnections] = useState<SfConnection[]>([]);
   const [sfError, setSfError] = useState<string | null>(null);
+  const [sfFilter, setSfFilter] = useState<SfPickerFilter>(EMPTY_SF_FILTER);
 
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
+  const set =<K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
 
   function edit(a?: any) {
     setForm(a ? accountFormFrom(a) : newAccountForm(refs.accounts.length));
@@ -94,6 +98,7 @@ export default function FinanceAccountsPage() {
     setSfOpen(true);
     setSfLoading(true);
     setSfError(null);
+    setSfFilter(EMPTY_SF_FILTER);
     try {
       const r = await financeClient.mutations.listSimplefinAccounts();
       if (r.errors?.length) throw new Error(r.errors[0].message);
@@ -313,15 +318,67 @@ export default function FinanceAccountsPage() {
               <div className="text-sm text-danger">{sfError}</div>
             ) : (
               <div className="flex flex-col gap-4">
-                {simplefinPickerGroups({ accounts: sfAccounts, connections: sfConnections }, form).map((conn) => {
+                {/* Search and filters: whose connection, institution, linked or not */}
+                <div className="flex flex-col gap-2 sticky top-0 bg-content1 z-10 pb-1">
+                  <Input
+                    size="sm"
+                    autoFocus
+                    isClearable
+                    placeholder="Search name, bank or id"
+                    value={sfFilter.query ?? ""}
+                    onValueChange={(v) => setSfFilter((f) => ({ ...f, query: v }))}
+                    onClear={() => setSfFilter((f) => ({ ...f, query: "" }))}
+                  />
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex gap-1">
+                      {[{ key: null as string | null, label: "Both" }, ...SIMPLEFIN_CONNECTIONS.map((c) => ({ key: c.key as string | null, label: c.label }))].map((c) => (
+                        <Button
+                          key={c.key ?? "all"}
+                          size="sm"
+                          variant={(sfFilter.connection ?? null) === c.key ? "solid" : "flat"}
+                          color={(sfFilter.connection ?? null) === c.key ? "primary" : "default"}
+                          className="h-7 min-w-0 px-2 text-xs"
+                          onPress={() => setSfFilter((f) => ({ ...f, connection: c.key }))}
+                        >
+                          {c.label}
+                        </Button>
+                      ))}
+                    </div>
+                    <Select
+                      size="sm"
+                      aria-label="Institution"
+                      placeholder="Any bank"
+                      className="w-44"
+                      selectedKeys={sfFilter.institution ? [sfFilter.institution] : []}
+                      onSelectionChange={(k) => setSfFilter((f) => ({ ...f, institution: (Array.from(k)[0] as string | undefined) ?? null }))}
+                    >
+                      {simplefinInstitutions(sfAccounts).map((i) => (
+                        <SelectItem key={i}>{i}</SelectItem>
+                      ))}
+                    </Select>
+                    <Checkbox size="sm" isSelected={!!sfFilter.hideLinked} onValueChange={(v) => setSfFilter((f) => ({ ...f, hideLinked: v }))}>
+                      Hide linked
+                    </Checkbox>
+                  </div>
+                </div>
+                {simplefinPickerGroups({ accounts: sfAccounts, connections: sfConnections }, form, sfFilter).map((conn) => {
                   const rows = conn.rows;
                   return (
                     <div key={conn.key}>
-                      <div className="text-sm font-semibold mb-1">{conn.label}&apos;s SimpleFIN</div>
+                      <div className="text-sm font-semibold mb-1 flex items-baseline gap-2">
+                        {conn.label}&apos;s SimpleFIN
+                        {conn.ok && conn.total > 0 && (
+                          <span className="text-xs font-normal text-default-400">
+                            {rows.length === conn.total ? conn.total : `${rows.length} of ${conn.total}`}
+                          </span>
+                        )}
+                      </div>
                       {!conn.ok ? (
                         <div className="text-xs text-warning-600">{conn.error}</div>
-                      ) : rows.length === 0 ? (
+                      ) : conn.total === 0 ? (
                         <div className="text-xs text-default-500">No accounts on this connection yet.</div>
+                      ) : rows.length === 0 ? (
+                        <div className="text-xs text-default-500">Nothing matches here.</div>
                       ) : (
                         <ul className="flex flex-col divide-y divide-default-100">
                           {rows.map((s) => {

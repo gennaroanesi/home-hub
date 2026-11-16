@@ -166,7 +166,10 @@ Each token can see that person's own accounts too, so:
   is reported and skipped; the others still sync (status PARTIAL);
 - the account picker (`listSimplefinAccounts`) uses `balances-only=1` and
   returns only id, institution, name and the connection key, grouped per
-  person in the modal ("Gennaro's SimpleFIN" / "Cristine's SimpleFIN").
+  person in the modal ("Gennaro's SimpleFIN" / "Cristine's SimpleFIN"), with
+  a search box and filters (whose connection, institution, hide linked;
+  `simplefinPickerGroups` in `lib/finance/account-form.ts`, shared with the
+  phone).
   Anyone in `home-users` can see those names;
 - SimpleFIN rate-limits per token. gennaroanesi.com pulls Gennaro's at
   roughly 4/12/19h Chicago; these runs are 30 minutes later. Cristine's token

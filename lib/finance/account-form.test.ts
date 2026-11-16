@@ -9,6 +9,7 @@ import {
   parseSimplefinListing,
   pickSimplefinAccount,
   saveAccountForm,
+  simplefinInstitutions,
   simplefinPickerGroups,
   validateAccountForm,
 } from "./account-form";
@@ -137,6 +138,27 @@ describe("SimpleFIN picker", () => {
     expect(simplefinPickerGroups(listing, { ...EMPTY_ACCOUNT_FORM, id: "a1" })[0].rows[0].taken).toBe(false);
     // Same id on another connection isn't selected.
     expect(simplefinPickerGroups(listing, { ...EMPTY_ACCOUNT_FORM, simplefinAccountId: "ACT-2", simplefinConnection: "cristine" })[0].rows[1].selected).toBe(false);
+  });
+
+  it("filters by words, connection, institution and linked, keeping the current pick", () => {
+    const g = (filter: Parameters<typeof simplefinPickerGroups>[2], form: Parameters<typeof simplefinPickerGroups>[1] = null) =>
+      simplefinPickerGroups(listing, form, filter).map((x) => [x.key, x.rows.map((r) => r.id), x.total]);
+    expect(g({ query: "che" })).toEqual([
+      ["gennaro", ["ACT-1"], 2],
+      ["cristine", [], 1],
+    ]);
+    expect(g({ query: "fidelity 401" })).toEqual([
+      ["gennaro", [], 2],
+      ["cristine", ["ACT-3"], 1],
+    ]);
+    expect(g({ query: "act-2" })[0][1]).toEqual(["ACT-2"]);
+    expect(g({ connection: "cristine" })).toEqual([["cristine", ["ACT-3"], 1]]);
+    expect(g({ institution: "Amex" })[0][1]).toEqual(["ACT-2"]);
+    expect(g({ hideLinked: true })[0][1]).toEqual(["ACT-2"]);
+    // The linked-elsewhere row stays when it's this form's own link, and the current pick survives any filter.
+    expect(g({ hideLinked: true }, { ...EMPTY_ACCOUNT_FORM, id: "a1" })[0][1]).toEqual(["ACT-1", "ACT-2"]);
+    expect(g({ query: "zzz" }, { ...EMPTY_ACCOUNT_FORM, simplefinAccountId: "ACT-2", simplefinConnection: "gennaro" })[0][1]).toEqual(["ACT-2"]);
+    expect(simplefinInstitutions(listing.accounts)).toEqual(["Amex", "Chase", "Fidelity"]);
   });
 
   it("falls back to the configured connections when the listing names none", () => {
