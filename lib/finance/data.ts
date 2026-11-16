@@ -124,6 +124,31 @@ export async function listGoalMilestones(client: Client): Promise<any[]> {
 }
 
 /** Positions in invested accounts (one account, or all), largest first. */
+export async function listAssets(client: Client): Promise<any[]> {
+  const rows = await listAllPages<any>(client.models.homeFinanceAsset);
+  return rows.sort((a, b) => (a.sortOrder ?? 999) - (b.sortOrder ?? 999) || (b.currentValue ?? 0) - (a.currentValue ?? 0));
+}
+
+export async function listAssetValuations(client: Client): Promise<any[]> {
+  const rows = await listAllPages<any>(client.models.homeFinanceAssetValuation);
+  return rows.sort((a, b) => a.date.localeCompare(b.date));
+}
+
+export async function listLoans(client: Client): Promise<any[]> {
+  return listAllPages<any>(client.models.homeFinanceLoan);
+}
+
+/** Newest first. */
+export async function listLoanPayments(client: Client, loanId?: string): Promise<any[]> {
+  const rows = await listAllPages<any>(client.models.homeFinanceLoanPayment);
+  return rows.filter((p) => !loanId || p.loanId === loanId).sort((a, b) => b.date.localeCompare(a.date));
+}
+
+export async function listSnapshots(client: Client, fromIso?: string): Promise<any[]> {
+  const rows = await listAllPages<any>(client.models.homeFinanceAccountSnapshot);
+  return fromIso ? rows.filter((s) => s.date >= fromIso) : rows;
+}
+
 export async function listHoldings(client: Client, accountId?: string): Promise<any[]> {
   const rows = accountId
     ? await listAllPages<any>({ list: (opts: any) => client.models.homeFinanceHolding.list({ ...opts, accountId }) })

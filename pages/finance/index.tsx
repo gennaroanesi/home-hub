@@ -20,8 +20,9 @@ import { householdAccounts } from "@/lib/finance/accounts";
 import { householdBudget, type HouseholdBudgetView } from "@/lib/finance/budget";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, todayIso } from "@/lib/finance/dates";
-import { listBudgetLines, listGoals, listSchedules, listTransactions } from "@/lib/finance/data";
+import { listAssets, listBudgetLines, listGoals, listSchedules, listTransactions } from "@/lib/finance/data";
 import { goalProgress, type GoalProgress } from "@/lib/finance/goals";
+import { netWorthNow } from "@/lib/finance/net-worth";
 import { lowestPoint, projectBalance, upcomingEvents, type ProjectedEvent, type ProjectionPoint } from "@/lib/finance/recurring";
 import { listAllPages } from "@/lib/list-all";
 
@@ -47,19 +48,22 @@ export default function FinanceOverviewPage() {
   const [goals, setGoals] = useState<GoalProgress[]>([]);
   const [uncategorized, setUncategorized] = useState(0);
   const [lastSync, setLastSync] = useState<any | null>(null);
+  const [assets, setAssets] = useState<any[]>([]);
 
   const load = useCallback(async () => {
     if (refs.loading) return;
     setLoading(true);
     try {
       const active = householdAccounts(refs.accounts);
-      const [lines, sched, goalRows, txs, logs] = await Promise.all([
+      const [lines, sched, goalRows, txs, logs, assetRows] = await Promise.all([
         listBudgetLines(financeClient),
         listSchedules(financeClient),
         listGoals(financeClient),
         active.length ? listTransactions(financeClient, { ...month, accountIds: active.map((a) => a.id) }) : Promise.resolve([]),
         listAllPages<any>(financeClient.models.homeFinanceSyncLog),
+        listAssets(financeClient),
       ]);
+      setAssets(assetRows);
       setBudget(householdBudget(lines, txs, sched, month, today));
       setSchedules(sched);
       setGoals(goalProgress(goalRows, refs.accounts, today).filter((g) => g.goal.active !== false));
@@ -77,6 +81,7 @@ export default function FinanceOverviewPage() {
   }, [load]);
 
   const activeAccounts = refs.accounts.filter((a) => a.active !== false);
+  const worth = useMemo(() => netWorthNow(refs.accounts, assets), [refs.accounts, assets]);
 
   const outlooks: AccountOutlook[] = useMemo(() => {
     const horizon = addDays(today, 14);
@@ -136,6 +141,33 @@ export default function FinanceOverviewPage() {
 
   return (
     <FinanceShell title="Finance" subtitle={syncChip} onSynced={reloadAll}>
+      {/* Net worth */}
+      <NextLink href="/finance/net-worth" className="block mb-3">
+        <Card isPressable shadow="sm" className="w-full">
+          <CardBody className="flex flex-row flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
+            <span className="flex items-baseline gap-3">
+              <span className="text-xs uppercase text-default-500">Net worth</span>
+              <Money value={worth.total} cents={false} className="text-2xl font-semibold" />
+            </span>
+            <span className="text-xs text-default-500 flex flex-wrap gap-x-3">
+              <span>
+                Cash <Money value={worth.cash} cents={false} />
+              </span>
+              <span>
+                Invested <Money value={worth.invested} cents={false} />
+              </span>
+              <span>
+                Property <Money value={worth.property} cents={false} />
+              </span>
+              <span>
+                Debt <Money value={worth.debt} cents={false} />
+              </span>
+              <span className="text-primary">Details →</span>
+            </span>
+          </CardBody>
+        </Card>
+      </NextLink>
+
       {/* Accounts */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
         {activeAccounts.map((a) => {

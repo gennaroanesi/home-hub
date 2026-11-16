@@ -78,12 +78,69 @@ Household differences from gennaroanesi.com:
 
 | Where | What |
 |---|---|
-| `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…GoalMilestone`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date), `…Holding` (identifier accountId+holdingKey); `syncFinance` and `listSimplefinAccounts` mutations |
-| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `simplefin-connections.ts` (one connection per person), `data.ts` (loading through the indexes) |
+| `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…GoalMilestone`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date), `…Holding` (identifier accountId+holdingKey), `…Asset`, `…AssetValuation`, `…Loan`, `…LoanPayment`; `syncFinance` and `listSimplefinAccounts` mutations |
+| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `loans.ts`, `net-worth.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `simplefin-connections.ts` (one connection per person), `data.ts` (loading through the indexes) |
 | `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, syncs positions for invested accounts, writes a sync log |
 | `lib/ops/finance.ts` | `get_finance_summary` (+ per-account buffer / projected low, last sync), `get_finance_budget` (month / quarter / year / last3, cadence filter), `list_finance_transactions` (`categories` = any of), `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule` (`markPaid`), `list_finance_goals`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh`, the pages' writes and the phone |
+| `lib/ops/net-worth.ts` | `get_net_worth`, `list_finance_loans`, `simulate_loan_payoff`, `save_finance_asset`, `save_finance_loan`, `record_loan_payment` (see Net worth below) |
 | `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings, SimpleFIN connection + last sync; add / edit / link / delete via `AccountFormModal`, writing `homeFinanceAccount` directly through `lib/finance/account-form.ts`, the same code as the web form). Everything else through the ops; sheets in `mobile/components/finance/` |
-| `pages/finance/` | Overview, Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
+| `pages/finance/` | Overview, Net worth, Loans (detail), Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
+
+## Net worth: assets and loans (2026-11-16)
+
+Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,
+`financeLoanPayment`), reshaped:
+
+- **Net worth** = active accounts (cash, invested, debts: loans and cards are
+  negative balances) + active assets' current value
+  (`lib/finance/net-worth.ts`). The history series reads the daily
+  `homeFinanceAccountSnapshot` rows (each account's latest on or before the
+  date) plus asset valuations as a step function; it starts on the first
+  snapshot, since balances before it are unknown. Today's point uses live
+  balances.
+- **Assets** (`homeFinanceAsset`): house, cars, collectibles. Every value set
+  is a `homeFinanceAssetValuation` row (PURCHASE / ESTIMATE / APPRAISAL /
+  SALE; one per day, a second the same day corrects it); `currentValue` +
+  `valuedOn` mirror the latest. Selling = `soldDate` + `soldValue`, which
+  takes it out of net worth from that day without losing the history.
+- **Loans** (`homeFinanceLoan`): the terms only. **The balance is the LOAN
+  account's `currentBalance`**, never a cached copy: SimpleFIN keeps the Chase
+  mortgage current; a manual one (the BMW) moves by each recorded payment's
+  principal (`record_loan_payment`, which also moves it back on edit /
+  delete). gennaroanesi.com cached `originalPrincipal − Σ principal` on the
+  loan and needed "correction" payments when it drifted from the lender;
+  here a manual balance is just corrected (`save_finance_loan owed`). One loan
+  per account; the loan mirrors its rate into the account's `apr`.
+- **Schedule** is computed (`lib/finance/loans.ts`): contractual P&I from the
+  terms (or `monthlyPayment` when the lender's differs), payment dates on the
+  first payment's day of the month (clamped in short months), the contract's
+  expected balance today, payoff at the current payment, months ahead /
+  behind. gennaroanesi.com stored one SCHEDULED row per month (360 for the
+  mortgage) and posted them; here `homeFinanceLoanPayment` holds only
+  payments actually made (P / I / escrow / fees, `isExtra`).
+- **Connection**: `loan.assetId` = what secures it (mortgage → Home, auto →
+  the car). Equity = value − what its loans owe, plus loan-to-value. Set from
+  the loan's editor (or `save_finance_loan assetId / assetName`); removing an
+  asset unlinks its loans.
+- **What-ifs** (`simulate_loan_payoff`, the loan page's simulator): extra per
+  month, a lump sum, a different payment, or "paid off by" → the payment
+  needed; months and interest saved vs the current payment.
+
+Ops (`lib/ops/net-worth.ts`): `get_net_worth` (`includeHistory`),
+`list_finance_loans` (by id or name: "mortgage", "car", the asset or lender),
+`simulate_loan_payoff`, `save_finance_asset`, `save_finance_loan`,
+`record_loan_payment`. Pages: `/finance/net-worth` (headline, own vs owe bar,
+history, property with equity, loans, accounts by group) and
+`/finance/loans/[id]` (where it stands, simulator + balance chart, terms,
+payments by year with interest per year for taxes, remaining schedule); the
+overview has a net worth line, a LOAN account's page links to its loan. Phone:
+Finance → Net worth (read-only).
+
+Data came over with `scripts/import-gennaroanesi-loans.ts` (assets with a
+purchase + today's valuation; the mortgage attached to the synced Chase
+account; the BMW as a manual LOAN account at gennaroanesi.com's balance;
+posted payments only; a `startDate` after the first payment, a data slip
+there, is dropped). Re-run safe (markers in notes).
 
 ## Paychecks, tax outlook, invoices (2026-11-09)
 

@@ -41,6 +41,7 @@ import {
   FaMoneyCheckAlt,
   FaFileInvoiceDollar,
   FaLandmark,
+  FaChartLine,
 } from "react-icons/fa";
 
 export interface NavLink {
@@ -104,6 +105,7 @@ export const NAV_SECTIONS: NavSection[] = [
     label: "Finance",
     items: [
       { name: "Overview", href: "/finance", icon: FaWallet, exact: true },
+      { name: "Net worth", href: "/finance/net-worth", icon: FaChartLine },
       { name: "Transactions", href: "/finance/transactions", icon: FaExchangeAlt },
       { name: "Budget", href: "/finance/budget", icon: FaBalanceScale },
       { name: "Review", href: "/finance/review", icon: FaClipboardCheck },

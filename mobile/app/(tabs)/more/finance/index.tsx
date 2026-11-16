@@ -15,6 +15,7 @@ import { fmtCurrency, fmtDate } from "../../../../../lib/finance/dates";
 type Summary = OpResultOf<"get_finance_summary">;
 
 const SECTIONS = [
+  { label: "Net worth", icon: "trending-up-outline", route: "net-worth" },
   { label: "Transactions", icon: "list-outline", route: "transactions" },
   { label: "Budget", icon: "pie-chart-outline", route: "budget" },
   { label: "Scheduled", icon: "calendar-outline", route: "scheduled" },

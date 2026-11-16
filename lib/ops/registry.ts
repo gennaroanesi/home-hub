@@ -7,11 +7,12 @@ import { OpError, type OpDef } from "./define";
 import { contactsOps } from "./contacts";
 import { financeOps } from "./finance";
 import { inventoryOps } from "./inventory";
+import { netWorthOps } from "./net-worth";
 import { notesOps } from "./notes";
 import { wardrobeOps } from "./wardrobe";
 import { weekOps } from "./week";
 
-export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...financeOps, ...weekOps, ...contactsOps] as const;
+export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...financeOps, ...netWorthOps, ...weekOps, ...contactsOps] as const;
 
 export type AnyOp = (typeof OPS)[number];
 export type OpName = AnyOp["name"];

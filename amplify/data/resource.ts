@@ -1330,6 +1330,87 @@ const schema = a
       })
       .authorization((allow) => [allow.group("home-users")]),
 
+    // ── Net worth: assets and loans ────────────────────────────────────
+    // Ported from gennaroanesi.com's financeAsset / financeLoan /
+    // financeLoanPayment, reshaped (lib/finance/loans.ts, net-worth.ts,
+    // docs/finance-handoff.md):
+    // - An asset keeps its value history (homeFinanceAssetValuation), so net
+    //   worth can be charted over time; currentValue mirrors the latest.
+    // - A loan's balance is its LOAN account's currentBalance (negative =
+    //   owed), never a cached copy: SimpleFIN keeps a synced one current,
+    //   recorded payments move a manual one. No drift, no corrections.
+    // - The amortization schedule is computed, not stored.
+    // - loan.assetId is what it's secured by (mortgage → home, auto → car):
+    //   equity = value − what its loans owe.
+
+    // Things owned that aren't accounts: the house, cars, collectibles.
+    homeFinanceAsset: a
+      .model({
+        name: a.string().required(),
+        type: a.enum(["REAL_ESTATE", "VEHICLE", "COLLECTIBLE", "OTHER"]),
+        purchaseValue: a.float(),
+        purchaseDate: a.date(),
+        currentValue: a.float().required().default(0), // = the latest valuation
+        valuedOn: a.date(), // date of that valuation
+        ownerPersonIds: a.id().array(), // empty = household
+        active: a.boolean().default(true), // false once sold or gone
+        soldDate: a.date(),
+        soldValue: a.float(),
+        notes: a.string(),
+        sortOrder: a.integer(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // One row per time an asset's value was set (purchase, an estimate, an
+    // appraisal, the sale). Read as a step function: the value on a date is
+    // the latest row on or before it.
+    homeFinanceAssetValuation: a
+      .model({
+        assetId: a.id().required(),
+        date: a.date().required(),
+        value: a.float().required(),
+        source: a.enum(["PURCHASE", "ESTIMATE", "APPRAISAL", "SALE"]),
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // Terms of a loan whose balance lives on a LOAN homeFinanceAccount.
+    homeFinanceLoan: a
+      .model({
+        accountId: a.id().required(),
+        loanType: a.enum(["MORTGAGE", "AUTO", "STUDENT", "PERSONAL", "HELOC", "OTHER"]),
+        lender: a.string(),
+        originalPrincipal: a.float().required(),
+        interestRate: a.float().required(), // annual, decimal (0.045)
+        termMonths: a.integer().required(),
+        startDate: a.date(), // origination
+        firstPaymentDate: a.date().required(), // payments fall on this day of the month
+        // Contractual principal + interest; computed from the terms when empty.
+        monthlyPayment: a.float(),
+        escrowMonthly: a.float(), // taxes + insurance collected with the payment
+        assetId: a.id(), // what secures it
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
+    // A payment made on a loan, split into principal / interest / escrow /
+    // fees. On a manual loan account, recording one moves the balance by
+    // its principal; a synced account's balance comes from SimpleFIN.
+    homeFinanceLoanPayment: a
+      .model({
+        loanId: a.id().required(),
+        date: a.date().required(),
+        totalAmount: a.float().required(),
+        principal: a.float().required(),
+        interest: a.float().required(),
+        escrow: a.float(),
+        fees: a.float(),
+        isExtra: a.boolean().default(false), // principal-only, outside the schedule
+        transactionId: a.id(), // the household transaction that paid it, when known
+        notes: a.string(),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
     // Small JSON settings for finance pages (tax outlook inputs per year:
     // prior-year tax, filing status, per-person RSU cadence, 401k what-ifs).
     // key e.g. "tax-outlook:2026".

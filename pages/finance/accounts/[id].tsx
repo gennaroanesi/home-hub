@@ -21,7 +21,7 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "@/lib/finance/dates";
 import { accountTypeLabel, isInvested } from "@/lib/finance/accounts";
-import { listAccountTransactions, listHoldings } from "@/lib/finance/data";
+import { listAccountTransactions, listHoldings, listLoans } from "@/lib/finance/data";
 import { listAllPages } from "@/lib/list-all";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -58,6 +58,15 @@ export default function FinanceAccountDetailPage() {
   const [txs, setTxs] = useState<any[] | null>(null);
   const [holdings, setHoldings] = useState<any[] | null>(null);
   const [logs, setLogs] = useState<Array<{ log: any; entry: any }>>([]);
+  const [loanId, setLoanId] = useState<string | null>(null);
+
+  // A LOAN account with terms has its own page (payoff, payments, equity).
+  useEffect(() => {
+    if (account?.type !== "LOAN") return;
+    listLoans(financeClient)
+      .then((rows) => setLoanId(rows.find((l) => l.accountId === account.id)?.id ?? null))
+      .catch(() => setLoanId(null));
+  }, [account?.id, account?.type]);
 
   const loadAccount = useCallback(async () => {
     if (!id) return;
@@ -151,9 +160,16 @@ export default function FinanceAccountDetailPage() {
         setReloadTick((n) => n + 1);
       }}
       actions={
-        <Button size="sm" variant="light" startContent={<FaArrowLeft />} onPress={() => router.push("/finance/accounts")}>
-          Accounts
-        </Button>
+        <>
+          {account.type === "LOAN" && (
+            <Button size="sm" variant="flat" color="primary" onPress={() => router.push(loanId ? `/finance/loans/${loanId}` : "/finance/net-worth")}>
+              {loanId ? "Loan details" : "Add loan terms"}
+            </Button>
+          )}
+          <Button size="sm" variant="light" startContent={<FaArrowLeft />} onPress={() => router.push("/finance/accounts")}>
+            Accounts
+          </Button>
+        </>
       }
     >
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">

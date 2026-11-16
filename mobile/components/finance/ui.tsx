@@ -95,7 +95,7 @@ export function Chip({ label, on, onPress, color }: { label: string; on?: boolea
   );
 }
 
-export type FinanceRoute = "transactions" | "budget" | "scheduled" | "goals" | "accounts";
+export type FinanceRoute = "transactions" | "budget" | "scheduled" | "goals" | "accounts" | "net-worth";
 
 /**
  * Push a finance sub-screen. The cast: expo-router's generated route types
