@@ -181,15 +181,37 @@ estimated chips, import lender schedule, remaining schedule); the overview
 has a net worth line, a LOAN account's page links to its loan. Phone: Finance
 → Net worth (read-only).
 
-**Open (assets):** market values for the house and the car. Plan agreed
-2026-11-16: a monthly job writing an ESTIMATE valuation from RentCast's value
-estimate (free tier, 50 requests/month) for the house and VinAudit's /
-MarketCheck's market value by VIN + mileage for the car (the user is creating
-the accounts), with a depreciation-curve fallback and a "refresh now" button;
-the asset gains a valuation config (provider, address or VIN, mileage).
-Williamson CAD's yearly appraised value goes in as an APPRAISAL. No parallel
-inventory records for the house or cars; an `inventoryItemId` link on the
-asset for things that are both (a watch, art).
+### Automatic market values (2026-11-16)
+
+`homeFinanceAsset.valueProvider` + `lib/finance/asset-values.ts`:
+- **RENTCAST** (the house): `GET api.rentcast.io/v1/avm/value?address=…`
+  (`X-Api-Key`), `price` + `priceRangeLow/High`; needs `address` as
+  "Street, City, State, Zip". Free plan 50 requests/month; one a month is
+  used.
+- **MARKETCHECK** (a car): `GET api.marketcheck.com/v2/predict/car/us/marketcheck_price?api_key&vin&miles&zip&dealer_type=independent`
+  → `marketcheck_price` (+ `msrp`); needs `vin`, `mileage` (`mileageDate`
+  set when it changes; update it now and then) and `zip`. Free plan 500
+  calls/month; whether price prediction is included on Free is unconfirmed
+  (the user couldn't find VinAudit's free developer tier, so MarketCheck it is).
+- **DEPRECIATION**: purchase price × (1 − `annualDepreciation`, default
+  15%)^years, by the day. The no-key fallback for a car.
+- **When:** the scheduled finance sync (3×/day) refreshes assets whose last
+  auto valuation (notes start "Auto: ") is ≥ 28 days old, so about monthly;
+  "Refresh values" on `/finance/net-worth` and the `refresh_asset_values`
+  op (→ the `refreshAssetValues` mutation on the finance-sync Lambda) do it
+  now, for all or one asset. Each refresh is an ESTIMATE valuation dated
+  today (a same-day estimate is replaced) and mirrors onto `currentValue`
+  unless a hand-entered value has a later date. One asset's failure doesn't
+  stop the others; errors come back per asset.
+- **Keys:** `RENTCAST_API_KEY`, `MARKETCHECK_API_KEY`: plain env vars on
+  the finance-sync Lambda (`amplify/backend.ts`), read from `.env.local` for
+  the sandbox and from **Amplify Hosting's environment variables for prod**
+  (the build env is what `process.env` sees at synth). They must be added
+  there, like `ANTHROPIC_API_KEY`.
+- Williamson CAD's yearly appraised value still goes in by hand as an
+  APPRAISAL. No parallel inventory records for the house or cars; an
+  `inventoryItemId` link on the asset for things that are both (a watch,
+  art) is still open.
 
 Data came over with `scripts/import-gennaroanesi-loans.ts` (assets with a
 purchase + today's valuation; the mortgage attached to the synced Chase

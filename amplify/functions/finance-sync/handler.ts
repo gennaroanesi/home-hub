@@ -51,6 +51,7 @@ import {
 import { classifiableCategories, inferCategory, rulesFromDbRows } from "../../../lib/finance/categories.js";
 import { findScheduleMatches, MATCH_AUTO_THRESHOLD, nextDateAfter } from "../../../lib/finance/recurring.js";
 import { planLoanCapture } from "../../../lib/finance/loan-capture.js";
+import { refreshAssetValues } from "../../../lib/finance/asset-values.js";
 import { addDays, round2, todayIso } from "../../../lib/finance/dates.js";
 import type { RecurringLike } from "../../../lib/finance/types.js";
 import { classifyTransactionsLLM } from "./classify-llm";
@@ -145,9 +146,40 @@ export const handler = async (event: any = {}) => {
     const args = event.arguments ?? {};
     return runSync({ trigger: "MANUAL", days: args.days ?? undefined, accountId: args.accountId ?? undefined, dryRun: args.dryRun ?? false });
   }
+  if (field === "refreshAssetValues") {
+    const assetId = event.arguments?.assetId ? String(event.arguments.assetId) : null;
+    return { results: await refreshValues({ assetIds: assetId ? [assetId] : null, onlyStale: false }) };
+  }
   const scheduled = event?.source === "aws.events" || event?.["detail-type"] === "Scheduled Event" || Object.keys(event ?? {}).length === 0;
-  return runSync({ trigger: scheduled ? "CRON" : "MANUAL", days: event?.days, accountId: event?.accountId, dryRun: event?.dryRun === true });
+  const result = await runSync({ trigger: scheduled ? "CRON" : "MANUAL", days: event?.days, accountId: event?.accountId, dryRun: event?.dryRun === true });
+  // Market values, monthly: assets whose last auto valuation is old enough.
+  if (scheduled && !event?.dryRun) {
+    try {
+      const r = await refreshValues({ assetIds: null, onlyStale: true });
+      const done = r.filter((x) => !x.skipped);
+      if (done.length) console.log(`[finance-sync] asset values: ${done.map((x) => `${x.name} ${x.error ? `failed (${x.error})` : x.value}`).join("; ")}`);
+    } catch (e) {
+      console.error("[finance-sync] asset values failed", e);
+    }
+  }
+  return result;
 };
+
+/** Market values for assets with a provider (lib/finance/asset-values.ts). */
+async function refreshValues(opts: { assetIds: string[] | null; onlyStale: boolean }) {
+  const c = await getClient();
+  const [assets, valuations] = await Promise.all([listAllPages<any>(c.models.homeFinanceAsset), listAllPages<any>(c.models.homeFinanceAssetValuation)]); // eslint-disable-line @typescript-eslint/no-explicit-any
+  return refreshAssetValues({
+    client: c,
+    assets,
+    valuations,
+    assetIds: opts.assetIds,
+    onlyStale: opts.onlyStale,
+    today: todayIso(),
+    keys: { rentcast: process.env.RENTCAST_API_KEY ?? "", marketcheck: process.env.MARKETCHECK_API_KEY ?? "" },
+    fetchFn: fetch,
+  });
+}
 
 // ── Access URLs ───────────────────────────────────────────────────────────────
 

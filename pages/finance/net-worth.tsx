@@ -15,7 +15,7 @@ import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Progress, Spinner, addToast } from "@heroui/react";
-import { FaCar, FaGem, FaHome, FaPen, FaPlus, FaBox } from "react-icons/fa";
+import { FaCar, FaGem, FaHome, FaPen, FaPlus, FaBox, FaSyncAlt } from "react-icons/fa";
 import { Area, AreaChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
@@ -28,6 +28,9 @@ import { listAssetValuations, listAssets, listLoanPayments, listLoans, listSnaps
 import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
 import { LOAN_TYPE_LABELS, fmtDuration, loanOutlook, type LoanType } from "@/lib/finance/loans";
 import { ASSET_TYPE_LABELS, GROUP_LABELS, accountGroup, assetEquity, changeSince, netWorthHistory, netWorthNow, type AssetType, type NetWorthGroup } from "@/lib/finance/net-worth";
+import { type AssetRefresh } from "@/lib/finance/asset-values";
+
+const PROVIDER_SHORT: Record<string, string> = { RENTCAST: "RentCast", MARKETCHECK: "MarketCheck", DEPRECIATION: "depreciation" };
 
 const ASSET_ICON: Record<string, React.ReactNode> = {
   REAL_ESTATE: <FaHome />,
@@ -54,6 +57,34 @@ export default function NetWorthPage() {
   const [payments, setPayments] = useState<any[]>([]);
   const [snapshots, setSnapshots] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const autoAssets = assets.filter((a) => a.active !== false && a.valueProvider);
+
+  async function refreshValues(assetId?: string) {
+    setRefreshing(true);
+    try {
+      const r = await (financeClient as any).mutations.refreshAssetValues(assetId ? { assetId } : {});
+      if (r.errors?.length) throw new Error(r.errors[0].message);
+      let data: any = r.data;
+      for (let i = 0; i < 3 && typeof data === "string"; i++) data = JSON.parse(data);
+      const results: AssetRefresh[] = Array.isArray(data?.results) ? data.results : [];
+      const failed = results.filter((x) => x.error);
+      const done = results.filter((x) => x.value != null);
+      if (!results.length) addToast({ title: "Nothing to refresh", description: "No asset has an automatic value yet; set one in the asset's editor.", color: "warning" });
+      else {
+        addToast({
+          title: done.length ? `Updated ${done.map((x) => `${x.name} ${fmtCurrency(x.value!, { cents: false })}${x.change ? ` (${fmtCurrency(x.change, { sign: true, cents: false })})` : ""}`).join(", ")}` : "No values updated",
+          description: failed.length ? failed.map((x) => `${x.name}: ${x.error}`).join(" · ") : undefined,
+          color: failed.length ? (done.length ? "warning" : "danger") : "success",
+        });
+      }
+      await load();
+    } catch (e) {
+      addToast({ title: "Couldn't refresh values", description: e instanceof Error ? e.message : String(e), color: "danger" });
+    } finally {
+      setRefreshing(false);
+    }
+  }
   const [assetModal, setAssetModal] = useState<any | null | undefined>(undefined);
   const [loanModal, setLoanModal] = useState<{ loan: any | null; accountId?: string } | null>(null);
   const [showSold, setShowSold] = useState(false);
@@ -125,6 +156,11 @@ export default function NetWorthPage() {
 
   const actions = (
     <>
+      {autoAssets.length > 0 && (
+        <Button size="sm" variant="flat" startContent={<FaSyncAlt />} isLoading={refreshing} onPress={() => refreshValues()} title="Fetch today's market value for assets with an automatic value">
+          Refresh values
+        </Button>
+      )}
       <Button size="sm" variant="flat" startContent={<FaPlus />} onPress={() => setAssetModal(null)}>
         Asset
       </Button>
@@ -207,6 +243,12 @@ export default function NetWorthPage() {
                   <div className="text-xs text-default-500 flex flex-wrap gap-x-2">
                     <span>{ASSET_TYPE_LABELS[(a.type ?? "OTHER") as AssetType]}</span>
                     <span>· valued {a.valuedOn ? fmtDate(a.valuedOn, { month: "short", day: "numeric", year: "numeric" }) : "—"}</span>
+                    {a.valueProvider && (
+                      <span>
+                        · auto, {PROVIDER_SHORT[a.valueProvider] ?? a.valueProvider}
+                        {a.valueProvider === "MARKETCHECK" && a.mileage != null ? ` at ${Number(a.mileage).toLocaleString("en-US")} mi` : ""}
+                      </span>
+                    )}
                     {gain != null && (
                       <span>
                         · <Money value={gain} sign cents={false} /> vs purchase

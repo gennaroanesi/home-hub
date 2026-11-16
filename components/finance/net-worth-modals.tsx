@@ -23,6 +23,9 @@ import { listSchedules } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, round2, todayIso } from "@/lib/finance/dates";
 import { INTEREST_ACCRUALS, INTEREST_ACCRUAL_LABELS, LOAN_TYPES, LOAN_TYPE_LABELS, contractualPayment, interestDays, suggestSplit } from "@/lib/finance/loans";
 import { ASSET_TYPES, ASSET_TYPE_LABELS } from "@/lib/finance/net-worth";
+import { DEFAULT_ANNUAL_DEPRECIATION, VALUE_PROVIDERS, VALUE_PROVIDER_LABELS } from "@/lib/finance/asset-values";
+
+const BY_HAND = "__manual__";
 
 const $ = <span className="text-default-400 text-sm">$</span>;
 const num = (s: string): number | null => (s.trim() === "" || !Number.isFinite(Number(s)) ? null : Number(s));
@@ -48,7 +51,7 @@ export function AssetModal({
   onSaved: () => void;
 }) {
   const isNew = asset === null;
-  const [f, setF] = useState({ name: "", type: "REAL_ESTATE", purchaseValue: "", purchaseDate: "", value: "", valuedOn: todayIso(), valueSource: "ESTIMATE", valueNotes: "", sold: false, soldDate: "", soldValue: "", notes: "" });
+  const [f, setF] = useState({ name: "", type: "REAL_ESTATE", purchaseValue: "", purchaseDate: "", value: "", valuedOn: todayIso(), valueSource: "ESTIMATE", valueNotes: "", sold: false, soldDate: "", soldValue: "", notes: "", valueProvider: BY_HAND, address: "", vin: "", mileage: "", zip: "", annualDepreciation: "" });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -66,6 +69,12 @@ export function AssetModal({
       soldDate: asset?.soldDate ?? "",
       soldValue: str(asset?.soldValue),
       notes: asset?.notes ?? "",
+      valueProvider: asset?.valueProvider ?? BY_HAND,
+      address: asset?.address ?? "",
+      vin: asset?.vin ?? "",
+      mileage: str(asset?.mileage),
+      zip: asset?.zip ?? "",
+      annualDepreciation: asset?.annualDepreciation != null ? str(round2(asset.annualDepreciation * 100)) : "",
     });
   }, [asset]);
 
@@ -94,8 +103,17 @@ export function AssetModal({
       purchaseValue: num(f.purchaseValue),
       purchaseDate: f.purchaseDate || null,
       notes: f.notes.trim() || null,
+      valueProvider: f.valueProvider === BY_HAND ? null : f.valueProvider,
+      address: f.address.trim() || null,
+      vin: f.vin.trim() || null,
+      mileage: num(f.mileage) == null ? null : Math.round(num(f.mileage)!),
+      zip: f.zip.trim() || null,
+      annualDepreciation: num(f.annualDepreciation) == null ? null : round2(num(f.annualDepreciation)! / 100),
       ...(value != null ? { value, valuedOn: f.valuedOn || todayIso(), valueSource: f.valueSource, valueNotes: f.valueNotes.trim() || undefined } : {}),
     };
+    if (f.valueProvider === "RENTCAST" && !f.address.trim()) return toastError("Missing address", "RentCast needs the full address: Street, City, State, Zip");
+    if (f.valueProvider === "MARKETCHECK" && (f.vin.trim().length !== 17 || !(num(f.mileage)! > 0) || !/^\d{5}$/.test(f.zip.trim()))) return toastError("Missing car details", "MarketCheck needs the 17-character VIN, the mileage and a ZIP code");
+    if (f.valueProvider === "DEPRECIATION" && (num(f.purchaseValue) == null || !f.purchaseDate)) return toastError("Missing purchase", "The depreciation curve needs the purchase price and date");
     if (isNew && value == null && input.purchaseValue == null) return toastError("Missing value", "Give today's value or what it cost");
     if (f.sold) {
       if (!f.soldDate) return toastError("Missing date", "When was it sold?");
@@ -135,6 +153,40 @@ export function AssetModal({
               <SelectItem key="APPRAISAL">Appraisal</SelectItem>
             </Select>
             <Input label="Where from (optional)" placeholder="Zillow, KBB private party" value={f.valueNotes} onValueChange={(v) => setF({ ...f, valueNotes: v })} />
+
+            <div className="sm:col-span-2 text-sm font-medium mt-2">Automatic market value</div>
+            <Select
+              label="Valued by"
+              className="sm:col-span-2"
+              selectedKeys={[f.valueProvider]}
+              onSelectionChange={(k) => setF({ ...f, valueProvider: String(Array.from(k as Set<string>)[0] ?? BY_HAND) })}
+              description="Refreshed monthly by the finance sync and with “Refresh values”; each refresh is an estimate in the history. A value you type on a later date still wins."
+            >
+              {[
+                <SelectItem key={BY_HAND}>By hand</SelectItem>,
+                ...VALUE_PROVIDERS.map((p) => <SelectItem key={p}>{VALUE_PROVIDER_LABELS[p]}</SelectItem>),
+              ]}
+            </Select>
+            {f.valueProvider === "RENTCAST" && <Input label="Address" className="sm:col-span-2" placeholder="Street, City, State, Zip" value={f.address} onValueChange={(v) => setF({ ...f, address: v })} isRequired />}
+            {f.valueProvider === "MARKETCHECK" && (
+              <>
+                <Input label="VIN" value={f.vin} onValueChange={(v) => setF({ ...f, vin: v })} isRequired description="17 characters" />
+                <Input label="ZIP code" value={f.zip} onValueChange={(v) => setF({ ...f, zip: v })} isRequired description="The car's market" />
+              </>
+            )}
+            {(f.valueProvider === "MARKETCHECK" || f.type === "VEHICLE") && (
+              <Input
+                label="Mileage"
+                type="number"
+                min={0}
+                value={f.mileage}
+                onValueChange={(v) => setF({ ...f, mileage: v })}
+                description={asset?.mileageDate ? `Last read ${fmtDate(asset.mileageDate, { month: "short", day: "numeric", year: "numeric" })}` : "Update it now and then"}
+              />
+            )}
+            {f.valueProvider === "DEPRECIATION" && (
+              <Input label="Loses per year" type="number" min={0} max={100} endContent={<span className="text-default-400 text-sm">%</span>} value={f.annualDepreciation} onValueChange={(v) => setF({ ...f, annualDepreciation: v })} placeholder={String(DEFAULT_ANNUAL_DEPRECIATION * 100)} description={`Empty = ${DEFAULT_ANNUAL_DEPRECIATION * 100}%, from the purchase price`} />
+            )}
 
             {!isNew && (
               <>

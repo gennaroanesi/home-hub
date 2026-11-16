@@ -12,6 +12,7 @@ import { listAccounts, listAssetValuations, listAssets, listLoanPayments, listLo
 import { round2, todayIso } from "../finance/dates";
 import { INTEREST_ACCRUALS, LOAN_TYPES, LOAN_TYPE_LABELS, compareToPlan, contractualPayment, interestDays, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit, type LoanTerms } from "../finance/loans";
 import { ASSET_TYPES, GROUP_LABELS, accountGroup, assetEquity, changeSince, netWorthHistory, netWorthNow, type NetWorthGroup } from "../finance/net-worth";
+import { VALUE_PROVIDERS } from "../finance/asset-values";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -220,6 +221,13 @@ const AssetOut = z.object({
   valuedOn: z.string().nullable(),
   purchaseValue: z.number().nullable(),
   purchaseDate: z.string().nullable(),
+  valueProvider: z.string().nullable().describe("RENTCAST, MARKETCHECK or DEPRECIATION: its value is refreshed automatically; null = by hand"),
+  address: z.string().nullable(),
+  vin: z.string().nullable(),
+  mileage: z.number().nullable(),
+  mileageDate: z.string().nullable(),
+  zip: z.string().nullable(),
+  annualDepreciation: z.number().nullable(),
   owed: z.number().describe("What the loans it secures still owe"),
   equity: z.number(),
   ltv: z.number().nullable().describe("Loan-to-value, 0..1"),
@@ -240,6 +248,13 @@ function assetOut(a: any, d: Loaded, valuations: any[]): z.input<typeof AssetOut
     valuedOn: a.valuedOn ?? null,
     purchaseValue: a.purchaseValue ?? null,
     purchaseDate: a.purchaseDate ?? null,
+    valueProvider: a.valueProvider ?? null,
+    address: a.address ?? null,
+    vin: a.vin ?? null,
+    mileage: a.mileage ?? null,
+    mileageDate: a.mileageDate ?? null,
+    zip: a.zip ?? null,
+    annualDepreciation: a.annualDepreciation ?? null,
     owed: eq.owed,
     equity: eq.equity,
     ltv: eq.ltv == null ? null : Math.round(eq.ltv * 1000) / 1000,
@@ -400,13 +415,20 @@ export const saveFinanceAsset = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Add or change something the household owns that isn't an account (the house, a car, a collectible), for net worth. `value` records a new valuation (an estimate like Zillow or KBB, or an appraisal) dated valuedOn (default today) and becomes the current value; history is kept for the net worth chart. Selling: soldDate + soldValue. A loan secured by it is linked from the loan (save_finance_loan assetId). With assetId, only the fields given change. remove deletes it with its valuation history (loans pointing at it are unlinked); removeValuationId drops one wrong valuation.",
+    "Add or change something the household owns that isn't an account (the house, a car, a collectible), for net worth. `value` records a new valuation (an estimate like Zillow or KBB, or an appraisal) dated valuedOn (default today) and becomes the current value; history is kept for the net worth chart. Automatic market value: valueProvider RENTCAST (needs address 'Street, City, State, Zip'), MARKETCHECK (needs vin, mileage, zip) or DEPRECIATION (purchase price and date, annualDepreciation default 0.15); refreshed monthly and with refresh_asset_values. Update mileage now and then (mileageDate). Selling: soldDate + soldValue. A loan secured by it is linked from the loan (save_finance_loan assetId). With assetId, only the fields given change. remove deletes it with its valuation history (loans pointing at it are unlinked); removeValuationId drops one wrong valuation.",
   input: z.object({
     assetId: z.string().optional(),
     name: z.string().optional(),
     type: z.enum(ASSET_TYPES).optional(),
     purchaseValue: z.number().min(0).nullable().optional(),
     purchaseDate: DATE.nullable().optional(),
+    valueProvider: z.enum(VALUE_PROVIDERS).nullable().optional().describe("null = valued by hand"),
+    address: z.string().nullable().optional().describe("Full address for RentCast: 'Street, City, State, Zip'"),
+    vin: z.string().nullable().optional(),
+    mileage: z.number().int().min(0).nullable().optional(),
+    mileageDate: DATE.nullable().optional().describe("Default today when mileage is given"),
+    zip: z.string().nullable().optional().describe("5-digit ZIP for the car's market"),
+    annualDepreciation: z.number().min(0).max(1).nullable().optional().describe("0.15 = loses 15% a year"),
     value: z.number().min(0).optional().describe("Today's value (or on valuedOn)"),
     valuedOn: DATE.optional(),
     valueSource: z.enum(["ESTIMATE", "APPRAISAL"]).optional().describe("Default ESTIMATE"),
@@ -437,9 +459,15 @@ export const saveFinanceAsset = defineOp({
     }
 
     const fields: Record<string, unknown> = Object.fromEntries(
-      (["name", "type", "purchaseValue", "purchaseDate", "ownerPersonIds", "soldDate", "soldValue", "active", "notes", "sortOrder"] as const).filter((k) => input[k] !== undefined).map((k) => [k, input[k]]),
+      (["name", "type", "purchaseValue", "purchaseDate", "valueProvider", "address", "vin", "mileage", "mileageDate", "zip", "annualDepreciation", "ownerPersonIds", "soldDate", "soldValue", "active", "notes", "sortOrder"] as const)
+        .filter((k) => input[k] !== undefined)
+        .map((k) => [k, input[k]]),
     );
     if (typeof fields.name === "string") fields.name = fields.name.trim();
+    if (typeof fields.vin === "string") fields.vin = fields.vin.trim().toUpperCase() || null;
+    if (typeof fields.address === "string") fields.address = fields.address.trim() || null;
+    if (typeof fields.zip === "string") fields.zip = fields.zip.trim() || null;
+    if (input.mileage != null && input.mileageDate === undefined && input.mileage !== existing?.mileage) fields.mileageDate = todayIso();
     if (input.soldDate) fields.active = false;
     if (input.soldDate === null && input.active === undefined) fields.active = true;
 
@@ -492,6 +520,37 @@ export const saveFinanceAsset = defineOp({
     const fresh = await loadAll(ctx);
     const saved = fresh.assets.find((a) => a.id === asset.id);
     return { action, asset: assetOut(saved, fresh, await listAssetValuations(ctx.client)) };
+  },
+});
+
+// ── refresh_asset_values ───────────────────────────────────────────────────
+
+export const refreshAssetValuesOp = defineOp({
+  name: "refresh_asset_values",
+  domain: "finance",
+  access: "write",
+  description:
+    "Fetch today's market value for every asset that has a value provider (RentCast for the house, MarketCheck for a car by VIN + mileage, or the depreciation curve), or for one asset, and record it as an ESTIMATE valuation. The scheduled finance sync does this monthly; this is the 'refresh now'. Answers 'what's the house worth now?' when a fresh number is wanted. Runs in the finance-sync Lambda.",
+  input: z.object({
+    assetId: z.string().optional(),
+    assetName: z.string().optional(),
+  }),
+  output: z.object({
+    results: z.array(z.object({ assetId: z.string(), name: z.string(), provider: z.string().nullable(), value: z.number().nullable(), previous: z.number().nullable(), change: z.number().nullable(), skipped: z.boolean(), error: z.string().nullable() })),
+  }),
+  async run(ctx, input) {
+    const d = await loadAll(ctx);
+    const asset = findAsset(d, input);
+    if (asset === null) throw new OpError("Which asset?");
+    const mutations = ctx.client.mutations;
+    if (!mutations?.refreshAssetValues) throw new OpError("refreshAssetValues isn't available on this client");
+    const r = await mutations.refreshAssetValues(asset ? { assetId: asset.id } : {});
+    if (r.errors?.length) throw new Error(r.errors[0].message);
+    let data = r.data;
+    for (let i = 0; i < 3 && typeof data === "string"; i++) data = JSON.parse(data);
+    const results = Array.isArray(data?.results) ? data.results : [];
+    if (!results.length && !asset) throw new OpError("No asset has a value provider yet (save_finance_asset valueProvider)");
+    return { results };
   },
 });
 
@@ -880,4 +939,4 @@ export const importLoanPayments = defineOp({
   },
 });
 
-export const netWorthOps = [getNetWorth, listFinanceLoans, simulateLoanPayoff, saveFinanceAsset, saveFinanceLoan, recordLoanPayment, importLoanPayments] as const;
+export const netWorthOps = [getNetWorth, listFinanceLoans, simulateLoanPayoff, saveFinanceAsset, refreshAssetValuesOp, saveFinanceLoan, recordLoanPayment, importLoanPayments] as const;

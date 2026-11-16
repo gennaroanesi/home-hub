@@ -409,6 +409,11 @@ for (const conn of SIMPLEFIN_CONNECTIONS) {
   secretsmanager.Secret.fromSecretNameV2(financeSyncStack, `SimplefinSecret-${conn.key}`, conn.secretName).grantRead(financeSyncLambda);
 }
 financeSyncLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+// Market values for assets (lib/finance/asset-values.ts): RentCast for the
+// house, MarketCheck for a car. Same pattern as ANTHROPIC_API_KEY: from
+// .env.local for the sandbox, the Amplify Hosting build env for prod.
+financeSyncLambda.addEnvironment("RENTCAST_API_KEY", process.env.RENTCAST_API_KEY ?? "");
+financeSyncLambda.addEnvironment("MARKETCHECK_API_KEY", process.env.MARKETCHECK_API_KEY ?? "");
 
 const financeSyncScheduleRole = new iam.Role(financeSyncStack, "financeSyncSchedulerRole", {
   assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),

@@ -1352,6 +1352,18 @@ const schema = a
         purchaseDate: a.date(),
         currentValue: a.float().required().default(0), // = the latest valuation
         valuedOn: a.date(), // date of that valuation
+        // Automatic market value (lib/finance/asset-values.ts): RentCast by
+        // address for the house, MarketCheck by VIN + mileage + ZIP for a
+        // car, or a depreciation curve from the purchase. Null = by hand.
+        // Refreshed monthly by the finance sync and on demand
+        // (refreshAssetValues); each refresh is an ESTIMATE valuation.
+        valueProvider: a.enum(["RENTCAST", "MARKETCHECK", "DEPRECIATION"]),
+        address: a.string(), // "Street, City, State, Zip"
+        vin: a.string(),
+        mileage: a.integer(),
+        mileageDate: a.date(), // when the mileage was read
+        zip: a.string(), // the car's market
+        annualDepreciation: a.float(), // 0.15 = loses 15% a year; default for DEPRECIATION
         ownerPersonIds: a.id().array(), // empty = household
         active: a.boolean().default(true), // false once sold or gone
         soldDate: a.date(),
@@ -2407,6 +2419,15 @@ const schema = a
       .mutation()
       .authorization((allow) => [allow.group("home-users")])
       .arguments({ days: a.integer(), accountId: a.id(), dryRun: a.boolean() })
+      .returns(a.json())
+      .handler(a.handler.function(financeSync)),
+    // Market values for assets with a valueProvider (all of them, or one),
+    // right now: { results: [{ assetId, name, provider, value, previous,
+    // change, error }] }. The scheduled sync does the same monthly.
+    refreshAssetValues: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({ assetId: a.id() })
       .returns(a.json())
       .handler(a.handler.function(financeSync)),
     // SimpleFIN accounts on the (shared) token, for mapping one to a
