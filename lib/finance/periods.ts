@@ -3,6 +3,7 @@
 // gennaroanesi.com's review.ts Period. Pure; the picker UI is
 // components/finance/period-picker.tsx.
 
+import type { BudgetPeriod } from "./budget";
 import { addDays, addMonthsAnchored, lastDayOfMonth, type DateRange } from "./dates";
 
 export type Period =
@@ -99,4 +100,16 @@ export function periodFromParam(s: string | null | undefined): Period | null {
   m = /^(\d{4})$/.exec(s);
   if (m) return { kind: "year", year: Number(m[1]) };
   return null;
+}
+
+/**
+ * Which budget lines a period shows when nothing was picked: a month shows
+ * monthly lines, a quarter adds quarterly ones, a year adds yearly ones.
+ * One-time lines are always in (filterBudgetView keeps them only in the
+ * period their date falls in).
+ */
+export function defaultCadences(kind: PeriodKind): Set<BudgetPeriod> {
+  if (kind === "month") return new Set(["MONTHLY", "ONCE"]);
+  if (kind === "quarter" || kind === "last3") return new Set(["MONTHLY", "QUARTERLY", "ONCE"]);
+  return new Set(["MONTHLY", "ANNUALLY", "ONCE"]);
 }

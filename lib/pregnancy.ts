@@ -467,6 +467,33 @@ export function careUrgency(
   return "LATER";
 }
 
+/** Badge text per urgency (empty for CLOSED — closed rows show no badge). */
+export const CARE_URGENCY_LABELS: Record<CareUrgency, string> = {
+  OVERDUE: "Overdue",
+  DUE_NOW: "Due now",
+  SOON: "Soon",
+  LATER: "Later",
+  BOOKED: "Scheduled",
+  CONFIRM: "Done? Confirm",
+  CLOSED: "",
+};
+
+/** UPCOMING or SCHEDULED — still something to do. */
+export function isOpenCareStatus(status: string | null | undefined): boolean {
+  return status === "UPCOMING" || status === "SCHEDULED";
+}
+
+/** Timeline order: by window start, then template order. */
+export function sortCareItems<T extends { windowStart: string; sortOrder?: number | null }>(items: T[]): T[] {
+  return items
+    .slice()
+    .sort((a, b) =>
+      a.windowStart === b.windowStart
+        ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
+        : a.windowStart.localeCompare(b.windowStart),
+    );
+}
+
 export const CARE_CATEGORY_LABELS: Record<CareCategory, string> = {
   VISIT: "Visit",
   LAB: "Lab",
@@ -600,6 +627,76 @@ export async function shiftCareTimeline(
   }
   return shifts.length;
 }
+
+/**
+ * Start tracking a pregnancy from an LMP and/or a due date (the due date
+ * wins when both are given) and seed its care timeline.
+ */
+export async function createPregnancy(
+  client: DataClient,
+  opts: { personId: string; lmp?: string | null; due?: string | null },
+): Promise<{ pregnancyId: string; dueDate: string; failed: number }> {
+  const dueDate = opts.due || (opts.lmp ? dueDateFromLmp(opts.lmp) : "");
+  if (!dueDate) throw new Error("Give a due date or the first day of the last period");
+  const { data, errors } = await client.models.homePregnancy.create({
+    personId: opts.personId,
+    lmpDate: opts.lmp || lmpFromDueDate(dueDate),
+    dueDate,
+    dueDateSource: opts.due ? "OTHER" : "LMP",
+    status: "ACTIVE",
+  });
+  if (errors?.length || !data) throw new Error(errors?.[0]?.message ?? "create failed");
+  const { failed } = await seedCareTimeline(client, data.id, dueDate);
+  return { pregnancyId: data.id, dueDate, failed };
+}
+
+export interface PregnancyEdit {
+  dueDate: string;
+  lmpDate: string | null;
+  dueDateSource: string;
+  providerId: string | null;
+  hospitalName: string | null;
+  status: string;
+  deliveredAt: string | null;
+  notes: string | null;
+}
+
+/**
+ * Save edits to a pregnancy. A changed due date moves the open standard
+ * timeline items (shiftCareTimeline). Returns how many items moved.
+ */
+export async function updatePregnancy(
+  client: DataClient,
+  current: { id: string; dueDate: string },
+  edit: PregnancyEdit,
+): Promise<number> {
+  const { errors } = await client.models.homePregnancy.update({
+    id: current.id,
+    dueDate: edit.dueDate,
+    lmpDate: edit.lmpDate || null,
+    dueDateSource: edit.dueDateSource,
+    providerId: edit.providerId || null,
+    hospitalName: edit.hospitalName?.trim() || null,
+    status: edit.status,
+    deliveredAt: edit.status === "DELIVERED" ? edit.deliveredAt || null : null,
+    notes: edit.notes?.trim() || null,
+  });
+  if (errors?.length) throw new Error(errors[0].message);
+  return edit.dueDate !== current.dueDate ? shiftCareTimeline(client, current.id, edit.dueDate) : 0;
+}
+
+export const DUE_DATE_SOURCE_OPTIONS: { key: string; label: string }[] = [
+  { key: "LMP", label: "Last period" },
+  { key: "ULTRASOUND", label: "Ultrasound" },
+  { key: "IVF", label: "IVF transfer" },
+  { key: "OTHER", label: "Other / doctor" },
+];
+
+export const PREGNANCY_STATUS_OPTIONS: { key: string; label: string }[] = [
+  { key: "ACTIVE", label: "Active" },
+  { key: "DELIVERED", label: "Delivered" },
+  { key: "ENDED", label: "Ended" },
+];
 
 export const DUE_DATE_SOURCE_LABELS: Record<string, string> = {
   LMP: "from last period",

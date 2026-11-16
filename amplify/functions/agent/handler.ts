@@ -27,7 +27,8 @@ import {
 } from "../../../lib/aviation-weather.js";
 import { DOCUMENT_ACCESS_NOTIFICATIONS_ENABLED } from "../../../lib/feature-flags.js";
 import { documentIsSensitive } from "../../../lib/documents.js";
-import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus } from "./duo.js";
+import { preauth as duoPreauth, pushAuth as duoPushAuth, authStatus as duoAuthStatus, fileLinkRootSecret } from "./duo.js";
+import { deriveFileLinkKey, FILE_LINK_DM_TTL_MS, signedFileLink } from "../../../lib/file-link.js";
 import { HassClient, entityDomain } from "./hass-client.js";
 import { canPerform, type Sensitivity, type Action, type PolicyContext } from "../../../lib/devicePolicy.js";
 import {
@@ -106,6 +107,16 @@ function inferImageMediaType(s3Key: string): string {
     default:
       return "image/jpeg";
   }
+}
+
+// Signed /api/d link for a vault file DMed on WhatsApp (lib/file-link.ts):
+// ~110 chars, opens off the home network, 15 minutes. Not single-use,
+// since WhatsApp's link preview fetches it before anyone taps. The key is
+// derived from the Duo secret the SSR also reads, so /api/d can verify it.
+let fileLinkKeyCache: string | null = null;
+async function documentDmLink(s3Key: string): Promise<string> {
+  if (!fileLinkKeyCache) fileLinkKeyCache = deriveFileLinkKey(await fileLinkRootSecret());
+  return signedFileLink(s3Key, fileLinkKeyCache, { ttlMs: FILE_LINK_DM_TTL_MS });
 }
 
 async function fetchS3AsBase64(s3Key: string): Promise<{ contentType: string; data: string }> {
@@ -3528,22 +3539,15 @@ async function executeTool(
       // Steps 7–12: hand the file / number over by DM. Runs after Duo
       // approval, or straight away for a document marked not sensitive.
       const deliver = async (authRowId: string | null, challengeId: string | null): Promise<string> => {
-        // 7. Build payload — either a CloudFront URL (file-backed) or the
-        //    raw documentNumber (metadata-only entries like Global Entry).
-        //    CloudFront serves the entire S3 bucket; the UUID in the key is
-        //    the effective unguessability gate (same security model as photos).
+        // 7. Build payload — either a signed /api/d link (file-backed) or
+        //    the raw documentNumber (metadata-only entries like Global Entry).
         let dmText = "";
         let deliveryKind: "file" | "number" = "number";
         if (doc.s3Key) {
-          // Direct S3 URL — the bucket allows public reads on home/* and
-          // the UUID in the key is the unguessability gate (same model as
-          // photos). Presigned URLs failed due to bucket policy conflicts.
-          // Short URL via /api/d/[key] redirector — keeps WA links under
-          // ~80 chars so iOS doesn't truncate them. The redirector maps
-          // the filename back to home/documents/{key} and 302s to S3.
-          const docFilename = doc.s3Key.replace("home/documents/", "");
-          const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
-          dmText = `Here's your document: ${doc.title}\n${url}`;
+          // Signed short link (see documentDmLink): works off the home
+          // network, expires in 15 minutes.
+          const url = await documentDmLink(doc.s3Key);
+          dmText = `Here's your document: ${doc.title}\n${url}\n(The link works for 15 minutes.)`;
           deliveryKind = "file";
         } else if (doc.documentNumber) {
           dmText = `${doc.title}: ${doc.documentNumber}`;
@@ -3843,12 +3847,9 @@ async function executeTool(
       let dmText = "";
       let deliveryKind: "file" | "number" = "number";
       if (doc.s3Key) {
-        // Short URL via /api/d/[key] redirector — keeps WA links under
-        // ~80 chars so iOS doesn't truncate them. The redirector maps
-        // the filename back to home/documents/{key} and 302s to S3.
-        const docFilename = doc.s3Key.replace("home/documents/", "");
-        const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
-        dmText = `Here's your document: ${doc.title}\n${url}`;
+        // Signed short link (see documentDmLink).
+        const url = await documentDmLink(doc.s3Key);
+        dmText = `Here's your document: ${doc.title}\n${url}\n(The link works for 15 minutes.)`;
         deliveryKind = "file";
       } else if (doc.documentNumber) {
         dmText = `${doc.title}: ${doc.documentNumber}`;

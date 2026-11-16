@@ -4,7 +4,8 @@
 // homePerson update, which any member may do. Groups are admin-only and
 // go through the setPersonGroups mutation so Cognito stays in sync; a
 // member without a login (a kid) can only hold home-users, and taking
-// someone out of home-users moves them to Contacts.
+// someone out of home-users moves them to Contacts. Admins can also
+// merge the member into another row (MergePersonButton → mergePeople).
 
 import { useEffect, useState } from "react";
 import {
@@ -24,6 +25,7 @@ import {
 import { getClient } from "../lib/amplify";
 import { BirthdayField } from "./BirthdayField";
 import { RelationshipsSection } from "./RelationshipsSection";
+import { MergePersonButton } from "./MergePersonButton";
 import { formStyles as styles } from "./person-form-styles";
 import { HOUSEHOLD_GROUP } from "../../lib/household";
 import { COMMON_TIMEZONES, editableGroups, personGroups, sameGroups } from "../../lib/people";
@@ -276,6 +278,18 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
             </Text>
 
             <RelationshipsSection person={person} people={people} rels={rels} onChanged={onChanged} disabled={busy} />
+
+            {isAdmin && (
+              <MergePersonButton
+                source={person}
+                people={people}
+                disabled={busy}
+                onMerged={async () => {
+                  onClose();
+                  await onChanged();
+                }}
+              />
+            )}
           </ScrollView>
         )}
       </KeyboardAvoidingView>

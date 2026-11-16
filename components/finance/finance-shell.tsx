@@ -14,6 +14,7 @@ import { FaSyncAlt, FaWallet } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { financeClient } from "@/components/finance/client";
+import { describeSyncResult } from "@/lib/finance/sync-result";
 
 export function FinanceShell({
   title,
@@ -42,16 +43,9 @@ export function FinanceShell({
     setSyncing(true);
     try {
       const r = await financeClient.mutations.syncFinance({});
-      let data: any = r.data; // eslint-disable-line @typescript-eslint/no-explicit-any
-      while (typeof data === "string") data = JSON.parse(data);
-      if (r.errors?.length || !data?.ok) {
-        addToast({ title: "Sync failed", description: r.errors?.[0]?.message ?? data?.errors?.[0] ?? "", color: "danger" });
-      } else {
-        const parts = [`${data.txInserted} new`, `${data.txUpdated} updated`];
-        if (data.linked) parts.push(`${data.linked} matched to schedules`);
-        addToast({ title: data.accountsChecked ? "Synced" : "No accounts linked to SimpleFIN yet", description: data.accountsChecked ? parts.join(", ") : undefined, color: "success" });
-        onSynced?.();
-      }
+      const out = describeSyncResult(r.data, r.errors?.[0]?.message);
+      addToast({ title: out.title, description: out.detail, color: out.ok ? "success" : "danger" });
+      if (out.ok) onSynced?.();
     } catch (e) {
       addToast({ title: "Sync failed", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {

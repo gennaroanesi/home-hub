@@ -5,12 +5,14 @@
 // row opens the file in the in-app Safari sheet (image, PDF, video, audio).
 //
 // Auth: the underlying upload-url endpoint is gated by withHomeUserAuth,
-// so authedFetch attaches the access token.
+// so authedFetch attaches the access token. Thumbnails and opening use
+// signed /api/d links fetched from /api/files/link (lib/file-links.ts):
+// the bucket only answers unsigned requests from the home network.
 //
 // Render is intentionally compact — these embed inside form modals
 // that already have lots of fields above them.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActionSheetIOS,
   ActivityIndicator,
@@ -33,12 +35,10 @@ import {
   uploadAttachmentFile,
   type AttachmentParentType,
 } from "../lib/attachments-upload";
+import { fetchFileLinks, fileLinksFresh, type FileLinks } from "../lib/file-links";
 import type { Schema } from "../../amplify/data/resource";
 
 type Attachment = Schema["homeAttachment"]["type"];
-
-const WEB_BASE_URL =
-  process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
 
 interface Props {
   parentType: AttachmentParentType;
@@ -55,6 +55,9 @@ export function AttachmentSection({
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const [caption, setCaption] = useState("");
+  const [fileLinks, setFileLinks] = useState<FileLinks | null>(null);
+  const linksRef = useRef<FileLinks | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -63,12 +66,22 @@ export function AttachmentSection({
         filter: { parentId: { eq: parentId } },
         limit: 200,
       });
-      setAttachments(
-        (data ?? []).slice().sort(
-          (a, b) =>
-            new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-        )
+      const rows = (data ?? []).slice().sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
       );
+      setAttachments(rows);
+      // Signed links for the thumbnails (and a head start on opening).
+      // A failure only costs the previews; tapping a row retries.
+      const keys = rows.map((a) => a.s3Key).filter((k) => !isUrl(k));
+      if (keys.length && !fileLinksFresh(linksRef.current, keys)) {
+        fetchFileLinks(keys)
+          .then((f) => {
+            linksRef.current = f;
+            setFileLinks(f);
+          })
+          .catch(() => {});
+      }
     } catch {
       setAttachments([]);
     } finally {
@@ -219,9 +232,34 @@ export function AttachmentSection({
     );
   }
 
-  function openAttachment(att: Attachment) {
-    const url = publicUrl(att.s3Key);
-    void WebBrowser.openBrowserAsync(url);
+  async function openAttachment(att: Attachment) {
+    if (opening) return;
+    setOpening(att.id);
+    try {
+      let url: string | undefined;
+      if (isUrl(att.s3Key)) {
+        url = att.s3Key;
+      } else {
+        let f = linksRef.current;
+        if (!fileLinksFresh(f, [att.s3Key])) {
+          f = await fetchFileLinks(
+            attachments.map((a) => a.s3Key).filter((k) => !isUrl(k))
+          );
+          linksRef.current = f;
+          setFileLinks(f);
+        }
+        url = f?.links[att.s3Key];
+      }
+      if (!url) throw new Error("Couldn't get a link to this file.");
+      await WebBrowser.openBrowserAsync(url);
+    } catch (err) {
+      Alert.alert(
+        "Couldn't open the file",
+        err instanceof Error ? err.message : String(err)
+      );
+    } finally {
+      setOpening(null);
+    }
   }
 
   return (
@@ -233,12 +271,16 @@ export function AttachmentSection({
           {attachments.map((att) => (
             <Pressable
               key={att.id}
-              onPress={() => openAttachment(att)}
+              onPress={() => void openAttachment(att)}
               style={styles.row}
             >
-              {isImage(att.contentType) ? (
+              {opening === att.id ? (
+                <View style={[styles.thumb, styles.iconThumb]}>
+                  <ActivityIndicator size="small" />
+                </View>
+              ) : isImage(att.contentType) && previewUrl(att.s3Key, fileLinks) ? (
                 <Image
-                  source={{ uri: publicUrl(att.s3Key) }}
+                  source={{ uri: previewUrl(att.s3Key, fileLinks)! }}
                   style={styles.thumb}
                 />
               ) : (
@@ -306,14 +348,13 @@ export function AttachmentSection({
   );
 }
 
-function publicUrl(s3Key: string): string {
-  // /api/d/<...key> is a catch-all redirector that maps a path under
-  // `home/` to the public S3 URL. We strip the leading "home/" since
-  // the redirector adds it back. Each segment is encoded individually
-  // so slashes survive but special chars in filenames don't break it.
-  const trimmed = s3Key.replace(/^home\//, "");
-  const path = trimmed.split("/").map(encodeURIComponent).join("/");
-  return `${WEB_BASE_URL}/api/d/${path}`;
+// Some rows (Janet's outbound photos) hold a full URL in s3Key.
+function isUrl(s3Key: string): boolean {
+  return /^https?:\/\//.test(s3Key);
+}
+
+function previewUrl(s3Key: string, links: FileLinks | null): string | undefined {
+  return isUrl(s3Key) ? s3Key : links?.links[s3Key];
 }
 
 function isImage(contentType: string | null | undefined): boolean {

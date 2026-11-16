@@ -2,7 +2,8 @@
 // write), notes, and their relationships (add / unlink through the
 // save_relationship op). The pencil opens ContactFormModal; Delete drops
 // their relationship rows first so no link points at nobody, then the
-// person, as /contacts does. Merge is web-only (admin).
+// person, as /contacts does. Admins also get "Merge into…"
+// (MergePersonButton → mergePeople), then go back: this row is gone.
 
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -24,6 +25,8 @@ import { getClient } from "../../../../lib/amplify";
 import { resizedImageUrl } from "../../../../lib/image";
 import { ContactFormModal } from "../../../../components/ContactFormModal";
 import { RelationshipsSection } from "../../../../components/RelationshipsSection";
+import { MergePersonButton } from "../../../../components/MergePersonButton";
+import { useIsAdmin } from "../../../../lib/use-is-admin";
 import { listAllPages } from "../../../../../lib/list-all";
 import { todayIso } from "../../../../../lib/finance/dates";
 import { birthdayLabel, circleLabel, inHousehold } from "../../../../../lib/people";
@@ -41,6 +44,7 @@ export default function ContactDetail() {
   const [loading, setLoading] = useState(true);
   const [editOpen, setEditOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const isAdmin = useIsAdmin();
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -180,6 +184,15 @@ export default function ContactDetail() {
             onChanged={load}
             disabled={deleting}
           />
+
+          {isAdmin && (
+            <MergePersonButton
+              source={person}
+              people={people}
+              disabled={deleting}
+              onMerged={() => router.back()}
+            />
+          )}
 
           {!member && (
             <Pressable onPress={remove} style={styles.deleteBtn} disabled={deleting}>

@@ -1,53 +1,72 @@
 /**
- * GET /api/d/<...key>
+ * GET /api/d/<...key>?t=<token>
  *
- * Short-link redirector for files under the home/* S3 prefix. Two URL
- * shapes are supported:
+ * Signed short links to files under home/ (lib/file-link.ts):
  *
- *   /api/d/<filename>.<ext>
- *     Single-segment — backwards-compat with the document-vault URLs
- *     the agent DMs to WhatsApp. The key resolves to
- *     `home/documents/<filename>.<ext>`.
+ *   /api/d/<filename>.<ext>?t=…      → home/documents/<filename>.<ext>
+ *   /api/d/<prefix>/<...rest>?t=…    → home/<prefix>/<...rest>
  *
- *   /api/d/<prefix>/<...rest>
- *     Multi-segment — for attachments, photos, anything else under
- *     `home/`. The key resolves to `home/<prefix>/<...rest>`.
- *     Mobile uses this shape for AttachmentSection previews.
+ * The token is an HMAC over the S3 key and an expiry. A good one gets a
+ * 302 to a 2-minute presigned S3 GET signed by the SSR role, which works
+ * from anywhere (the bucket only answers unsigned requests from the home
+ * IP, which is why the old bare links broke away from home Wi-Fi).
  *
- * AUTH MODEL: no Cognito session required — the URL is shared via
- * WhatsApp DM (agent) or used by the mobile app for inline previews.
- * The "auth" is the unguessable UUID + the upstream Duo/Face-ID gate
- * (for documents) or the parent's auth scope (for attachments). This
- * is the WEAKEST gate in the system — TODO before going wide:
- * generate a single-use token at approval time, validate it here,
- * and consume it on the redirect.
+ * Who mints them:
+ *   - Janet's WhatsApp DMs, after the Duo approval (or straight away for
+ *     a document marked not sensitive), valid 15 minutes.
+ *   - /api/files/link, for the apps (home-users session), e.g. mobile
+ *     attachment previews.
+ *   - /api/documents/download (Duo-gated web download).
+ *
+ * Links aren't single-use: WhatsApp's link preview fetches the URL before
+ * anyone taps it, so the expiry is what bounds them. Unsigned links
+ * (everything handed out before this change, and old app installs that
+ * build /api/d URLs themselves) now get a 403 — intended, they only ever
+ * worked at home.
  */
 
 import type { NextApiRequest, NextApiResponse } from "next";
+import { s3KeyFromLinkPath, verifyFileLinkToken } from "@/lib/file-link";
+import { fileLinkKey, presignHomeFile } from "@/lib/file-link-server";
 
-const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
+const MESSAGES = {
+  missing:
+    "This file link isn't signed. Home Hub file links are now signed and expire: ask Janet for the file again, or open it in the app (update the app if attachments don't open).",
+  invalid: "This file link isn't valid. Ask Janet for the file again, or open it in the app.",
+  expired: "This file link has expired. Ask Janet for the file again, or open it in the app.",
+} as const;
 
-export default async function handler(
-  req: NextApiRequest,
-  res: NextApiResponse
-) {
-  if (req.method !== "GET") {
-    return res.status(405).json({ error: "Method not allowed" });
+function deny(res: NextApiResponse, status: number, message: string) {
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Content-Type", "text/html; charset=utf-8");
+  res
+    .status(status)
+    .send(
+      `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Home Hub</title></head>` +
+        `<body style="font-family:-apple-system,system-ui,sans-serif;padding:24px;color:#333;line-height:1.4"><p>${message}</p></body></html>`,
+    );
+}
+
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "GET" && req.method !== "HEAD") {
+    res.setHeader("Allow", "GET, HEAD");
+    return deny(res, 405, "Method not allowed.");
   }
 
   const raw = req.query.key;
   const segments = Array.isArray(raw) ? raw : raw ? [raw] : [];
-  if (segments.length === 0) {
-    return res.status(400).json({ error: "Missing key" });
+  const s3Key = s3KeyFromLinkPath(segments);
+  if (!s3Key) return deny(res, 404, "There's no file at this link.");
+
+  try {
+    const check = verifyFileLinkToken(s3Key, req.query.t, await fileLinkKey());
+    if (!check.ok) return deny(res, 403, MESSAGES[check.reason]);
+    const url = await presignHomeFile(s3Key);
+    res.setHeader("Cache-Control", "no-store");
+    res.setHeader("Referrer-Policy", "no-referrer");
+    res.redirect(302, url);
+  } catch (err) {
+    console.error("[api/d] failed:", err);
+    return deny(res, 500, "Couldn't open this file right now. Try again in a minute.");
   }
-
-  // Single segment with no slash → assume the document-vault prefix
-  // (backwards compat with agent DM URLs). Multi-segment → the first
-  // segment IS the prefix under home/.
-  const joined = segments.join("/");
-  const s3Key =
-    segments.length === 1 ? `home/documents/${joined}` : `home/${joined}`;
-
-  const url = `https://s3.us-east-1.amazonaws.com/${BUCKET}/${s3Key}`;
-  res.redirect(302, url);
 }

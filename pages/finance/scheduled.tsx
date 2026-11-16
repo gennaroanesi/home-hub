@@ -27,8 +27,8 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
 import { listSchedules, listTransactions, txIndexQuery } from "@/lib/finance/data";
-import { addDays, advanceByCadence, CADENCE_LABELS, CADENCE_MONTHLY_FACTOR, CADENCES, fmtDate, todayIso, type Cadence } from "@/lib/finance/dates";
-import { findScheduleMatches, isScheduleLive, nextDateAfter } from "@/lib/finance/recurring";
+import { addDays, CADENCE_LABELS, CADENCE_MONTHLY_FACTOR, CADENCES, fmtDate, todayIso, type Cadence } from "@/lib/finance/dates";
+import { findScheduleMatches, isScheduleLive, nextDateAfter, nextDueAfterPaid } from "@/lib/finance/recurring";
 
 type Schedule = any;
 type Tx = any;
@@ -97,16 +97,6 @@ function formFrom(s: Schedule): Form {
     url: s.url ?? "",
     notes: s.notes ?? "",
   };
-}
-
-/** One step past the current due date (weekly cadences don't use a day-of-month anchor). */
-function stepNext(s: Schedule): string | null {
-  const cur = s.nextDate ?? s.startDate;
-  if (!cur) return null;
-  const cadence = (s.cadence ?? "MONTHLY") as Cadence;
-  if (cadence === "ONCE") return null;
-  const anchor = cadence === "WEEKLY" || cadence === "BIWEEKLY" ? null : s.startDate;
-  return advanceByCadence(cur, cadence, anchor);
 }
 
 export default function ScheduledPage() {
@@ -224,7 +214,7 @@ export default function ScheduledPage() {
   }
 
   async function markPaid(s: Schedule) {
-    const next = stepNext(s);
+    const next = nextDueAfterPaid(s);
     const r = await callOp(financeClient, "save_finance_schedule", next ? { recurringId: s.id, nextDate: next } : { recurringId: s.id, active: false });
     if ("error" in r) addToast({ title: "Couldn't mark paid", description: r.error, color: "danger" });
     else {

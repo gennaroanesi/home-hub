@@ -12,16 +12,12 @@ import { useRouter } from "next/router";
 import { Select, SelectItem } from "@heroui/select";
 
 import { BUDGET_PERIODS, type BudgetPeriod } from "@/lib/finance/budget";
-import type { Period } from "@/lib/finance/periods";
+import { defaultCadences, type Period } from "@/lib/finance/periods";
 
 const LABELS: Record<BudgetPeriod, string> = { MONTHLY: "Monthly", QUARTERLY: "Quarterly", ANNUALLY: "Yearly", ONCE: "One-time" };
 
-/** What a period kind shows when nothing was picked. */
-export function defaultCadences(kind: Period["kind"]): Set<BudgetPeriod> {
-  if (kind === "month") return new Set(["MONTHLY", "ONCE"]);
-  if (kind === "quarter" || kind === "last3") return new Set(["MONTHLY", "QUARTERLY", "ONCE"]);
-  return new Set(["MONTHLY", "ANNUALLY", "ONCE"]);
-}
+/** What a period kind shows when nothing was picked (shared with the get_finance_budget op). */
+export { defaultCadences };
 
 export function useCadenceFilter(kind: Period["kind"]) {
   const router = useRouter();

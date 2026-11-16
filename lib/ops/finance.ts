@@ -6,6 +6,8 @@
 import { z } from "zod/v4";
 import { listAllPages } from "../list-all";
 import {
+  BUDGET_PERIODS,
+  filterBudgetView,
   householdBudget,
   bucketCategories,
   defaultChangeEnd,
@@ -21,7 +23,8 @@ import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, norm
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested } from "../finance/accounts";
-import { isScheduleLive, lowestPoint, projectBalance, upcomingEvents } from "../finance/recurring";
+import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
+import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -91,7 +94,17 @@ export const getFinanceSummary = defineOp({
   output: z.object({
     month: z.string(),
     accounts: z.array(
-      z.object({ id: z.string(), name: z.string(), type: z.string().nullable(), balance: z.number().describe("Invested accounts: total value, positions included"), updatedAt: z.string().nullable() }),
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        type: z.string().nullable(),
+        balance: z.number().describe("Invested accounts: total value, positions included"),
+        updatedAt: z.string().nullable(),
+        institution: z.string().nullable(),
+        minBalance: z.number().nullable().describe("The buffer the balance shouldn't drop under"),
+        invested: z.boolean().describe("401k / IRA / brokerage: for goals, not cash flow"),
+        lowPoint: z.object({ date: z.string(), balance: z.number() }).nullable().describe("Cash accounts: lowest projected balance in the next 14 days"),
+      }),
     ),
     contributions: z.array(z.object({ name: z.string(), person: z.string().nullable(), period: z.string(), planned: z.number(), received: z.number() })),
     savings: z.array(z.object({ name: z.string(), account: z.string().nullable(), planned: z.number(), saved: z.number() })),
@@ -115,27 +128,34 @@ export const getFinanceSummary = defineOp({
           remaining: z.number(),
           scheduled: z.number().describe("Part of the line already committed by scheduled transactions"),
           status: z.enum(["under", "on", "over"]).describe("Pace vs the elapsed part of the month"),
+          period: z.string().describe("How often the line repeats: MONTHLY, QUARTERLY, ANNUALLY, ONCE"),
         }),
       ),
       unbudgeted: z.array(z.object({ category: z.string(), spent: z.number() })),
+      elapsed: z.number().describe("Fraction of the month gone, 0..1"),
     }),
     upcoming: z.array(z.object({ date: z.string(), description: z.string(), amount: z.number(), account: z.string() })),
     lowPoint: z.object({ account: z.string(), date: z.string(), balance: z.number(), belowBuffer: z.boolean() }).nullable(),
     goals: z.array(
-      z.object({ name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable(), fundedBy: z.array(z.string()).describe("Accounts whose balance counts; empty = tracked by hand"), milestones: z.array(MilestoneOut) }),
+      z.object({ id: z.string(), name: z.string(), current: z.number(), target: z.number(), pct: z.number(), targetDate: z.string().nullable(), monthlyNeeded: z.number().nullable(), fundedBy: z.array(z.string()).describe("Accounts whose balance counts; empty = tracked by hand"), milestones: z.array(MilestoneOut) }),
     ),
     uncategorizedCount: z.number(),
+    lastSync: z
+      .object({ status: z.string().nullable(), at: z.string().nullable(), txInserted: z.number().nullable() })
+      .nullable()
+      .describe("The latest SimpleFIN sync run"),
   }),
   async run(ctx, input) {
     const today = todayIso();
     const window = monthRange(input.month ? `${input.month}-01` : today);
-    const [accounts, lines, schedules, goals, folks, milestones] = await Promise.all([
+    const [accounts, lines, schedules, goals, folks, milestones, lastSync] = await Promise.all([
       listAccounts(ctx.client),
       listBudgetLines(ctx.client),
       listSchedules(ctx.client),
       listGoals(ctx.client),
       people(ctx),
       listGoalMilestones(ctx.client),
+      latestSync(ctx),
     ]);
     const active = accounts.filter((a) => a.active !== false);
     const txs = await listTransactions(ctx.client, { ...window, accountIds: householdAccounts(accounts).map((a) => a.id) });
@@ -145,10 +165,12 @@ export const getFinanceSummary = defineOp({
     const horizon = addDays(today, 14);
     const upcoming: Array<{ date: string; description: string; amount: number; account: string }> = [];
     let lowPoint: { account: string; date: string; balance: number; belowBuffer: boolean } | null = null;
+    const lowByAccount = new Map<string, { date: string; balance: number }>();
     for (const a of active.filter((x) => x.type === "CHECKING" || x.type === "SAVINGS" || x.type === "CASH")) {
       const events = upcomingEvents(a.id, schedules, today, horizon);
       upcoming.push(...events.map((e) => ({ date: e.date, description: e.description, amount: r2(e.amount), account: a.name })));
       const lo = lowestPoint(projectBalance(a.currentBalance ?? 0, events));
+      if (lo) lowByAccount.set(a.id, { date: lo.date, balance: r2(lo.balance) });
       if (lo && (!lowPoint || lo.balance < lowPoint.balance)) {
         lowPoint = { account: a.name, date: lo.date, balance: r2(lo.balance), belowBuffer: lo.balance < (a.minBalance ?? 0) };
       }
@@ -157,7 +179,17 @@ export const getFinanceSummary = defineOp({
 
     return {
       month: window.label,
-      accounts: active.map((a) => ({ id: a.id, name: a.name, type: a.type ?? null, balance: r2(a.currentBalance ?? 0), updatedAt: a.balanceUpdatedAt ?? null })),
+      accounts: active.map((a) => ({
+        id: a.id,
+        name: a.name,
+        type: a.type ?? null,
+        balance: r2(a.currentBalance ?? 0),
+        updatedAt: a.balanceUpdatedAt ?? null,
+        institution: a.institution ?? null,
+        minBalance: a.minBalance ?? null,
+        invested: isInvested(a.type),
+        lowPoint: lowByAccount.get(a.id) ?? null,
+      })),
       contributions: view.incomeViews.map((v) => ({ name: v.line.name, person: nameOf(folks, v.line.personId) ?? null, period: v.line.period ?? "MONTHLY", planned: r2(v.budgeted), received: r2(v.spent) })),
       savings: view.savingsViews.map((v) => ({ name: v.line.name, account: accounts.find((a) => a.id === v.line.accountId)?.name ?? null, planned: r2(v.budgeted), saved: r2(v.spent) })),
       budget: {
@@ -179,14 +211,17 @@ export const getFinanceSummary = defineOp({
           remaining: r2(v.remaining),
           scheduled: r2(v.committed),
           status: v.status,
+          period: v.line.period ?? "MONTHLY",
         })),
         unbudgeted: view.unassigned.map((u) => ({ category: u.category, spent: r2(u.spent) })),
+        elapsed: Math.round((view.expenseViews[0]?.elapsed ?? view.incomeViews[0]?.elapsed ?? 0) * 1000) / 1000,
       },
       upcoming,
       lowPoint,
       goals: goalProgress(goals, accounts, today)
         .filter((g) => g.goal.active !== false)
         .map((g) => ({
+          id: g.goal.id,
           name: g.goal.name,
           current: r2(g.current),
           target: r2(g.target),
@@ -197,6 +232,142 @@ export const getFinanceSummary = defineOp({
           milestones: milestoneOut(milestones.filter((m) => m.goalId === g.goal.id), g.current, today),
         })),
       uncategorizedCount: txs.filter((t) => effectiveCategory(t) === UNCATEGORIZED).length,
+      lastSync,
+    };
+  },
+});
+
+/** The most recent sync log row, or null (none yet, or the model isn't readable here). */
+async function latestSync(ctx: OpContext): Promise<{ status: string | null; at: string | null; txInserted: number | null } | null> {
+  const model = ctx.client.models.homeFinanceSyncLog;
+  if (!model) return null;
+  try {
+    const logs = await listAllPages<any>(model);
+    const last = logs.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""))[0];
+    return last ? { status: last.status ?? null, at: last.finishedAt ?? last.startedAt ?? null, txInserted: last.txInserted ?? null } : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── get_finance_budget ────────────────────────────────────────────────────────
+
+const PERIOD_PARAM = z
+  .string()
+  .refine((s) => periodFromParam(s) != null, "YYYY-MM, YYYY-Qn, YYYY or last3")
+  .describe("YYYY-MM (a month), YYYY-Qn (a quarter), YYYY (a year) or last3 (the 3 months ending today). Default: this month.");
+
+const PlanLineOut = z.object({
+  seriesId: z.string(),
+  id: z.string(),
+  name: z.string(),
+  period: z.string(),
+  amount: z.number().describe("The line's amount per its own period (budgeted is scaled to the window)"),
+  budgeted: z.number(),
+  spent: z.number().describe("Contributions: what came in; savings: what landed in the account"),
+});
+
+export const getFinanceBudget = defineOp({
+  name: "get_finance_budget",
+  domain: "finance",
+  access: "read",
+  description:
+    "The household budget for a month, quarter, year or the last 3 months: what each person planned to contribute vs what came in, each savings line vs what was saved, and each spending line's budgeted / spent / remaining / pace, plus spending no line covers and any problems in the budget's history. include picks lines by how often they repeat (default: a month shows monthly lines, a quarter adds quarterly ones, a year yearly ones; one-time lines show in the period their date falls in). Answers 'how's the budget this quarter?', 'which lines are over?', 'what did we spend that isn't budgeted?'. Use the seriesIds with save_finance_budget.",
+  input: z.object({
+    period: PERIOD_PARAM.optional(),
+    include: z.array(z.enum(BUDGET_PERIODS)).optional().describe("Line cadences to show; default depends on the period (see description)."),
+  }),
+  output: z.object({
+    period: z.string().describe("The period as a param (2026-11, 2026-Q4, 2026, last3)"),
+    label: z.string(),
+    fromIso: z.string(),
+    toIso: z.string(),
+    include: z.array(z.string()),
+    elapsed: z.number().describe("Fraction of the period gone, 0..1"),
+    planned: z.number(),
+    received: z.number(),
+    allocated: z.number(),
+    savingsPlanned: z.number(),
+    saved: z.number(),
+    unallocated: z.number().describe("Planned contributions − spending lines − savings lines"),
+    spentBudgeted: z.number(),
+    spentTotal: z.number(),
+    overspend: z.number(),
+    contributions: z.array(PlanLineOut.extend({ personId: z.string().nullable(), person: z.string().nullable() })),
+    savings: z.array(PlanLineOut.extend({ accountId: z.string().nullable(), account: z.string().nullable() })),
+    lines: z.array(
+      z.object({
+        seriesId: z.string(),
+        id: z.string(),
+        name: z.string(),
+        categories: z.array(z.string()),
+        period: z.string(),
+        amount: z.number().describe("Per the line's own period"),
+        budgeted: z.number(),
+        spent: z.number(),
+        remaining: z.number(),
+        scheduled: z.number(),
+        status: z.enum(["under", "on", "over"]),
+        pace: z.number().nullable().describe("Spent ÷ what the budget expects by today; 1 = on pace"),
+        share: z.number().nullable().describe("This line's budget as a fraction of all spending lines"),
+      }),
+    ),
+    unbudgeted: z.array(z.object({ category: z.string(), spent: z.number() })),
+    issues: z.array(z.object({ name: z.string(), detail: z.string() })),
+  }),
+  async run(ctx, input) {
+    const today = todayIso();
+    const period = periodFromParam(input.period) ?? periodContaining("month", today);
+    const range = periodRange(period, today);
+    const include = input.include?.length ? new Set<string>(input.include) : defaultCadences(period.kind);
+    const [accounts, lines, schedules, folks] = await Promise.all([listAccounts(ctx.client), listBudgetLines(ctx.client), listSchedules(ctx.client), people(ctx)]);
+    const txs = await listTransactions(ctx.client, { fromIso: range.fromIso, toIso: range.toIso, accountIds: householdAccounts(accounts).map((a) => a.id) });
+    const view = filterBudgetView(householdBudget(lines, txs, schedules, range, today), include);
+    const plan = (v: (typeof view.incomeViews)[number]) => ({
+      seriesId: v.line.seriesId,
+      id: v.line.id,
+      name: v.line.name,
+      period: v.line.period ?? "MONTHLY",
+      amount: r2(v.line.amount ?? 0),
+      budgeted: r2(v.budgeted),
+      spent: r2(v.spent),
+    });
+    const elapsed = view.expenseViews[0]?.elapsed ?? view.incomeViews[0]?.elapsed ?? view.savingsViews[0]?.elapsed ?? 0;
+    return {
+      period: periodToParam(period),
+      label: range.label,
+      fromIso: range.fromIso,
+      toIso: range.toIso,
+      include: BUDGET_PERIODS.filter((p) => include.has(p)),
+      elapsed: Math.round(elapsed * 1000) / 1000,
+      planned: r2(view.planned),
+      received: r2(view.received),
+      allocated: r2(view.allocated),
+      savingsPlanned: r2(view.savingsPlanned),
+      saved: r2(view.saved),
+      unallocated: r2(view.unallocated),
+      spentBudgeted: r2(view.spentBudgeted),
+      spentTotal: r2(view.spentTotal),
+      overspend: r2(view.overspend),
+      contributions: view.incomeViews.map((v) => ({ ...plan(v), personId: v.line.personId ?? null, person: nameOf(folks, v.line.personId) })),
+      savings: view.savingsViews.map((v) => ({ ...plan(v), accountId: v.line.accountId ?? null, account: accounts.find((a) => a.id === v.line.accountId)?.name ?? null })),
+      lines: view.expenseViews.map((v) => ({
+        seriesId: v.line.seriesId,
+        id: v.line.id,
+        name: v.line.name,
+        categories: bucketCategories(v.line),
+        period: v.line.period ?? "MONTHLY",
+        amount: r2(v.line.amount ?? 0),
+        budgeted: r2(v.budgeted),
+        spent: r2(v.spent),
+        remaining: r2(v.remaining),
+        scheduled: r2(v.committed),
+        status: v.status,
+        pace: v.pace == null ? null : Math.round(v.pace * 100) / 100,
+        share: view.allocated > 0 ? Math.round((v.budgeted / view.allocated) * 1000) / 1000 : null,
+      })),
+      unbudgeted: view.unassigned.map((u) => ({ category: u.category, spent: r2(u.spent) })),
+      issues: view.issues.map((i) => ({ name: i.name, detail: i.detail })),
     };
   },
 });
@@ -218,9 +389,12 @@ const TxOut = z.object({
   category: z.string(),
   categorySource: z.string().nullable().describe("RULE, LLM (guessed) or MANUAL"),
   person: z.string().nullable(),
+  personId: z.string().nullable(),
   account: z.string().nullable(),
+  accountId: z.string(),
   status: z.string().nullable(),
   spendGroupId: z.string().nullable(),
+  goalId: z.string().nullable(),
   recurringId: z.string().nullable(),
   notes: z.string().nullable(),
   items: z.array(LineItemSchema).nullable().describe("Itemization, when the charge is split across categories"),
@@ -237,6 +411,7 @@ export const listFinanceTransactions = defineOp({
     to: DATE.optional(),
     query: z.string().optional().describe("Words that must all appear in the description or notes."),
     category: z.string().optional(),
+    categories: z.array(z.string()).optional().describe("Any of these categories (a budget line's categories)."),
     uncategorized: z.boolean().optional(),
     personId: z.string().optional(),
     personName: z.string().optional(),
@@ -261,6 +436,10 @@ export const listFinanceTransactions = defineOp({
       if (input.uncategorized && cat !== UNCATEGORIZED) return false;
       // An itemized charge matches any of its items' categories.
       if (input.category && !categoryParts(t, rules).some((p) => p.category.toLowerCase() === input.category!.toLowerCase())) return false;
+      if (input.categories?.length) {
+        const want = new Set(input.categories.map((c) => c.toLowerCase()));
+        if (!categoryParts(t, rules).some((p) => want.has(p.category.toLowerCase()))) return false;
+      }
       if (personId && t.personId !== personId) return false;
       if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
       if (input.direction === "in" && (t.amount ?? 0) <= 0) return false;
@@ -279,9 +458,12 @@ export const listFinanceTransactions = defineOp({
         category: effectiveCategory(t, rules),
         categorySource: t.categorySource ?? null,
         person: nameOf(folks, t.personId),
+        personId: t.personId ?? null,
         account: accName.get(t.accountId) ?? null,
+        accountId: t.accountId,
         status: t.status ?? null,
         spendGroupId: t.spendGroupId ?? null,
+        goalId: t.goalId ?? null,
         recurringId: t.recurringId ?? null,
         notes: t.notes ?? null,
         items: parseLineItems(t),
@@ -555,14 +737,46 @@ const ScheduleOut = z.object({
   person: z.string().nullable(),
   active: z.boolean(),
   autopay: z.boolean(),
+  accountId: z.string(),
+  toAccountId: z.string().nullable(),
+  personId: z.string().nullable(),
+  startDate: z.string().nullable(),
+  endDate: z.string().nullable(),
+  matchPattern: z.string().nullable(),
+  url: z.string().nullable(),
+  notes: z.string().nullable(),
 });
+
+function scheduleOut(r: any, accounts: any[], folks: Person[]): z.input<typeof ScheduleOut> {
+  return {
+    id: r.id,
+    description: r.description,
+    amount: r.amount,
+    type: r.type ?? null,
+    cadence: r.cadence ?? null,
+    nextDate: r.nextDate ?? null,
+    category: r.category ?? null,
+    account: accounts.find((a) => a.id === r.accountId)?.name ?? null,
+    person: nameOf(folks, r.personId),
+    active: r.active !== false,
+    autopay: r.autopay !== false,
+    accountId: r.accountId,
+    toAccountId: r.toAccountId ?? null,
+    personId: r.personId ?? null,
+    startDate: r.startDate ?? null,
+    endDate: r.endDate ?? null,
+    matchPattern: r.matchPattern ?? null,
+    url: r.url ?? null,
+    notes: r.notes ?? null,
+  };
+}
 
 export const saveFinanceSchedule = defineOp({
   name: "save_finance_schedule",
   domain: "finance",
   access: "write",
   description:
-    "Create or change a scheduled transaction on a household account: the mortgage, car payment, a utility, insurance, or a person's regular contribution into the joint account. Amount is the usual amount (sign is set from type: EXPENSE out, INCOME in). nextDate is the next time it's due; cadence how often. matchPattern (a word from the bank description, e.g. 'ROCKET MORTGAGE') lets the sync link posted transactions and roll nextDate forward. autopay false means someone has to pay it by hand. Set active false to stop one. Without accountId it goes on the household's checking account. With recurringId, only the fields given change.",
+    "Create or change a scheduled transaction on a household account: the mortgage, car payment, a utility, insurance, or a person's regular contribution into the joint account. Amount is the usual amount (sign is set from type: EXPENSE out, INCOME in). nextDate is the next time it's due; cadence how often. matchPattern (a word from the bank description, e.g. 'ROCKET MORTGAGE') lets the sync link posted transactions and roll nextDate forward. autopay false means someone has to pay it by hand. Set active false to stop one. Without accountId it goes on the household's checking account. With recurringId, only the fields given change; markPaid with recurringId records it as paid by hand: nextDate moves one step on (a one-time one is switched off).",
   input: z.object({
     recurringId: z.string().optional(),
     description: z.string().optional(),
@@ -581,23 +795,21 @@ export const saveFinanceSchedule = defineOp({
     active: z.boolean().optional(),
     url: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
+    markPaid: z.boolean().optional().describe("With recurringId: paid by hand, so roll nextDate one step (one-time: switch it off). Other fields are ignored."),
   }),
   output: z.object({ action: z.enum(["created", "updated"]), schedule: ScheduleOut }),
   async run(ctx, input) {
     const [accounts, folks] = await Promise.all([listAccounts(ctx.client), people(ctx)]);
-    const out = (r: any) => ({
-      id: r.id,
-      description: r.description,
-      amount: r.amount,
-      type: r.type ?? null,
-      cadence: r.cadence ?? null,
-      nextDate: r.nextDate ?? null,
-      category: r.category ?? null,
-      account: accounts.find((a) => a.id === r.accountId)?.name ?? null,
-      person: nameOf(folks, r.personId),
-      active: r.active !== false,
-      autopay: r.autopay !== false,
-    });
+    const out = (r: any) => scheduleOut(r, accounts, folks);
+    if (input.markPaid) {
+      if (!input.recurringId) throw new OpError("markPaid needs the recurringId");
+      const { data: existing } = await ctx.client.models.homeFinanceRecurring.get({ id: input.recurringId });
+      if (!existing) throw new OpError(`No scheduled transaction ${input.recurringId}`);
+      const next = nextDueAfterPaid(existing);
+      const r = await ctx.client.models.homeFinanceRecurring.update({ id: existing.id, ...(next ? { nextDate: next } : { active: false }) });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+      return { action: "updated" as const, schedule: out(r.data) };
+    }
     const personId = await personRef(ctx, input);
     if (input.accountId && !accounts.some((a) => a.id === input.accountId)) throw new OpError(`No account ${input.accountId}`);
     const pick = (keys: Array<keyof typeof input>) => Object.fromEntries(keys.filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
@@ -655,31 +867,24 @@ export const listFinanceSchedules = defineOp({
     dueWithinDays: z.number().int().min(0).optional().describe("Only those due within this many days."),
     includeInactive: z.boolean().optional(),
   }),
-  output: z.object({ monthlyOut: z.number().describe("Monthly equivalent of the live outgoing schedules"), schedules: z.array(ScheduleOut) }),
+  output: z.object({
+    monthlyOut: z.number().describe("Monthly equivalent of the live outgoing schedules"),
+    monthlyIn: z.number().describe("Monthly equivalent of the live incoming ones (contributions), transfers left out"),
+    schedules: z.array(ScheduleOut),
+  }),
   async run(ctx, input) {
     const today = todayIso();
     const [rows, accounts, folks] = await Promise.all([listSchedules(ctx.client), listAccounts(ctx.client), people(ctx)]);
     const live = rows.filter((r) => input.includeInactive || isScheduleLive(r, today));
     const within = input.dueWithinDays != null ? addDays(today, input.dueWithinDays) : null;
     const shown = live.filter((r) => !within || (r.nextDate && r.nextDate <= within)).sort((a, b) => (a.nextDate ?? "9").localeCompare(b.nextDate ?? "9"));
-    const monthlyOut = rows
-      .filter((r) => isScheduleLive(r, today) && (r.amount ?? 0) < 0)
-      .reduce((s, r) => s + Math.abs(r.amount) * (CADENCE_MONTHLY_FACTOR[(r.cadence ?? "MONTHLY") as Cadence] ?? 1), 0);
+    const perMonth = (r: any) => Math.abs(r.amount) * (CADENCE_MONTHLY_FACTOR[(r.cadence ?? "MONTHLY") as Cadence] ?? 1);
+    const monthlyOut = rows.filter((r) => isScheduleLive(r, today) && (r.amount ?? 0) < 0).reduce((s, r) => s + perMonth(r), 0);
+    const monthlyIn = rows.filter((r) => isScheduleLive(r, today) && r.type !== "TRANSFER" && (r.amount ?? 0) > 0).reduce((s, r) => s + perMonth(r), 0);
     return {
       monthlyOut: r2(monthlyOut),
-      schedules: shown.map((r) => ({
-        id: r.id,
-        description: r.description,
-        amount: r.amount,
-        type: r.type ?? null,
-        cadence: r.cadence ?? null,
-        nextDate: r.nextDate ?? null,
-        category: r.category ?? null,
-        account: accounts.find((a) => a.id === r.accountId)?.name ?? null,
-        person: nameOf(folks, r.personId),
-        active: r.active !== false,
-        autopay: r.autopay !== false,
-      })),
+      monthlyIn: r2(monthlyIn),
+      schedules: shown.map((r) => scheduleOut(r, accounts, folks)),
     };
   },
 });
@@ -804,6 +1009,68 @@ export const saveFinanceGoal = defineOp({
   },
 });
 
+// ── list_finance_goals ────────────────────────────────────────────────────────
+
+export const listFinanceGoals = defineOp({
+  name: "list_finance_goals",
+  domain: "finance",
+  access: "read",
+  description:
+    "The household's savings goals with progress (tracked by hand, or following one or more accounts' balances, filled in priority order), the monthly saving needed to hit the target date, and each goal's milestones (HIT / MISSED / PENDING). Archived goals only with includeInactive. Answers 'how are our goals doing?', 'how much do we need to save a month for the baby fund?'. Use the goalId (and milestone ids) with save_finance_goal.",
+  input: z.object({ includeInactive: z.boolean().optional() }),
+  output: z.object({
+    goals: z.array(
+      z.object({
+        id: z.string(),
+        name: z.string(),
+        active: z.boolean(),
+        current: z.number(),
+        target: z.number(),
+        pct: z.number().describe("0..1"),
+        targetDate: z.string().nullable(),
+        monthlyNeeded: z.number().nullable(),
+        funded: z.enum(["manual", "account"]).describe("account = follows fundingAccountIds' balances; manual = currentAmount"),
+        currentAmount: z.number().nullable().describe("The hand-tracked amount (used when funded is manual)"),
+        fundingAccountIds: z.array(z.string()),
+        fundedBy: z.array(z.string()).describe("Names of fundingAccountIds"),
+        priority: z.number().nullable(),
+        notes: z.string().nullable(),
+        milestones: z.array(MilestoneOut.extend({ notes: z.string().nullable() })),
+      }),
+    ),
+  }),
+  async run(ctx, input) {
+    const today = todayIso();
+    const [goals, accounts, milestones] = await Promise.all([listGoals(ctx.client), listAccounts(ctx.client), listGoalMilestones(ctx.client)]);
+    const progress = goalProgress(goals, accounts, today)
+      .filter((g) => input.includeInactive || g.goal.active !== false)
+      .sort((a, b) => Number(b.goal.active !== false) - Number(a.goal.active !== false) || (a.goal.priority ?? 100) - (b.goal.priority ?? 100) || a.goal.name.localeCompare(b.goal.name));
+    return {
+      goals: progress.map((g) => {
+        const raw: any = g.goal;
+        const mine = milestones.filter((m) => m.goalId === g.goal.id);
+        return {
+          id: g.goal.id,
+          name: g.goal.name,
+          active: g.goal.active !== false,
+          current: r2(g.current),
+          target: r2(g.target),
+          pct: Math.round(g.pct * 1000) / 1000,
+          targetDate: g.goal.targetDate ?? null,
+          monthlyNeeded: g.monthlyNeeded == null ? null : r2(g.monthlyNeeded),
+          funded: g.funded,
+          currentAmount: g.goal.currentAmount ?? null,
+          fundingAccountIds: goalAccountIds(g.goal),
+          fundedBy: goalAccountIds(g.goal).map((id) => accounts.find((a) => a.id === id)?.name ?? id),
+          priority: g.goal.priority ?? null,
+          notes: raw.notes ?? null,
+          milestones: milestoneOut(mine, g.current, today).map((m) => ({ ...m, notes: mine.find((x) => x.id === m.id)?.notes ?? null })),
+        };
+      }),
+    };
+  },
+});
+
 // ── list_finance_categories ───────────────────────────────────────────────────
 
 export const listFinanceCategories = defineOp({
@@ -896,6 +1163,8 @@ export const listFinanceHoldings = defineOp({
 
 export const financeOps = [
   getFinanceSummary,
+  getFinanceBudget,
+  listFinanceGoals,
   listFinanceHoldings,
   listFinanceTransactions,
   updateFinanceTransaction,

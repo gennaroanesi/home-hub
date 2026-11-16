@@ -111,6 +111,19 @@ export function nextDateAfter(rule: RecurringLike, txDate: string): string | nul
   return next;
 }
 
+/**
+ * "Mark paid" by hand: one step past the current due date, or null for a
+ * one-time schedule (it's done). Weekly cadences don't use a day-of-month anchor.
+ */
+export function nextDueAfterPaid(rule: Pick<RecurringLike, "cadence" | "nextDate" | "startDate">): string | null {
+  const cur = rule.nextDate ?? rule.startDate;
+  if (!cur) return null;
+  const cadence = (rule.cadence ?? "MONTHLY") as Cadence;
+  if (cadence === "ONCE") return null;
+  const anchor = cadence === "WEEKLY" || cadence === "BIWEEKLY" ? null : rule.startDate;
+  return advanceByCadence(cur, cadence, anchor);
+}
+
 export type ProjectedEvent = { date: string; amount: number; description: string; recurringId: string };
 export type ProjectionPoint = { date: string; balance: number; events: ProjectedEvent[] };
 

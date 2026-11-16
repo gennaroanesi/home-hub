@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { categoryParts, classify, effectiveCategory, parseLineItems, rulesFromDbRows, CATEGORY_RULES } from "./categories";
+import { categoryParts, classify, effectiveCategory, parseLineItems, rulesFromDbRows, suggestPattern, CATEGORY_RULES } from "./categories";
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
 import { budgetTransactions, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
-import { findScheduleMatches, lowestPoint, nextDateAfter, projectBalance, upcomingEvents } from "./recurring";
+import { findScheduleMatches, lowestPoint, nextDateAfter, nextDueAfterPaid, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress, milestoneViews } from "./goals";
 import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
 import type { SfAccount } from "./simplefin";
@@ -395,5 +395,17 @@ describe("sync engine", () => {
     const first = sfTxToDraft(sf({ id: "TRN-x", amount: -3, description: "TOLL" }), "joint")!;
     const idx = buildDedupIndex([{ id: "row", sfTransactionId: "TRN-y", date: "2026-11-05", amount: -3, description: "TOLL", importHash: first.importHash }]);
     expect(reconcileDraft(first, idx).action).toBe("create");
+  });
+});
+
+describe("phone/web shared helpers", () => {
+  it("suggests a merchant pattern past the processor prefix", () => {
+    expect(suggestPattern("SQ *BLUE BOTTLE AUSTIN TX 1234")).toBe("BLUE BOTTLE");
+    expect(suggestPattern(null)).toBe("");
+  });
+  it("steps a schedule one due date on when marked paid", () => {
+    expect(nextDueAfterPaid({ cadence: "MONTHLY", nextDate: "2026-01-31", startDate: "2025-12-31" })).toBe("2026-02-28");
+    expect(nextDueAfterPaid({ cadence: "BIWEEKLY", nextDate: "2026-11-06", startDate: "2026-01-02" })).toBe("2026-11-20");
+    expect(nextDueAfterPaid({ cadence: "ONCE", nextDate: "2026-11-06" })).toBeNull();
   });
 });

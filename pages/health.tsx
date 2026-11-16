@@ -32,16 +32,33 @@ import { ChecklistPanel } from "@/components/checklist-panel";
 import { NotesSection } from "@/components/notes-section";
 import { AttachmentSection } from "@/components/attachment-section";
 import {
+  HEALTH_TZ,
+  LAB_FLAGS,
+  LAB_FLAG_LABELS,
   PHONE_KINDS,
   PHONE_KIND_LABELS,
   VISIT_KINDS,
   VISIT_KIND_LABELS,
-  completeCareItem,
+  archiveProvider,
+  careItemDeletePrompt,
+  careItemFormError,
+  createLabResult,
+  defaultHealthPersonId,
+  deleteCareItem,
   deleteVisit,
-  linkVisitToCareItem,
-  scheduleCareItem,
+  formatVisitDateTime,
+  formatYmdShort,
+  groupLabResults,
+  labValueLabel,
+  linkableCareItems,
   providerPhones,
-  syncVisitEvent,
+  saveCareItem,
+  saveProvider,
+  saveVisit,
+  setCareItemStatus,
+  sortVisitsNewestFirst,
+  visitDisplayTitle,
+  visitVitalsSummary,
   type PhoneKind,
   type ProviderPhone,
 } from "@/lib/health";
@@ -52,13 +69,18 @@ import {
   CARE_CATEGORY_LABELS,
   CARE_STATUSES,
   CARE_STATUS_LABELS,
+  CARE_URGENCY_LABELS,
   DUE_DATE_SOURCE_LABELS,
+  DUE_DATE_SOURCE_OPTIONS,
+  PREGNANCY_STATUS_OPTIONS,
   careUrgency,
+  createPregnancy,
   dueDateFromLmp,
   gestationalAge,
+  isOpenCareStatus,
   lmpFromDueDate,
-  seedCareTimeline,
-  shiftCareTimeline,
+  sortCareItems,
+  updatePregnancy,
   ymdInTimezone,
   type CareCategory,
   type CareStatus,
@@ -67,7 +89,7 @@ import {
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
-const TZ = "America/Chicago";
+const TZ = HEALTH_TZ;
 
 type Person = Schema["homePerson"]["type"];
 type Pregnancy = Schema["homePregnancy"]["type"];
@@ -85,15 +107,6 @@ const URGENCY_STYLES: Record<CareUrgency, string> = {
   CONFIRM: "bg-warning-100 text-warning-700",
   CLOSED: "bg-default-100 text-default-400",
 };
-const URGENCY_LABELS: Record<CareUrgency, string> = {
-  OVERDUE: "Overdue",
-  DUE_NOW: "Due now",
-  SOON: "Soon",
-  LATER: "Later",
-  BOOKED: "Scheduled",
-  CONFIRM: "Done? Confirm",
-  CLOSED: "",
-};
 
 const LAB_FLAG_STYLES: Record<string, string> = {
   HIGH: "text-danger-600",
@@ -103,26 +116,8 @@ const LAB_FLAG_STYLES: Record<string, string> = {
   PENDING: "text-default-400 italic",
 };
 
-function fmtDate(ymd: string | null | undefined): string {
-  if (!ymd) return "";
-  const [y, m, d] = ymd.slice(0, 10).split("-").map(Number);
-  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString("en-US", {
-    timeZone: "UTC",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function fmtDateTime(iso: string): string {
-  return new Date(iso).toLocaleString("en-US", {
-    timeZone: TZ,
-    weekday: "short",
-    month: "short",
-    day: "numeric",
-    hour: "numeric",
-    minute: "2-digit",
-  });
-}
+const fmtDate = formatYmdShort;
+const fmtDateTime = (iso: string) => formatVisitDateTime(iso, TZ);
 
 // datetime-local wants "YYYY-MM-DDTHH:mm" in local time.
 function toLocalInput(iso: string | null | undefined): string {
@@ -189,11 +184,7 @@ export default function HealthPage() {
       setLabs(lab);
       setProviders(prov.filter((p) => p.active !== false));
       // Default to whoever is pregnant, else the first person.
-      setPersonId((cur) => {
-        if (cur) return cur;
-        const active = preg.find((p) => p.status === "ACTIVE");
-        return active?.personId ?? household[0]?.id ?? ppl[0]?.id ?? "";
-      });
+      setPersonId((cur) => cur || defaultHealthPersonId(preg, household, ppl));
     } catch (err) {
       console.error("Failed to load health data:", err);
     } finally {
@@ -208,43 +199,19 @@ export default function HealthPage() {
 
   const pregnancyCare = useMemo(() => {
     if (!pregnancy) return [];
-    return careItems
-      .filter((c) => c.pregnancyId === pregnancy.id)
-      .sort((a, b) =>
-        a.windowStart === b.windowStart
-          ? (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
-          : a.windowStart.localeCompare(b.windowStart),
-      );
+    return sortCareItems(careItems.filter((c) => c.pregnancyId === pregnancy.id));
   }, [careItems, pregnancy]);
 
   const personVisits = useMemo(
-    () =>
-      visits
-        .filter((v) => v.personId === personId)
-        .sort((a, b) => b.visitAt.localeCompare(a.visitAt)),
+    () => sortVisitsNewestFirst(visits.filter((v) => v.personId === personId)),
     [visits, personId],
   );
 
-  const personLabs = useMemo(
-    () =>
-      labs
-        .filter((l) => l.personId === personId)
-        .sort((a, b) =>
-          (b.collectedAt ?? b.createdAt).localeCompare(a.collectedAt ?? a.createdAt),
-        ),
+  // Newest first, grouped by panel + collected date so a report reads as one block.
+  const labGroups = useMemo(
+    () => groupLabResults(labs.filter((l) => l.personId === personId)),
     [labs, personId],
   );
-
-  // Group labs by panel + collected date so a report reads as one block.
-  const labGroups = useMemo(() => {
-    const groups = new Map<string, { label: string; date: string | null; rows: LabResult[] }>();
-    for (const l of personLabs) {
-      const k = `${l.panel ?? ""}|${l.collectedAt ?? ""}`;
-      if (!groups.has(k)) groups.set(k, { label: l.panel ?? "Results", date: l.collectedAt ?? null, rows: [] });
-      groups.get(k)!.rows.push(l);
-    }
-    return Array.from(groups.values());
-  }, [personLabs]);
 
   async function updateCareStatus(item: CareItem, status: CareStatus) {
     // Scheduling or completing needs a real date — ask for it.
@@ -254,17 +221,12 @@ export default function HealthPage() {
       setCareModalOpen(true);
       return;
     }
-    const { data, errors } = await client.models.homeCareItem.update({
-      id: item.id,
-      status,
-      scheduledAt: null,
-      completedAt: null,
-    });
-    if (errors?.length || !data) {
-      addToast({ title: "Update failed", description: errors?.[0]?.message, color: "danger" });
-      return;
+    try {
+      const data = (await setCareItemStatus(client, item.id, status)) as unknown as CareItem;
+      setCareItems((prev) => prev.map((c) => (c.id === data.id ? data : c)));
+    } catch (err: any) {
+      addToast({ title: "Update failed", description: err?.message, color: "danger" });
     }
-    setCareItems((prev) => prev.map((c) => (c.id === data.id ? data : c)));
   }
 
   const providerName = (id: string | null | undefined) =>
@@ -346,7 +308,7 @@ export default function HealthPage() {
                 </div>
                 <div className="space-y-2">
                   {pregnancyCare
-                    .filter((c) => showClosedCare || c.status === "UPCOMING" || c.status === "SCHEDULED")
+                    .filter((c) => showClosedCare || isOpenCareStatus(c.status))
                     .map((c) => {
                       const urgency = careUrgency(
                         { status: c.status, windowStart: c.windowStart, windowEnd: c.windowEnd, scheduledAt: c.scheduledAt },
@@ -380,7 +342,7 @@ export default function HealthPage() {
                                 )}
                                 {!closed && (
                                   <span className={`px-2 py-0.5 rounded-full text-[11px] ${URGENCY_STYLES[urgency]}`}>
-                                    {URGENCY_LABELS[urgency]}
+                                    {CARE_URGENCY_LABELS[urgency]}
                                   </span>
                                 )}
                               </div>
@@ -495,7 +457,7 @@ export default function HealthPage() {
                       >
                         <div className="flex flex-wrap items-center gap-2">
                           <span className="text-sm font-medium">
-                            {v.title || (v.kind ? VISIT_KIND_LABELS[v.kind] : "Visit")}
+                            {visitDisplayTitle(v)}
                           </span>
                           {v.status === "PLANNED" && (
                             <span className="px-2 py-0.5 rounded-full text-[11px] bg-primary-100 text-primary-700">Planned</span>
@@ -514,16 +476,8 @@ export default function HealthPage() {
                           {ga ? ` · ${ga}` : ""}
                           {providerName(v.providerId) ? ` · ${providerName(v.providerId)}` : ""}
                         </p>
-                        {(v.weightLb || v.bpSystolic || v.fetalHeartRate) && (
-                          <p className="text-xs text-default-600 mt-1">
-                            {[
-                              v.weightLb ? `${v.weightLb} lb` : null,
-                              v.bpSystolic && v.bpDiastolic ? `BP ${v.bpSystolic}/${v.bpDiastolic}` : null,
-                              v.fetalHeartRate ? `FHR ${v.fetalHeartRate} bpm` : null,
-                            ]
-                              .filter(Boolean)
-                              .join(" · ")}
-                          </p>
+                        {visitVitalsSummary(v) && (
+                          <p className="text-xs text-default-600 mt-1">{visitVitalsSummary(v)}</p>
                         )}
                         {v.status === "PLANNED" && v.questions && (
                           <p className="text-xs text-default-500 mt-1 whitespace-pre-line">
@@ -560,7 +514,7 @@ export default function HealthPage() {
               ) : (
                 <div className="space-y-4">
                   {labGroups.map((g) => {
-                    const groupKey = `${g.label}|${g.date}`;
+                    const groupKey = g.key;
                     const filesOpen = openLabFiles === groupKey;
                     return (
                     <div key={groupKey} className="border border-default-200 rounded-md bg-default-50">
@@ -593,7 +547,7 @@ export default function HealthPage() {
                             <tr key={r.id} className="border-b border-default-100 last:border-0">
                               <td className="px-3 py-1.5">{r.testName}</td>
                               <td className={`px-3 py-1.5 text-right ${LAB_FLAG_STYLES[r.flag ?? ""] ?? ""}`}>
-                                {r.flag === "PENDING" ? "pending" : `${r.valueText ?? ""}${r.unit ? ` ${r.unit}` : ""}`}
+                                {labValueLabel(r)}
                               </td>
                               <td className="px-3 py-1.5 text-right text-xs text-default-400 hidden sm:table-cell">
                                 {r.referenceRange ?? ""}
@@ -806,15 +760,7 @@ function CreatePregnancy({ personId, onCreated }: { personId: string; onCreated:
     if (!effectiveDue) return;
     setSaving(true);
     try {
-      const { data, errors } = await client.models.homePregnancy.create({
-        personId,
-        lmpDate: lmp || lmpFromDueDate(effectiveDue),
-        dueDate: effectiveDue,
-        dueDateSource: due ? "OTHER" : "LMP",
-        status: "ACTIVE",
-      });
-      if (errors?.length || !data) throw new Error(errors?.[0]?.message ?? "create failed");
-      const { failed } = await seedCareTimeline(client, data.id, effectiveDue);
+      const { failed } = await createPregnancy(client, { personId, lmp, due });
       addToast(
         failed > 0
           ? { title: "Pregnancy added", description: `${failed} timeline item(s) failed to save — add them by hand.`, color: "warning" }
@@ -914,13 +860,8 @@ function VisitModal({
     setFhr(editing?.fetalHeartRate != null ? String(editing.fetalHeartRate) : "");
   }, [isOpen, editing]);
 
-  const num = (s: string) => (s.trim() === "" ? null : Number(s));
-  const int = (s: string) => (s.trim() === "" ? null : Math.round(Number(s)));
-
   // Open items, plus whatever this visit is already linked to.
-  const linkableCare = careItems.filter(
-    (c) => c.status === "UPCOMING" || c.status === "SCHEDULED" || c.id === editing?.careItemId,
-  );
+  const linkableCare = linkableCareItems(careItems, editing?.careItemId);
 
   async function save(onClose: () => void) {
     if (!visitAt) {
@@ -929,53 +870,41 @@ function VisitModal({
     }
     setSaving(true);
     try {
-      const fields = {
-        visitAt: new Date(visitAt).toISOString(),
-        kind: kind as Visit["kind"],
-        status: status as Visit["status"],
-        title: title.trim() || null,
-        providerId: providerId || null,
-        questions: questions.trim() || null,
-        notes: notes.trim() || null,
-        followUp: followUp.trim() || null,
-        weightLb: num(weight),
-        bpSystolic: int(bpSys),
-        bpDiastolic: int(bpDia),
-        fetalHeartRate: int(fhr),
-      };
-      const { data: saved, errors } = editing
-        ? await client.models.homeMedicalVisit.update({ id: editing.id, ...fields })
-        : await client.models.homeMedicalVisit.create({
-            personId,
-            pregnancyId,
-            createdBy: "ui",
-            ...fields,
-          });
-      if (errors?.length || !saved) throw new Error(errors?.[0]?.message ?? "save failed");
-
-      // Keep the calendar event (and timeline item) in step. The visit is
-      // already saved, so a failure here is a warning, not a lost edit.
-      try {
-        const provider = providers.find((p) => p.id === saved.providerId);
-        const eventId = await syncVisitEvent(client, saved, {
-          providerName: provider?.name,
-          providerAddress: provider?.address,
+      // Saves the visit, then keeps the calendar event (and timeline item)
+      // in step. A sync failure is a warning, not a lost edit.
+      const provider = providers.find((p) => p.id === providerId);
+      const { eventId, syncError } = await saveVisit(client, {
+        visitId: editing?.id,
+        personId,
+        pregnancyId,
+        values: {
+          visitAt: new Date(visitAt).toISOString(),
+          kind,
+          status,
+          title,
+          providerId,
+          questions,
+          notes,
+          followUp,
+          weight,
+          bpSystolic: bpSys,
+          bpDiastolic: bpDia,
+          fetalHeartRate: fhr,
+        },
+        careItemId,
+        provider,
+      });
+      if (syncError) {
+        addToast({
+          title: "Visit saved, but the calendar didn't update",
+          description: syncError,
+          color: "warning",
         });
-        if (careItemId) {
-          await linkVisitToCareItem(client, { ...saved, eventId }, careItemId);
-        } else if (saved.careItemId) {
-          await client.models.homeMedicalVisit.update({ id: saved.id, careItemId: null });
-        }
+      } else {
         addToast({
           title: editing ? "Visit updated" : "Visit added",
           description: eventId ? "Calendar updated." : status === "CANCELLED" ? "Removed from the calendar." : undefined,
           color: "success",
-        });
-      } catch (err: any) {
-        addToast({
-          title: "Visit saved, but the calendar didn't update",
-          description: err?.message ?? String(err),
-          color: "warning",
         });
       }
       onClose();
@@ -1159,20 +1088,16 @@ function LabModal({
     if (!testName.trim()) return;
     setSaving(true);
     try {
-      const n = Number(value);
-      const { errors } = await client.models.homeLabResult.create({
+      await createLabResult(client, {
         personId,
-        testName: testName.trim(),
-        valueText: value.trim() || null,
-        valueNum: value.trim() !== "" && Number.isFinite(n) ? n : null,
-        unit: unit.trim() || null,
-        referenceRange: range.trim() || null,
-        flag: (flag || null) as LabResult["flag"],
-        panel: panel.trim() || null,
-        collectedAt: collectedAt || null,
-        createdBy: "ui",
+        testName,
+        value,
+        unit,
+        referenceRange: range,
+        flag,
+        panel,
+        collectedAt,
       });
-      if (errors?.length) throw new Error(errors[0].message);
       onClose();
       onSaved();
     } catch (err: any) {
@@ -1195,8 +1120,8 @@ function LabModal({
                 <Input label="Unit" placeholder="g/dL" value={unit} onValueChange={setUnit} />
                 <Input label="Reference range" placeholder="11.1–15.9" value={range} onValueChange={setRange} />
                 <Select label="Flag" selectedKeys={flag ? [flag] : []} onChange={(e) => setFlag(e.target.value)}>
-                  {["NORMAL", "LOW", "HIGH", "ABNORMAL", "POSITIVE", "NEGATIVE", "PENDING"].map((f) => (
-                    <SelectItem key={f}>{f.charAt(0) + f.slice(1).toLowerCase()}</SelectItem>
+                  {LAB_FLAGS.map((f) => (
+                    <SelectItem key={f}>{LAB_FLAG_LABELS[f]}</SelectItem>
                   ))}
                 </Select>
               </div>
@@ -1265,28 +1190,11 @@ function ProviderModal({
     if (!name.trim()) return;
     setSaving(true);
     try {
-      const cleanPhones = phones
-        .filter((p) => p.number.trim())
-        .map((p) => ({ kind: p.kind ?? "OTHER", number: p.number.trim(), label: p.label?.trim() || null }));
-      const fields = {
-        name: name.trim(),
-        specialty: specialty.trim() || null,
-        practice: practice.trim() || null,
-        phones: cleanPhones,
-        // Legacy field now lives in phones; clear it so it isn't shown twice.
-        phone: null,
-        address: address.trim() || null,
-        portalUrl: portalUrl.trim() || null,
-        notes: notes.trim() || null,
-      };
-      const { errors } = editing
-        ? await client.models.homeHealthProvider.update({ id: editing.id, ...fields })
-        : await client.models.homeHealthProvider.create({
-            ...fields,
-            personIds: personId ? [personId] : [],
-            active: true,
-          });
-      if (errors?.length) throw new Error(errors[0].message);
+      await saveProvider(client, {
+        providerId: editing?.id,
+        personId,
+        values: { name, specialty, practice, phones, address, portalUrl, notes },
+      });
       onClose();
       onSaved();
     } catch (err: any) {
@@ -1299,9 +1207,10 @@ function ProviderModal({
   // Soft delete, like the agent: visits keep pointing at the row.
   async function archive(onClose: () => void) {
     if (!editing || !confirm(`Archive ${editing.name}? Past visits keep the link.`)) return;
-    const { errors } = await client.models.homeHealthProvider.update({ id: editing.id, active: false });
-    if (errors?.length) {
-      addToast({ title: "Archive failed", description: errors[0].message, color: "danger" });
+    try {
+      await archiveProvider(client, editing.id);
+    } catch (err: any) {
+      addToast({ title: "Archive failed", description: err?.message ?? String(err), color: "danger" });
       return;
     }
     onClose();
@@ -1467,19 +1376,16 @@ function PregnancyModal({
     if (!dueDate) return;
     setSaving(true);
     try {
-      const { errors } = await client.models.homePregnancy.update({
-        id: pregnancy.id,
+      const moved = await updatePregnancy(client, pregnancy, {
         dueDate,
-        lmpDate: lmpDate || null,
-        dueDateSource: source as Pregnancy["dueDateSource"],
-        providerId: providerId || null,
-        hospitalName: hospital.trim() || null,
-        status: status as Pregnancy["status"],
-        deliveredAt: status === "DELIVERED" ? deliveredAt || null : null,
-        notes: notes.trim() || null,
+        lmpDate,
+        dueDateSource: source,
+        providerId,
+        hospitalName: hospital,
+        status,
+        deliveredAt,
+        notes,
       });
-      if (errors?.length) throw new Error(errors[0].message);
-      const moved = dueChanged ? await shiftCareTimeline(client, pregnancy.id, dueDate) : 0;
       addToast({
         title: "Pregnancy updated",
         description: moved > 0 ? `${moved} timeline item${moved === 1 ? "" : "s"} moved to match the new due date.` : undefined,
@@ -1510,10 +1416,9 @@ function PregnancyModal({
                 selectedKeys={[source]}
                 onChange={(e) => e.target.value && setSource(e.target.value)}
               >
-                <SelectItem key="LMP">Last period</SelectItem>
-                <SelectItem key="ULTRASOUND">Ultrasound</SelectItem>
-                <SelectItem key="IVF">IVF transfer</SelectItem>
-                <SelectItem key="OTHER">Other / doctor</SelectItem>
+                {DUE_DATE_SOURCE_OPTIONS.map((o) => (
+                  <SelectItem key={o.key}>{o.label}</SelectItem>
+                ))}
               </Select>
               {dueChanged && (
                 <p className="text-xs text-warning-600">
@@ -1539,9 +1444,9 @@ function PregnancyModal({
                   selectedKeys={[status]}
                   onChange={(e) => e.target.value && setStatus(e.target.value)}
                 >
-                  <SelectItem key="ACTIVE">Active</SelectItem>
-                  <SelectItem key="DELIVERED">Delivered</SelectItem>
-                  <SelectItem key="ENDED">Ended</SelectItem>
+                  {PREGNANCY_STATUS_OPTIONS.map((o) => (
+                    <SelectItem key={o.key}>{o.label}</SelectItem>
+                  ))}
                 </Select>
                 {status === "DELIVERED" && (
                   <DateInput label="Birth date" value={deliveredAt} onChange={setDeliveredAt} />
@@ -1616,58 +1521,27 @@ function CareItemModal({
 
   async function save(onClose: () => void) {
     if (!title.trim() || !windowStart || !windowEnd) return;
-    if (windowEnd < windowStart) {
-      addToast({ title: "The window ends before it starts", color: "warning" });
-      return;
-    }
-    if (status === "SCHEDULED" && !scheduledAt) {
-      addToast({ title: "Pick the date and time it's booked for", color: "warning" });
+    const formError = careItemFormError({ title, windowStart, windowEnd, status, scheduledAt });
+    if (formError) {
+      addToast({ title: formError, color: "warning" });
       return;
     }
     setSaving(true);
     try {
-      // 1. Details (status handled below for Scheduled / Done).
-      const details = {
-        title: title.trim(),
-        category: category as CareItem["category"],
-        windowStart,
-        windowEnd,
-        optional,
-        notes: notes.trim() || null,
-      };
-      const res = editing
-        ? await client.models.homeCareItem.update({ id: editing.id, ...details })
-        : await client.models.homeCareItem.create({
-            pregnancyId,
-            key: null,
-            sortOrder: 999,
-            status: "UPCOMING",
-            ...details,
-          });
-      if (res.errors?.length || !res.data) throw new Error(res.errors?.[0]?.message ?? "save failed");
-      const item = res.data;
-
-      // 2. Status, with its date.
-      let description: string | undefined;
-      if (status === "SCHEDULED") {
-        const { visitId } = await scheduleCareItem(client, item, {
-          scheduledAt: new Date(scheduledAt).toISOString(),
-          personId,
-          pregnancyId,
-          withVisit: addToCalendar,
-        });
-        description = visitId ? "On the calendar as a visit." : undefined;
-      } else if (status === "DONE") {
-        await completeCareItem(client, item, completedAt || today);
-      } else {
-        const { errors } = await client.models.homeCareItem.update({
-          id: item.id,
-          status: status as CareItem["status"],
-          scheduledAt: null,
-          completedAt: null,
-        });
-        if (errors?.length) throw new Error(errors[0].message);
-      }
+      // Details, then the status with its date (Scheduled books / moves
+      // the visit; Done completes a linked planned visit).
+      const { visitId } = await saveCareItem(client, {
+        itemId: editing?.id,
+        pregnancyId,
+        personId,
+        details: { title, category, windowStart, windowEnd, optional, notes },
+        status,
+        scheduledAt: status === "SCHEDULED" ? new Date(scheduledAt).toISOString() : null,
+        withVisit: addToCalendar,
+        completedAt,
+        today,
+      });
+      const description = visitId ? "On the calendar as a visit." : undefined;
       addToast({ title: "Saved", description, color: "success" });
       onClose();
       onSaved();
@@ -1680,13 +1554,11 @@ function CareItemModal({
 
   async function remove(onClose: () => void) {
     if (!editing) return;
-    const msg = editing.key
-      ? `Delete "${editing.title}"? It's part of the standard timeline — marking it Skipped or N/A keeps a record instead.`
-      : `Delete "${editing.title}"?`;
-    if (!confirm(msg)) return;
-    const { errors } = await client.models.homeCareItem.delete({ id: editing.id });
-    if (errors?.length) {
-      addToast({ title: "Delete failed", description: errors[0].message, color: "danger" });
+    if (!confirm(careItemDeletePrompt(editing))) return;
+    try {
+      await deleteCareItem(client, editing.id);
+    } catch (err: any) {
+      addToast({ title: "Delete failed", description: err?.message ?? String(err), color: "danger" });
       return;
     }
     onClose();

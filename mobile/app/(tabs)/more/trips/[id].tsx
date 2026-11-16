@@ -156,6 +156,15 @@ export default function TripDetail() {
         >
           <TripHeader trip={data.trip} />
 
+          <Pressable
+            onPress={() => router.push(`/more/wardrobe/trip/${data.trip.id}` as any)}
+            style={({ pressed }) => [styles.looksLink, pressed && { opacity: 0.7 }]}
+          >
+            <Ionicons name="shirt-outline" size={18} color="#735f55" />
+            <Text style={styles.looksLinkText}>Trip looks & packing</Text>
+            <Ionicons name="chevron-forward" size={16} color="#bbb" />
+          </Pressable>
+
           <View style={styles.sectionHeader}>
             <Text style={styles.sectionLabel}>Legs</Text>
             <Pressable
@@ -475,6 +484,19 @@ const styles = StyleSheet.create({
   tripMeta: { color: "#666", fontSize: 13 },
   tripMetaSep: { color: "#ccc", fontSize: 13 },
   tripNotes: { color: "#666", marginTop: 8, fontSize: 13, lineHeight: 19 },
+  looksLink: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#fff",
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    marginBottom: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#e5e5e5",
+  },
+  looksLinkText: { flex: 1, fontSize: 15, color: "#222", fontWeight: "500" },
 
   sectionLabel: {
     fontSize: 12,

@@ -180,6 +180,11 @@ export function makeMain(keys: string[], index: number): string[] {
   return next;
 }
 
+/** Same ids, any order (a try-on image only describes the exact set of pieces it was rendered from). */
+export function sameIdSet(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
+}
+
 /** Owned and wearable today: what the suggester may pick from. */
 export function isWearable(item: { status?: string | null }): boolean {
   const s = item.status ?? "KEEP";
@@ -188,6 +193,108 @@ export function isWearable(item: { status?: string | null }): boolean {
 
 export function isWishlist(item: { status?: string | null }): boolean {
   return item.status === "WISHLIST";
+}
+
+/**
+ * Every word must appear somewhere in the haystack: "navy wool" matches a
+ * navy merino-wool sweater, not just the literal phrase.
+ */
+export function matchesSearch(q: string, parts: (string | null | undefined)[]): boolean {
+  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = parts.filter(Boolean).join(" ").toLowerCase();
+  return words.every((w) => hay.includes(w));
+}
+
+/** Closet filters (web /wardrobe query string, mobile chips). "OWNED" = wearing; "" = everything. */
+export interface ClosetFilter {
+  category: string;
+  status: WardrobeStatus | "OWNED" | "";
+  inLook: "" | "YES" | "NO";
+  search: string;
+}
+
+/** Item ids used by at least one of the looks. */
+export function itemIdsInLooks(looks: { itemIds?: (string | null)[] | null }[]): Set<string> {
+  return new Set(looks.flatMap((l) => (l.itemIds ?? []).filter((x): x is string => !!x)));
+}
+
+export function filterCloset<T extends WardrobeItemLike & { styleCode?: string | null }>(
+  items: T[],
+  f: ClosetFilter,
+  inLooks: Set<string>,
+): T[] {
+  return items.filter((i) => {
+    if (f.category && i.category !== f.category) return false;
+    const s = i.status ?? "KEEP";
+    if (f.status === "OWNED" && (s === "WISHLIST" || s === "RETIRE")) return false;
+    if (f.status && f.status !== "OWNED" && s !== f.status) return false;
+    if (f.inLook === "YES" && !inLooks.has(i.id)) return false;
+    if (f.inLook === "NO" && inLooks.has(i.id)) return false;
+    return matchesSearch(f.search, [i.name, i.brand, i.color, i.fabric, i.fit, i.size, i.styleCode, i.notes, i.category]);
+  });
+}
+
+/** Header counts: owned (not wishlist / retired), on the wishlist, with a photo. */
+export function closetCounts(items: WardrobeItemLike[]): { owned: number; wish: number; photos: number } {
+  return {
+    owned: items.filter((i) => i.status !== "WISHLIST" && i.status !== "RETIRE").length,
+    wish: items.filter((i) => i.status === "WISHLIST").length,
+    photos: items.filter((i) => mainImage(i)).length,
+  };
+}
+
+export interface LookLike {
+  title?: string | null;
+  occasion?: string | null;
+  palette?: string | null;
+  note?: string | null;
+  stylingInstructions?: string | null;
+  previewImageKey?: string | null;
+  itemIds?: (string | null)[] | null;
+}
+
+/**
+ * Occasion chips for saved looks: distinct occasions, case-insensitive,
+ * shown with the first spelling seen, most used first. Keys are lowercased.
+ */
+export function lookOccasions(looks: LookLike[]): [string, { label: string; count: number }][] {
+  const m = new Map<string, { label: string; count: number }>();
+  for (const l of looks) {
+    const o = l.occasion?.trim();
+    if (!o) continue;
+    const k = o.toLowerCase();
+    const e = m.get(k);
+    if (e) e.count++;
+    else m.set(k, { label: o, count: 1 });
+  }
+  return Array.from(m.entries()).sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label));
+}
+
+/** Saved-look filters: occasion key (lowercased), has a try-on, and words across the look and its pieces. */
+export function filterLooks<L extends LookLike>(
+  looks: L[],
+  f: { occasion: string; tryOn: boolean; search: string },
+  byId: Map<string, WardrobeItemLike>,
+): L[] {
+  return looks.filter((l) => {
+    if (f.occasion && (l.occasion ?? "").trim().toLowerCase() !== f.occasion) return false;
+    if (f.tryOn && !l.previewImageKey) return false;
+    const pieces = (l.itemIds ?? []).map((id) => (id ? byId.get(id) : undefined));
+    return matchesSearch(f.search, [
+      l.title,
+      l.occasion,
+      l.palette,
+      l.note,
+      l.stylingInstructions,
+      ...pieces.flatMap((p) => (p ? [p.brand, p.name, p.color, p.category] : [])),
+    ]);
+  });
+}
+
+/** Closet order inside a category: brand, then name. */
+export function compareClosetItems(a: WardrobeItemLike, b: WardrobeItemLike): number {
+  return (a.brand ?? "").localeCompare(b.brand ?? "") || (a.name ?? "").localeCompare(b.name ?? "");
 }
 
 /** Item ids worn on or after `sinceYmd` (inclusive), newest first, deduped. */

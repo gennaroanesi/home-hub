@@ -27,8 +27,12 @@ import {
   WARDROBE_STATUSES,
   WARDROBE_STATUS_LABELS,
   categoriesFor,
-  mainImage,
-  type WardrobeStatus,
+  closetCounts,
+  compareClosetItems,
+  filterCloset,
+  filterLooks,
+  itemIdsInLooks,
+  lookOccasions,
 } from "@/lib/wardrobe";
 import type { Schema } from "@/amplify/data/resource";
 import {
@@ -75,15 +79,6 @@ interface Suggestion {
   itemIds?: (string | null)[] | null;
   why?: string | null;
   wishlistItemIds?: (string | null)[] | null;
-}
-
-// Every word must appear somewhere in the haystack: "navy wool" matches a
-// navy merino-wool sweater, not just the literal phrase.
-function matchesSearch(q: string, parts: (string | null | undefined)[]): boolean {
-  const words = q.toLowerCase().split(/\s+/).filter(Boolean);
-  if (!words.length) return true;
-  const hay = parts.filter(Boolean).join(" ").toLowerCase();
-  return words.every((w) => hay.includes(w));
 }
 
 function todayYmd(): string {
@@ -215,42 +210,15 @@ export default function WardrobePage() {
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
 
   // Pieces used by at least one of this person's saved looks.
-  const inLooks = useMemo(() => new Set(myLooks.flatMap((l) => (l.itemIds ?? []).filter((x): x is string => !!x))), [myLooks]);
+  const inLooks = useMemo(() => itemIdsInLooks(myLooks), [myLooks]);
 
-  const shown = mine.filter((i) => {
-    if (category && i.category !== category) return false;
-    const s = i.status ?? "KEEP";
-    if (status === "OWNED" && (s === "WISHLIST" || s === "RETIRE")) return false;
-    if (status && status !== "OWNED" && s !== status) return false;
-    if (inLook === "YES" && !inLooks.has(i.id)) return false;
-    if (inLook === "NO" && inLooks.has(i.id)) return false;
-    return matchesSearch(search, [i.name, i.brand, i.color, i.fabric, i.fit, i.size, i.styleCode, i.notes, i.category]);
-  });
+  const shown = filterCloset(mine, { category, status, inLook, search }, inLooks);
 
   // Occasion chips: distinct occasions across the looks, case-insensitive,
   // shown with the first spelling seen.
-  const occasions = useMemo(() => {
-    const m = new Map<string, { label: string; count: number }>();
-    for (const l of myLooks) {
-      const o = l.occasion?.trim();
-      if (!o) continue;
-      const k = o.toLowerCase();
-      const e = m.get(k);
-      if (e) e.count++;
-      else m.set(k, { label: o, count: 1 });
-    }
-    return Array.from(m.entries()).sort((a, b) => b[1].count - a[1].count || a[1].label.localeCompare(b[1].label));
-  }, [myLooks]);
+  const occasions = useMemo(() => lookOccasions(myLooks), [myLooks]);
 
-  const shownLooks = myLooks.filter((l) => {
-    if (lookOccasion && (l.occasion ?? "").trim().toLowerCase() !== lookOccasion) return false;
-    if (lookTryOn && !l.previewImageKey) return false;
-    const pieces = (l.itemIds ?? []).map((id) => (id ? byId.get(id) : undefined));
-    return matchesSearch(lookSearch, [
-      l.title, l.occasion, l.palette, l.note, l.stylingInstructions,
-      ...pieces.flatMap((p) => (p ? [p.brand, p.name, p.color, p.category] : [])),
-    ]);
-  });
+  const shownLooks = filterLooks(myLooks, { occasion: lookOccasion, tryOn: lookTryOn, search: lookSearch }, byId);
   const groups = categories.map((c) => [c, shown.filter((i) => i.category === c)] as const).filter(([, l]) => l.length);
 
   function pickPerson(id: string) {
@@ -289,11 +257,7 @@ export default function WardrobePage() {
     }
   }
 
-  const counts = {
-    owned: mine.filter((i) => i.status !== "WISHLIST" && i.status !== "RETIRE").length,
-    wish: mine.filter((i) => i.status === "WISHLIST").length,
-    photos: mine.filter((i) => mainImage(i)).length,
-  };
+  const counts = closetCounts(mine);
 
   return (
     <DefaultLayout>
@@ -419,7 +383,7 @@ export default function WardrobePage() {
                   <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
                     {list
                       .slice()
-                      .sort((a, b) => (a.brand ?? "").localeCompare(b.brand ?? "") || a.name.localeCompare(b.name))
+                      .sort(compareClosetItems)
                       .map((it) => (
                         <ItemCard key={it.id} item={it} onOpen={() => openItem(it)} />
                       ))}

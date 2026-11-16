@@ -2,7 +2,14 @@ import { describe, expect, it } from "vitest";
 import {
   addDaysYmd,
   categoriesFor,
+  closetCounts,
   dayBoundsUtc,
+  filterCloset,
+  filterLooks,
+  itemIdsInLooks,
+  lookOccasions,
+  sameIdSet,
+  matchesSearch,
   isDarkHex,
   isWearable,
   makeMain,
@@ -79,6 +86,45 @@ describe("dates", () => {
   it("dayBoundsUtc uses the local day in the timezone (CDT and CST)", () => {
     expect(dayBoundsUtc("2026-10-26", "America/Chicago").start.toISOString()).toBe("2026-10-26T05:00:00.000Z");
     expect(dayBoundsUtc("2026-12-01", "America/Chicago").start.toISOString()).toBe("2026-12-01T06:00:00.000Z");
+  });
+});
+
+describe("closet filters", () => {
+  const items = [
+    { id: "a", category: "Knitwear", name: "Cashmere crew", brand: "Drake's", color: "Navy", fabric: "merino wool", imageKeys: ["k"] },
+    { id: "b", category: "Pants", name: "Flannel", status: "WISHLIST" },
+    { id: "c", category: "Pants", name: "Chino", status: "RETIRE" },
+  ];
+  const inLooks = itemIdsInLooks([{ itemIds: ["a", null] }]);
+  const f = { category: "", status: "" as const, inLook: "" as const, search: "" };
+  it("matches every word anywhere", () => {
+    expect(matchesSearch("navy wool", ["Cashmere", "Navy", "merino wool"])).toBe(true);
+    expect(matchesSearch("navy linen", ["Navy"])).toBe(false);
+  });
+  it("filters by status, category, looks and search", () => {
+    expect(filterCloset(items, { ...f, status: "OWNED" }, inLooks).map((i) => i.id)).toEqual(["a"]);
+    expect(filterCloset(items, { ...f, status: "WISHLIST" }, inLooks).map((i) => i.id)).toEqual(["b"]);
+    expect(filterCloset(items, { ...f, category: "Pants" }, inLooks).map((i) => i.id)).toEqual(["b", "c"]);
+    expect(filterCloset(items, { ...f, inLook: "NO" }, inLooks).map((i) => i.id)).toEqual(["b", "c"]);
+    expect(filterCloset(items, { ...f, search: "drake navy" }, inLooks).map((i) => i.id)).toEqual(["a"]);
+  });
+  it("counts", () => expect(closetCounts(items)).toEqual({ owned: 1, wish: 1, photos: 1 }));
+  it("looks: occasions, filters, same piece sets", () => {
+    const looks = [
+      { title: "Desk", occasion: "Office", itemIds: ["a"] },
+      { title: "Board", occasion: "office ", itemIds: ["b"], previewImageKey: "k" },
+      { title: "Golf", occasion: "Golf", itemIds: [] },
+    ];
+    expect(lookOccasions(looks)).toEqual([
+      ["office", { label: "Office", count: 2 }],
+      ["golf", { label: "Golf", count: 1 }],
+    ]);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    expect(filterLooks(looks, { occasion: "office", tryOn: false, search: "" }, byId).map((l) => l.title)).toEqual(["Desk", "Board"]);
+    expect(filterLooks(looks, { occasion: "", tryOn: true, search: "" }, byId).map((l) => l.title)).toEqual(["Board"]);
+    expect(filterLooks(looks, { occasion: "", tryOn: false, search: "cashmere" }, byId).map((l) => l.title)).toEqual(["Desk"]);
+    expect(sameIdSet(["a", "b"], ["b", "a"])).toBe(true);
+    expect(sameIdSet(["a"], ["a", "b"])).toBe(false);
   });
 });
 

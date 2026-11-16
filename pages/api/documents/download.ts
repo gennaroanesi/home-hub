@@ -3,7 +3,7 @@
  *
  * Duo-Push-gated document download for the web UI. Triggers a Duo push
  * to the requester's phone, waits for approval (~60s max), then returns
- * a 30-minute presigned S3 GET URL. For metadata-only entries (no file),
+ * a signed /api/d link valid 15 minutes (lib/file-link.ts). For metadata-only entries (no file),
  * returns the documentNumber directly.
  *
  * Body: { documentId: string, duoUsername: string }
@@ -14,6 +14,8 @@
 import type { NextApiRequest, NextApiResponse } from "next";
 import { preauth, pushAndWait } from "@/lib/duo-server";
 import { withHomeUserAuth } from "@/lib/api-auth";
+import { FILE_LINK_APP_TTL_MS } from "@/lib/file-link";
+import { mintFileLink } from "@/lib/file-link-server";
 
 async function handler(
   req: NextApiRequest,
@@ -71,9 +73,11 @@ async function handler(
       if (!s3Key.startsWith("home/documents/")) {
         return res.status(400).json({ error: "Invalid document path" });
       }
-      const docFilename = s3Key.replace("home/documents/", "");
-      const url = `https://home.cristinegennaro.com/api/d/${docFilename}`;
-      return res.status(200).json({ url });
+      // Signed /api/d link (lib/file-link.ts): works off the home
+      // network and expires, unlike the old bare /api/d/<file>.
+      const url = await mintFileLink(s3Key, { ttlMs: FILE_LINK_APP_TTL_MS });
+      const expiresAt = new Date(Date.now() + FILE_LINK_APP_TTL_MS).toISOString();
+      return res.status(200).json({ url, expiresAt });
     }
 
     if (documentNumber) {

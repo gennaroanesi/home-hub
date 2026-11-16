@@ -93,6 +93,14 @@ export function stripProcessorPrefix(description: string): string {
   return description.replace(PROCESSOR_PREFIX, "").trim();
 }
 
+/** A starting point for "remember for similar": the first merchant-looking words. */
+export function suggestPattern(description: string | null | undefined): string {
+  const words = stripProcessorPrefix(description ?? "")
+    .split(/\s+/)
+    .filter((w) => /^[A-Za-z][A-Za-z&'.-]{2,}$/.test(w));
+  return words.slice(0, 2).join(" ").toUpperCase();
+}
+
 // A money-IN row matching one of these keeps the rule's category instead of
 // becoming a Refund.
 const NON_REFUNDABLE = new Set<string>([...EXCLUDED_FROM_BUDGET, ...INCOME_CATEGORIES, REFUND_CATEGORY]);

@@ -21,7 +21,6 @@ import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
   addTripPlanItem,
-  moveTripLook,
   packCount,
   parseJsonField,
   removeTripPlanItem,
@@ -32,8 +31,27 @@ import {
   type TripDayWeather,
   type TripLook,
   type TripPlan,
-  type TripPlanSnapshot,
 } from "@/lib/wardrobe-trip";
+import {
+  TRIP_PLAN_POLL_LIMIT_MS as POLL_LIMIT_MS,
+  TRIP_PLAN_POLL_MS as POLL_MS,
+  editTripPlanPatch,
+  forgetFeedbackPatch,
+  groupByCategory,
+  latestTripPlan,
+  moveTripLookPatch,
+  packEditSummary,
+  pinTripLookPatch,
+  shownTripPlan,
+  sortTripsForPlanning,
+  togglePackedPatch,
+  tripDayLabel as dayLabel,
+  tripPlanOf,
+  tripPlanStillGenerating,
+  tripsForPerson,
+  undoTripPlanPatch,
+  type TripPlanPatch,
+} from "@/lib/wardrobe-trip-edits";
 import type { Schema } from "@/amplify/data/resource";
 import type { WardrobeItem } from "./shared";
 import { LookCard } from "./look-card";
@@ -45,20 +63,6 @@ const client = generateClient<Schema>({ authMode: "userPool" });
 type Trip = Schema["homeTrip"]["type"];
 type Plan = Schema["homeWardrobeTripPlan"]["type"];
 type SavedLook = Pick<Schema["homeWardrobeLook"]["type"], "id" | "title" | "occasion" | "note" | "itemIds">;
-
-const POLL_MS = 4000;
-const POLL_LIMIT_MS = 150_000;
-
-function dayLabel(ymd: string): string {
-  return new Date(`${ymd}T12:00:00`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-}
-
-// Upcoming and ongoing trips first (soonest first), then past ones (latest first).
-function sortTrips(trips: Trip[], today: string): Trip[] {
-  const live = trips.filter((t) => t.endDate >= today).sort((a, b) => a.startDate.localeCompare(b.startDate));
-  const past = trips.filter((t) => t.endDate < today).sort((a, b) => b.startDate.localeCompare(a.startDate));
-  return [...live, ...past];
-}
 
 function todayYmd(): string {
   const d = new Date();
@@ -110,11 +114,7 @@ export function TripPanel({
       try {
         const all = await listAllPages<Trip>(client.models.homeTrip);
         // Trips this person is on; trips with no participants count for everyone.
-        const mine = all.filter((t) => {
-          const ids = (t.participantIds ?? []).filter(Boolean);
-          return !ids.length || ids.includes(personId);
-        });
-        setTrips(sortTrips(mine, todayYmd()));
+        setTrips(sortTripsForPlanning(tripsForPerson(all, personId), todayYmd()));
       } catch (err) {
         console.error("Failed to load trips:", err);
         addToast({ title: "Couldn't load trips", color: "danger" });
@@ -137,7 +137,7 @@ export function TripPanel({
     const rows = await listAllPages<Plan>(client.models.homeWardrobeTripPlan, {
       filter: { tripId: { eq: tripId }, personId: { eq: personId } },
     });
-    const p = rows.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null;
+    const p = latestTripPlan(rows);
     setPlan(p);
     return p;
   }
@@ -155,7 +155,7 @@ export function TripPanel({
       setActivities(parseJsonField<TripActivity[]>(p?.activities, []));
       setRequest(p?.request ?? "");
       // A plan still generating (e.g. started before a reload) gets polled.
-      if (p?.status === "GENERATING" && Date.now() - new Date(p.updatedAt).getTime() < POLL_LIMIT_MS) {
+      if (tripPlanStillGenerating(p)) {
         pollUntil.current = Date.now() + POLL_LIMIT_MS;
         setPolling(true);
       }
@@ -222,89 +222,43 @@ export function TripPanel({
   }
 
   async function togglePacked(id: string) {
-    if (!plan) return;
-    const cur = (plan.packedItemIds ?? []).filter((x): x is string => !!x);
-    const next = cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id];
-    setPlan({ ...plan, packedItemIds: next });
-    const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, packedItemIds: next });
-    if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+    if (plan) await savePlan(togglePackedPatch(plan, id));
   }
 
-  async function savePlan(patch: Partial<Plan>): Promise<boolean> {
+  // Patches come from lib/wardrobe-trip-edits.ts, shared with the mobile screen.
+  async function savePlan(patch: TripPlanPatch): Promise<boolean> {
     if (!plan) return false;
-    setPlan({ ...plan, ...patch });
-    const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, ...patch });
+    setPlan({ ...plan, ...(patch as Partial<Plan>) });
+    const r = await client.models.homeWardrobeTripPlan.update({ id: plan.id, ...(patch as any) }); // eslint-disable-line @typescript-eslint/no-explicit-any
     if (r.errors?.length) addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
     return !r.errors?.length;
   }
 
   // Pin look `n` to a saved closet look (taking any edits made while saving), or unpin it.
   async function pinLook(n: number, saved: SavedLook | null) {
-    if (!plan) return;
-    const list = parseJsonField<TripLook[]>(plan.looks, []);
-    const l = list[n];
-    if (!l) return;
-    const itemIds = saved ? (saved.itemIds ?? []).filter((x): x is string => !!x) : l.itemIds;
-    list[n] = saved
-      ? { ...l, lookId: saved.id, title: saved.title || l.title, occasion: saved.occasion ?? l.occasion, why: saved.note ?? l.why, itemIds: itemIds.length ? itemIds : l.itemIds }
-      : { ...l, lookId: null };
-    const pack = (plan.packItemIds ?? []).filter((x): x is string => !!x);
-    for (const id of list[n].itemIds) if (!pack.includes(id)) pack.push(id);
-    await savePlan({ looks: JSON.stringify(list) as any, packItemIds: pack }); // eslint-disable-line @typescript-eslint/no-explicit-any
+    const patch = plan && pinTripLookPatch(plan, n, saved);
+    if (patch) await savePlan(patch);
   }
 
   // Swap the plan with the one before the last tweak or re-plan, so undo can be undone.
   async function undo() {
-    const prev = parseJsonField<TripPlanSnapshot | null>(plan?.previousPlan, null);
-    if (!plan || !prev) return;
-    const now: TripPlanSnapshot = {
-      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
-      looks: parseJsonField<TripLook[]>(plan.looks, []),
-      tips: plan.tips ?? null,
-      feedback: (plan.feedback ?? []).filter((x): x is string => !!x),
-    };
-    await savePlan({
-      packItemIds: prev.packItemIds,
-      looks: JSON.stringify(prev.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      tips: prev.tips,
-      feedback: prev.feedback,
-      packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && prev.packItemIds.includes(id)),
-      previousPlan: JSON.stringify(now) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      error: null,
-    });
+    const patch = plan && undoTripPlanPatch(plan);
+    if (patch) await savePlan(patch);
   }
 
   // Direct packing-list edits (replace / remove / add) without the model. Each
   // goes through previousPlan like a tweak does, so "Undo last change" works.
   async function editPack(edit: (current: TripPlan) => { plan: TripPlan; changedLooks?: number; pinnedKept?: number }, title: string, keptName?: string) {
     if (!plan) return;
-    const current: TripPlan = {
-      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
-      looks: parseJsonField<TripLook[]>(plan.looks, []),
-      tips: plan.tips ?? null,
-    };
+    const current = tripPlanOf(plan);
     const { plan: next, changedLooks = 0, pinnedKept = 0 } = edit(current);
     if (next === current) return;
-    const snapshot: TripPlanSnapshot = { ...current, feedback: (plan.feedback ?? []).filter((x): x is string => !!x) };
     setEditBusy(true);
     try {
-      const ok = await savePlan({
-        packItemIds: next.packItemIds,
-        looks: JSON.stringify(next.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        // Ticks only survive for pieces still on the list; a new piece starts unticked.
-        packedItemIds: (plan.packedItemIds ?? []).filter((id): id is string => !!id && next.packItemIds.includes(id) && current.packItemIds.includes(id)),
-        previousPlan: JSON.stringify(snapshot) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-        error: null,
-      });
+      const ok = await savePlan(editTripPlanPatch(plan, next));
       if (!ok) return;
       setPicker(null);
-      addToast({
-        title,
-        description:
-          `${changedLooks} look${changedLooks === 1 ? "" : "s"} changed` +
-          (pinnedKept && keptName ? `; ${pinnedKept} saved look${pinnedKept === 1 ? " keeps" : "s keep"} the ${keptName}` : ""),
-        color: "success",
-      });
+      addToast({ title, description: packEditSummary(changedLooks, pinnedKept, keptName), color: "success" });
     } finally {
       setEditBusy(false);
     }
@@ -314,26 +268,14 @@ export function TripPanel({
   const removeItem = (it: WardrobeItem) => editPack((c) => removeTripPlanItem(c, it.id), `${it.name} removed`, it.name);
   const addItem = (it: WardrobeItem) => editPack((c) => ({ plan: addTripPlanItem(c, it.id) }), `${it.name} added to the packing list`);
   async function moveLook(n: number, date: string | null) {
-    if (!plan) return;
-    const current = parseJsonField<TripLook[]>(plan.looks, []);
-    const { plan: next, swappedWith } = moveTripLook({ packItemIds: [], looks: current, tips: null }, n, date);
-    if (next.looks === current) return;
-    const snapshot: TripPlanSnapshot = {
-      packItemIds: (plan.packItemIds ?? []).filter((x): x is string => !!x),
-      looks: current,
-      tips: plan.tips ?? null,
-      feedback: (plan.feedback ?? []).filter((x): x is string => !!x),
-    };
-    const ok = await savePlan({
-      looks: JSON.stringify(next.looks) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      previousPlan: JSON.stringify(snapshot) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
-      error: null,
-    });
+    const m = plan && moveTripLookPatch(plan, n, date);
+    if (!m) return;
+    const ok = await savePlan(m.patch);
     if (!ok) return;
     const where = date ? dayLabel(date) : "any day";
     addToast({
-      title: `${current[n].title} moved to ${where}`,
-      description: swappedWith ? `${swappedWith.title} takes ${current[n].date ? dayLabel(current[n].date!) : "no day"}` : undefined,
+      title: `${m.moved.title} moved to ${where}`,
+      description: m.swappedWith ? `${m.swappedWith.title} takes ${m.moved.date ? dayLabel(m.moved.date) : "no day"}` : undefined,
       color: "success",
     });
   }
@@ -358,7 +300,7 @@ export function TripPanel({
 
   const working = busy || polling;
   // While a tweak or re-plan runs, keep showing the plan it started from.
-  const ready = plan?.status === "READY" || (plan?.status === "GENERATING" && plan.generatedAt) ? plan : null;
+  const ready = shownTripPlan(plan);
   const feedback = (plan?.feedback ?? []).filter((x): x is string => !!x);
   const canUndo = !!plan?.previousPlan && !working;
   const weather = parseJsonField<TripDayWeather[]>(ready?.weather, []);
@@ -371,11 +313,7 @@ export function TripPanel({
     () => Array.from(byId.values()).filter((i) => i.ownerPersonId === personId && isWearable(i)),
     [byId, personId],
   );
-  const packGroups = useMemo(() => {
-    const m = new Map<string, WardrobeItem[]>();
-    for (const it of pack) m.set(it.category, [...(m.get(it.category) ?? []), it]);
-    return Array.from(m.entries());
-  }, [pack]);
+  const packGroups = useMemo(() => groupByCategory(pack), [pack]);
 
   if (tripsLoaded && !trips.length) {
     return (
@@ -642,7 +580,7 @@ export function TripPanel({
                       aria-label="Forget this change"
                       title="Forget this change (the next plan won't follow it)"
                       className="text-default-400 hover:text-danger mt-0.5"
-                      onClick={() => savePlan({ feedback: feedback.filter((_, i) => i !== n) })}
+                      onClick={() => plan && savePlan(forgetFeedbackPatch(plan, n))}
                     >
                       <FaTimes size={11} />
                     </button>

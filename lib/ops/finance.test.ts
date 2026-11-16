@@ -44,7 +44,7 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
@@ -255,6 +255,7 @@ describe("save_finance_schedule", () => {
     const out: any = await runOp(ctx, "list_finance_schedules", { dueWithinDays: 7 });
     expect(out.result.schedules.map((s: any) => s.description)).toEqual(["Water"]);
     expect(out.result.monthlyOut).toBe(200);
+    expect(out.result.monthlyIn).toBe(0);
   });
 });
 
@@ -387,5 +388,117 @@ describe("list_finance_holdings", () => {
     expect(out.result.accounts[0]).toMatchObject({ name: "Gennaro 401k", type: "401(k)", owners: ["Gennaro"], cash: 500 });
     expect(out.result.accounts[0].holdings.map((h: any) => h.gain)).toEqual([1000, null]);
     expect((await runOp(ctx, "list_finance_holdings", { accountName: "Joint checking" }) as any).error).toMatch(/No investment account/);
+  });
+});
+
+describe("summary extras for the phone", () => {
+  it("adds each account's buffer and projected low, goal ids, the line cadence and the last sync", async () => {
+    const { ctx } = setup({
+      homeFinanceAccount: [{ ...joint, institution: "Chase" }],
+      homeFinanceRecurring: [
+        { id: "m", accountId: "joint", amount: -5500, type: "EXPENSE", description: "Mortgage", cadence: "MONTHLY", startDate: addDays(today, 3), nextDate: addDays(today, 3), active: true },
+      ],
+      homeFinanceSavingsGoal: [{ id: "g", name: "Baby", targetAmount: 1000, currentAmount: 250, active: true }],
+      homeFinanceBudget: [{ id: "b", seriesId: "food", name: "Food", kind: "EXPENSE", categories: ["Groceries"], amount: 900, period: "MONTHLY", effectiveFrom: "2026-01-01" }],
+      homeFinanceSyncLog: [
+        { id: "l1", startedAt: "2026-11-01T10:00:00Z", status: "ERROR" },
+        { id: "l2", startedAt: "2026-11-02T10:00:00Z", finishedAt: "2026-11-02T10:01:00Z", status: "OK", txInserted: 4 },
+      ],
+    });
+    const s = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(s.accounts[0]).toMatchObject({ institution: "Chase", minBalance: 1000, invested: false, lowPoint: { date: addDays(today, 3), balance: 500 } });
+    expect(s.goals[0]).toMatchObject({ id: "g", current: 250 });
+    expect(s.budget.lines[0].period).toBe("MONTHLY");
+    expect(s.budget.elapsed).toBeGreaterThan(0);
+    expect(s.lastSync).toEqual({ status: "OK", at: "2026-11-02T10:01:00Z", txInserted: 4 });
+  });
+});
+
+describe("get_finance_budget", () => {
+  const lines = [
+    { id: "c", seriesId: "c", name: "Cristine", kind: "INCOME", personId: "cris", amount: 3000, period: "MONTHLY", effectiveFrom: "2026-01-01" },
+    { id: "f", seriesId: "food", name: "Food", kind: "EXPENSE", categories: ["Groceries"], amount: 900, period: "MONTHLY", effectiveFrom: "2026-01-01" },
+    { id: "t", seriesId: "travel", name: "Travel", kind: "EXPENSE", categories: ["Travel"], amount: 1500, period: "QUARTERLY", effectiveFrom: "2026-01-01" },
+  ];
+  const txs = [
+    { id: "t1", accountId: "joint", amount: 3000, category: "Contribution", personId: "cris", date: "2026-11-02", status: "POSTED" },
+    { id: "t2", accountId: "joint", amount: -300, category: "Groceries", date: "2026-11-03", status: "POSTED" },
+    { id: "t3", accountId: "joint", amount: -50, category: "Pets", date: "2026-11-04", status: "POSTED" },
+  ];
+
+  it("shows a month's monthly lines by default and adds quarterly ones for a quarter", async () => {
+    const { ctx } = setup({ homePerson: people, homeFinanceAccount: [joint], homeFinanceBudget: lines, homeFinanceTransaction: txs });
+    const month: any = await runOp(ctx, "get_finance_budget", { period: "2026-11" });
+    expect(month.error).toBeUndefined();
+    expect(month.result).toMatchObject({ period: "2026-11", label: "November 2026", include: ["MONTHLY", "ONCE"], planned: 3000, received: 3000 });
+    expect(month.result.lines.map((l: any) => [l.name, l.spent, l.remaining])).toEqual([["Food", 300, 600]]);
+    expect(month.result.contributions[0]).toMatchObject({ seriesId: "c", person: "Cristine", personId: "cris", spent: 3000 });
+    expect(month.result.unbudgeted).toEqual([{ category: "Pets", spent: 50 }]);
+
+    const quarter: any = await runOp(ctx, "get_finance_budget", { period: "2026-Q4" });
+    expect(quarter.result.include).toEqual(["MONTHLY", "QUARTERLY", "ONCE"]);
+    expect(quarter.result.lines.map((l: any) => [l.name, l.budgeted, l.amount])).toEqual([
+      ["Food", 2700, 900],
+      ["Travel", 1500, 1500],
+    ]);
+
+    const onlyQuarterly: any = await runOp(ctx, "get_finance_budget", { period: "2026-Q4", include: ["QUARTERLY"] });
+    expect(onlyQuarterly.result.lines.map((l: any) => l.name)).toEqual(["Travel"]);
+    expect((await runOp(ctx, "get_finance_budget", { period: "Nov" }) as any).error).toMatch(/YYYY-MM/);
+  });
+});
+
+describe("list_finance_transactions for the phone", () => {
+  it("filters by any of a line's categories and returns the ids an edit needs", async () => {
+    const { ctx } = setup({
+      homePerson: people,
+      homeFinanceAccount: [joint],
+      homeFinanceTransaction: [
+        { id: "a", accountId: "joint", amount: -10, category: "Groceries", personId: "gen", date: thisMonth, status: "POSTED" },
+        { id: "b", accountId: "joint", amount: -20, category: "Dining", date: thisMonth, status: "POSTED" },
+        { id: "c", accountId: "joint", amount: -30, category: "Gas", date: thisMonth, status: "POSTED" },
+      ],
+    });
+    const out: any = await runOp(ctx, "list_finance_transactions", { from: thisMonth, categories: ["groceries", "Dining"] });
+    expect(out.result.transactions.map((t: any) => t.id).sort()).toEqual(["a", "b"]);
+    expect(out.result.transactions.find((t: any) => t.id === "a")).toMatchObject({ personId: "gen", person: "Gennaro", accountId: "joint" });
+  });
+});
+
+describe("marking a schedule paid", () => {
+  it("rolls nextDate one step, switches a one-time one off, and lists the fields an edit needs", async () => {
+    const { ctx, tables } = setup({
+      homeFinanceAccount: [joint],
+      homeFinanceRecurring: [
+        { id: "w", accountId: "joint", amount: -80, type: "EXPENSE", description: "Water", cadence: "MONTHLY", startDate: "2026-01-15", nextDate: "2026-11-15", matchPattern: "CITY WATER", autopay: false, active: true },
+        { id: "o", accountId: "joint", amount: -500, type: "EXPENSE", description: "Deposit", cadence: "ONCE", startDate: "2026-11-20", nextDate: "2026-11-20", active: true },
+      ],
+    });
+    const paid: any = await runOp(ctx, "save_finance_schedule", { recurringId: "w", markPaid: true });
+    expect(paid.result.schedule).toMatchObject({ nextDate: "2026-12-15", matchPattern: "CITY WATER", accountId: "joint", autopay: false });
+    await runOp(ctx, "save_finance_schedule", { recurringId: "o", markPaid: true });
+    expect(tables.homeFinanceRecurring.find((r) => r.id === "o")?.active).toBe(false);
+    expect((await runOp(ctx, "save_finance_schedule", { markPaid: true }) as any).error).toMatch(/recurringId/);
+  });
+});
+
+describe("list_finance_goals", () => {
+  it("lists active goals by priority with funding, milestones and notes; archived ones on request", async () => {
+    const { ctx } = setup({
+      homeFinanceAccount: [{ id: "sav", name: "Savings", type: "SAVINGS", currentBalance: 5000 }],
+      homeFinanceSavingsGoal: [
+        { id: "trip", name: "Trip", targetAmount: 2000, currentAmount: 500, priority: 200, active: true, notes: "Japan" },
+        { id: "ef", name: "Emergency fund", targetAmount: 10000, fundingAccountIds: ["sav"], priority: 10, active: true },
+        { id: "old", name: "Old car", targetAmount: 100, active: false },
+      ],
+      homeFinanceGoalMilestone: [{ id: "m1", goalId: "ef", targetAmount: 4000, targetDate: "2099-01-01", label: "Half", notes: "by spring" }],
+    });
+    const out: any = await runOp(ctx, "list_finance_goals", {});
+    expect(out.result.goals.map((g: any) => g.id)).toEqual(["ef", "trip"]);
+    expect(out.result.goals[0]).toMatchObject({ funded: "account", current: 5000, pct: 0.5, fundedBy: ["Savings"], fundingAccountIds: ["sav"] });
+    expect(out.result.goals[0].milestones[0]).toMatchObject({ id: "m1", status: "HIT", notes: "by spring" });
+    expect(out.result.goals[1]).toMatchObject({ funded: "manual", currentAmount: 500, notes: "Japan" });
+    const all: any = await runOp(ctx, "list_finance_goals", { includeInactive: true });
+    expect(all.result.goals.map((g: any) => g.id)).toEqual(["ef", "trip", "old"]);
   });
 });

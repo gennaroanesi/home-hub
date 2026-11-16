@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { periodContaining, periodFromParam, periodRange, periodToParam, shiftPeriod, switchKind, type Period } from "./periods";
+import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam, shiftPeriod, switchKind, type Period } from "./periods";
 
 const today = "2026-11-09";
 
@@ -28,5 +28,23 @@ describe("periods", () => {
     for (const p of all) expect(periodFromParam(periodToParam(p))).toEqual(p);
     expect(periodFromParam("2026-13")).toBeNull();
     expect(periodFromParam("soon")).toBeNull();
+  });
+});
+
+describe("defaultCadences", () => {
+  it("adds the period's own cadence to monthly and one-time lines", () => {
+    expect([...defaultCadences("month")].sort()).toEqual(["MONTHLY", "ONCE"]);
+    expect([...defaultCadences("quarter")].sort()).toEqual(["MONTHLY", "ONCE", "QUARTERLY"]);
+    expect([...defaultCadences("year")].sort()).toEqual(["ANNUALLY", "MONTHLY", "ONCE"]);
+  });
+});
+
+describe("describeSyncResult", () => {
+  it("summarizes a run, a run with no accounts, and failures", async () => {
+    const { describeSyncResult } = await import("./sync-result");
+    expect(describeSyncResult(JSON.stringify({ ok: true, accountsChecked: 1, txInserted: 3, txUpdated: 0, linked: 1 }))).toEqual({ ok: true, title: "Synced", detail: "3 new, 0 updated, 1 matched to schedules" });
+    expect(describeSyncResult({ ok: true, accountsChecked: 0 })).toMatchObject({ ok: true, title: "No accounts linked to SimpleFIN yet" });
+    expect(describeSyncResult({ ok: false, errors: ["bridge down"] })).toEqual({ ok: false, title: "Sync failed", detail: "bridge down" });
+    expect(describeSyncResult(null, "Unauthorized")).toMatchObject({ ok: false, detail: "Unauthorized" });
   });
 });

@@ -25,7 +25,7 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { categoryParts, effectiveCategory, parseLineItems, stripProcessorPrefix, UNCATEGORIZED } from "@/lib/finance/categories";
+import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
 
@@ -34,14 +34,6 @@ import { listTransactions } from "@/lib/finance/data";
 const LAST_90 = "last90";
 const HOUSEHOLD = "__household";
 const NONE = "__none";
-
-/** A starting point for "remember for similar": the first merchant-looking words. */
-function suggestPattern(description: string | null | undefined): string {
-  const words = stripProcessorPrefix(description ?? "")
-    .split(/\s+/)
-    .filter((w) => /^[A-Za-z][A-Za-z&'.-]{2,}$/.test(w));
-  return words.slice(0, 2).join(" ").toUpperCase();
-}
 
 function sourceLabel(src: string | null | undefined): string | null {
   if (src === "LLM") return "guessed";

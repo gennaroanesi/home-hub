@@ -77,7 +77,7 @@ Then:
 5. **Person-level medications and supplements** (generalize `homePetMedication`), plus curated trimester nutrition notes.
 6. **`PREGNANCY` entity type for checklists:** hospital bag, nursery, car seat.
 7. **Inventory phase 2:** barcode `pendingScan` flow, photos, and automatic low-stock restock from the web page (it's a manual button there today).
-8. **Mobile:** Health and Inventory screens, and switch the Today screen to `lib/dashboard.ts`. Later a kick counter, contraction timer and "go time" button.
+8. **Mobile:** Inventory screen. (Health landed 2026-11-15 in `mobile/app/(tabs)/more/health/`, sharing the write helpers in `lib/health.ts` / `lib/pregnancy.ts`; Today uses `lib/dashboard.ts`.) Later a kick counter, contraction timer and "go time" button.
 9. **By ~32 weeks:** create the baby's `homePerson` at delivery, move `pregnancyId` inventory items to their `ownerPersonId`, and build the newborn log (feeds, diapers, sleep).
 
 Small follow-ups:

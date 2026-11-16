@@ -10,7 +10,7 @@ import { Input, Textarea } from "@heroui/input";
 import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
 
 import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
-import { mainImage } from "@/lib/wardrobe";
+import { mainImage, sameIdSet } from "@/lib/wardrobe";
 import { wardrobeTryOnAvailable } from "@/lib/wardrobe-capabilities";
 import type { Schema } from "@/amplify/data/resource";
 import { SHEET_MODAL_CLASSES, Swatch, type WardrobeItem, type WardrobeLook } from "./shared";
@@ -25,7 +25,7 @@ interface PreviewState {
   itemIds: string[];
 }
 
-const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((id) => b.includes(id));
+const sameSet = sameIdSet;
 
 export interface LookDraft {
   title: string;

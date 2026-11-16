@@ -9,7 +9,6 @@ export function documentIsSensitive(doc: { isSensitive?: boolean | null }): bool
   return doc.isSensitive !== false;
 }
 
-/** Short link to a vault file: /api/d/<file> redirects to home/documents/<file>. */
-export function documentFileUrl(s3Key: string, baseUrl = "https://home.cristinegennaro.com"): string {
-  return `${baseUrl}/api/d/${s3Key.replace(/^home\/documents\//, "")}`;
-}
+// Links to a vault file are signed and expire (lib/file-link.ts
+// signedFileLink); there is no bare /api/d/<file> URL any more, since
+// the bucket only answers unsigned requests from the home network.

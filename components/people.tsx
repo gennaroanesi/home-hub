@@ -21,6 +21,13 @@ import { callOp } from "@/lib/ops-client";
 import { PeoplePicker } from "@/components/people-picker";
 import { photoUrl } from "@/lib/image-loader";
 import {
+  mergeCandidates,
+  mergeConfirmBody,
+  mergeConfirmTitle,
+  mergeExplainer,
+  mergeSummary,
+} from "@/lib/people-merge";
+import {
   RELATION_KINDS,
   RELATION_LABELS,
   type RelationKind,
@@ -84,9 +91,7 @@ export function MergeModal({
   async function merge(target: Person, onClose: () => void) {
     if (!source) return;
     if (
-      !confirm(
-        `Merge ${source.name} into ${target.name}? Every reference to ${source.name} will be rewritten and the row deleted.`,
-      )
+      !confirm(`${mergeConfirmTitle(source, target)} ${mergeConfirmBody(source, target)}`)
     )
       return;
     try {
@@ -97,7 +102,7 @@ export function MergeModal({
       if (res.errors?.length) throw new Error(res.errors[0].message);
       addToast({
         title: "Merged",
-        description: JSON.stringify(res.data?.rewrites ?? {}),
+        description: mergeSummary(source, target, res.data?.rewrites),
       });
       onClose();
       onMerged();
@@ -118,13 +123,10 @@ export function MergeModal({
             <ModalHeader>Merge {source?.name} into…</ModalHeader>
             <ModalBody>
               <p className="text-xs text-default-500 mb-2">
-                Every reference to {source?.name} (tasks, events, faces,
-                documents, reminders, etc.) will be rewritten to point at the
-                target row, then this row will be deleted.
+                {source ? mergeExplainer(source) : null}
               </p>
               <div className="space-y-2">
-                {people
-                  .filter((p) => p.id !== source?.id)
+                {mergeCandidates(people, source?.id ?? "")
                   .map((p) => (
                     <Card
                       key={p.id}

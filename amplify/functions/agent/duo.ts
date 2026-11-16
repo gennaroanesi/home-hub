@@ -244,3 +244,13 @@ export async function authStatus(txid: string): Promise<AuthStatusResponse> {
 export async function ping(): Promise<{ time: number }> {
   return duoRequest<{ time: number }>("GET", "/auth/v2/ping", {});
 }
+
+/**
+ * The Duo integration secret, used (never directly) as the root of the
+ * signed /api/d file-link key: lib/file-link.ts deriveFileLinkKey. The
+ * SSR derives the same key from the same secret (lib/duo-server.ts
+ * approvalSigningKey), so the two sides agree without a new secret.
+ */
+export async function fileLinkRootSecret(): Promise<string> {
+  return (await getCredentials()).secretKey;
+}
