@@ -310,6 +310,12 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       bridgeErrors.push(...(res.errors ?? []).map((e) => `${conn.label}: ${e}`));
       // Defense in depth: never touch an account we didn't ask for.
       sfAccounts.push(...res.accounts.filter((a) => ids.has(a.id)));
+      // A mapped id the connection doesn't return (wrong connection on the
+      // account, or the bank was removed from SimpleFIN) would otherwise sit
+      // at its old balance with no sign anything is wrong.
+      const returned = new Set(res.accounts.map((a) => a.id));
+      const missing = [...ids].filter(([id]) => !returned.has(id)).map(([, a]) => a.name);
+      if (missing.length) errors.push(`${conn.label}'s SimpleFIN connection didn't return ${missing.join(", ")}: check the account's connection, or reconnect the bank in SimpleFIN`);
       for (const [id, a] of ids) byId.set(id, a);
       synced.push(...group);
     } catch (e) {
