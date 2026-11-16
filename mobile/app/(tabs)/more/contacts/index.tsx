@@ -7,7 +7,7 @@
 //     from the list_businesses op. Tap a business to edit it.
 // Household members are on /more/household.
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -22,7 +22,7 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
@@ -54,7 +54,13 @@ type Tab = "people" | "businesses";
 const ACCENT = "#735f55";
 
 export default function Contacts() {
-  const [tab, setTab] = useState<Tab>("people");
+  // ?tab=businesses opens that tab (the More menu links straight to it).
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const paramTab: Tab | null = params.tab === "businesses" || params.tab === "people" ? params.tab : null;
+  const [tab, setTab] = useState<Tab>(paramTab ?? "people");
+  useEffect(() => {
+    if (paramTab) setTab(paramTab);
+  }, [paramTab]);
   const [people, setPeople] = useState<Person[]>([]);
   const [rels, setRels] = useState<RelationshipRow[]>([]);
   const [businesses, setBusinesses] = useState<BusinessRow[]>([]);

@@ -4,6 +4,7 @@
 
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { Fragment, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
@@ -24,6 +25,8 @@ interface FeatureRow {
   label: string;
   icon: keyof typeof Ionicons.glyphMap;
   route: string;
+  /** Screens inside the feature: the row expands to list them, so one tap lands on Budget instead of Overview → Budget. */
+  sub?: { label: string; route: string }[];
 }
 
 const FEATURE_ROWS: FeatureRow[] = [
@@ -32,16 +35,54 @@ const FEATURE_ROWS: FeatureRow[] = [
   { label: "Reminders", icon: "alarm-outline", route: "/more/reminders" },
   { label: "Checklists", icon: "checkbox-outline", route: "/more/checklists" },
   { label: "Trips", icon: "airplane-outline", route: "/more/trips" },
-  { label: "Finance", icon: "wallet-outline", route: "/more/finance" },
-  { label: "Wardrobe", icon: "shirt-outline", route: "/more/wardrobe" },
+  {
+    label: "Finance",
+    icon: "wallet-outline",
+    route: "/more/finance",
+    sub: [
+      { label: "Overview", route: "/more/finance" },
+      { label: "Transactions", route: "/more/finance/transactions" },
+      { label: "Budget", route: "/more/finance/budget" },
+      { label: "Scheduled", route: "/more/finance/scheduled" },
+      { label: "Goals", route: "/more/finance/goals" },
+      { label: "Accounts", route: "/more/finance/accounts" },
+    ],
+  },
+  {
+    label: "Wardrobe",
+    icon: "shirt-outline",
+    route: "/more/wardrobe",
+    sub: [
+      { label: "Closet", route: "/more/wardrobe?tab=closet" },
+      { label: "Looks", route: "/more/wardrobe?tab=looks" },
+      { label: "Suggest", route: "/more/wardrobe?tab=suggest" },
+      { label: "Trips", route: "/more/wardrobe?tab=trips" },
+    ],
+  },
   { label: "Health", icon: "medkit-outline", route: "/more/health" },
   { label: "Documents", icon: "document-text-outline", route: "/more/documents" },
   { label: "Pets", icon: "paw-outline", route: "/more/pets" },
-  { label: "Contacts", icon: "people-outline", route: "/more/contacts" },
+  {
+    label: "Contacts",
+    icon: "people-outline",
+    route: "/more/contacts",
+    sub: [
+      { label: "People", route: "/more/contacts?tab=people" },
+      { label: "Businesses", route: "/more/contacts?tab=businesses" },
+    ],
+  },
   { label: "Household", icon: "home-outline", route: "/more/household" },
 ];
 
 export default function More() {
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggle = (route: string) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (next.has(route)) next.delete(route);
+      else next.add(route);
+      return next;
+    });
   const personState = usePerson();
   const personLabel =
     personState.status === "found"
@@ -57,23 +98,49 @@ export default function More() {
 
         <Text style={styles.sectionTitle}>Features</Text>
         <View style={styles.card}>
-          {FEATURE_ROWS.map((r, i) => (
-            <Pressable
-              key={r.route}
-              onPress={() => router.push(r.route as any)}
-              style={({ pressed }) => [
-                styles.row,
-                i < FEATURE_ROWS.length - 1 && styles.rowDivider,
-                pressed && styles.rowPressed,
-              ]}
-            >
-              <View style={styles.rowLeft}>
-                <Ionicons name={r.icon} size={20} color="#735f55" />
-                <Text style={styles.rowLabel}>{r.label}</Text>
-              </View>
-              <Ionicons name="chevron-forward" size={18} color="#bbb" />
-            </Pressable>
-          ))}
+          {FEATURE_ROWS.map((r, i) => {
+            const expanded = !!r.sub && open.has(r.route);
+            const last = i === FEATURE_ROWS.length - 1;
+            return (
+              <Fragment key={r.route}>
+                <Pressable
+                  onPress={() => (r.sub ? toggle(r.route) : router.push(r.route as any))}
+                  style={({ pressed }) => [
+                    styles.row,
+                    (!last || expanded) && styles.rowDivider,
+                    pressed && styles.rowPressed,
+                  ]}
+                  accessibilityState={r.sub ? { expanded } : undefined}
+                >
+                  <View style={styles.rowLeft}>
+                    <Ionicons name={r.icon} size={20} color="#735f55" />
+                    <Text style={styles.rowLabel}>{r.label}</Text>
+                  </View>
+                  <Ionicons
+                    name={r.sub ? (expanded ? "chevron-up" : "chevron-down") : "chevron-forward"}
+                    size={18}
+                    color="#bbb"
+                  />
+                </Pressable>
+                {expanded &&
+                  r.sub!.map((s, j) => (
+                    <Pressable
+                      key={s.route}
+                      onPress={() => router.push(s.route as any)}
+                      style={({ pressed }) => [
+                        styles.row,
+                        styles.subRow,
+                        (!last || j < r.sub!.length - 1) && styles.rowDivider,
+                        pressed && styles.rowPressed,
+                      ]}
+                    >
+                      <Text style={styles.subLabel}>{s.label}</Text>
+                      <Ionicons name="chevron-forward" size={16} color="#ccc" />
+                    </Pressable>
+                  ))}
+              </Fragment>
+            );
+          })}
         </View>
 
         <Text style={styles.sectionTitle}>Account</Text>
@@ -141,6 +208,8 @@ const styles = StyleSheet.create({
   },
   rowPressed: { backgroundColor: "#f4f4f4" },
   rowLabel: { fontSize: 15 },
+  subRow: { paddingLeft: 44, paddingVertical: 10, backgroundColor: "#fafafa" },
+  subLabel: { fontSize: 14, color: "#444" },
   rowValue: { color: "#666", fontSize: 14 },
   rowMuted: { color: "#aaa", fontSize: 13 },
   danger: { color: "#c44" },

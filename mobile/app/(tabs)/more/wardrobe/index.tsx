@@ -12,7 +12,7 @@
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import type { ClosetFilter } from "../../../../../lib/wardrobe";
@@ -42,7 +42,13 @@ export default function Wardrobe() {
   const data = useWardrobe();
   const [toastNode, toast] = useToast();
   const [personId, setPersonId] = useState("");
-  const [tab, setTab] = useState<Tab>("CLOSET");
+  // ?tab=looks|suggest|trips opens that tab (the More menu links straight to it).
+  const params = useLocalSearchParams<{ tab?: string }>();
+  const paramTab = (["CLOSET", "LOOKS", "SUGGEST", "TRIPS"] as const).find((t) => t === params.tab?.toUpperCase());
+  const [tab, setTab] = useState<Tab>(paramTab ?? "CLOSET");
+  useEffect(() => {
+    if (paramTab) setTab(paramTab);
+  }, [paramTab]);
   const [filter, setFilter] = useState<ClosetFilter>(EMPTY_FILTER);
   const [refreshing, setRefreshing] = useState(false);
 
