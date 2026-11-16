@@ -19,8 +19,9 @@ import { FaTrash } from "react-icons/fa";
 import { financeClient } from "@/components/finance/client";
 import { Money } from "@/components/finance/ui";
 import { callOp } from "@/lib/ops-client";
+import { listSchedules } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, round2, todayIso } from "@/lib/finance/dates";
-import { LOAN_TYPES, LOAN_TYPE_LABELS, contractualPayment, suggestSplit } from "@/lib/finance/loans";
+import { INTEREST_ACCRUALS, INTEREST_ACCRUAL_LABELS, LOAN_TYPES, LOAN_TYPE_LABELS, contractualPayment, interestDays, suggestSplit } from "@/lib/finance/loans";
 import { ASSET_TYPES, ASSET_TYPE_LABELS } from "@/lib/finance/net-worth";
 
 const $ = <span className="text-default-400 text-sm">$</span>;
@@ -217,6 +218,8 @@ export function AssetModal({
 // ── Loan ───────────────────────────────────────────────────────────────────
 
 const NEW_ACCOUNT = "__new__";
+const NEW_SCHEDULE = "__new_schedule__";
+const NO_SCHEDULE = "__none__";
 
 export function LoanModal({
   loan,
@@ -240,8 +243,11 @@ export function LoanModal({
   const synced = !!account?.simplefinAccountId;
   // LOAN accounts without terms yet, for attaching.
   const free = accounts.filter((a) => a.type === "LOAN" && a.active !== false && !loans.some((l) => l.accountId === a.id));
-  const [f, setF] = useState({ accountId: "", newName: "", institution: "", owed: "", loanType: "MORTGAGE", lender: "", originalPrincipal: "", ratePct: "", termMonths: "360", startDate: "", firstPaymentDate: "", monthlyPayment: "", escrowMonthly: "", assetId: "", notes: "" });
+  const [f, setF] = useState({ accountId: "", newName: "", institution: "", owed: "", loanType: "MORTGAGE", lender: "", originalPrincipal: "", ratePct: "", termMonths: "360", startDate: "", firstPaymentDate: "", monthlyPayment: "", escrowMonthly: "", interestAccrual: "MONTHLY", assetId: "", recurringId: NO_SCHEDULE, payFromId: "", matchPattern: "", notes: "" });
   const [saving, setSaving] = useState(false);
+  // Scheduled transactions, for "paid by"; loaded when the editor opens.
+  const [schedules, setSchedules] = useState<any[]>([]);
+  const checking = accounts.filter((a) => a.active !== false && (a.type === "CHECKING" || a.type === "SAVINGS"));
 
   useEffect(() => {
     if (loan === undefined) return;
@@ -261,9 +267,16 @@ export function LoanModal({
       firstPaymentDate: loan?.firstPaymentDate ?? "",
       monthlyPayment: str(loan?.monthlyPayment),
       escrowMonthly: str(loan?.escrowMonthly),
+      interestAccrual: loan?.interestAccrual ?? "MONTHLY",
       assetId: loan?.assetId ?? "",
+      recurringId: loan?.recurringId ?? NO_SCHEDULE,
+      payFromId: checking.find((a) => !(a.ownerPersonIds ?? []).length && a.type === "CHECKING")?.id ?? checking[0]?.id ?? "",
+      matchPattern: loan?.lender ?? "",
       notes: loan?.notes ?? "",
     });
+    listSchedules(financeClient)
+      .then((rows) => setSchedules(rows.filter((s) => s.active !== false && s.type !== "INCOME").sort((a, b) => (a.description ?? "").localeCompare(b.description ?? ""))))
+      .catch(() => setSchedules([]));
   }, [loan, presetAccountId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const computed = useMemo(() => {
@@ -287,9 +300,16 @@ export function LoanModal({
       firstPaymentDate: f.firstPaymentDate || undefined,
       monthlyPayment: num(f.monthlyPayment),
       escrowMonthly: num(f.escrowMonthly),
+      interestAccrual: f.interestAccrual,
       assetId: f.assetId || null,
       notes: f.notes.trim() || null,
     };
+    if (f.recurringId === NEW_SCHEDULE) {
+      if (!f.payFromId) return toastError("Missing account", "Which account is it paid from?");
+      input.newSchedule = { accountId: f.payFromId, matchPattern: f.matchPattern.trim() || null };
+    } else if ((loan?.recurringId ?? NO_SCHEDULE) !== f.recurringId) {
+      input.recurringId = f.recurringId === NO_SCHEDULE ? null : f.recurringId;
+    }
     if (isNew) {
       if (f.accountId === NEW_ACCOUNT) {
         if (!f.newName.trim() || num(f.owed) == null) return toastError("Missing account", "Name the new loan account and say what's owed");
@@ -385,6 +405,16 @@ export function LoanModal({
             />
             <Input label="Escrow per month" type="number" min={0} startContent={$} value={f.escrowMonthly} onValueChange={set("escrowMonthly")} description="Taxes + insurance paid with it" />
             <Select
+              label="Interest accrues"
+              selectedKeys={[f.interestAccrual]}
+              onSelectionChange={(k) => setF({ ...f, interestAccrual: String(Array.from(k as Set<string>)[0] ?? "MONTHLY") })}
+              description="Daily for simple-interest loans (most auto loans): estimated splits then use the days since the last payment"
+            >
+              {INTEREST_ACCRUALS.map((t) => (
+                <SelectItem key={t}>{INTEREST_ACCRUAL_LABELS[t]}</SelectItem>
+              ))}
+            </Select>
+            <Select
               label="Secured by"
               placeholder="Nothing"
               selectedKeys={f.assetId ? [f.assetId] : []}
@@ -399,6 +429,35 @@ export function LoanModal({
                   </SelectItem>
                 ))}
             </Select>
+            <Select
+              label="Paid by"
+              className="sm:col-span-2"
+              selectedKeys={[f.recurringId]}
+              onSelectionChange={(k) => setF({ ...f, recurringId: String(Array.from(k as Set<string>)[0] ?? NO_SCHEDULE) })}
+              description="The scheduled transaction for the payment. When the sync links a bank transaction to it, the payment is recorded on the loan automatically."
+            >
+              {[
+                <SelectItem key={NO_SCHEDULE}>No scheduled transaction</SelectItem>,
+                <SelectItem key={NEW_SCHEDULE} description={computed ? `Monthly ${fmtCurrency(computed + (num(f.escrowMonthly) ?? 0))} from the next payment date` : "From these terms"}>
+                  New scheduled transaction from these terms
+                </SelectItem>,
+                ...schedules.map((s) => (
+                  <SelectItem key={s.id} description={`${fmtCurrency(s.amount)} · next ${fmtDate(s.nextDate, { month: "short", day: "numeric" })}`}>
+                    {s.description}
+                  </SelectItem>
+                )),
+              ]}
+            </Select>
+            {f.recurringId === NEW_SCHEDULE && (
+              <>
+                <Select label="Paid from" selectedKeys={f.payFromId ? [f.payFromId] : []} onSelectionChange={(k) => setF({ ...f, payFromId: String(Array.from(k as Set<string>)[0] ?? "") })} isRequired>
+                  {checking.map((a) => (
+                    <SelectItem key={a.id}>{a.name}</SelectItem>
+                  ))}
+                </Select>
+                <Input label="Bank description contains" placeholder="BMW FINANCIAL" value={f.matchPattern} onValueChange={set("matchPattern")} description="So the sync links the bank's rows to it" />
+              </>
+            )}
             <Textarea label="Notes" className="sm:col-span-2" minRows={2} value={f.notes} onValueChange={set("notes")} />
           </div>
         </ModalBody>
@@ -431,6 +490,7 @@ export function PaymentModal({
   loan,
   owed,
   synced,
+  payments = [],
   onClose,
   onSaved,
 }: {
@@ -438,38 +498,42 @@ export function PaymentModal({
   loan: any;
   owed: number;
   synced: boolean;
+  payments?: any[]; // the loan's other payments, for daily interest days
   onClose: () => void;
   onSaved: () => void;
 }) {
   const isNew = payment === null;
-  const [f, setF] = useState({ date: todayIso(), total: "", principal: "", interest: "", escrow: "", fees: "", isExtra: false, notes: "" });
+  const [f, setF] = useState({ date: todayIso(), total: "", principal: "", interest: "", escrow: "", fees: "", isExtra: false, paymentNumber: "", notes: "" });
   const [touchedSplit, setTouchedSplit] = useState(false);
   const [saving, setSaving] = useState(false);
+  const days = (date: string) => interestDays(loan, payments.filter((p) => p.id !== payment?.id), date);
 
   useEffect(() => {
     if (payment === undefined) return;
     if (payment) {
-      setF({ date: payment.date, total: str(payment.totalAmount), principal: str(payment.principal), interest: str(payment.interest), escrow: str(payment.escrow), fees: str(payment.fees), isExtra: !!payment.isExtra, notes: payment.notes ?? "" });
+      setF({ date: payment.date, total: str(payment.totalAmount), principal: str(payment.principal), interest: str(payment.interest), escrow: str(payment.escrow), fees: str(payment.fees), isExtra: !!payment.isExtra, paymentNumber: str(payment.paymentNumber), notes: payment.notes ?? "" });
       setTouchedSplit(true);
     } else {
       const pi = contractualPayment(loan);
       const escrow = loan.escrowMonthly ?? 0;
       const total = round2(pi + escrow);
-      const s = suggestSplit(owed, loan.interestRate, total, escrow);
-      setF({ date: todayIso(), total: str(total), principal: str(s.principal), interest: str(s.interest), escrow: escrow ? str(escrow) : "", fees: "", isExtra: false, notes: "" });
+      const today = todayIso();
+      const s = suggestSplit(owed, loan.interestRate, total, escrow, 0, days(today));
+      setF({ date: today, total: str(total), principal: str(s.principal), interest: str(s.interest), escrow: escrow ? str(escrow) : "", fees: "", isExtra: false, paymentNumber: "", notes: "" });
       setTouchedSplit(false);
     }
   }, [payment]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Re-estimate the split as the total changes, until it's typed by hand.
-  function setTotal(v: string, extra = f.isExtra, escrowS = f.escrow, feesS = f.fees) {
+  // Re-estimate the split as the total (or date) changes, until it's typed by hand.
+  function setTotal(v: string, extra = f.isExtra, escrowS = f.escrow, feesS = f.fees, date = f.date) {
     const total = num(v) ?? 0;
     const escrow = num(escrowS) ?? 0;
     const fees = num(feesS) ?? 0;
-    if (touchedSplit) return setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS }));
-    const s = extra ? { principal: round2(total - escrow - fees), interest: 0 } : suggestSplit(owed + (payment?.principal ?? 0), loan.interestRate, total, escrow, fees);
-    setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS, principal: str(s.principal), interest: str(s.interest) }));
+    if (touchedSplit) return setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS, date }));
+    const s = extra ? { principal: round2(total - escrow - fees), interest: 0 } : suggestSplit(owed + (payment?.principal ?? 0), loan.interestRate, total, escrow, fees, days(date));
+    setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS, date, principal: str(s.principal), interest: str(s.interest) }));
   }
+  const dayCount = days(f.date);
 
   const sum = round2((num(f.principal) ?? 0) + (num(f.interest) ?? 0) + (num(f.escrow) ?? 0) + (num(f.fees) ?? 0));
   const total = num(f.total) ?? 0;
@@ -488,6 +552,7 @@ export function PaymentModal({
       escrow: num(f.escrow),
       fees: num(f.fees),
       isExtra: f.isExtra,
+      paymentNumber: num(f.paymentNumber),
       notes: f.notes.trim() || null,
     });
     setSaving(false);
@@ -517,7 +582,7 @@ export function PaymentModal({
         <ModalHeader>{isNew ? "Record a payment" : "Edit payment"}</ModalHeader>
         <ModalBody>
           <div className="grid grid-cols-2 gap-3">
-            <Input label="Date" type="date" placeholder=" " value={f.date} onValueChange={(v) => setF({ ...f, date: v })} />
+            <Input label="Date" type="date" placeholder=" " value={f.date} onValueChange={(v) => setTotal(f.total, f.isExtra, f.escrow, f.fees, v)} />
             <Input label="Total paid" type="number" min={0} startContent={$} value={f.total} onValueChange={(v) => setTotal(v)} />
             <Switch className="col-span-2" isSelected={f.isExtra} onValueChange={(v) => setTotal(f.total, v)}>
               Extra principal payment
@@ -526,10 +591,19 @@ export function PaymentModal({
             <Input label="Interest" type="number" min={0} startContent={$} value={f.interest} onValueChange={splitInput("interest")} />
             <Input label="Escrow" type="number" min={0} startContent={$} value={f.escrow} onValueChange={(v) => setTotal(f.total, f.isExtra, v)} />
             <Input label="Fees" type="number" min={0} startContent={$} value={f.fees} onValueChange={(v) => setTotal(f.total, f.isExtra, f.escrow, v)} />
-            <Input label="Notes" className="col-span-2" value={f.notes} onValueChange={(v) => setF({ ...f, notes: v })} />
+            <Input label="Payment #" type="number" min={1} value={f.paymentNumber} onValueChange={(v) => setF({ ...f, paymentNumber: v })} description="The lender's number, optional" />
+            <Input label="Notes" value={f.notes} onValueChange={(v) => setF({ ...f, notes: v })} />
           </div>
           <div className={`text-xs ${off ? "text-danger" : "text-default-500"}`}>
-            {off ? `The split adds up to ${fmtCurrency(sum)}, not ${fmtCurrency(total)}.` : touchedSplit ? "Split as entered." : "Interest estimated as a month on what's owed; use the statement's numbers when you have them."}
+            {off
+              ? `The split adds up to ${fmtCurrency(sum)}, not ${fmtCurrency(total)}.`
+              : touchedSplit
+                ? payment?.estimated
+                  ? "This split was estimated; typing the statement's numbers makes it exact."
+                  : "Split as entered."
+                : dayCount != null
+                  ? `Interest estimated as ${dayCount} days on what's owed; use the statement's numbers when you have them.`
+                  : "Interest estimated as a month on what's owed; use the statement's numbers when you have them."}
             {!synced && " Recording it lowers the balance by the principal."}
           </div>
         </ModalBody>

@@ -50,7 +50,8 @@ import {
 } from "../../../lib/finance/sync-engine.js";
 import { classifiableCategories, inferCategory, rulesFromDbRows } from "../../../lib/finance/categories.js";
 import { findScheduleMatches, MATCH_AUTO_THRESHOLD, nextDateAfter } from "../../../lib/finance/recurring.js";
-import { addDays, todayIso } from "../../../lib/finance/dates.js";
+import { planLoanCapture } from "../../../lib/finance/loan-capture.js";
+import { addDays, round2, todayIso } from "../../../lib/finance/dates.js";
 import type { RecurringLike } from "../../../lib/finance/types.js";
 import { classifyTransactionsLLM } from "./classify-llm";
 
@@ -454,6 +455,45 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     const { errors: e } = await c.models.homeFinanceRecurring.update({ id: rule.id, ...patch });
     if (e?.length) errors.push(`schedule ${rule.description}: ${e[0].message}`);
   }
+
+  // A schedule that pays a loan: record the payment on the loan too
+  // (estimated split; the lender's schedule import corrects it later).
+  let loanPaymentsCaptured = 0;
+  if (links.size) {
+    try {
+      const loans = (await listAllPages<any>(c.models.homeFinanceLoan)).filter((l) => l.recurringId); // eslint-disable-line @typescript-eslint/no-explicit-any
+      const linkedRules = new Set(loans.map((l) => l.recurringId as string));
+      const captured = [...links].filter(([, rule]) => linkedRules.has(rule.id));
+      if (captured.length) {
+        const [payments, loanAccounts] = await Promise.all([listAllPages<any>(c.models.homeFinanceLoanPayment), listAllPages<any>(c.models.homeFinanceAccount)]); // eslint-disable-line @typescript-eslint/no-explicit-any
+        const plan = planLoanCapture({
+          transactions: captured.map(([d, rule]) => ({ id: syncedTransactionId(d.accountId, d.sfTransactionId), date: d.date, amount: d.amount, recurringId: rule.id })),
+          loans,
+          accounts: loanAccounts,
+          payments,
+        });
+        for (const row of plan.creates) {
+          const { errors: e } = await c.models.homeFinanceLoanPayment.create(row);
+          if (e?.length) errors.push(`loan payment ${row.date}: ${e[0].message}`);
+          else loanPaymentsCaptured++;
+        }
+        for (const l of plan.links) {
+          const { errors: e } = await c.models.homeFinanceLoanPayment.update({ id: l.paymentId, transactionId: l.transactionId });
+          if (e?.length) errors.push(`loan payment link ${l.paymentId}: ${e[0].message}`);
+        }
+        for (const m of plan.balanceMoves) {
+          const acc = loanAccounts.find((a) => a.id === m.accountId);
+          if (!acc) continue;
+          acc.currentBalance = round2((acc.currentBalance ?? 0) + m.principalDelta);
+          const { errors: e } = await c.models.homeFinanceAccount.update({ id: acc.id, currentBalance: acc.currentBalance, balanceUpdatedAt: nowIso });
+          if (e?.length) errors.push(`loan balance ${acc.name}: ${e[0].message}`);
+        }
+      }
+    } catch (e) {
+      errors.push(`loan capture: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (loanPaymentsCaptured) console.log(`[finance-sync] recorded ${loanPaymentsCaptured} loan payment(s) from linked transactions`);
 
   let holdingsChanged = 0;
   for (const [accountId, d] of holdingDiffs) {

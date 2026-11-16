@@ -8,9 +8,9 @@
 // recorded payment's principal.
 
 import { z } from "zod/v4";
-import { listAccounts, listAssetValuations, listAssets, listLoanPayments, listLoans, listSnapshots } from "../finance/data";
+import { listAccounts, listAssetValuations, listAssets, listLoanPayments, listLoans, listSchedules, listSnapshots } from "../finance/data";
 import { round2, todayIso } from "../finance/dates";
-import { LOAN_TYPES, LOAN_TYPE_LABELS, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit, type LoanTerms } from "../finance/loans";
+import { INTEREST_ACCRUALS, LOAN_TYPES, LOAN_TYPE_LABELS, compareToPlan, contractualPayment, interestDays, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit, type LoanTerms } from "../finance/loans";
 import { ASSET_TYPES, GROUP_LABELS, accountGroup, assetEquity, changeSince, netWorthHistory, netWorthNow, type NetWorthGroup } from "../finance/net-worth";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
@@ -23,11 +23,11 @@ const finite = (n: number) => (Number.isFinite(n) ? n : null);
 
 // ── Loading ────────────────────────────────────────────────────────────────
 
-type Loaded = { accounts: any[]; assets: any[]; loans: any[]; payments: any[] };
+type Loaded = { accounts: any[]; assets: any[]; loans: any[]; payments: any[]; schedules: any[] };
 
 async function loadAll(ctx: OpContext): Promise<Loaded> {
-  const [accounts, assets, loans, payments] = await Promise.all([listAccounts(ctx.client), listAssets(ctx.client), listLoans(ctx.client), listLoanPayments(ctx.client)]);
-  return { accounts, assets, loans, payments };
+  const [accounts, assets, loans, payments, schedules] = await Promise.all([listAccounts(ctx.client), listAssets(ctx.client), listLoans(ctx.client), listLoanPayments(ctx.client), listSchedules(ctx.client)]);
+  return { accounts, assets, loans, payments, schedules };
 }
 
 const owedOn = (account: any) => round2(Math.max(0, -(account?.currentBalance ?? 0)));
@@ -39,6 +39,7 @@ const termsOf = (l: any): LoanTerms => ({
   firstPaymentDate: l.firstPaymentDate,
   monthlyPayment: l.monthlyPayment,
   escrowMonthly: l.escrowMonthly,
+  interestAccrual: l.interestAccrual ?? null,
 });
 
 function loanName(l: any, d: Loaded): string {
@@ -97,6 +98,9 @@ const PaymentOut = z.object({
   escrow: z.number().nullable(),
   fees: z.number().nullable(),
   isExtra: z.boolean(),
+  paymentNumber: z.number().nullable().describe("The lender's payment number"),
+  source: z.string().nullable().describe("MANUAL, LENDER (imported schedule) or BANK (captured from a transaction)"),
+  estimated: z.boolean().describe("The split was estimated, not taken from the lender"),
   notes: z.string().nullable(),
 });
 
@@ -109,7 +113,30 @@ const paymentOut = (p: any): z.input<typeof PaymentOut> => ({
   escrow: p.escrow ?? null,
   fees: p.fees ?? null,
   isExtra: !!p.isExtra,
+  paymentNumber: p.paymentNumber ?? null,
+  source: p.source ?? null,
+  estimated: !!p.estimated,
   notes: p.notes ?? null,
+});
+
+const ScheduleRef = z.object({
+  id: z.string(),
+  description: z.string(),
+  amount: z.number(),
+  nextDate: z.string().nullable(),
+  autopay: z.boolean(),
+  accountId: z.string(),
+  account: z.string().nullable(),
+});
+
+const scheduleRef = (s: any, d: Loaded): z.input<typeof ScheduleRef> => ({
+  id: s.id,
+  description: s.description,
+  amount: s.amount,
+  nextDate: s.nextDate ?? null,
+  autopay: s.autopay !== false,
+  accountId: s.accountId,
+  account: d.accounts.find((a) => a.id === s.accountId)?.name ?? null,
 });
 
 const LoanOut = z.object({
@@ -127,6 +154,9 @@ const LoanOut = z.object({
   firstPaymentDate: z.string(),
   payment: z.number().describe("Contractual principal + interest per month"),
   escrowMonthly: z.number().nullable(),
+  interestAccrual: z.string().describe("MONTHLY or DAILY (simple interest on the days between payments)"),
+  schedule: ScheduleRef.nullable().describe("The scheduled transaction that pays it; a linked bank transaction records the payment automatically"),
+  principalAhead: z.number().describe("Principal paid beyond the contract's rows so far (negative = behind)"),
   nextPaymentDate: z.string(),
   contractEnd: z.string().describe("Date of the last payment under the original terms"),
   projectedPayoff: z.string().nullable().describe("When it's paid off at the contractual payment from today's balance"),
@@ -144,8 +174,11 @@ const LoanOut = z.object({
 function loanOut(l: any, d: Loaded, today: string, paymentLimit: number): z.input<typeof LoanOut> {
   const account = d.accounts.find((a) => a.id === l.accountId);
   const payments = d.payments.filter((p) => p.loanId === l.id);
-  const o = loanOutlook(termsOf(l), owedOn(account), payments, today);
+  const terms = termsOf(l);
+  const o = loanOutlook(terms, owedOn(account), payments, today);
   const eq = l.assetId ? assetEquity(d.assets, d.loans, d.accounts).find((e) => e.asset.id === l.assetId) : null;
+  const schedule = l.recurringId ? d.schedules.find((s) => s.id === l.recurringId) : null;
+  const plan = compareToPlan(terms, payments);
   return {
     id: l.id,
     name: loanName(l, d),
@@ -161,6 +194,9 @@ function loanOut(l: any, d: Loaded, today: string, paymentLimit: number): z.inpu
     firstPaymentDate: l.firstPaymentDate,
     payment: o.payment,
     escrowMonthly: l.escrowMonthly ?? null,
+    interestAccrual: l.interestAccrual ?? "MONTHLY",
+    schedule: schedule ? scheduleRef(schedule, d) : null,
+    principalAhead: plan.length ? plan[plan.length - 1].cumulative : 0,
     nextPaymentDate: o.nextPaymentDate,
     contractEnd: o.contractEnd,
     projectedPayoff: o.projected.payoffDate,
@@ -466,7 +502,7 @@ export const saveFinanceLoan = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Add or change a loan's terms (mortgage, car loan, student loan). The balance lives on a LOAN account: pass accountId to attach to an existing one (the SimpleFIN-synced mortgage), or newAccountName + owed to create a manual one (its balance then moves with record_loan_payment). owed also corrects a manual loan's balance. assetId / assetName links what secures it (mortgage → the house), for equity; null unlinks. With loanId, only the fields given change. remove deletes the loan's terms and payment history but keeps the account.",
+    "Add or change a loan's terms (mortgage, car loan, student loan). The balance lives on a LOAN account: pass accountId to attach to an existing one (the SimpleFIN-synced mortgage), or newAccountName + owed to create a manual one (its balance then moves with record_loan_payment). owed also corrects a manual loan's balance. assetId / assetName links what secures it (mortgage → the house), for equity; null unlinks. interestAccrual DAILY for simple-interest loans (most auto loans): estimated splits then use the days since the last payment. recurringId links the scheduled transaction that pays it (null unlinks); newSchedule creates one from the terms (monthly, the contractual payment + escrow, next due on the next payment date) on the given checking account, with matchPattern so the sync links the bank's rows — a linked transaction then records the payment here automatically. With loanId, only the fields given change. remove deletes the loan's terms and payment history but keeps the account and the schedule.",
   input: z.object({
     loanId: z.string().optional(),
     loanName: z.string().optional().describe("Find the loan to change by name"),
@@ -483,8 +519,18 @@ export const saveFinanceLoan = defineOp({
     firstPaymentDate: DATE.optional(),
     monthlyPayment: z.number().positive().nullable().optional().describe("Contractual principal + interest; null = computed from the terms"),
     escrowMonthly: z.number().min(0).nullable().optional(),
+    interestAccrual: z.enum(INTEREST_ACCRUALS).optional().describe("MONTHLY (default) or DAILY simple interest"),
     assetId: z.string().nullable().optional(),
     assetName: z.string().nullable().optional(),
+    recurringId: z.string().nullable().optional().describe("The scheduled transaction that pays it; null unlinks"),
+    newSchedule: z
+      .object({
+        accountId: z.string().optional().describe("The account it's paid from; default the household checking account"),
+        matchPattern: z.string().nullable().optional().describe("A word from the bank description ('BMW FINANCIAL'); default the lender or account name"),
+        autopay: z.boolean().optional(),
+      })
+      .optional()
+      .describe("Create the scheduled transaction from the loan's terms and link it"),
     notes: z.string().nullable().optional(),
     remove: z.boolean().optional(),
   }),
@@ -504,9 +550,17 @@ export const saveFinanceLoan = defineOp({
 
     const asset = findAsset(d, input);
     const fields: Record<string, unknown> = Object.fromEntries(
-      (["loanType", "lender", "originalPrincipal", "interestRate", "termMonths", "startDate", "firstPaymentDate", "monthlyPayment", "escrowMonthly", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, input[k]]),
+      (["loanType", "lender", "originalPrincipal", "interestRate", "termMonths", "startDate", "firstPaymentDate", "monthlyPayment", "escrowMonthly", "interestAccrual", "notes"] as const).filter((k) => input[k] !== undefined).map((k) => [k, input[k]]),
     );
     if (asset !== undefined) fields.assetId = asset?.id ?? null;
+    if (input.recurringId !== undefined && input.newSchedule) throw new OpError("Give recurringId or newSchedule, not both");
+    if (input.recurringId) {
+      const s = d.schedules.find((x) => x.id === input.recurringId);
+      if (!s) throw new OpError(`No scheduled transaction ${input.recurringId}`);
+      const taken = d.loans.find((l) => l.recurringId === s.id && l.id !== existing?.id);
+      if (taken) throw new OpError(`"${s.description}" already pays the loan ${loanName(taken, d)}`);
+      fields.recurringId = s.id;
+    } else if (input.recurringId === null) fields.recurringId = null;
     const start = (fields.startDate ?? existing?.startDate) as string | null | undefined;
     const first = (fields.firstPaymentDate ?? existing?.firstPaymentDate) as string | undefined;
     if (start && first && start > first) throw new OpError(`startDate ${start} is after the first payment (${first})`);
@@ -544,7 +598,7 @@ export const saveFinanceLoan = defineOp({
     let saved: any;
     let action: "created" | "updated";
     if (existing) {
-      if (!Object.keys(fields).length && input.owed === undefined) throw new OpError("Nothing to change");
+      if (!Object.keys(fields).length && input.owed === undefined && !input.newSchedule) throw new OpError("Nothing to change");
       if (Object.keys(fields).length) {
         const r = await M.homeFinanceLoan.update({ id: existing.id, ...fields });
         if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
@@ -570,6 +624,35 @@ export const saveFinanceLoan = defineOp({
     }
     if (Object.keys(acctPatch).length) await M.homeFinanceAccount.update({ id: accountId, ...acctPatch });
 
+    // The scheduled transaction that pays it, from the terms.
+    if (input.newSchedule) {
+      const ns = input.newSchedule;
+      const from = ns.accountId
+        ? d.accounts.find((a) => a.id === ns.accountId)
+        : (d.accounts.find((a) => a.active !== false && a.type === "CHECKING" && !(a.ownerPersonIds ?? []).length) ?? d.accounts.find((a) => a.active !== false && a.type === "CHECKING"));
+      if (!from) throw new OpError(ns.accountId ? `No account ${ns.accountId}` : "No household checking account to pay it from; pass newSchedule.accountId");
+      const terms = termsOf(saved);
+      const o = loanOutlook(terms, owedOn(account), [], todayIso());
+      const name = account?.name ?? LOAN_TYPE_LABELS[saved.loanType as keyof typeof LOAN_TYPE_LABELS] ?? "Loan";
+      const r = await M.homeFinanceRecurring.create({
+        accountId: from.id,
+        description: name,
+        amount: -round2(contractualPayment(terms) + (saved.escrowMonthly ?? 0)),
+        type: "EXPENSE",
+        cadence: "MONTHLY",
+        startDate: o.nextPaymentDate,
+        nextDate: o.nextPaymentDate,
+        endDate: o.contractEnd,
+        matchPattern: ns.matchPattern === undefined ? (saved.lender ?? name) : ns.matchPattern,
+        autopay: ns.autopay ?? true,
+        active: true,
+        notes: `Pays the ${name} loan`,
+      });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Creating the scheduled transaction failed");
+      const u = await M.homeFinanceLoan.update({ id: saved.id, recurringId: r.data.id });
+      if (u.errors?.length) throw new Error(u.errors[0].message);
+    }
+
     const fresh = await loadAll(ctx);
     return { action, loan: loanOut(fresh.loans.find((l) => l.id === saved.id), fresh, todayIso(), 3) };
   },
@@ -582,7 +665,7 @@ export const recordLoanPayment = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Record a payment made on a loan (or fix / remove one: paymentId, remove). Give the total; principal and interest come from the lender's statement when known, otherwise interest is estimated as a month of interest on what's owed and the rest (after escrow and fees) goes to principal. isExtra = principal-only extra payment. On a manual loan account the balance drops by the principal (and moves back on edit/remove); a SimpleFIN-synced loan's balance comes from the bank.",
+    "Record a payment made on a loan (or fix / remove one: paymentId, remove). Give the total; principal and interest come from the lender's statement when known, otherwise interest is estimated on what's owed (a month of it, or the days since the last payment for a DAILY-accrual loan) and the rest (after escrow and fees) goes to principal; such a row is marked estimated. isExtra = principal-only extra payment. On a manual loan account the balance drops by the principal (and moves back on edit/remove); a SimpleFIN-synced loan's balance comes from the bank.",
   input: z.object({
     loanId: z.string().optional(),
     loanName: z.string().optional(),
@@ -595,6 +678,7 @@ export const recordLoanPayment = defineOp({
     escrow: z.number().min(0).nullable().optional(),
     fees: z.number().min(0).nullable().optional(),
     isExtra: z.boolean().optional(),
+    paymentNumber: z.number().int().positive().nullable().optional().describe("The lender's payment number"),
     transactionId: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
   }),
@@ -637,29 +721,38 @@ export const recordLoanPayment = defineOp({
     const escrow = input.escrow !== undefined ? input.escrow ?? 0 : old?.escrow ?? 0;
     const fees = input.fees !== undefined ? input.fees ?? 0 : old?.fees ?? 0;
     const isExtra = input.isExtra ?? old?.isExtra ?? false;
+    const date = input.date ?? old?.date ?? todayIso();
     let principal = input.principal ?? (input.totalAmount === undefined ? old?.principal : undefined);
     let interest = input.interest ?? (input.totalAmount === undefined ? old?.interest : undefined);
+    let estimated = old?.estimated ?? false;
     if (principal == null || interest == null) {
       if (isExtra) {
         interest = interest ?? 0;
         principal = principal ?? round2(total - escrow - fees - interest);
       } else if (principal != null) interest = round2(total - escrow - fees - principal);
       else if (interest != null) principal = round2(total - escrow - fees - interest);
-      else ({ principal, interest } = suggestSplit(owedBefore, loan.interestRate, total, escrow, fees));
-    }
+      else {
+        const others = d.payments.filter((p) => p.loanId === loan.id && p.id !== old?.id);
+        ({ principal, interest } = suggestSplit(owedBefore, loan.interestRate, total, escrow, fees, interestDays(termsOf(loan), others, date)));
+        estimated = true;
+      }
+    } else if (input.principal != null || input.interest != null) estimated = false;
     const sum = round2(principal + interest + escrow + fees);
     if (Math.abs(sum - total) > 0.01) throw new OpError(`principal + interest + escrow + fees = ${sum}, but the total is ${total}`);
     if (principal < 0 || interest < 0) throw new OpError("The split comes out negative; check escrow and fees against the total");
 
     const row = {
       loanId: loan.id,
-      date: input.date ?? old?.date ?? todayIso(),
+      date,
       totalAmount: total,
       principal,
       interest,
       escrow: escrow || null,
       fees: fees || null,
       isExtra,
+      paymentNumber: input.paymentNumber !== undefined ? input.paymentNumber : old?.paymentNumber ?? null,
+      source: old?.source ?? "MANUAL",
+      estimated,
       transactionId: input.transactionId !== undefined ? input.transactionId : old?.transactionId ?? null,
       notes: input.notes !== undefined ? input.notes?.trim() || null : old?.notes ?? null,
     };
@@ -671,4 +764,120 @@ export const recordLoanPayment = defineOp({
   },
 });
 
-export const netWorthOps = [getNetWorth, listFinanceLoans, simulateLoanPayoff, saveFinanceAsset, saveFinanceLoan, recordLoanPayment] as const;
+// ── import_loan_payments ───────────────────────────────────────────────────
+
+const ImportRow = z.object({
+  number: z.number().int().positive().nullable().optional().describe("The lender's payment number"),
+  date: DATE,
+  total: z.number().positive(),
+  principal: z.number().min(0),
+  interest: z.number().min(0),
+  fees: z.number().min(0).nullable().optional(),
+  escrow: z.number().min(0).nullable().optional(),
+  balance: z.number().min(0).nullable().optional().describe("Principal balance after this payment, as the lender prints it"),
+});
+
+export const importLoanPayments = defineOp({
+  name: "import_loan_payments",
+  domain: "finance",
+  access: "write",
+  description:
+    "Load a lender's payment history (its amortization schedule / payment history, as rows) onto a loan: one row per payment made, with the lender's own principal / interest split. Rows are matched to existing payments by date: a payment already recorded on that date is corrected to the lender's numbers (an estimated split from a bank transaction becomes exact), others are added. Nothing is deleted. On a manual loan account the balance is set to owedAfter (or the last row's balance) when given, else it moves by the principal added. Re-run with each new schedule from the lender; that's the manual sync. The loan page gets the rows out of a PDF (parseLoanSchedulePdf); over the API pass them directly.",
+  input: z.object({
+    loanId: z.string().optional(),
+    loanName: z.string().optional(),
+    rows: z.array(ImportRow).min(1).max(1000),
+    owedAfter: z.number().min(0).nullable().optional().describe("Principal balance after the last row; default that row's balance"),
+    source: z.string().nullable().optional().describe("Where it came from, for the notes: 'BMW FS schedule 2026-11-15'"),
+  }),
+  output: z.object({
+    loan: z.string(),
+    created: z.number(),
+    updated: z.number(),
+    unchanged: z.number(),
+    owed: z.number(),
+    balanceMoved: z.boolean(),
+    problems: z.array(z.string()).describe("Rows whose split didn't add up; they were skipped"),
+  }),
+  async run(ctx, input) {
+    const M = ctx.client.models;
+    const d = await loadAll(ctx);
+    const loan = findLoan(d, input);
+    const account = d.accounts.find((a) => a.id === loan.accountId);
+    const manual = !!account && !isSynced(account);
+    const existing = d.payments.filter((p) => p.loanId === loan.id);
+    const tag = input.source?.trim() ? `Lender's schedule (${input.source.trim()})` : "Lender's schedule";
+
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    let principalDelta = 0;
+    const problems: string[] = [];
+    const seen = new Set<string>();
+    const imported: typeof input.rows = [];
+    for (const r of [...input.rows].sort((a, b) => a.date.localeCompare(b.date) || (a.number ?? 0) - (b.number ?? 0))) {
+      const fees = r.fees ?? 0;
+      const escrow = r.escrow ?? 0;
+      const sum = round2(r.principal + r.interest + fees + escrow);
+      if (Math.abs(sum - r.total) > 0.01) {
+        problems.push(`${r.date}: principal + interest + fees + escrow = ${sum.toFixed(2)}, not ${r.total.toFixed(2)}`);
+        continue;
+      }
+      imported.push(r);
+      // Two lender rows on one date (a payment and an extra) take the second
+      // slot rather than overwriting each other.
+      const key = `${r.date}:${seen.has(r.date) ? r.total : ""}`;
+      seen.add(r.date);
+      const match = existing.find((p) => p.date === r.date && !p._claimed && (key.endsWith(":") || Math.abs(p.totalAmount - r.total) < 0.01));
+      const row = {
+        loanId: loan.id,
+        date: r.date,
+        totalAmount: round2(r.total),
+        principal: round2(r.principal),
+        interest: round2(r.interest),
+        escrow: escrow || null,
+        fees: fees || null,
+        isExtra: false,
+        paymentNumber: r.number ?? null,
+        source: "LENDER" as const,
+        estimated: false,
+      };
+      if (match) {
+        match._claimed = true;
+        const same = (["totalAmount", "principal", "interest", "escrow", "fees", "paymentNumber"] as const).every((k) => (match[k] ?? null) === (row[k] ?? null)) && match.source === "LENDER" && !match.estimated;
+        if (same) {
+          unchanged++;
+          continue;
+        }
+        const u = await M.homeFinanceLoanPayment.update({ id: match.id, ...row, notes: match.notes && !/^Split estimated/.test(match.notes) ? match.notes : tag });
+        if (u.errors?.length) throw new Error(u.errors[0].message);
+        principalDelta += row.principal - (match.principal ?? 0);
+        updated++;
+      } else {
+        const c = await M.homeFinanceLoanPayment.create({ ...row, transactionId: null, notes: tag });
+        if (c.errors?.length || !c.data) throw new Error(c.errors?.[0]?.message ?? "Save failed");
+        existing.push({ ...c.data, _claimed: true });
+        principalDelta += row.principal;
+        created++;
+      }
+    }
+
+    // The balance: the lender's figure when given (owedAfter, else the last
+    // imported row's balance), else moved by what was added.
+    let balanceMoved = false;
+    if (manual) {
+      const last = imported[imported.length - 1];
+      const target = input.owedAfter ?? last?.balance ?? null;
+      const next = target != null ? -round2(target) : round2((account.currentBalance ?? 0) + principalDelta);
+      if (Math.abs(next - (account.currentBalance ?? 0)) >= 0.005) {
+        const u = await M.homeFinanceAccount.update({ id: account.id, currentBalance: next, balanceUpdatedAt: new Date().toISOString() });
+        if (u.errors?.length) throw new Error(u.errors[0].message);
+        balanceMoved = true;
+      }
+    }
+    const fresh = await loadAll(ctx);
+    return { loan: loanName(loan, d), created, updated, unchanged, owed: owedOn(fresh.accounts.find((a) => a.id === loan.accountId)), balanceMoved, problems };
+  },
+});
+
+export const netWorthOps = [getNetWorth, listFinanceLoans, simulateLoanPayoff, saveFinanceAsset, saveFinanceLoan, recordLoanPayment, importLoanPayments] as const;

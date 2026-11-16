@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  compareToPlan,
+  contractRow,
   contractualPayment,
   fmtDuration,
+  interestDays,
   loanOutlook,
   monthlyPaymentFor,
   nextPaymentDate,
@@ -65,6 +68,61 @@ describe("simulatePayoff", () => {
   it("finds the payment for a target", () => {
     const pmt = paymentToFinishIn(36409.33, 0.0549, 12);
     expect(simulatePayoff({ balance: 36409.33, annualRate: 0.0549, payment: pmt, firstDate: "2026-11-30" }).months).toBe(12);
+  });
+});
+
+// The BMW: $106,622.78 at 5.49% over 72 months, daily simple interest, first payment Jan 18 2023.
+const bmw = { originalPrincipal: 106622.78, interestRate: 0.0549, termMonths: 72, firstPaymentDate: "2023-01-18", monthlyPayment: 1745.48, interestAccrual: "DAILY" as const };
+
+describe("daily simple interest", () => {
+  it("matches the lender's schedule to the cent given the days", () => {
+    // Row 1: 32 days on the original principal; row 2: 28 days on the balance after it.
+    expect(suggestSplit(106622.78, 0.0549, 1745.48, 0, 0, 32)).toEqual({ interest: 513.19, principal: 1232.29 });
+    expect(suggestSplit(105390.49, 0.0549, 1745.48, 0, 0, 28)).toEqual({ interest: 443.85, principal: 1301.63 });
+    // No days → a month, as before.
+    expect(suggestSplit(105390.49, 0.0549, 1745.48)).toEqual({ interest: 482.16, principal: 1263.32 });
+  });
+
+  it("counts the days since the last payment, or from the month before the first", () => {
+    expect(interestDays(bmw, [], "2023-01-18")).toBe(31);
+    expect(interestDays(bmw, [{ date: "2023-01-18" }], "2023-02-15")).toBe(28);
+    expect(interestDays(bmw, [{ date: "2023-01-18" }, { date: "2023-02-15" }], "2023-03-29")).toBe(42);
+    // Only earlier payments count; a later one doesn't.
+    expect(interestDays(bmw, [{ date: "2023-02-15" }], "2023-01-18")).toBe(31);
+    expect(interestDays({ ...bmw, interestAccrual: "MONTHLY" }, [], "2023-02-15")).toBeNull();
+    expect(interestDays({ ...bmw, interestAccrual: null }, [], "2023-02-15")).toBeNull();
+  });
+});
+
+describe("against the contract", () => {
+  it("splits each contract payment", () => {
+    expect(contractRow(mortgage, 1)).toEqual({ principal: 592.03, interest: 1685.91 });
+    const r2 = contractRow(mortgage, 2);
+    expect(r2.principal + r2.interest).toBeCloseTo(2277.94, 1);
+    expect(r2.principal).toBeGreaterThan(592.03);
+  });
+
+  it("tracks principal paid ahead of the contract, by payment number or position", () => {
+    const rows = compareToPlan(bmw, [
+      { id: "a", date: "2023-01-18", totalAmount: 1745.48, principal: 1232.29, interest: 513.19, paymentNumber: 1 },
+      { id: "b", date: "2023-02-15", totalAmount: 1745.48, principal: 1301.63, interest: 443.85, paymentNumber: 2 },
+      { id: "c", date: "2023-03-29", totalAmount: 2000, principal: 1342.44, interest: 657.56, paymentNumber: 3 },
+    ]);
+    expect(rows.map((r) => r.n)).toEqual([1, 2, 3]);
+    expect(rows[0].contractPrincipal).toBe(contractRow(bmw, 1).principal);
+    expect(rows[2].cumulative).toBeCloseTo(rows[0].delta + rows[1].delta + rows[2].delta, 2);
+    // Without numbers, position in date order; an extra payment adds to the running total.
+    const unnumbered = compareToPlan(mortgage, [
+      { id: "x", date: "2022-12-01", totalAmount: 2277.94, principal: 592.03, interest: 1685.91 },
+      { id: "e", date: "2022-12-15", totalAmount: 1000, principal: 1000, interest: 0, isExtra: true },
+      { id: "y", date: "2023-01-01", totalAmount: 2277.94, principal: 600, interest: 1677.94 },
+    ]);
+    expect(unnumbered.map((r) => [r.n, r.delta])).toEqual([
+      [1, 0],
+      [1, 1000],
+      [2, Math.round((600 - contractRow(mortgage, 2).principal) * 100) / 100],
+    ]);
+    expect(unnumbered[2].cumulative).toBeCloseTo(1000 + 600 - contractRow(mortgage, 2).principal, 2);
   });
 });
 

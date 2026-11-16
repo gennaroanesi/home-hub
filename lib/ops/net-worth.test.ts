@@ -32,7 +32,7 @@ function setup(seed: Record<string, any[]> = {}) {
       },
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceAccountSnapshot", "homeFinanceAsset", "homeFinanceAssetValuation", "homeFinanceLoan", "homeFinanceLoanPayment"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceAccountSnapshot", "homeFinanceAsset", "homeFinanceAssetValuation", "homeFinanceLoan", "homeFinanceLoanPayment", "homeFinanceRecurring"];
   const ctx: OpContext = {
     client: { models: Object.fromEntries(names.map((m) => [m, model(m)])) },
     storage: { storeFromUrl: async () => "", copyUpload: async () => "" },
@@ -148,6 +148,72 @@ describe("loans", () => {
 
     const by = await run("simulate_loan_payoff", { loanName: "car", payoffBy: s.baseline.payoffDate });
     expect(by.payoffBy.payment).toBeLessThanOrEqual(2000.01);
+  });
+});
+
+describe("the lender's schedule and the scheduled transaction", () => {
+  const bmwTerms = { loanType: "AUTO", lender: "BMW Financial Services", originalPrincipal: 106622.78, interestRate: 0.0549, termMonths: 72, firstPaymentDate: "2023-01-18", monthlyPayment: 1745.48, interestAccrual: "DAILY" };
+
+  it("estimates a daily-interest split from the days since the last payment and flags it", async () => {
+    const { run, tables } = setup();
+    const r = await run("save_finance_loan", { newAccountName: "BMW", owed: 106622.78, ...bmwTerms });
+    expect(r.loan.interestAccrual).toBe("DAILY");
+    await run("record_loan_payment", { loanId: r.loan.id, date: "2023-01-18", totalAmount: 1745.48, principal: 1232.29, interest: 513.19, paymentNumber: 1 });
+    // 28 days later, no split given: the lender's row 2 to the cent.
+    const p2 = await run("record_loan_payment", { loanId: r.loan.id, date: "2023-02-15", totalAmount: 1745.48 });
+    expect(p2.payment).toMatchObject({ interest: 443.85, principal: 1301.63, estimated: true, source: "MANUAL" });
+    expect(tables.homeFinanceLoanPayment[0]).toMatchObject({ paymentNumber: 1, estimated: false });
+    expect(p2.owed).toBe(104088.86);
+  });
+
+  it("imports the lender's rows: new ones added, an estimated one corrected, the balance set", async () => {
+    const { run, tables } = setup();
+    const r = await run("save_finance_loan", { newAccountName: "BMW", owed: 106622.78, ...bmwTerms });
+    const loanId = r.loan.id;
+    // A bank capture with an estimated split, and a hand-typed one that's already right.
+    await run("record_loan_payment", { loanId, date: "2023-02-15", totalAmount: 1745.48 });
+    await run("record_loan_payment", { loanId, date: "2023-03-29", totalAmount: 2000, principal: 1342.44, interest: 657.56 });
+    const imp = await run("import_loan_payments", {
+      loanId,
+      source: "BMW FS schedule 2026-11-15",
+      rows: [
+        { number: 1, date: "2023-01-18", total: 1745.48, principal: 1232.29, interest: 513.19, balance: 105390.49 },
+        { number: 2, date: "2023-02-15", total: 1745.48, principal: 1301.63, interest: 443.85, balance: 104088.86 },
+        { number: 3, date: "2023-03-29", total: 2000, principal: 1342.44, interest: 657.56, balance: 102746.42 },
+        { number: 4, date: "2023-04-26", total: 2000, principal: 1567.28, interest: 432.72, balance: 101179.14 },
+        { number: 5, date: "2023-05-24", total: 2000, principal: 1573.89, interest: 400, balance: 99605.25 }, // doesn't add up
+      ],
+    });
+    expect(imp).toMatchObject({ created: 2, updated: 2, unchanged: 0, owed: 101179.14, balanceMoved: true });
+    expect(imp.problems).toHaveLength(1);
+    const rows = tables.homeFinanceLoanPayment.sort((a: any, b: any) => a.date.localeCompare(b.date));
+    expect(rows.map((p: any) => [p.paymentNumber, p.principal, p.source, p.estimated])).toEqual([
+      [1, 1232.29, "LENDER", false],
+      [2, 1301.63, "LENDER", false],
+      [3, 1342.44, "LENDER", false],
+      [4, 1567.28, "LENDER", false],
+    ]);
+    expect(rows[1].notes).toMatch(/BMW FS schedule/);
+    // Re-running the same file changes nothing.
+    const again = await run("import_loan_payments", { loanId, rows: [{ number: 4, date: "2023-04-26", total: 2000, principal: 1567.28, interest: 432.72, balance: 101179.14 }] });
+    expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 1, balanceMoved: false });
+    expect((await run("list_finance_loans", { loanId })).loans[0].principalAhead).toBeGreaterThan(0);
+  });
+
+  it("creates the scheduled transaction from the terms and links it; a schedule pays one loan", async () => {
+    const { run, fail, tables } = setup({ homeFinanceAccount: [checking, synced] });
+    const r = await run("save_finance_loan", { newAccountName: "BMW", owed: 36409.33, ...bmwTerms, newSchedule: { matchPattern: "BMW FINANCIAL" } });
+    expect(tables.homeFinanceRecurring).toHaveLength(1);
+    const s = tables.homeFinanceRecurring[0];
+    expect(s).toMatchObject({ accountId: "chk", description: "BMW", amount: -1745.48, type: "EXPENSE", cadence: "MONTHLY", matchPattern: "BMW FINANCIAL", autopay: true, nextDate: r.loan.nextPaymentDate, endDate: r.loan.contractEnd });
+    expect(r.loan.schedule).toMatchObject({ id: s.id, description: "BMW", account: "Joint checking" });
+    expect(tables.homeFinanceLoan[0].recurringId).toBe(s.id);
+
+    const m = await run("save_finance_loan", { accountId: "mort", loanType: "MORTGAGE", originalPrincipal: 449577, interestRate: 0.045, termMonths: 360, firstPaymentDate: "2022-12-01" });
+    expect(await fail("save_finance_loan", { loanId: m.loan.id, recurringId: s.id })).toMatch(/already pays/);
+    const unlinked = await run("save_finance_loan", { loanId: r.loan.id, recurringId: null });
+    expect(unlinked.loan.schedule).toBeNull();
+    expect(await fail("save_finance_loan", { loanId: r.loan.id, recurringId: "nope" })).toMatch(/No scheduled transaction/);
   });
 });
 

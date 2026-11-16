@@ -8,7 +8,7 @@
 //   home/finance/invoices/<id>/original.eml    the email it came in
 
 export const FINANCE_PREFIX = "home/finance/";
-export type FinanceUploadKind = "paycheck" | "invoice";
+export type FinanceUploadKind = "paycheck" | "invoice" | "loan";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
 

@@ -26,7 +26,8 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { listSchedules, listTransactions, txIndexQuery } from "@/lib/finance/data";
+import NextLink from "next/link";
+import { listLoans, listSchedules, listTransactions, txIndexQuery } from "@/lib/finance/data";
 import { addDays, CADENCE_LABELS, CADENCE_MONTHLY_FACTOR, CADENCES, fmtDate, todayIso, type Cadence } from "@/lib/finance/dates";
 import { findScheduleMatches, isScheduleLive, nextDateAfter, nextDueAfterPaid } from "@/lib/finance/recurring";
 
@@ -102,6 +103,8 @@ function formFrom(s: Schedule): Form {
 export default function ScheduledPage() {
   const refs = useFinanceRefs();
   const [schedules, setSchedules] = useState<Schedule[]>([]);
+  // recurringId → the loan it pays (homeFinanceLoan.recurringId).
+  const [loanFor, setLoanFor] = useState<Map<string, { id: string; accountId: string }>>(new Map());
   const [lastTx, setLastTx] = useState<Map<string, Tx>>(new Map());
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState<Form | null>(null);
@@ -113,8 +116,9 @@ export default function ScheduledPage() {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const rows = await listSchedules(financeClient);
+      const [rows, loans] = await Promise.all([listSchedules(financeClient), listLoans(financeClient).catch(() => [] as any[])]);
       setSchedules(rows);
+      setLoanFor(new Map(loans.filter((l: any) => l.recurringId).map((l: any) => [l.recurringId, { id: l.id, accountId: l.accountId }])));
       // Last posted transaction each schedule realized (recurringId index).
       const pairs = await Promise.all(
         rows.map(async (s) => {
@@ -249,6 +253,13 @@ export default function ScheduledPage() {
               <Chip size="sm" color="danger" variant="flat">
                 Overdue
               </Chip>
+            )}
+            {loanFor.has(s.id) && (
+              <NextLink href={`/finance/loans/${loanFor.get(s.id)!.id}`} title="Pays this loan; a matched transaction is recorded on it">
+                <Chip size="sm" color="secondary" variant="flat" className="cursor-pointer">
+                  Loan
+                </Chip>
+              </NextLink>
             )}
             {s.type === "INCOME" && <PersonChip personId={s.personId} people={refs.people} />}
           </div>

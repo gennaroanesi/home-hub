@@ -22,6 +22,7 @@ import { listAllPages } from "../../../lib/list-all.js";
 import { householdMembers } from "../../../lib/household.js";
 import { collectPdfs, gateMail, parseAllowedSenders, parseMail } from "../../../lib/finance/inbound-mail.js";
 import { extractPaycheckFields, matchPerson } from "../../../lib/finance/paycheck-extract.js";
+import { extractLoanSchedule } from "../../../lib/finance/loan-schedule-extract.js";
 import { INBOUND_PREFIX, isStagingKey, looksLikePdf, MAX_FINANCE_PDF_BYTES, paycheckPdfKey } from "../../../lib/finance/finance-files.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -51,8 +52,25 @@ const sha256 = (b: Buffer) => createHash("sha256").update(b as unknown as Uint8A
 export const handler = async (event: any) => {
   const field: string | undefined = event?.fieldName ?? event?.info?.fieldName;
   if (field === "parsePaycheckPdf") return parseUploaded(String(event.arguments?.s3Key ?? ""));
+  if (field === "parseLoanSchedulePdf") return parseLoanSchedule(String(event.arguments?.s3Key ?? ""));
   return handleS3(event as S3Event);
 };
+
+/** A lender's amortization / payment-history PDF → rows for import_loan_payments. */
+async function parseLoanSchedule(s3Key: string) {
+  if (!isStagingKey("loan", s3Key)) return { ok: false, error: "s3Key must come from /api/finance/upload-url (kind loan)" };
+  let pdf: Buffer;
+  try {
+    pdf = await readObject(HOME_BUCKET, s3Key);
+  } catch {
+    return { ok: false, error: "Nothing uploaded at that key yet" };
+  }
+  if (!looksLikePdf(pdf)) return { ok: false, error: "That file isn't a PDF" };
+  if (pdf.byteLength > MAX_FINANCE_PDF_BYTES) return { ok: false, error: "PDF is larger than 20 MB" };
+  const { schedule, error } = await extractLoanSchedule(pdf);
+  if (error || !schedule) return { ok: false, error: error ?? "No rows extracted", s3Key };
+  return { ok: true, schedule, s3Key };
+}
 
 // ── Upload path ─────────────────────────────────────────────────────────────
 

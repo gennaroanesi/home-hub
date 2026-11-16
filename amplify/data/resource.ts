@@ -1388,7 +1388,16 @@ const schema = a
         // Contractual principal + interest; computed from the terms when empty.
         monthlyPayment: a.float(),
         escrowMonthly: a.float(), // taxes + insurance collected with the payment
+        // How interest accrues between payments: MONTHLY (rate/12 per
+        // payment, a mortgage) or DAILY (simple interest on the days since
+        // the last payment, most auto loans). Null = MONTHLY.
+        interestAccrual: a.enum(["MONTHLY", "DAILY"]),
         assetId: a.id(), // what secures it
+        // The scheduled transaction that pays it. When the sync links a
+        // posted transaction to that schedule, a payment is recorded here
+        // automatically (estimated split, until the lender's schedule
+        // import confirms it).
+        recurringId: a.id(),
         notes: a.string(),
       })
       .authorization((allow) => [allow.group("home-users")]),
@@ -1407,6 +1416,11 @@ const schema = a
         fees: a.float(),
         isExtra: a.boolean().default(false), // principal-only, outside the schedule
         transactionId: a.id(), // the household transaction that paid it, when known
+        paymentNumber: a.integer(), // the lender's payment number, from its schedule
+        // Where the split came from: typed in, the lender's own schedule
+        // (import), or captured from a bank transaction (BANK, estimated).
+        source: a.enum(["MANUAL", "LENDER", "BANK"]),
+        estimated: a.boolean(), // split was estimated, not taken from a statement
         notes: a.string(),
       })
       .authorization((allow) => [allow.group("home-users")]),
@@ -2410,6 +2424,14 @@ const schema = a
     // (never saves); ingestInvoicePdf runs the same pipeline as an emailed
     // invoice and returns { invoiceId }. Both return JSON.
     parsePaycheckPdf: a
+      .mutation()
+      .authorization((allow) => [allow.group("home-users")])
+      .arguments({ s3Key: a.string().required() })
+      .returns(a.json())
+      .handler(a.handler.function(paycheckProcessor)),
+    // A lender's amortization / payment-history PDF (upload kind "loan") →
+    // its payment rows, for the loan page's import (import_loan_payments).
+    parseLoanSchedulePdf: a
       .mutation()
       .authorization((allow) => [allow.group("home-users")])
       .arguments({ s3Key: a.string().required() })

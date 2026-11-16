@@ -6,7 +6,7 @@
 // payments), not originalPrincipal − Σ principal, and the schedule is
 // computed on demand instead of stored as one row per month.
 
-import { addMonthsAnchored, round2 } from "./dates";
+import { addMonthsAnchored, daysBetween, round2 } from "./dates";
 
 export const LOAN_TYPES = ["MORTGAGE", "AUTO", "STUDENT", "PERSONAL", "HELOC", "OTHER"] as const;
 export type LoanType = (typeof LOAN_TYPES)[number];
@@ -19,6 +19,13 @@ export const LOAN_TYPE_LABELS: Record<LoanType, string> = {
   OTHER: "Other",
 };
 
+export const INTEREST_ACCRUALS = ["MONTHLY", "DAILY"] as const;
+export type InterestAccrual = (typeof INTEREST_ACCRUALS)[number];
+export const INTEREST_ACCRUAL_LABELS: Record<InterestAccrual, string> = {
+  MONTHLY: "Monthly (rate ÷ 12 per payment)",
+  DAILY: "Daily simple interest (on the days since the last payment)",
+};
+
 export type LoanTerms = {
   originalPrincipal: number;
   interestRate: number; // annual, decimal
@@ -26,6 +33,7 @@ export type LoanTerms = {
   firstPaymentDate: string;
   monthlyPayment?: number | null;
   escrowMonthly?: number | null;
+  interestAccrual?: InterestAccrual | null; // null = MONTHLY
 };
 
 export type LoanPaymentLike = {
@@ -37,6 +45,8 @@ export type LoanPaymentLike = {
   escrow?: number | null;
   fees?: number | null;
   isExtra?: boolean | null;
+  paymentNumber?: number | null;
+  estimated?: boolean | null;
 };
 
 /** Fixed monthly payment that clears `principal` in `months` (P·r / (1 − (1+r)^−n)). */
@@ -131,15 +141,72 @@ export function paymentToFinishIn(balance: number, annualRate: number, months: n
 }
 
 /**
- * Suggested split for a payment being recorded: a month of interest on what's
- * owed, escrow and fees as given, the rest to principal. The lender's
- * statement wins; this only pre-fills the form.
+ * Suggested split for a payment being recorded: interest on what's owed
+ * (a month of it, or `days` of daily simple interest when given), escrow
+ * and fees as given, the rest to principal. The lender's statement wins;
+ * this only pre-fills the form.
  */
-export function suggestSplit(owed: number, annualRate: number, total: number, escrow = 0, fees = 0): { principal: number; interest: number } {
-  const interest = round2(Math.max(0, owed) * (annualRate / 12));
+export function suggestSplit(owed: number, annualRate: number, total: number, escrow = 0, fees = 0, days?: number | null): { principal: number; interest: number } {
+  const interest = round2(Math.max(0, owed) * (days != null ? (annualRate * days) / 365 : annualRate / 12));
   const rest = round2(total - escrow - fees);
   if (rest <= interest) return { principal: 0, interest: Math.max(0, rest) };
   return { principal: round2(rest - interest), interest };
+}
+
+/**
+ * Days of interest a payment on `date` covers under daily accrual: since
+ * the latest earlier payment, else since the loan's grid date one month
+ * before its first payment (the origination month). Null for monthly
+ * accrual, so suggestSplit uses a month.
+ */
+export function interestDays(loan: Pick<LoanTerms, "firstPaymentDate" | "interestAccrual">, payments: Array<Pick<LoanPaymentLike, "date">>, date: string): number | null {
+  if (loan.interestAccrual !== "DAILY") return null;
+  const before = payments.map((p) => p.date).filter((d) => d < date).sort();
+  const from = before[before.length - 1] ?? addMonthsAnchored(loan.firstPaymentDate, -1, anchorDay(loan));
+  return Math.max(0, daysBetween(from, date));
+}
+
+/** Principal and interest the contract puts in payment n (1-based). */
+export function contractRow(loan: LoanTerms, n: number): { principal: number; interest: number } {
+  const before = scheduledBalance(loan, n - 1);
+  const after = scheduledBalance(loan, n);
+  const principal = round2(before - after);
+  const interest = round2(Math.max(0, Math.min(contractualPayment(loan), before * (1 + loan.interestRate / 12)) - principal));
+  return { principal, interest };
+}
+
+export type PlanComparison = {
+  id?: string;
+  n: number; // position in date order (or the lender's payment number)
+  contractPrincipal: number;
+  delta: number; // this payment's principal − the contract's
+  cumulative: number; // Σ delta so far: principal paid ahead of the contract
+};
+
+/**
+ * Each regular payment against the contract's row with the same number:
+ * extra principal per payment and the running total ahead (behind, when
+ * negative). Extra (principal-only) payments count toward the running
+ * total without consuming a contract row.
+ */
+export function compareToPlan(loan: LoanTerms, payments: LoanPaymentLike[]): PlanComparison[] {
+  const sorted = [...payments].sort((a, b) => a.date.localeCompare(b.date) || (a.paymentNumber ?? 0) - (b.paymentNumber ?? 0));
+  const out: PlanComparison[] = [];
+  let cumulative = 0;
+  let k = 0;
+  for (const p of sorted) {
+    if (p.isExtra) {
+      cumulative = round2(cumulative + p.principal);
+      out.push({ id: p.id, n: k, contractPrincipal: 0, delta: round2(p.principal), cumulative });
+      continue;
+    }
+    k = p.paymentNumber ?? k + 1;
+    const contract = contractRow(loan, k).principal;
+    const delta = round2(p.principal - contract);
+    cumulative = round2(cumulative + delta);
+    out.push({ id: p.id, n: k, contractPrincipal: contract, delta, cumulative });
+  }
+  return out;
 }
 
 export type LoanOutlook = {

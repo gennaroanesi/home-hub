@@ -9,7 +9,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NextLink from "next/link";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
@@ -17,7 +17,7 @@ import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
 import { Input } from "@heroui/input";
 import { Progress, Spinner, addToast } from "@heroui/react";
-import { FaArrowLeft, FaPen, FaPlus } from "react-icons/fa";
+import { FaArrowLeft, FaFileImport, FaPen, FaPlus } from "react-icons/fa";
 import { Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
@@ -25,9 +25,11 @@ import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { LoanModal, PaymentModal } from "@/components/finance/net-worth-modals";
-import { listAssets, listLoanPayments, listLoans } from "@/lib/finance/data";
+import { LoanImportModal, parseLoanSchedulePdf } from "@/components/finance/loan-import-modal";
+import { listAssets, listLoanPayments, listLoans, listSchedules } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, round2, todayIso } from "@/lib/finance/dates";
-import { LOAN_TYPE_LABELS, fmtDuration, loanOutlook, paymentDate, paymentsBetween, paymentToFinishIn, simulatePayoff, type LoanType } from "@/lib/finance/loans";
+import type { ExtractedLoanSchedule } from "@/lib/finance/loan-schedule-extract";
+import { LOAN_TYPE_LABELS, compareToPlan, fmtDuration, loanOutlook, paymentDate, paymentsBetween, paymentToFinishIn, simulatePayoff, type LoanType } from "@/lib/finance/loans";
 
 const pct = (r: number) => `${(r * 100).toFixed(3).replace(/\.?0+$/, "")}%`;
 const longDate = (d: string | null | undefined) => fmtDate(d, { month: "short", day: "numeric", year: "numeric" });
@@ -41,20 +43,25 @@ export default function LoanPage() {
   const [loans, setLoans] = useState<any[]>([]);
   const [payments, setPayments] = useState<any[]>([]);
   const [assets, setAssets] = useState<any[]>([]);
+  const [schedules, setSchedules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [paymentModal, setPaymentModal] = useState<any | null | undefined>(undefined);
   const [sim, setSim] = useState({ extra: "", lump: "", by: "" });
   const [showSchedule, setShowSchedule] = useState(false);
+  const [importing, setImporting] = useState<ExtractedLoanSchedule | null>(null);
+  const [parsing, setParsing] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
     try {
-      const [l, p, a] = await Promise.all([listLoans(financeClient), listLoanPayments(financeClient, id), listAssets(financeClient)]);
+      const [l, p, a, s] = await Promise.all([listLoans(financeClient), listLoanPayments(financeClient, id), listAssets(financeClient), listSchedules(financeClient)]);
       setLoans(l);
       setPayments(p);
       setAssets(a);
+      setSchedules(s);
     } catch (e) {
       addToast({ title: "Couldn't load the loan", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
@@ -75,7 +82,28 @@ export default function LoanPage() {
   const synced = !!account?.simplefinAccountId;
   const owed = Math.max(0, -(account?.currentBalance ?? 0));
   const asset = loan?.assetId ? assets.find((a) => a.id === loan.assetId) : null;
+  const schedule = loan?.recurringId ? schedules.find((s) => s.id === loan.recurringId) : null;
   const o = useMemo(() => (loan ? loanOutlook(loan, owed, payments, today) : null), [loan, owed, payments, today]);
+  // Each payment against the contract's row: extra principal, running total.
+  const plan = useMemo(() => {
+    const m = new Map<string, { delta: number; cumulative: number; n: number }>();
+    if (!loan) return { byId: m, ahead: 0 };
+    const rows = compareToPlan(loan, payments);
+    for (const r of rows) if (r.id) m.set(r.id, r);
+    return { byId: m, ahead: rows.length ? rows[rows.length - 1].cumulative : 0 };
+  }, [loan, payments]);
+
+  async function importPdf(file: File) {
+    setParsing(true);
+    try {
+      setImporting(await parseLoanSchedulePdf(file));
+    } catch (e) {
+      addToast({ title: "Couldn't read the schedule", description: e instanceof Error ? e.message : String(e), color: "danger" });
+    } finally {
+      setParsing(false);
+      if (fileInput.current) fileInput.current.value = "";
+    }
+  }
 
   // The simulator: current pace vs with extra / a lump sum.
   const extra = Math.max(0, Number(sim.extra) || 0);
@@ -154,6 +182,10 @@ export default function LoanPage() {
 
   const actions = (
     <>
+      <input ref={fileInput} type="file" accept="application/pdf,.pdf" className="hidden" onChange={(e) => e.target.files?.[0] && importPdf(e.target.files[0])} />
+      <Button size="sm" variant="flat" startContent={<FaFileImport />} isLoading={parsing} onPress={() => fileInput.current?.click()}>
+        Import lender schedule
+      </Button>
       <Button size="sm" variant="flat" startContent={<FaPen />} onPress={() => setEditing(true)}>
         Edit
       </Button>
@@ -333,6 +365,19 @@ export default function LoanPage() {
                   <Money value={o.recentAverage} /> /mo
                 </Row>
               )}
+              {loan.interestAccrual === "DAILY" && <Row label="Interest">daily simple interest</Row>}
+              <Row label="Paid by">
+                {schedule ? (
+                  <NextLink href="/finance/scheduled" className="text-primary">
+                    {schedule.description}
+                    <span className="text-default-500"> · next {fmtDate(schedule.nextDate)}</span>
+                  </NextLink>
+                ) : (
+                  <button type="button" className="text-default-500 underline decoration-dotted" onClick={() => setEditing(true)}>
+                    no scheduled transaction
+                  </button>
+                )}
+              </Row>
               {loan.notes && <div className="text-xs text-default-500 mt-2 whitespace-pre-wrap">{loan.notes}</div>}
             </CardBody>
           </Card>
@@ -340,14 +385,25 @@ export default function LoanPage() {
 
         {/* Payments */}
         <Card shadow="sm" className="lg:col-span-3">
-          <CardHeader className="flex justify-between">
-            <span className="font-semibold">Payments</span>
+          <CardHeader className="flex flex-wrap justify-between gap-2">
+            <span className="font-semibold">
+              Payments
+              {payments.length > 0 && Math.abs(plan.ahead) >= 1 && (
+                <Chip size="sm" variant="flat" color={plan.ahead > 0 ? "success" : "warning"} className="ml-2">
+                  {fmtCurrency(Math.abs(plan.ahead), { cents: false })} of principal {plan.ahead > 0 ? "ahead of" : "behind"} the contract
+                </Chip>
+              )}
+            </span>
             <Button size="sm" variant="light" startContent={<FaPlus />} onPress={() => setPaymentModal(null)}>
               Record
             </Button>
           </CardHeader>
           <CardBody className="pt-0">
-            {byYear.length === 0 && <div className="text-sm text-default-500">No payments recorded yet.{synced ? " The balance still follows the bank; recording them adds the interest history." : " Each one you record lowers the balance by its principal."}</div>}
+            {byYear.length === 0 && (
+              <div className="text-sm text-default-500">
+                No payments recorded yet.{synced ? " The balance still follows the bank; recording them adds the interest history." : " Each one you record lowers the balance by its principal."} Import the lender&apos;s schedule to load them all at once.
+              </div>
+            )}
             {byYear.map(([year, g]) => {
               const open = openYears.has(year);
               return (
@@ -384,40 +440,56 @@ export default function LoanPage() {
                       <table className="w-full text-sm tabular-nums min-w-lg">
                         <thead className="text-xs text-default-500 text-right">
                           <tr>
+                            <th className="text-left font-normal py-1">#</th>
                             <th className="text-left font-normal py-1">Date</th>
                             <th className="font-normal">Total</th>
                             <th className="font-normal">Principal</th>
                             <th className="font-normal">Interest</th>
                             <th className="font-normal">Escrow</th>
+                            <th className="font-normal" title="Principal against the contract's row with the same number">
+                              vs plan
+                            </th>
                             <th />
                           </tr>
                         </thead>
                         <tbody>
-                          {g.rows.map((p) => (
-                            <tr key={p.id} className="text-right hover:bg-default-50 cursor-pointer" onClick={() => setPaymentModal(p)}>
-                              <td className="text-left py-1">
-                                {fmtDate(p.date)}
-                                {p.isExtra && (
-                                  <Chip size="sm" variant="flat" color="success" className="ml-2 h-5">
-                                    extra
-                                  </Chip>
-                                )}
-                              </td>
-                              <td>
-                                <Money value={p.totalAmount} />
-                              </td>
-                              <td>
-                                <Money value={p.principal} />
-                              </td>
-                              <td>
-                                <Money value={p.interest} />
-                              </td>
-                              <td className="text-default-500">{p.escrow ? fmtCurrency(p.escrow) : "—"}</td>
-                              <td className="w-8 text-default-400">
-                                <FaPen className="inline text-xs" />
-                              </td>
-                            </tr>
-                          ))}
+                          {g.rows.map((p) => {
+                            const vs = plan.byId.get(p.id);
+                            return (
+                              <tr key={p.id} className="text-right hover:bg-default-50 cursor-pointer" onClick={() => setPaymentModal(p)}>
+                                <td className="text-left text-default-400 py-1">{p.paymentNumber ?? vs?.n ?? ""}</td>
+                                <td className="text-left py-1">
+                                  {fmtDate(p.date)}
+                                  {p.isExtra && (
+                                    <Chip size="sm" variant="flat" color="success" className="ml-2 h-5">
+                                      extra
+                                    </Chip>
+                                  )}
+                                  {p.estimated && (
+                                    <Chip size="sm" variant="flat" color="warning" className="ml-2 h-5" title="Split estimated from the bank transaction; the lender's schedule import makes it exact">
+                                      estimated
+                                    </Chip>
+                                  )}
+                                </td>
+                                <td>
+                                  <Money value={p.totalAmount} />
+                                </td>
+                                <td>
+                                  <Money value={p.principal} />
+                                </td>
+                                <td>
+                                  <Money value={p.interest} />
+                                </td>
+                                <td className="text-default-500">{p.escrow ? fmtCurrency(p.escrow) : "—"}</td>
+                                <td className={vs && Math.abs(vs.delta) >= 0.5 ? (vs.delta > 0 ? "text-success-600" : "text-warning-600") : "text-default-400"}>
+                                  {vs && Math.abs(vs.delta) >= 0.5 ? `${vs.delta > 0 ? "+" : "−"}${fmtCurrency(Math.abs(vs.delta), { cents: false })}` : "—"}
+                                </td>
+                                <td className="w-8 text-default-400">
+                                  <FaPen className="inline text-xs" />
+                                </td>
+                              </tr>
+                            );
+                          })}
                         </tbody>
                       </table>
                     </div>
@@ -482,7 +554,8 @@ export default function LoanPage() {
           else reload();
         }}
       />
-      <PaymentModal payment={paymentModal} loan={loan} owed={owed} synced={synced} onClose={() => setPaymentModal(undefined)} onSaved={reload} />
+      <PaymentModal payment={paymentModal} loan={loan} owed={owed} synced={synced} payments={payments} onClose={() => setPaymentModal(undefined)} onSaved={reload} />
+      <LoanImportModal schedule={importing} loan={loan} synced={synced} existingDates={new Set(payments.map((p) => p.date))} onClose={() => setImporting(null)} onSaved={reload} />
     </FinanceShell>
   );
 }

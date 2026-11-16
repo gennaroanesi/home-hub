@@ -126,15 +126,70 @@ Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,
   month, a lump sum, a different payment, or "paid off by" → the payment
   needed; months and interest saved vs the current payment.
 
+### Tracking payments against the lender (2026-11-16)
+
+- **The lender's schedule is the source of truth for payments.** "Import
+  lender schedule" on the loan page takes the lender's PDF (BMW FS's "actual
+  amortization schedule", a servicer's payment history): upload kind `loan`
+  (`/api/finance/upload-url`) → `parseLoanSchedulePdf` (paycheck-processor
+  Lambda, Claude reads the rows: `lib/finance/loan-schedule-extract.ts`,
+  rows whose split doesn't add up are flagged) → a preview → the
+  `import_loan_payments` op. Rows match existing payments **by date**: a
+  recorded one is corrected to the lender's split (`source: LENDER`,
+  `estimated: false`, `paymentNumber`), others are added, nothing is
+  deleted; a manual account's balance is set to the lender's figure (the
+  last row's balance, or `owedAfter`). Re-importing the next letter is the
+  manual sync; identical rows count as unchanged.
+- **Daily simple interest** (`homeFinanceLoan.interestAccrual = DAILY`, the
+  BMW; null = MONTHLY, the mortgage): estimated splits use the days since the
+  previous payment (`interestDays` → `suggestSplit(…, days)`), which
+  reproduces BMW FS's rows to the cent. A split that wasn't typed or imported
+  is marked `estimated`.
+- **The scheduled transaction that pays it** (`homeFinanceLoan.recurringId`;
+  "Paid by" in the loan editor: pick a bill or create one from the terms,
+  `save_finance_loan newSchedule` → monthly, P&I + escrow, next due on the
+  next payment date, `matchPattern` for the sync, `endDate` at the contract's
+  end). When the finance sync links a posted transaction to that schedule it
+  also records the payment on the loan (`lib/finance/loan-capture.ts`,
+  `source: BANK`, estimated split, `transactionId`; a payment already on that
+  date just gains the link; a manual balance moves by the principal). The
+  bills page shows a "Loan" chip on such a schedule. One schedule pays one
+  loan.
+- **Against the contract** (`compareToPlan`): each regular payment next to
+  the contract's row with the same number (the lender's `paymentNumber`, else
+  position in date order), extra principal per payment ("vs plan" column) and
+  the running total ahead or behind (`principalAhead` on the op, a chip on the
+  loan page). Extra payments add to the total without consuming a row.
+- **The BMW** (2026-11-16, from BMW FS's letters): $106,622.78 at 5.49% over
+  72 months, $1,745.48 contractual, first payment 2023-01-18, daily accrual;
+  45 payments through 2026-10-23, balance $36,409.33, interest paid
+  $15,568.75. Mostly $2,000 payments; no July 2026 payment (71 days of
+  interest on #43). Import the November letter after the deploy; create the
+  bill from the loan editor (the household has no scheduled transactions yet).
+
 Ops (`lib/ops/net-worth.ts`): `get_net_worth` (`includeHistory`),
-`list_finance_loans` (by id or name: "mortgage", "car", the asset or lender),
-`simulate_loan_payoff`, `save_finance_asset`, `save_finance_loan`,
-`record_loan_payment`. Pages: `/finance/net-worth` (headline, own vs owe bar,
-history, property with equity, loans, accounts by group) and
-`/finance/loans/[id]` (where it stands, simulator + balance chart, terms,
-payments by year with interest per year for taxes, remaining schedule); the
-overview has a net worth line, a LOAN account's page links to its loan. Phone:
-Finance → Net worth (read-only).
+`list_finance_loans` (by id or name: "mortgage", "car", the asset or lender;
+each loan carries `schedule`, `interestAccrual`, `principalAhead`),
+`simulate_loan_payoff`, `save_finance_asset`, `save_finance_loan`
+(`interestAccrual`, `recurringId`, `newSchedule`), `record_loan_payment`
+(`paymentNumber`; estimated splits flagged), `import_loan_payments` (rows +
+`owedAfter`, `source`). Pages: `/finance/net-worth` (headline, own vs owe
+bar, history, property with equity, loans, accounts by group) and
+`/finance/loans/[id]` (where it stands, simulator + balance chart, terms with
+"paid by", payments by year with interest per year for taxes, "vs plan" and
+estimated chips, import lender schedule, remaining schedule); the overview
+has a net worth line, a LOAN account's page links to its loan. Phone: Finance
+→ Net worth (read-only).
+
+**Open (assets):** market values for the house and the car. Plan agreed
+2026-11-16: a monthly job writing an ESTIMATE valuation from RentCast's value
+estimate (free tier, 50 requests/month) for the house and VinAudit's /
+MarketCheck's market value by VIN + mileage for the car (the user is creating
+the accounts), with a depreciation-curve fallback and a "refresh now" button;
+the asset gains a valuation config (provider, address or VIN, mileage).
+Williamson CAD's yearly appraised value goes in as an APPRAISAL. No parallel
+inventory records for the house or cars; an `inventoryItemId` link on the
+asset for things that are both (a watch, art).
 
 Data came over with `scripts/import-gennaroanesi-loans.ts` (assets with a
 purchase + today's valuation; the mortgage attached to the synced Chase

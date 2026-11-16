@@ -7,21 +7,21 @@ import { MAX_FINANCE_PDF_BYTES, stagingKey, type FinanceUploadKind } from "@/lib
 
 const BUCKET = process.env.HOME_HUB_BUCKET ?? "";
 const s3 = new S3Client({ region: "us-east-1" });
-const KINDS = new Set<FinanceUploadKind>(["paycheck", "invoice"]);
+const KINDS = new Set<FinanceUploadKind>(["paycheck", "invoice", "loan"]);
 
 /**
  * POST /api/finance/upload-url
- * Body: { kind: "paycheck" | "invoice", sizeBytes? }
+ * Body: { kind: "paycheck" | "invoice" | "loan", sizeBytes? }
  * Returns: { uploadUrl, s3Key, expiresIn }
  *
  * The page PUTs the PDF to uploadUrl (Content-Type application/pdf), then
- * calls parsePaycheckPdf / ingestInvoicePdf with s3Key. PDFs only; the
- * processors check the bytes too.
+ * calls parsePaycheckPdf / ingestInvoicePdf / parseLoanSchedulePdf with
+ * s3Key. PDFs only; the processors check the bytes too.
  */
 async function handler(req: NextApiRequest, res: NextApiResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method not allowed" });
   const { kind, sizeBytes } = req.body ?? {};
-  if (!KINDS.has(kind)) return res.status(400).json({ error: "kind must be paycheck or invoice" });
+  if (!KINDS.has(kind)) return res.status(400).json({ error: "kind must be paycheck, invoice or loan" });
   if (typeof sizeBytes === "number" && sizeBytes > MAX_FINANCE_PDF_BYTES) return res.status(400).json({ error: "PDF is larger than 20 MB" });
   const s3Key = stagingKey(kind, randomUUID());
   const expiresIn = 600;
