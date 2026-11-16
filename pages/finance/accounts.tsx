@@ -19,69 +19,23 @@ import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, RETIREMENT_TYPES, RETIREMENT_TYPE_LABELS, accountTypeLabel, isInvested } from "@/lib/finance/accounts";
-import { listHoldings, txIndexQuery } from "@/lib/finance/data";
+import {
+  ACCOUNT_HAS_TRANSACTIONS,
+  accountFormFrom,
+  accountHasTransactions,
+  deleteAccountWithHoldings,
+  newAccountForm,
+  parseSimplefinListing,
+  pickSimplefinAccount,
+  saveAccountForm,
+  simplefinPickerGroups,
+  type AccountForm as Form,
+  type SfAccount,
+  type SfConnection,
+} from "@/lib/finance/account-form";
 import { DEFAULT_SIMPLEFIN_CONNECTION, SIMPLEFIN_CONNECTIONS, simplefinConnectionLabel } from "@/lib/finance/simplefin-connections";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-type SfAccount = { id: string; institution: string; name: string; connection: string; mappedTo: { id: string; name: string } | null };
-type SfConnection = { key: string; label: string; ok: boolean; error: string | null };
-
-type Form = {
-  id?: string;
-  name: string;
-  type: string;
-  retirementType: string;
-  institution: string;
-  last4: string;
-  currentBalance: string;
-  ownerPersonIds: string[];
-  active: boolean;
-  sortOrder: string;
-  minBalance: string;
-  creditLimit: string;
-  statementDueDay: string;
-  apr: string;
-  apy: string;
-  simplefinAccountId: string;
-  simplefinConnection: string;
-  notes: string;
-};
-
-const EMPTY: Form = {
-  name: "",
-  type: "CHECKING",
-  retirementType: "_401K",
-  institution: "",
-  last4: "",
-  currentBalance: "0",
-  ownerPersonIds: [],
-  active: true,
-  sortOrder: "",
-  minBalance: "",
-  creditLimit: "",
-  statementDueDay: "",
-  apr: "",
-  apy: "",
-  simplefinAccountId: "",
-  simplefinConnection: DEFAULT_SIMPLEFIN_CONNECTION,
-  notes: "",
-};
-
-const str = (n: number | null | undefined) => (n == null ? "" : String(n));
-const num = (s: string): number | null => (s.trim() === "" || !Number.isFinite(Number(s)) ? null : Number(s));
-/** Percent typed by the user (6.25) ↔ stored decimal (0.0625). */
-const pctIn = (n: number | null | undefined) => (n == null ? "" : String(Math.round(n * 10000) / 100));
-const pctOut = (s: string) => {
-  const n = num(s);
-  return n == null ? null : n / 100;
-};
-
-function parseJsonLayers(v: unknown): any {
-  let d: any = v;
-  while (typeof d === "string") d = JSON.parse(d);
-  return d;
-}
 
 export default function FinanceAccountsPage() {
   const refs = useFinanceRefs();
@@ -96,65 +50,15 @@ export default function FinanceAccountsPage() {
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
 
   function edit(a?: any) {
-    if (!a) return setForm({ ...EMPTY, sortOrder: String((refs.accounts.length + 1) * 10) });
-    setForm({
-      id: a.id,
-      name: a.name ?? "",
-      type: a.type ?? "OTHER",
-      retirementType: a.retirementType ?? "_401K",
-      institution: a.institution ?? "",
-      last4: a.last4 ?? "",
-      currentBalance: str(a.currentBalance ?? 0),
-      ownerPersonIds: (a.ownerPersonIds ?? []).filter(Boolean),
-      active: a.active !== false,
-      sortOrder: str(a.sortOrder),
-      minBalance: str(a.minBalance),
-      creditLimit: str(a.creditLimit),
-      statementDueDay: str(a.statementDueDay),
-      apr: pctIn(a.apr),
-      apy: pctIn(a.apy),
-      simplefinAccountId: a.simplefinAccountId ?? "",
-      simplefinConnection: a.simplefinConnection ?? DEFAULT_SIMPLEFIN_CONNECTION,
-      notes: a.notes ?? "",
-    });
+    setForm(a ? accountFormFrom(a) : newAccountForm(refs.accounts.length));
   }
 
   async function save() {
     if (!form) return;
-    if (!form.name.trim()) return addToast({ title: "Name is required", color: "warning" });
-    const due = num(form.statementDueDay);
-    if (due != null && (due < 1 || due > 31)) return addToast({ title: "Statement due day must be 1–31", color: "warning" });
-    const sfId = form.simplefinAccountId.trim() || null;
-    const clash = sfId && refs.accounts.find((a) => a.simplefinAccountId === sfId && a.id !== form.id);
-    if (clash) return addToast({ title: `That SimpleFIN account is already linked to ${clash.name}`, color: "warning" });
-
-    const existing = form.id ? refs.accounts.find((a) => a.id === form.id) : null;
-    const balance = num(form.currentBalance) ?? 0;
-    const balanceChanged = !existing || Math.abs((existing.currentBalance ?? 0) - balance) >= 0.005;
-    const row: any = {
-      name: form.name.trim(),
-      type: form.type as any,
-      retirementType: form.type === "RETIREMENT" ? (form.retirementType as any) : null,
-      institution: form.institution.trim() || null,
-      last4: form.last4.trim() || null,
-      currentBalance: balance,
-      ownerPersonIds: form.ownerPersonIds,
-      active: form.active,
-      sortOrder: num(form.sortOrder),
-      minBalance: form.type === "CHECKING" || form.type === "CASH" ? num(form.minBalance) : null,
-      creditLimit: form.type === "CREDIT" ? num(form.creditLimit) : null,
-      statementDueDay: form.type === "CREDIT" ? due : null,
-      apr: form.type === "CREDIT" || form.type === "LOAN" ? pctOut(form.apr) : null,
-      apy: form.type === "SAVINGS" ? pctOut(form.apy) : null,
-      simplefinAccountId: sfId,
-      simplefinConnection: sfId ? form.simplefinConnection : null,
-      notes: form.notes.trim() || null,
-      ...(balanceChanged ? { balanceUpdatedAt: new Date().toISOString() } : {}),
-    };
     setSaving(true);
     try {
-      const r = form.id ? await financeClient.models.homeFinanceAccount.update({ id: form.id, ...row }) : await financeClient.models.homeFinanceAccount.create(row);
-      if (r.errors?.length) throw new Error(r.errors[0].message);
+      const invalid = await saveAccountForm(financeClient, form, refs.accounts);
+      if (invalid) return addToast({ title: invalid, color: "warning" });
       addToast({ title: form.id ? "Account saved" : "Account added", color: "success" });
       setForm(null);
       await refs.reload();
@@ -167,20 +71,20 @@ export default function FinanceAccountsPage() {
 
   async function remove() {
     if (!form?.id) return;
-    const { data, errors } = await txIndexQuery(financeClient, "AccountIdAndDate")({ accountId: form.id }, { limit: 1 });
-    if (errors?.length) {
-      addToast({ title: "Couldn't check for transactions", description: errors[0].message, color: "danger" });
-      return;
-    }
-    if (data?.length) {
-      addToast({ title: "This account has transactions", description: "Turn off Active instead, so its history stays in the reports.", color: "warning" });
+    try {
+      if (await accountHasTransactions(financeClient, form.id)) {
+        addToast({ title: ACCOUNT_HAS_TRANSACTIONS.title, description: ACCOUNT_HAS_TRANSACTIONS.detail, color: "warning" });
+        return;
+      }
+    } catch (e) {
+      addToast({ title: "Couldn't check for transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
       return;
     }
     if (!confirm(`Delete ${form.name}?`)) return;
-    const r = await financeClient.models.homeFinanceAccount.delete({ id: form.id });
-    if (r.errors?.length) return addToast({ title: "Couldn't delete", description: r.errors[0].message, color: "danger" });
-    for (const h of await listHoldings(financeClient, form.id)) {
-      await financeClient.models.homeFinanceHolding.delete({ accountId: h.accountId, holdingKey: h.holdingKey });
+    try {
+      await deleteAccountWithHoldings(financeClient, form.id);
+    } catch (e) {
+      return addToast({ title: "Couldn't delete", description: e instanceof Error ? e.message : String(e), color: "danger" });
     }
     setForm(null);
     await refs.reload();
@@ -193,10 +97,10 @@ export default function FinanceAccountsPage() {
     try {
       const r = await financeClient.mutations.listSimplefinAccounts();
       if (r.errors?.length) throw new Error(r.errors[0].message);
-      const data = parseJsonLayers(r.data) ?? {};
+      const data = parseSimplefinListing(r.data);
       if (data.error) setSfError(data.error);
-      setSfAccounts(data.accounts ?? []);
-      setSfConnections(data.connections ?? []);
+      setSfAccounts(data.accounts);
+      setSfConnections(data.connections);
     } catch (e) {
       setSfError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -409,8 +313,8 @@ export default function FinanceAccountsPage() {
               <div className="text-sm text-danger">{sfError}</div>
             ) : (
               <div className="flex flex-col gap-4">
-                {(sfConnections.length ? sfConnections : SIMPLEFIN_CONNECTIONS.map((c) => ({ ...c, ok: true, error: null }))).map((conn) => {
-                  const rows = sfAccounts.filter((s) => s.connection === conn.key);
+                {simplefinPickerGroups({ accounts: sfAccounts, connections: sfConnections }, form).map((conn) => {
+                  const rows = conn.rows;
                   return (
                     <div key={conn.key}>
                       <div className="text-sm font-semibold mb-1">{conn.label}&apos;s SimpleFIN</div>
@@ -421,9 +325,7 @@ export default function FinanceAccountsPage() {
                       ) : (
                         <ul className="flex flex-col divide-y divide-default-100">
                           {rows.map((s) => {
-                            const selected = form?.simplefinAccountId === s.id && form?.simplefinConnection === s.connection;
-                            const mine = form?.id && s.mappedTo?.id === form.id;
-                            const taken = s.mappedTo && !mine;
+                            const { selected, taken } = s;
                             return (
                               <li key={s.id} className="flex items-center gap-2 py-2">
                                 <div className="flex-1 min-w-0">
@@ -437,11 +339,9 @@ export default function FinanceAccountsPage() {
                                   size="sm"
                                   variant={selected ? "solid" : "flat"}
                                   color={selected ? "primary" : "default"}
-                                  isDisabled={!!taken}
+                                  isDisabled={taken}
                                   onPress={() => {
-                                    set("simplefinAccountId", s.id);
-                                    set("simplefinConnection", s.connection);
-                                    if (form && !form.institution) set("institution", s.institution);
+                                    setForm((f) => (f ? pickSimplefinAccount(f, s) : f));
                                     setSfOpen(false);
                                   }}
                                 >

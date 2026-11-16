@@ -121,6 +121,11 @@ export type FinanceAccount = { id: string; name: string; type: string | null; in
 
 let accountsCache: FinanceAccount[] | null = null;
 
+/** Drop the cached account list (after adding, editing or deleting an account). */
+export function forgetFinanceAccounts() {
+  accountsCache = null;
+}
+
 /** The finance accounts (reference data for filters and pickers), cached for the session. */
 export function useFinanceAccounts(): FinanceAccount[] {
   const [accounts, setAccounts] = useState<FinanceAccount[]>(accountsCache ?? []);

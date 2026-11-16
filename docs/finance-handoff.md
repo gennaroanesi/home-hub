@@ -82,7 +82,7 @@ Household differences from gennaroanesi.com:
 | `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `simplefin-connections.ts` (one connection per person), `data.ts` (loading through the indexes) |
 | `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, syncs positions for invested accounts, writes a sync log |
 | `lib/ops/finance.ts` | `get_finance_summary` (+ per-account buffer / projected low, last sync), `get_finance_budget` (month / quarter / year / last3, cadence filter), `list_finance_transactions` (`categories` = any of), `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule` (`markPaid`), `list_finance_goals`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh`, the pages' writes and the phone |
-| `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings). All through the ops; sheets in `mobile/components/finance/` |
+| `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings, SimpleFIN connection + last sync; add / edit / link / delete via `AccountFormModal`, writing `homeFinanceAccount` directly through `lib/finance/account-form.ts`, the same code as the web form). Everything else through the ops; sheets in `mobile/components/finance/` |
 | `pages/finance/` | Overview, Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
 
 ## Paychecks, tax outlook, invoices (2026-11-09)
@@ -211,7 +211,7 @@ names a stored URL sees.
   new-merchant charge posts. `get_finance_summary` already computes the low
   point; the check would reuse `lib/finance/recurring.ts` and `budget.ts`.
 - A finance line in the daily summary (upcoming debits today/tomorrow).
-- Phone: review, paychecks, invoices, rules, groups and tax outlook are web-only; new budget lines, account setup and manual transactions too.
+- Phone: review, paychecks, invoices, rules, groups and tax outlook are web-only; new budget lines and manual transactions too.
 - Budget rollover (`rollover` is stored but not applied; gennaroanesi.com
   freezes period rows for it in `financeBudgetPeriod`).
 - Loans (mortgage / car amortization) if the payoff view is wanted here.

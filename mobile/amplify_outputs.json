@@ -4966,6 +4966,13 @@
               "isRequired": false,
               "attributes": []
             },
+            "simplefinConnection": {
+              "name": "simplefinConnection",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
             "balanceUpdatedAt": {
               "name": "balanceUpdatedAt",
               "isArray": false,
