@@ -464,6 +464,9 @@ const schema = a
           "CLOSET",
           "STORAGE",
           "GARAGE",
+          // Unusable space inside the walls (duct / plumbing chases, attic
+          // bulkheads): drawn hatched, no label.
+          "CHASE",
           // Site plan ("Lot" level): boundary, house footprint, lawn,
           // and paved areas (drive, walks, patio, A/C pad).
           "LOT",

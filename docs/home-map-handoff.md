@@ -38,7 +38,7 @@ A to-scale map of the house under **Home → Map**: two floors plus the garage. 
 }
 ```
 - **Coordinates:** feet from the floor's top-left corner, with x to the right and y down. Each value is a number or a feet-and-inches string.
-- **Room kinds:** ROOM, BEDROOM, BATHROOM, KITCHEN, LIVING, DINING, OFFICE, LAUNDRY, HALLWAY, STAIRS, CLOSET, STORAGE, GARAGE. For the site plan: LOT, FOOTPRINT, YARD, HARDSCAPE. Plus OTHER.
+- **Room kinds:** ROOM, BEDROOM, BATHROOM, KITCHEN, LIVING, DINING, OFFICE, LAUNDRY, HALLWAY, STAIRS, CLOSET, STORAGE, GARAGE, CHASE (unusable space, hatched, unlabeled). For the site plan: LOT, FOOTPRINT, YARD, HARDSCAPE. Plus OTHER.
 - **Label position:** a room can include `"label": [x, y]` to place its name. Names in narrow, tall spaces are drawn vertically.
 
 ## The lot (traced 2026-09-26)
@@ -66,12 +66,16 @@ Source: Meritage's marketing plan "The Reynolds / Plan 890", first floor (REV 01
 - **Lot kept in step:** the lot's house footprint now uses the floor plan's front bump (Bedroom 5 + foyer, 15'-5" wide), with the porch and walk in front of it.
 - **Covered patio:** the user confirmed the larger, "optional" covered patio from the plot plan (about 28' × 7') was built. Both the lot and the first floor use it; the marketing plan shows the standard 18'-5" × 6'-4".
 
-## The second floor (traced 2026-09-26)
-Source: the Plan 890 second-floor marketing plan, at the same scale as the first floor (the house's 34'-11" width).
+## The second floor (traced 2026-09-26, re-measured 2026-11-16)
+Source: the Plan 890 second-floor marketing plan, at the same scale as the first floor (the house's 34'-11" width), corrected with tape measurements on 2026-11-16.
 - **Placement:** the rear wall sits over the first floor's Family / Primary suite front wall (y = 16'), so the load-bearing walls stack. That also puts the upper stair flight over the first-floor stairs, within about 0.5'. The game room ends about 5' behind the garage face. Bedroom 5 and the porch are one-story.
 - **Rejected alternative:** front flush with the garage. That puts the stairs across the primary closet.
-- **13 spaces:** Bedrooms 2, 3 and 4 (each with a closet), Bath 2, Upstairs hall (+ Linen), Storage, Stairs, Study, Game room.
+- **Convention differs from the first floor:** rooms are **interior faces**, with gaps for the walls (4" interior, 6" exterior), so the label on a room is what a tape measure says. The first floor and lot still tile to wall centers; redo them the same way when they get measured.
+- **Measured (exact):** Bedroom 4 12'4" × 10'5", Bedroom 2 10'4" × 11'4", Bedroom 3 10' × 11' (all excluding closets), and 4'3" for Bedroom 2's entry between the bath wall and the storage wall. Everything else is the plan's proportions fitted to those: closets about 2'3" deep, Bath 2 5'6" wide, the corridor 3'.
+- **Layout, from the plan:** a straight corridor runs under Bedroom 4 and Bath 2 from Bedroom 3's door (left, off a short alcove) to Bedroom 2's door (right), with the bath door on its top side; the hall continues down beside the stairs into the game room. Bedroom 4 is an L (room + the door nook under its closet); Bedroom 2 is an L (room + the 4'3" entry beside its closet, whose floor sits about 2' below Storage's top wall). Bedroom 3 is a plain rectangle with its closet in a separate column.
+- **16 spaces:** the 13 above plus three `CHASE` blocks (the plan's cross-hatched dead space: above Bedroom 2's closet, above Bedroom 3's closet, and between Linen and Storage). `CHASE` draws hatched with no label.
 - **Floor-2 DWG:** its 14 dimensions use a different underlay scale from floor 1 (interior width 413" vs 398"), so they're only proportions. They weren't used as measurements.
+- **Open:** L-shaped rooms are labeled by area only (`describeSize`); showing the main rectangle too was offered, not built.
 
 ## Zoom and pan
 `components/floor-map.tsx` wraps the generated SVG and drives its `viewBox`:
@@ -121,7 +125,7 @@ Importing writes floors and rooms into the database (`homeFloor` / `homeRoom`). 
 ## Next steps
 1. ~~Deploy~~ Done: build 165.
 2. **Import** `house-map.json` on `/map` after the deploy, and upload the PDFs to Documents as Property.
-3. ~~Trace the second floor~~ Done. **Import** `house-map-second-floor.json`.
+3. ~~Trace the second floor~~ Done and imported. **Re-import the re-measured second floor (2026-11-16)** after the `CHASE` kind is deployed (the import validates kinds against the schema). Then measure the first floor the same way.
 4. **Earlier plan for tracing floor plans:** the user sends images of both floors and the garage plus known room dimensions. Trace the outlines in feet, using the given measurements as the scale (they win over the drawing). Render a preview for the user to check, then hand over the JSON to import on `/map`.
 5. **Later:**
    - Show Home Assistant devices in their room (match `homeRoom.haArea` to `homeDevice.area`).

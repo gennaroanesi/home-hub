@@ -147,6 +147,9 @@ const r2 = (n: number) => Math.round(n * 100) / 100;
 
 const SMALL_KINDS = new Set(["CLOSET", "STORAGE", "STAIRS", "HALLWAY", "HARDSCAPE"]);
 
+/** Drawn hatched with no label: chases, bulkheads and other dead space. */
+const UNLABELED_KINDS = new Set(["CHASE"]);
+
 /**
  * Standalone, to-scale SVG for one floor (1 user unit = 1 foot). Rooms
  * are <g class="room" data-room-id="…"> so the page can handle clicks by
@@ -191,6 +194,8 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
       ].join(""),
     );
 
+    if (UNLABELED_KINDS.has(room.kind ?? "")) continue;
+
     // Vertical when the name wouldn't fit across but would fit down.
     const approxWidth = room.name.length * fs * 0.62; // ~0.6em per character
     const vertical = approxWidth > rb.width * 0.9 && rb.depth > rb.width;
@@ -230,6 +235,8 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
     .room.kind-footprint polygon { fill: #e5e7eb; stroke: #374151; stroke-width: 0.2; }
     .room.kind-yard polygon { fill: #e3f1dc; stroke: #7aa66a; stroke-width: 0.1; }
     .room.kind-hardscape polygon { fill: #e7e5e4; stroke: #a8a29e; stroke-width: 0.1; }
+    .hatch line { stroke: #9ca3af; stroke-width: 0.08; }
+    .room.kind-chase polygon { fill: url(#hatch); stroke: #9ca3af; }
     .room:hover polygon { fill: #dde7f3; cursor: pointer; }
     .room.selected polygon { fill: #cfe0f7; stroke: #2563eb; stroke-width: 0.2; }
     .label, .size, .scale text, .badge text { font-family: system-ui, -apple-system, sans-serif; text-anchor: middle; }
@@ -248,6 +255,8 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
       .room.kind-footprint polygon { fill: #2b2f36; stroke: #d1d5db; }
       .room.kind-yard polygon { fill: #1e2b1a; stroke: #4d7a40; }
       .room.kind-hardscape polygon { fill: #292524; stroke: #57534e; }
+      .hatch line { stroke: #6b7280; }
+      .room.kind-chase polygon { stroke: #6b7280; }
       .room:hover polygon { fill: #26344a; }
       .room.selected polygon { fill: #1e3a5f; stroke: #60a5fa; }
       .label { fill: #f3f4f6; }
@@ -259,6 +268,9 @@ export function buildFloorSvg(rooms: RoomShape[], opts: FloorSvgOptions = {}): s
     `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${vbX} ${vbY} ${vbW} ${vbH}" width="100%" preserveAspectRatio="xMidYMid meet" role="img"${opts.title ? ` aria-label="${esc(opts.title)}"` : ""}>`,
     opts.title ? `<title>${esc(opts.title)}</title>` : "",
     `<style>${style}</style>`,
+    // 45° stripes, 0.5 ft apart, for CHASE: the two lines keep the
+    // tile seamless. Dead space reads as unusable without a label.
+    `<defs><pattern id="hatch" class="hatch" width="0.5" height="0.5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="0.5"/></pattern></defs>`,
     roomEls,
     scaleBar,
     `</svg>`,
@@ -300,6 +312,7 @@ export const ROOM_KINDS = [
   "CLOSET",
   "STORAGE",
   "GARAGE",
+  "CHASE",
   "LOT",
   "FOOTPRINT",
   "YARD",
@@ -322,6 +335,7 @@ export const ROOM_KIND_LABELS: Record<RoomKind, string> = {
   CLOSET: "Closet",
   STORAGE: "Storage",
   GARAGE: "Garage",
+  CHASE: "Chase (unusable)",
   LOT: "Lot boundary",
   FOOTPRINT: "House footprint",
   YARD: "Yard / lawn",

@@ -92,6 +92,18 @@ describe("buildFloorSvg", () => {
     expect(svg).toContain("20′ × 12′");
     expect(svg).toContain("10 ft");
   });
+
+  it("hatches chases and leaves them unlabeled", () => {
+    const svg = buildFloorSvg([
+      { id: "h", name: "Upstairs hall", kind: "HALLWAY", points: rectPoints(0, 0, 10, 3) },
+      { id: "c", name: "Hall chase", kind: "CHASE", points: rectPoints(10, 0, 4, 3) },
+    ]);
+    expect(svg).toContain('<pattern id="hatch"');
+    expect(svg).toContain('class="room kind-chase" data-room-id="c"');
+    expect(svg).toContain("<title>Hall chase</title>");
+    expect(svg).not.toContain(">Hall chase</text>");
+    expect(svg).toContain(">Upstairs hall</text>");
+  });
 });
 
 describe("import / export", () => {
