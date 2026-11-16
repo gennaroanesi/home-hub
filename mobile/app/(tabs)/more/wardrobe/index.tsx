@@ -112,7 +112,7 @@ export default function Wardrobe() {
       {toastNode}
 
       {data.people.length > 1 && (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.people}>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.peopleScroll} contentContainerStyle={styles.people}>
           {data.people.map((p) => (
             <Chip key={p.id} on={p.id === personId} onPress={() => pickPerson(p.id)} label={`${p.emoji ? `${p.emoji} ` : ""}${p.name}`} />
           ))}
@@ -227,6 +227,8 @@ export default function Wardrobe() {
 }
 
 const styles = StyleSheet.create({
-  people: { flexDirection: "row", gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
+  // flexGrow/flexShrink 0: otherwise the closet's ScrollView below squeezes this row and clips the chips.
+  peopleScroll: { flexGrow: 0, flexShrink: 0 },
+  people: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 20, paddingBottom: 10 },
   body: { paddingHorizontal: 16, paddingTop: 4, paddingBottom: 60 },
 });

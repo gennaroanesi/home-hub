@@ -208,7 +208,7 @@ export default function Contacts() {
         </View>
       ) : (
         <View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          <ScrollView horizontal style={{ flexGrow: 0, flexShrink: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
             {["ALL", ...usedCategories].map((c) => {
               const on = category === c;
               return (

@@ -109,7 +109,7 @@ export default function FinanceTransactions() {
             returnKeyType="search"
           />
         </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+        <ScrollView horizontal style={{ flexGrow: 0, flexShrink: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
           <Chip label="Needs category" on={uncategorized} color={WARN} onPress={() => setUncategorized(!uncategorized)} />
           <Chip label={categories.length ? `${categories.length === 1 ? categories[0] : `${categories.length} categories`} ✕` : "Category…"} on={categories.length > 0} onPress={() => (categories.length ? setCategories([]) : setPickCategory(true))} />
           <Chip label="All accounts" on={!accountId} onPress={() => setAccountId("")} />

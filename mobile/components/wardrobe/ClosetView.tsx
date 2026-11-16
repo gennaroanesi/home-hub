@@ -61,17 +61,7 @@ export function ClosetView({
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ws.chipRow}>
         <Chip on={filter.status === "OWNED"} onPress={() => set({ status: "OWNED" })} label="Wearing" />
         <Chip on={filter.status === ""} onPress={() => set({ status: "" })} label="Everything" />
-        {WARDROBE_STATUSES.map((s) => (
-          <Chip
-            key={s}
-            on={filter.status === s}
-            onPress={() => set({ status: s })}
-            label={WARDROBE_STATUS_LABELS[s]}
-            count={items.filter((i) => (i.status ?? "KEEP") === s).length}
-          />
-        ))}
-      </ScrollView>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ws.chipRow}>
+        <View style={styles.divider} />
         <Chip
           on={filter.inLook === "YES"}
           onPress={() => set({ inLook: filter.inLook === "YES" ? "" : "YES" })}
@@ -84,8 +74,18 @@ export function ClosetView({
           label="Not in a look"
           count={items.filter((i) => !inLooks.has(i.id)).length}
         />
+        <View style={styles.divider} />
+        {WARDROBE_STATUSES.map((s) => (
+          <Chip
+            key={s}
+            on={filter.status === s}
+            onPress={() => set({ status: s })}
+            label={WARDROBE_STATUS_LABELS[s]}
+            count={items.filter((i) => (i.status ?? "KEEP") === s).length}
+          />
+        ))}
       </ScrollView>
-      <Text style={[ws.meta, { marginVertical: 6 }]}>
+      <Text style={[ws.meta, { marginTop: 2, marginBottom: 4 }]}>
         {counts.owned} owned · {counts.wish} on the wishlist · {counts.photos} of {items.length} have photos
       </Text>
 
@@ -158,10 +158,11 @@ const styles = StyleSheet.create({
   cardImg: { aspectRatio: 4 / 3 },
   cardBody: { padding: 10, gap: 2 },
   brand: { fontSize: 10, color: "#999", textTransform: "uppercase", letterSpacing: 0.8 },
-  name: { fontSize: 14, fontWeight: "500", color: "#222", lineHeight: 18, minHeight: 36 },
+  name: { fontSize: 14, fontWeight: "500", color: "#222", lineHeight: 18 },
   metaRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   meta: { fontSize: 12, color: "#777", flexShrink: 1 },
-  badges: { flexDirection: "row", alignItems: "center", gap: 6, minHeight: 18, marginTop: 2, flexWrap: "wrap" },
+  badges: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" },
+  divider: { width: StyleSheet.hairlineWidth, alignSelf: "stretch", marginVertical: 4, marginHorizontal: 4, backgroundColor: "#ccc" },
   qty: { backgroundColor: "#f1f1f1", borderRadius: 4, paddingHorizontal: 5 },
   qtyText: { fontSize: 10, fontWeight: "600", color: "#555" },
   worn: { fontSize: 10, color: "#999" },
