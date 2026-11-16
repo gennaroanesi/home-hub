@@ -3,12 +3,14 @@
 // real entry; others stay as "coming soon" until their phase lands.
 
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { Fragment, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { getClient } from "../../../lib/amplify";
 import { signOut } from "../../../lib/auth";
+import { SPECIES_EMOJI, type PetSpecies } from "../../../lib/pets";
 import { usePerson } from "../../../lib/use-person";
 
 interface ComingRow {
@@ -83,6 +85,41 @@ export default function More() {
       else next.add(route);
       return next;
     });
+  // Pets expand into one row per active pet, so a pet is one tap away.
+  const [pets, setPets] = useState<{ id: string; name: string; species?: string | null }[]>([]);
+  useFocusEffect(
+    useCallback(() => {
+      void getClient()
+        .models.homePet.list()
+        .then(({ data }) =>
+          setPets(
+            (data ?? [])
+              .filter((p) => p.active !== false)
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((p) => ({ id: p.id, name: p.name, species: p.species })),
+          ),
+        )
+        .catch(() => {});
+    }, []),
+  );
+  const rows = useMemo(
+    () =>
+      FEATURE_ROWS.map((r) =>
+        r.route === "/more/pets" && pets.length
+          ? {
+              ...r,
+              sub: [
+                { label: "All pets", route: "/more/pets" },
+                ...pets.map((p) => ({
+                  label: `${SPECIES_EMOJI[(p.species ?? "OTHER") as PetSpecies] ?? ""} ${p.name}`.trim(),
+                  route: `/more/pets/${p.id}`,
+                })),
+              ],
+            }
+          : r,
+      ),
+    [pets],
+  );
   const personState = usePerson();
   const personLabel =
     personState.status === "found"
@@ -98,9 +135,9 @@ export default function More() {
 
         <Text style={styles.sectionTitle}>Features</Text>
         <View style={styles.card}>
-          {FEATURE_ROWS.map((r, i) => {
+          {rows.map((r, i) => {
             const expanded = !!r.sub && open.has(r.route);
-            const last = i === FEATURE_ROWS.length - 1;
+            const last = i === rows.length - 1;
             return (
               <Fragment key={r.route}>
                 <Pressable
