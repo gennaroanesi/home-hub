@@ -1362,6 +1362,11 @@ const schema = a
         // (refreshAssetValues); each refresh is an ESTIMATE valuation.
         valueProvider: a.enum(["RENTCAST", "MARKETCHECK", "DEPRECIATION"]),
         address: a.string(), // "Street, City, State, Zip"
+        // Sent with the RentCast call so it comps against the right houses
+        // (its own record of the house can be off: 4bd vs 5bd).
+        bedrooms: a.integer(),
+        bathrooms: a.float(),
+        squareFootage: a.integer(),
         vin: a.string(),
         mileage: a.integer(),
         mileageDate: a.date(), // when the mileage was read

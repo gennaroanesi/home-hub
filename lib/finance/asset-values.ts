@@ -39,12 +39,22 @@ async function readError(res: { status: number; text(): Promise<string> }, who: 
   throw new Error(`${who} ${res.status}${body ? `: ${body}` : ""}`);
 }
 
-/** RentCast's automated value estimate for a full street address ("Street, City, State, Zip"). */
-export async function rentcastValue(address: string, apiKey: string, fetchFn: FetchLike): Promise<ProviderResult> {
+export type RentcastSubject = { address: string; bedrooms?: number | null; bathrooms?: number | null; squareFootage?: number | null };
+
+/**
+ * RentCast's automated value estimate for a full street address ("Street,
+ * City, State, Zip"). Bedrooms, bathrooms and square footage, when known,
+ * override RentCast's own record of the house so the comps match it.
+ */
+export async function rentcastValue(subject: RentcastSubject | string, apiKey: string, fetchFn: FetchLike): Promise<ProviderResult> {
+  const s = typeof subject === "string" ? { address: subject } : subject;
   if (!apiKey) throw new Error("RENTCAST_API_KEY isn't set");
-  if (!address.trim()) throw new Error("The asset needs its full address (Street, City, State, Zip)");
-  const url = `https://api.rentcast.io/v1/avm/value?address=${encodeURIComponent(address.trim())}&compCount=15`;
-  const res = await fetchFn(url, { headers: { "X-Api-Key": apiKey, Accept: "application/json" } });
+  if (!s.address.trim()) throw new Error("The asset needs its full address (Street, City, State, Zip)");
+  const q = new URLSearchParams({ address: s.address.trim(), propertyType: "Single Family", compCount: "15" });
+  if (s.bedrooms) q.set("bedrooms", String(s.bedrooms));
+  if (s.bathrooms) q.set("bathrooms", String(s.bathrooms));
+  if (s.squareFootage) q.set("squareFootage", String(s.squareFootage));
+  const res = await fetchFn(`https://api.rentcast.io/v1/avm/value?${q}`, { headers: { "X-Api-Key": apiKey, Accept: "application/json" } });
   if (!res.ok) await readError(res, "RentCast");
   const body = await res.json();
   const value = Number(body?.price);
@@ -87,6 +97,9 @@ export type AssetLike = {
   active?: boolean | null;
   valueProvider?: ValueProvider | null;
   address?: string | null;
+  bedrooms?: number | null;
+  bathrooms?: number | null;
+  squareFootage?: number | null;
   vin?: string | null;
   mileage?: number | null;
   zip?: string | null;
@@ -114,7 +127,7 @@ export function isStale(asset: AssetLike, valuations: ValuationLike[], today: st
 export async function valueFor(asset: AssetLike, keys: { rentcast?: string; marketcheck?: string }, fetchFn: FetchLike, today: string): Promise<ProviderResult> {
   switch (asset.valueProvider) {
     case "RENTCAST":
-      return rentcastValue(asset.address ?? "", keys.rentcast ?? "", fetchFn);
+      return rentcastValue({ address: asset.address ?? "", bedrooms: asset.bedrooms, bathrooms: asset.bathrooms, squareFootage: asset.squareFootage }, keys.rentcast ?? "", fetchFn);
     case "MARKETCHECK":
       return marketcheckValue({ vin: asset.vin ?? "", miles: asset.mileage ?? 0, zip: asset.zip ?? "" }, keys.marketcheck ?? "", fetchFn);
     case "DEPRECIATION":

@@ -223,6 +223,9 @@ const AssetOut = z.object({
   purchaseDate: z.string().nullable(),
   valueProvider: z.string().nullable().describe("RENTCAST, MARKETCHECK or DEPRECIATION: its value is refreshed automatically; null = by hand"),
   address: z.string().nullable(),
+  bedrooms: z.number().nullable(),
+  bathrooms: z.number().nullable(),
+  squareFootage: z.number().nullable(),
   vin: z.string().nullable(),
   mileage: z.number().nullable(),
   mileageDate: z.string().nullable(),
@@ -250,6 +253,9 @@ function assetOut(a: any, d: Loaded, valuations: any[]): z.input<typeof AssetOut
     purchaseDate: a.purchaseDate ?? null,
     valueProvider: a.valueProvider ?? null,
     address: a.address ?? null,
+    bedrooms: a.bedrooms ?? null,
+    bathrooms: a.bathrooms ?? null,
+    squareFootage: a.squareFootage ?? null,
     vin: a.vin ?? null,
     mileage: a.mileage ?? null,
     mileageDate: a.mileageDate ?? null,
@@ -424,6 +430,9 @@ export const saveFinanceAsset = defineOp({
     purchaseDate: DATE.nullable().optional(),
     valueProvider: z.enum(VALUE_PROVIDERS).nullable().optional().describe("null = valued by hand"),
     address: z.string().nullable().optional().describe("Full address for RentCast: 'Street, City, State, Zip'"),
+    bedrooms: z.number().int().min(0).nullable().optional().describe("Sent to RentCast so the comps match"),
+    bathrooms: z.number().min(0).nullable().optional(),
+    squareFootage: z.number().int().min(0).nullable().optional(),
     vin: z.string().nullable().optional(),
     mileage: z.number().int().min(0).nullable().optional(),
     mileageDate: DATE.nullable().optional().describe("Default today when mileage is given"),
@@ -459,7 +468,7 @@ export const saveFinanceAsset = defineOp({
     }
 
     const fields: Record<string, unknown> = Object.fromEntries(
-      (["name", "type", "purchaseValue", "purchaseDate", "valueProvider", "address", "vin", "mileage", "mileageDate", "zip", "annualDepreciation", "ownerPersonIds", "soldDate", "soldValue", "active", "notes", "sortOrder"] as const)
+      (["name", "type", "purchaseValue", "purchaseDate", "valueProvider", "address", "bedrooms", "bathrooms", "squareFootage", "vin", "mileage", "mileageDate", "zip", "annualDepreciation", "ownerPersonIds", "soldDate", "soldValue", "active", "notes", "sortOrder"] as const)
         .filter((k) => input[k] !== undefined)
         .map((k) => [k, input[k]]),
     );

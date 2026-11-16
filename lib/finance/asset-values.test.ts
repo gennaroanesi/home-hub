@@ -19,9 +19,13 @@ const fakeFetch =
 describe("providers", () => {
   it("reads RentCast's estimate and range, sending the key in the header", async () => {
     const fetchFn = fakeFetch({ "api.rentcast.io/v1/avm/value": { body: { price: 512000, priceRangeLow: 480000, priceRangeHigh: 540000 } } });
-    const r = await rentcastValue("1 Main St, Round Rock, TX 78665", "key", fetchFn);
+    const r = await rentcastValue({ address: "1 Main St, Round Rock, TX 78665", bedrooms: 5, bathrooms: 3, squareFootage: 2812 }, "key", fetchFn);
     expect(r).toEqual({ value: 512000, note: "Auto: RentCast $512,000 (range $480,000–$540,000)" });
-    expect(fetchFn.calls[0]).toContain("address=1%20Main%20St%2C%20Round%20Rock%2C%20TX%2078665");
+    expect(fetchFn.calls[0]).toContain("address=1+Main+St%2C+Round+Rock%2C+TX+78665");
+    expect(fetchFn.calls[0]).toContain("bedrooms=5&bathrooms=3&squareFootage=2812");
+    // Unknown attributes are left out, so RentCast uses its own record.
+    await rentcastValue({ address: "1 Main St, Round Rock, TX 78665" }, "key", fetchFn);
+    expect(fetchFn.calls[1]).not.toContain("bedrooms");
     await expect(rentcastValue("1 Main St", "", fetchFn)).rejects.toThrow(/RENTCAST_API_KEY/);
     await expect(rentcastValue("x", "key", fakeFetch({ "avm/value": { status: 401, body: { error: "auth/api-key-invalid" } } }))).rejects.toThrow(/RentCast 401/);
   });

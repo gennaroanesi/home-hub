@@ -51,7 +51,7 @@ export function AssetModal({
   onSaved: () => void;
 }) {
   const isNew = asset === null;
-  const [f, setF] = useState({ name: "", type: "REAL_ESTATE", purchaseValue: "", purchaseDate: "", value: "", valuedOn: todayIso(), valueSource: "ESTIMATE", valueNotes: "", sold: false, soldDate: "", soldValue: "", notes: "", valueProvider: BY_HAND, address: "", vin: "", mileage: "", zip: "", annualDepreciation: "" });
+  const [f, setF] = useState({ name: "", type: "REAL_ESTATE", purchaseValue: "", purchaseDate: "", value: "", valuedOn: todayIso(), valueSource: "ESTIMATE", valueNotes: "", sold: false, soldDate: "", soldValue: "", notes: "", valueProvider: BY_HAND, address: "", bedrooms: "", bathrooms: "", squareFootage: "", vin: "", mileage: "", zip: "", annualDepreciation: "" });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -71,6 +71,9 @@ export function AssetModal({
       notes: asset?.notes ?? "",
       valueProvider: asset?.valueProvider ?? BY_HAND,
       address: asset?.address ?? "",
+      bedrooms: str(asset?.bedrooms),
+      bathrooms: str(asset?.bathrooms),
+      squareFootage: str(asset?.squareFootage),
       vin: asset?.vin ?? "",
       mileage: str(asset?.mileage),
       zip: asset?.zip ?? "",
@@ -105,6 +108,9 @@ export function AssetModal({
       notes: f.notes.trim() || null,
       valueProvider: f.valueProvider === BY_HAND ? null : f.valueProvider,
       address: f.address.trim() || null,
+      bedrooms: num(f.bedrooms) == null ? null : Math.round(num(f.bedrooms)!),
+      bathrooms: num(f.bathrooms),
+      squareFootage: num(f.squareFootage) == null ? null : Math.round(num(f.squareFootage)!),
       vin: f.vin.trim() || null,
       mileage: num(f.mileage) == null ? null : Math.round(num(f.mileage)!),
       zip: f.zip.trim() || null,
@@ -167,7 +173,17 @@ export function AssetModal({
                 ...VALUE_PROVIDERS.map((p) => <SelectItem key={p}>{VALUE_PROVIDER_LABELS[p]}</SelectItem>),
               ]}
             </Select>
-            {f.valueProvider === "RENTCAST" && <Input label="Address" className="sm:col-span-2" placeholder="Street, City, State, Zip" value={f.address} onValueChange={(v) => setF({ ...f, address: v })} isRequired />}
+            {f.valueProvider === "RENTCAST" && (
+              <>
+                <Input label="Address" className="sm:col-span-2" placeholder="Street, City, State, Zip" value={f.address} onValueChange={(v) => setF({ ...f, address: v })} isRequired />
+                <div className="sm:col-span-2 grid grid-cols-3 gap-3">
+                  <Input label="Bedrooms" type="number" min={0} value={f.bedrooms} onValueChange={(v) => setF({ ...f, bedrooms: v })} />
+                  <Input label="Bathrooms" type="number" min={0} step="0.5" value={f.bathrooms} onValueChange={(v) => setF({ ...f, bathrooms: v })} />
+                  <Input label="Sq ft" type="number" min={0} value={f.squareFootage} onValueChange={(v) => setF({ ...f, squareFootage: v })} />
+                </div>
+                <div className="sm:col-span-2 text-xs text-default-500 -mt-2">Sent with the estimate so the comps match the house; RentCast&apos;s own record can be off.</div>
+              </>
+            )}
             {f.valueProvider === "MARKETCHECK" && (
               <>
                 <Input label="VIN" value={f.vin} onValueChange={(v) => setF({ ...f, vin: v })} isRequired description="17 characters" />

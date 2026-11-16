@@ -198,8 +198,13 @@ has a net worth line, a LOAN account's page links to its loan. Phone: Finance
 `homeFinanceAsset.valueProvider` + `lib/finance/asset-values.ts`:
 - **RENTCAST** (the house): `GET api.rentcast.io/v1/avm/value?address=…`
   (`X-Api-Key`), `price` + `priceRangeLow/High`; needs `address` as
-  "Street, City, State, Zip". Free plan 50 requests/month; one a month is
-  used.
+  "Street, City, State, Zip", and sends `bedrooms` / `bathrooms` /
+  `squareFootage` when the asset has them (RentCast's own record had the
+  house as 4bd; with 5bd/3ba/2,812 sq ft the comps matched and the estimate
+  moved from $484k to $492k on 2026-11-16). Free plan 50 requests/month,
+  which needs the free subscription activated on the RentCast dashboard
+  (a key without it gets 403 `billing/subscription-inactive`); one a month
+  is used.
 - **MARKETCHECK** (a car): `GET api.marketcheck.com/v2/predict/car/us/marketcheck_price?api_key&vin&miles&zip&dealer_type=independent`
   → `marketcheck_price` (+ `msrp`); needs `vin`, `mileage` (`mileageDate`
   set when it changes; update it now and then) and `zip`. Free plan 500
