@@ -137,6 +137,23 @@ occurrence counts, the week plan and the review page. `save_finance_schedule
 lastDayOfMonth` moves `nextDate` to that month's end; a switch on the bills
 form and on the loan editor's new-schedule option.
 
+### Loan → payment → schedule → budget (2026-11-16)
+
+Real links: `homeFinanceLoan.recurringId` (the bill), `homeFinanceTransaction.recurringId`
+(set by the sync's match or by hand on the bills page), `homeFinanceLoanPayment.transactionId`
+(set by the capture, kept by the lender import). The budget has no link: it
+is category-driven, and a schedule's `category` is both its "committed"
+share of a budget line and, since 2026-11-16, **the category a linked
+transaction gets** (the sync's create and the bills page's manual link set
+`category` + `categorySource: RULE` from the schedule, unless the row was
+categorized by hand). So the schedule is where a recurring payment's budget
+line is decided; use the canonical names ("Mortgage Payment", "Loan
+Payment"). The household's two bills: Mortgage ($3,650, 1st, ends
+2052-11-01) and BMW M850i ($2,000, last day of the month, ends with the
+contract), both from Gennaro Chase Checking, patterns `/mortgage/i` and
+`/bmw/i` (gennaroanesi.com's rules couldn't be read: its pool rejects both
+local credential sets; tighten once the first payments post).
+
 ### Tracking payments against the lender (2026-11-16)
 
 - **The lender's schedule is the source of truth for payments.** "Import

@@ -493,7 +493,9 @@ function MatchModal({ schedule, onClose, onLinked }: { schedule: Schedule | null
   async function link(tx: Tx) {
     if (!schedule) return;
     setLinking(tx.id);
-    const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id });
+    // Linking by hand also hands the row the schedule's category, unless it was categorized by hand.
+    const cat = schedule.category?.trim() && tx.categorySource !== "MANUAL" ? { category: schedule.category.trim(), categorySource: "RULE" as const } : {};
+    const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id, ...cat });
     if (r.errors?.length) {
       setLinking(null);
       addToast({ title: "Couldn't link", description: r.errors[0].message, color: "danger" });

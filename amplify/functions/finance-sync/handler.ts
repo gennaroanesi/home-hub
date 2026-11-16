@@ -431,13 +431,17 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   let txAlreadyStored = 0;
   for (const d of fresh) {
     const rule = links.get(d);
+    // A row that realizes a scheduled transaction takes the schedule's
+    // category: the schedule is where a recurring payment's budget line is
+    // decided, not the bank's wording.
+    const scheduled = rule?.category?.trim() || null;
     const { errors: e } = await c.models.homeFinanceTransaction.create({
       id: syncedTransactionId(d.accountId, d.sfTransactionId),
       accountId: d.accountId,
       amount: d.amount,
       type: d.type,
-      category: d.category,
-      categorySource: d.categorySource,
+      category: scheduled ?? d.category,
+      categorySource: scheduled ? "RULE" : d.categorySource,
       description: d.description,
       date: d.date,
       status: d.status,
