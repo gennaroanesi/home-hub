@@ -231,6 +231,16 @@ export function pickSimplefinAccount(form: AccountForm, s: Pick<SfAccount, "id" 
   return { ...form, simplefinAccountId: s.id, simplefinConnection: s.connection, institution: form.institution || s.institution };
 }
 
+/**
+ * The form after typing or pasting an id: when the id is one the listing
+ * knows, its connection comes along (as with a pick), so a typed id can't
+ * end up on the wrong person's connection.
+ */
+export function typeSimplefinAccountId(form: AccountForm, id: string, listed: Pick<SfAccount, "id" | "connection" | "institution">[]): AccountForm {
+  const s = listed.find((a) => a.id === id.trim());
+  return s ? pickSimplefinAccount({ ...form, simplefinAccountId: id }, s) : { ...form, simplefinAccountId: id };
+}
+
 // ── Delete ──────────────────────────────────────────────────────────────
 
 /** Whether the account has any transaction (deleting it would orphan them). Throws when the check fails. */

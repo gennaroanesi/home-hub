@@ -22,6 +22,7 @@ import {
   parseSimplefinListing,
   pickSimplefinAccount,
   saveAccountForm,
+  typeSimplefinAccountId,
   simplefinInstitutions,
   simplefinPickerGroups,
   EMPTY_SF_FILTER,
@@ -71,6 +72,8 @@ export function AccountFormModal({
   const [form, setForm] = useState<AccountForm>(() => newAccountForm(accounts.length));
   const [busy, setBusy] = useState(false);
   const [pickOpen, setPickOpen] = useState(false);
+  // What the picker last listed, so a typed id takes its connection too.
+  const [listed, setListed] = useState<SfListing["accounts"]>([]);
 
   useEffect(() => {
     if (visible) setForm(account ? accountFormFrom(account) : newAccountForm(accounts.length));
@@ -192,7 +195,7 @@ export function AccountFormModal({
 
       <View style={ff.box}>
         <Text style={ff.label}>SimpleFIN</Text>
-        <Input value={form.simplefinAccountId} onChangeText={(v) => set("simplefinAccountId", v)} placeholder="ACT-…" autoCapitalize="none" autoCorrect={false} />
+        <Input value={form.simplefinAccountId} onChangeText={(v) => setForm((f) => typeSimplefinAccountId(f, v, listed))} placeholder="ACT-…" autoCapitalize="none" autoCorrect={false} />
         <Text style={ff.hint}>{isInvested(form.type) ? "Syncs value, positions and transactions 3×/day; its transactions stay out of the budget" : "Linked accounts sync balance and transactions 3×/day"}</Text>
         <Text style={ff.label}>Connection</Text>
         <View style={fs.chipRow}>
@@ -225,6 +228,7 @@ export function AccountFormModal({
         visible={pickOpen}
         form={form}
         onClose={() => setPickOpen(false)}
+        onListed={setListed}
         onPick={(s) => {
           setForm((f) => pickSimplefinAccount(f, s));
           setPickOpen(false);
@@ -235,7 +239,7 @@ export function AccountFormModal({
 }
 
 /** "Link a SimpleFIN account": listSimplefinAccounts grouped by whose connection it's on. */
-function SimplefinPickSheet({ visible, form, onClose, onPick }: { visible: boolean; form: AccountForm; onClose: () => void; onPick: (s: SfListing["accounts"][number]) => void }) {
+function SimplefinPickSheet({ visible, form, onClose, onListed, onPick }: { visible: boolean; form: AccountForm; onClose: () => void; onListed: (accounts: SfListing["accounts"]) => void; onPick: (s: SfListing["accounts"][number]) => void }) {
   const [loading, setLoading] = useState(false);
   const [listing, setListing] = useState<SfListing>({ accounts: [], connections: [], error: null });
   // Same filter as the web picker (lib/finance/account-form.ts): words over name / bank / id,
@@ -260,6 +264,7 @@ function SimplefinPickSheet({ visible, form, onClose, onPick }: { visible: boole
       }
       if (!live) return;
       setListing(out);
+      onListed(out.accounts);
       setLoading(false);
     })();
     return () => {

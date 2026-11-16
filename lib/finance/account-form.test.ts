@@ -11,6 +11,7 @@ import {
   saveAccountForm,
   simplefinInstitutions,
   simplefinPickerGroups,
+  typeSimplefinAccountId,
   validateAccountForm,
 } from "./account-form";
 
@@ -173,6 +174,13 @@ describe("SimpleFIN picker", () => {
     const s = { id: "ACT-3", connection: "cristine", institution: "Fidelity" };
     expect(pickSimplefinAccount({ ...EMPTY_ACCOUNT_FORM }, s)).toMatchObject({ simplefinAccountId: "ACT-3", simplefinConnection: "cristine", institution: "Fidelity" });
     expect(pickSimplefinAccount({ ...EMPTY_ACCOUNT_FORM, institution: "Mine" }, s).institution).toBe("Mine");
+  });
+
+  it("a typed id the listing knows takes its connection; an unknown one keeps the form's", () => {
+    const listed = [{ id: "ACT-3", connection: "cristine", institution: "Fidelity" }];
+    const form = { ...EMPTY_ACCOUNT_FORM, simplefinConnection: "gennaro" };
+    expect(typeSimplefinAccountId(form, " ACT-3", listed)).toMatchObject({ simplefinAccountId: "ACT-3", simplefinConnection: "cristine" });
+    expect(typeSimplefinAccountId(form, "ACT-", listed)).toMatchObject({ simplefinAccountId: "ACT-", simplefinConnection: "gennaro" });
   });
 });
 

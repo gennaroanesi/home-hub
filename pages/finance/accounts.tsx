@@ -28,6 +28,7 @@ import {
   parseSimplefinListing,
   pickSimplefinAccount,
   saveAccountForm,
+  typeSimplefinAccountId,
   simplefinInstitutions,
   simplefinPickerGroups,
   EMPTY_SF_FILTER,
@@ -256,7 +257,7 @@ export default function FinanceAccountsPage() {
                   <Input
                     label="SimpleFIN account id"
                     value={form.simplefinAccountId}
-                    onValueChange={(v) => set("simplefinAccountId", v)}
+                    onValueChange={(v) => setForm((f) => (f ? typeSimplefinAccountId(f, v, sfAccounts) : f))}
                     placeholder="ACT-…"
                     description={isInvested(form.type) ? "Syncs value, positions and transactions 3×/day; its transactions stay out of the budget" : "Linked accounts sync balance and transactions 3×/day"}
                     className="flex-1"
