@@ -22,9 +22,12 @@ import {
   parseSimplefinListing,
   pickSimplefinAccount,
   saveAccountForm,
+  simplefinInstitutions,
   simplefinPickerGroups,
+  EMPTY_SF_FILTER,
   type AccountForm,
   type SfListing,
+  type SfPickerFilter,
 } from "../../../lib/finance/account-form";
 import { SIMPLEFIN_CONNECTIONS } from "../../../lib/finance/simplefin-connections";
 import { Field, FormSheet, Input, ff } from "./form";
@@ -235,10 +238,15 @@ export function AccountFormModal({
 function SimplefinPickSheet({ visible, form, onClose, onPick }: { visible: boolean; form: AccountForm; onClose: () => void; onPick: (s: SfListing["accounts"][number]) => void }) {
   const [loading, setLoading] = useState(false);
   const [listing, setListing] = useState<SfListing>({ accounts: [], connections: [], error: null });
+  // Same filter as the web picker (lib/finance/account-form.ts): words over name / bank / id,
+  // whose connection, which bank, hide linked; the current pick always stays listed.
+  const [filter, setFilter] = useState<SfPickerFilter>(EMPTY_SF_FILTER);
+  const setF = (patch: Partial<SfPickerFilter>) => setFilter((f) => ({ ...f, ...patch }));
 
   useEffect(() => {
     if (!visible) return;
     let live = true;
+    setFilter(EMPTY_SF_FILTER);
     setLoading(true);
     setListing({ accounts: [], connections: [], error: null });
     (async () => {
@@ -271,20 +279,54 @@ function SimplefinPickSheet({ visible, form, onClose, onPick }: { visible: boole
             <Text style={ff.cancel}>Close</Text>
           </Pressable>
         </View>
-        <ScrollView contentContainerStyle={ff.body}>
+        {!loading && !listing.error && (
+          <View style={{ paddingHorizontal: 16, paddingTop: 10, gap: 8, borderBottomWidth: 1, borderBottomColor: "#eee", paddingBottom: 10 }}>
+            <Input
+              value={filter.query ?? ""}
+              onChangeText={(v) => setF({ query: v })}
+              placeholder="Search name, bank or id"
+              autoCapitalize="none"
+              autoCorrect={false}
+              clearButtonMode="while-editing"
+            />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 0 }} contentContainerStyle={{ gap: 6 }} keyboardShouldPersistTaps="handled">
+              {[{ key: null as string | null, label: "Both" }, ...SIMPLEFIN_CONNECTIONS.map((c) => ({ key: c.key as string | null, label: c.label }))].map((c) => (
+                <Chip key={c.key ?? "all"} label={c.label} on={(filter.connection ?? null) === c.key} onPress={() => setF({ connection: c.key })} />
+              ))}
+            </ScrollView>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 0 }} contentContainerStyle={{ gap: 6 }} keyboardShouldPersistTaps="handled">
+              <Chip label="Any bank" on={!filter.institution} onPress={() => setF({ institution: null })} />
+              {simplefinInstitutions(listing.accounts).map((i) => (
+                <Chip key={i} label={i} on={filter.institution === i} onPress={() => setF({ institution: filter.institution === i ? null : i })} />
+              ))}
+            </ScrollView>
+            <View style={fs.rowBetween}>
+              <Text style={fs.text}>Hide linked</Text>
+              <Switch value={!!filter.hideLinked} onValueChange={(v) => setF({ hideLinked: v })} />
+            </View>
+          </View>
+        )}
+        <ScrollView contentContainerStyle={ff.body} keyboardShouldPersistTaps="handled" keyboardDismissMode="on-drag">
           <Text style={fs.muted}>Names only; balances and activity are pulled only for the accounts linked here. One list per person&apos;s SimpleFIN connection.</Text>
           {loading ? (
             <ActivityIndicator style={{ marginTop: 24 }} />
           ) : listing.error ? (
             <Text style={[fs.text, fs.danger]}>{listing.error}</Text>
           ) : (
-            simplefinPickerGroups(listing, form).map((conn) => (
+            simplefinPickerGroups(listing, form, filter).map((conn) => (
               <View key={conn.key} style={ff.field}>
-                <Text style={ff.label}>{conn.label}&apos;s SimpleFIN</Text>
+                <Text style={ff.label}>
+                  {conn.label}&apos;s SimpleFIN
+                  {conn.ok && conn.total > 0 && (
+                    <Text style={fs.muted}>  {conn.rows.length === conn.total ? conn.total : `${conn.rows.length} of ${conn.total}`}</Text>
+                  )}
+                </Text>
                 {!conn.ok ? (
                   <Text style={[fs.muted, fs.warn]}>{conn.error}</Text>
-                ) : conn.rows.length === 0 ? (
+                ) : conn.total === 0 ? (
                   <Text style={fs.muted}>No accounts on this connection yet.</Text>
+                ) : conn.rows.length === 0 ? (
+                  <Text style={fs.muted}>Nothing matches here.</Text>
                 ) : (
                   <View style={[ff.box, { gap: 0, paddingVertical: 4 }]}>
                     {conn.rows.map((s, i) => (
