@@ -6,7 +6,7 @@
 // month view is a handful of Queries instead of a table Scan.
 
 import { householdMembers } from "../household";
-import { isInvested } from "./accounts";
+import { isOutsideCashFlow } from "./accounts";
 import { listAllPages } from "../list-all";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -90,14 +90,14 @@ export async function listAccountTransactions(client: Client, accountId: string,
 
 /**
  * Transactions across accounts, newest first. Without accountIds: every
- * account except invested ones (401k, brokerage), whose rows aren't
+ * account except invested ones (401k, brokerage) and loans, whose rows aren't
  * household cash flow; pass their ids (or includeInvested) to see them.
  */
 export async function listTransactions(
   client: Client,
   opts: { fromIso?: string; toIso?: string; accountIds?: string[]; includeInvested?: boolean } = {},
 ): Promise<any[]> {
-  const ids = opts.accountIds ?? (await listAccounts(client)).filter((a) => opts.includeInvested || !isInvested(a.type)).map((a) => a.id);
+  const ids = opts.accountIds ?? (await listAccounts(client)).filter((a) => opts.includeInvested || !isOutsideCashFlow(a.type)).map((a) => a.id);
   const per = await Promise.all(ids.map((id) => listAccountTransactions(client, id, opts)));
   return per.flat().sort((a, b) => (b.date ?? "").localeCompare(a.date ?? "") || (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 }

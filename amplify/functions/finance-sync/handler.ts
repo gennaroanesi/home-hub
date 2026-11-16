@@ -38,6 +38,7 @@ import {
   desiredHoldingsFromSf,
   diffHoldings,
   isInvested,
+  isOutsideCashFlow,
   markSelfTransfers,
   reconcileDraft,
   sfTxToDraft,
@@ -361,7 +362,8 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const txDuplicate = plans.filter((p) => p.action === "skip").length;
 
   // LLM fallback for household money out that no rule recognized.
-  const investedIds = new Set(mapped.filter((a) => isInvested(a.type)).map((a) => a.id));
+  // (Invested and loan accounts aren't cash flow: no category, no schedule link.)
+  const investedIds = new Set(mapped.filter((a) => isOutsideCashFlow(a.type)).map((a) => a.id));
   const toClassify = fresh.filter((d) => !d.category && d.type === "EXPENSE" && !investedIds.has(d.accountId));
   if (toClassify.length) {
     const cats = await classifyTransactionsLLM(

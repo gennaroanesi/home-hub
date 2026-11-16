@@ -36,9 +36,17 @@ export const RETIREMENT_TYPE_LABELS: Record<string, string> = {
 export const INVESTED_TYPES = new Set<string>(["BROKERAGE", "RETIREMENT"]);
 export const isInvested = (type: string | null | undefined) => INVESTED_TYPES.has(type ?? "");
 
-/** Active accounts whose transactions are household cash flow (not invested). */
+/**
+ * Accounts whose transactions aren't household cash flow: invested ones
+ * (above) and loans. A loan's rows (principal, interest, escrow, mortgage
+ * insurance…) are the other side of a payment already counted when it left
+ * checking, so they'd double it; the loan feeds net worth, not the budget.
+ */
+export const isOutsideCashFlow = (type: string | null | undefined) => isInvested(type) || type === "LOAN";
+
+/** Active accounts whose transactions are household cash flow (not invested, not loans). */
 export function householdAccounts<T extends { type?: string | null; active?: boolean | null }>(accounts: T[]): T[] {
-  return accounts.filter((a) => a.active !== false && !isInvested(a.type));
+  return accounts.filter((a) => a.active !== false && !isOutsideCashFlow(a.type));
 }
 
 /** "Retirement · 401(k)", "Brokerage", "Checking". */

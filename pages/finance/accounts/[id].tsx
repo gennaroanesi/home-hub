@@ -196,6 +196,7 @@ export default function FinanceAccountDetailPage() {
                     </div>
                   )}
                   {isInvested(account.type) && <div>Investment account: its transactions stay out of the budget and overview.</div>}
+                  {account.type === "LOAN" && <div>Loan: its transactions stay out of the budget and overview (the payment is counted where it left checking).</div>}
                 </>
               ) : (
                 "Not linked to SimpleFIN (manual balance)"

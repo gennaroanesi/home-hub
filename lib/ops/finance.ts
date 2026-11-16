@@ -22,7 +22,7 @@ import { allCategories, CATEGORY_RULES, categoryParts, effectiveCategory, parseL
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
-import { accountTypeLabel, householdAccounts, isInvested } from "../finance/accounts";
+import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
 import type { OpContext } from "./context";
@@ -429,7 +429,7 @@ export const listFinanceTransactions = defineOp({
     const [accounts, folks, ruleRows] = await Promise.all([listAccounts(ctx.client), people(ctx), listCategoryRules(ctx.client)]);
     const rules = rulesFromDbRows(ruleRows);
     const accName = new Map(accounts.map((a) => [a.id, a.name]));
-    const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.filter((a) => !isInvested(a.type)).map((a) => a.id) });
+    const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id) });
     const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const matched = txs.filter((t) => {
       const cat = effectiveCategory(t, rules);

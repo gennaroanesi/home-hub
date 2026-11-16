@@ -7,7 +7,7 @@
 import { classify, TRANSFER_CATEGORY, type CategoryRule } from "./categories";
 import type { SfAccount, SfHolding, SfTransaction } from "./simplefin";
 
-export { isInvested } from "./accounts";
+export { isInvested, isOutsideCashFlow } from "./accounts";
 
 export type TxType = "INCOME" | "EXPENSE" | "TRANSFER";
 export type CategorySource = "RULE" | "LLM" | "MANUAL";
