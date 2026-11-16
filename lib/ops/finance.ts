@@ -19,7 +19,7 @@ import {
   type SeriesWrite,
 } from "../finance/budget";
 import { allCategories, CATEGORY_RULES, categoryParts, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
-import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
+import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested } from "../finance/accounts";
@@ -742,6 +742,7 @@ const ScheduleOut = z.object({
   personId: z.string().nullable(),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
+  lastDayOfMonth: z.boolean().describe("Due on the last day of each month"),
   matchPattern: z.string().nullable(),
   url: z.string().nullable(),
   notes: z.string().nullable(),
@@ -765,6 +766,7 @@ function scheduleOut(r: any, accounts: any[], folks: Person[]): z.input<typeof S
     personId: r.personId ?? null,
     startDate: r.startDate ?? null,
     endDate: r.endDate ?? null,
+    lastDayOfMonth: !!r.lastDayOfMonth,
     matchPattern: r.matchPattern ?? null,
     url: r.url ?? null,
     notes: r.notes ?? null,
@@ -776,7 +778,7 @@ export const saveFinanceSchedule = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create or change a scheduled transaction on a household account: the mortgage, car payment, a utility, insurance, or a person's regular contribution into the joint account. Amount is the usual amount (sign is set from type: EXPENSE out, INCOME in). nextDate is the next time it's due; cadence how often. matchPattern (a word from the bank description, e.g. 'ROCKET MORTGAGE') lets the sync link posted transactions and roll nextDate forward. autopay false means someone has to pay it by hand. Set active false to stop one. Without accountId it goes on the household's checking account. With recurringId, only the fields given change; markPaid with recurringId records it as paid by hand: nextDate moves one step on (a one-time one is switched off).",
+    "Create or change a scheduled transaction on a household account: the mortgage, car payment, a utility, insurance, or a person's regular contribution into the joint account. Amount is the usual amount (sign is set from type: EXPENSE out, INCOME in). nextDate is the next time it's due; cadence how often; monthly-ish ones recur on nextDate's day of the month, or on each month's last day with lastDayOfMonth (nextDate is moved to that month's end). matchPattern (a word from the bank description, e.g. 'ROCKET MORTGAGE') lets the sync link posted transactions and roll nextDate forward. autopay false means someone has to pay it by hand. Set active false to stop one. Without accountId it goes on the household's checking account. With recurringId, only the fields given change; markPaid with recurringId records it as paid by hand: nextDate moves one step on (a one-time one is switched off).",
   input: z.object({
     recurringId: z.string().optional(),
     description: z.string().optional(),
@@ -785,6 +787,7 @@ export const saveFinanceSchedule = defineOp({
     cadence: z.enum(CADENCES).optional().describe("Default MONTHLY."),
     nextDate: DATE.optional(),
     endDate: DATE.nullable().optional(),
+    lastDayOfMonth: z.boolean().optional().describe("Due on the last day of each month (monthly, quarterly, … cadences)."),
     category: z.string().nullable().optional(),
     accountId: z.string().optional(),
     toAccountId: z.string().nullable().optional().describe("TRANSFER destination."),
@@ -818,10 +821,15 @@ export const saveFinanceSchedule = defineOp({
       const { data: existing } = await ctx.client.models.homeFinanceRecurring.get({ id: input.recurringId });
       if (!existing) throw new OpError(`No scheduled transaction ${input.recurringId}`);
       const type = input.type ?? existing.type ?? "EXPENSE";
-      const patch: Record<string, unknown> = pick(["description", "cadence", "nextDate", "endDate", "category", "accountId", "toAccountId", "matchPattern", "autopay", "active", "url", "notes"]);
+      const patch: Record<string, unknown> = pick(["description", "cadence", "nextDate", "endDate", "lastDayOfMonth", "category", "accountId", "toAccountId", "matchPattern", "autopay", "active", "url", "notes"]);
       if (input.type) patch.type = type;
       if (input.amount !== undefined || input.type) patch.amount = normalizeAmountSign(input.amount ?? existing.amount, type);
       if (personId !== undefined) patch.personId = personId;
+      // Last-day schedules keep their due date on a month's end.
+      if (input.lastDayOfMonth ?? existing.lastDayOfMonth) {
+        const due = (patch.nextDate as string | undefined) ?? existing.nextDate ?? existing.startDate;
+        if (due) patch.nextDate = monthEnd(due);
+      }
       if (!Object.keys(patch).length) throw new OpError("Nothing to change");
       const r = await ctx.client.models.homeFinanceRecurring.update({ id: existing.id, ...patch });
       if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
@@ -837,6 +845,7 @@ export const saveFinanceSchedule = defineOp({
       accounts.find((a) => a.active !== false && a.type === "CHECKING")?.id;
     if (!accountId) throw new OpError("No household checking account yet; add one on the Finance page or pass accountId");
     const type = input.type ?? "EXPENSE";
+    const nextDate = input.lastDayOfMonth ? monthEnd(input.nextDate) : input.nextDate;
     const r = await ctx.client.models.homeFinanceRecurring.create({
       ...pick(["endDate", "category", "toAccountId", "matchPattern", "url", "notes"]),
       accountId,
@@ -844,8 +853,9 @@ export const saveFinanceSchedule = defineOp({
       amount: normalizeAmountSign(input.amount, type),
       type,
       cadence: input.cadence ?? "MONTHLY",
-      startDate: input.nextDate,
-      nextDate: input.nextDate,
+      startDate: nextDate,
+      nextDate,
+      lastDayOfMonth: input.lastDayOfMonth ?? false,
       personId: personId ?? null,
       autopay: input.autopay ?? true,
       active: input.active ?? true,

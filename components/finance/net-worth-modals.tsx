@@ -295,7 +295,7 @@ export function LoanModal({
   const synced = !!account?.simplefinAccountId;
   // LOAN accounts without terms yet, for attaching.
   const free = accounts.filter((a) => a.type === "LOAN" && a.active !== false && !loans.some((l) => l.accountId === a.id));
-  const [f, setF] = useState({ accountId: "", newName: "", institution: "", owed: "", loanType: "MORTGAGE", lender: "", originalPrincipal: "", ratePct: "", termMonths: "360", startDate: "", firstPaymentDate: "", monthlyPayment: "", escrowMonthly: "", interestAccrual: "MONTHLY", assetId: "", recurringId: NO_SCHEDULE, payFromId: "", matchPattern: "", notes: "" });
+  const [f, setF] = useState({ accountId: "", newName: "", institution: "", owed: "", loanType: "MORTGAGE", lender: "", originalPrincipal: "", ratePct: "", termMonths: "360", startDate: "", firstPaymentDate: "", monthlyPayment: "", escrowMonthly: "", interestAccrual: "MONTHLY", assetId: "", recurringId: NO_SCHEDULE, payFromId: "", matchPattern: "", payAmount: "", payLastDay: false, notes: "" });
   const [saving, setSaving] = useState(false);
   // Scheduled transactions, for "paid by"; loaded when the editor opens.
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -324,6 +324,8 @@ export function LoanModal({
       recurringId: loan?.recurringId ?? NO_SCHEDULE,
       payFromId: checking.find((a) => !(a.ownerPersonIds ?? []).length && a.type === "CHECKING")?.id ?? checking[0]?.id ?? "",
       matchPattern: loan?.lender ?? "",
+      payAmount: "",
+      payLastDay: false,
       notes: loan?.notes ?? "",
     });
     listSchedules(financeClient)
@@ -358,7 +360,7 @@ export function LoanModal({
     };
     if (f.recurringId === NEW_SCHEDULE) {
       if (!f.payFromId) return toastError("Missing account", "Which account is it paid from?");
-      input.newSchedule = { accountId: f.payFromId, matchPattern: f.matchPattern.trim() || null };
+      input.newSchedule = { accountId: f.payFromId, matchPattern: f.matchPattern.trim() || null, amount: num(f.payAmount) ?? undefined, lastDayOfMonth: f.payLastDay };
     } else if ((loan?.recurringId ?? NO_SCHEDULE) !== f.recurringId) {
       input.recurringId = f.recurringId === NO_SCHEDULE ? null : f.recurringId;
     }
@@ -508,6 +510,19 @@ export function LoanModal({
                   ))}
                 </Select>
                 <Input label="Bank description contains" placeholder="BMW FINANCIAL" value={f.matchPattern} onValueChange={set("matchPattern")} description="So the sync links the bank's rows to it" />
+                <Input
+                  label="Amount paid each month"
+                  type="number"
+                  min={0}
+                  startContent={$}
+                  value={f.payAmount}
+                  onValueChange={set("payAmount")}
+                  placeholder={computed ? String(round2(computed + (num(f.escrowMonthly) ?? 0))) : ""}
+                  description="Empty = the contractual payment + escrow; put what you actually pay"
+                />
+                <Switch className="self-end" size="sm" isSelected={f.payLastDay} onValueChange={(v) => setF({ ...f, payLastDay: v })}>
+                  Due on the last day of the month
+                </Switch>
               </>
             )}
             <Textarea label="Notes" className="sm:col-span-2" minRows={2} value={f.notes} onValueChange={set("notes")} />

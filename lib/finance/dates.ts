@@ -98,21 +98,33 @@ export function advanceByCadence(iso: string, cadence: Cadence, anchorDate?: str
   return iso;
 }
 
+/**
+ * The day-of-month anchor a monthly-ish schedule keeps: the last day of
+ * every month when it says so (a 31st anchor clamps to 28/29/30), else its
+ * start date's day. Null for weekly cadences, which have no anchor.
+ */
+export function monthlyAnchor(rule: { cadence?: string | null; startDate?: string | null; nextDate?: string | null; lastDayOfMonth?: boolean | null }): string | null {
+  const cadence = (rule.cadence ?? "MONTHLY") as Cadence;
+  if (cadence === "WEEKLY" || cadence === "BIWEEKLY") return null;
+  if (rule.lastDayOfMonth) return "2000-01-31";
+  return rule.startDate ?? rule.nextDate ?? null;
+}
+
 /** Every occurrence date of a schedule within [fromIso, toIso]. */
 export function occurrencesBetween(
-  rule: { cadence?: string | null; startDate?: string | null; nextDate?: string | null; endDate?: string | null },
+  rule: { cadence?: string | null; startDate?: string | null; nextDate?: string | null; endDate?: string | null; lastDayOfMonth?: boolean | null },
   fromIso: string,
   toIso: string,
 ): string[] {
   const cadence = (rule.cadence ?? "MONTHLY") as Cadence;
-  const anchor = rule.startDate ?? rule.nextDate ?? null;
+  const anchor = monthlyAnchor(rule);
   let cur = rule.nextDate ?? rule.startDate ?? null;
   if (!cur) return [];
   const out: string[] = [];
   for (let guard = 0; guard < 1000 && cur <= toIso; guard++) {
     if (rule.endDate && cur > rule.endDate) break;
     if (cur >= fromIso) out.push(cur);
-    const next = advanceByCadence(cur, cadence, cadence === "WEEKLY" || cadence === "BIWEEKLY" ? null : anchor);
+    const next = advanceByCadence(cur, cadence, anchor);
     if (next <= cur) break;
     cur = next;
   }

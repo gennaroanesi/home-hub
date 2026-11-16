@@ -244,6 +244,18 @@ describe("save_finance_schedule", () => {
     expect(upd.result.schedule.amount).toBe(-700);
   });
 
+  it("moves a last-day-of-month bill to the month's end, on create and on edit", async () => {
+    const { ctx, tables } = setup({ homeFinanceAccount: [joint] });
+    const out: any = await runOp(ctx, "save_finance_schedule", { description: "BMW", amount: 2000, nextDate: "2026-11-20", lastDayOfMonth: true });
+    expect(out.result.schedule).toMatchObject({ nextDate: "2026-11-30", startDate: "2026-11-30", lastDayOfMonth: true });
+    const upd: any = await runOp(ctx, "save_finance_schedule", { recurringId: tables.homeFinanceRecurring[0].id, nextDate: "2027-02-03" });
+    expect(upd.result.schedule.nextDate).toBe("2027-02-28");
+    const paid: any = await runOp(ctx, "save_finance_schedule", { recurringId: tables.homeFinanceRecurring[0].id, markPaid: true });
+    expect(paid.result.schedule.nextDate).toBe("2027-03-31");
+    const off: any = await runOp(ctx, "save_finance_schedule", { recurringId: tables.homeFinanceRecurring[0].id, lastDayOfMonth: false, nextDate: "2027-04-15" });
+    expect(off.result.schedule).toMatchObject({ nextDate: "2027-04-15", lastDayOfMonth: false });
+  });
+
   it("lists what's due soon with a monthly total", async () => {
     const { ctx } = setup({
       homeFinanceAccount: [joint],

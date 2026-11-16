@@ -52,6 +52,21 @@ describe("dates", () => {
     expect(occurrencesBetween({ cadence: "ONCE", nextDate: "2026-11-06" }, "2026-11-01", "2026-12-31")).toEqual(["2026-11-06"]);
   });
 
+  it("lands on each month's last day when the schedule says so, whatever day it started on", () => {
+    expect(occurrencesBetween({ cadence: "MONTHLY", startDate: "2026-11-30", nextDate: "2026-11-30", lastDayOfMonth: true }, "2026-11-01", "2027-04-30")).toEqual([
+      "2026-11-30",
+      "2026-12-31",
+      "2027-01-31",
+      "2027-02-28",
+      "2027-03-31",
+      "2027-04-30",
+    ]);
+    // Without the flag a 30th stays a 30th.
+    expect(occurrencesBetween({ cadence: "MONTHLY", startDate: "2026-11-30", nextDate: "2026-11-30" }, "2026-12-01", "2027-01-31")).toEqual(["2026-12-30", "2027-01-30"]);
+    expect(nextDueAfterPaid({ cadence: "MONTHLY", nextDate: "2027-02-28", startDate: "2026-11-30", lastDayOfMonth: true })).toBe("2027-03-31");
+    expect(nextDateAfter({ id: "r", accountId: "a", cadence: "MONTHLY", nextDate: "2026-11-30", startDate: "2026-11-30", lastDayOfMonth: true }, "2026-12-29")).toBe("2026-12-31");
+  });
+
   it("gives today in Chicago, not UTC", () => {
     expect(todayIso("America/Chicago", new Date("2026-11-10T03:00:00Z"))).toBe("2026-11-09");
   });

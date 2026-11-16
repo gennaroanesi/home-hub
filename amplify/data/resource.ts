@@ -1043,6 +1043,9 @@ const schema = a
         startDate: a.date().required(),
         endDate: a.date(), // inclusive; null = no end
         nextDate: a.date(),
+        // Monthly-ish cadences: due on the last day of each month instead
+        // of startDate's day (lib/finance/dates.ts monthlyAnchor).
+        lastDayOfMonth: a.boolean(),
         active: a.boolean().default(true),
         autopay: a.boolean().default(true), // false = someone has to pay it by hand
         personId: a.id(), // contributor for INCOME rules

@@ -9,7 +9,7 @@
 
 import { z } from "zod/v4";
 import { listAccounts, listAssetValuations, listAssets, listLoanPayments, listLoans, listSchedules, listSnapshots } from "../finance/data";
-import { round2, todayIso } from "../finance/dates";
+import { monthEnd, round2, todayIso } from "../finance/dates";
 import { INTEREST_ACCRUALS, LOAN_TYPES, LOAN_TYPE_LABELS, compareToPlan, contractualPayment, interestDays, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit, type LoanTerms } from "../finance/loans";
 import { ASSET_TYPES, GROUP_LABELS, accountGroup, assetEquity, changeSince, netWorthHistory, netWorthNow, type NetWorthGroup } from "../finance/net-worth";
 import { VALUE_PROVIDERS } from "../finance/asset-values";
@@ -585,6 +585,9 @@ export const saveFinanceLoan = defineOp({
     newSchedule: z
       .object({
         accountId: z.string().optional().describe("The account it's paid from; default the household checking account"),
+        amount: z.number().positive().optional().describe("What's actually paid each month; default the contractual payment + escrow"),
+        nextDate: DATE.optional().describe("When it's next due; default the loan's next payment date"),
+        lastDayOfMonth: z.boolean().optional().describe("Due on each month's last day instead of a fixed day"),
         matchPattern: z.string().nullable().optional().describe("A word from the bank description ('BMW FINANCIAL'); default the lender or account name"),
         autopay: z.boolean().optional(),
       })
@@ -693,14 +696,17 @@ export const saveFinanceLoan = defineOp({
       const terms = termsOf(saved);
       const o = loanOutlook(terms, owedOn(account), [], todayIso());
       const name = account?.name ?? LOAN_TYPE_LABELS[saved.loanType as keyof typeof LOAN_TYPE_LABELS] ?? "Loan";
+      const due = ns.nextDate ?? o.nextPaymentDate;
+      const nextDate = ns.lastDayOfMonth ? monthEnd(due) : due;
       const r = await M.homeFinanceRecurring.create({
         accountId: from.id,
         description: name,
-        amount: -round2(contractualPayment(terms) + (saved.escrowMonthly ?? 0)),
+        amount: -round2(ns.amount ?? contractualPayment(terms) + (saved.escrowMonthly ?? 0)),
         type: "EXPENSE",
         cadence: "MONTHLY",
-        startDate: o.nextPaymentDate,
-        nextDate: o.nextPaymentDate,
+        startDate: nextDate,
+        nextDate,
+        lastDayOfMonth: ns.lastDayOfMonth ?? false,
         endDate: o.contractEnd,
         matchPattern: ns.matchPattern === undefined ? (saved.lender ?? name) : ns.matchPattern,
         autopay: ns.autopay ?? true,

@@ -46,6 +46,7 @@ export type RecurringLike = {
   active?: boolean | null;
   matchPattern?: string | null;
   personId?: string | null;
+  lastDayOfMonth?: boolean | null; // monthly-ish: due on each month's last day
 };
 
 export type GoalLike = {

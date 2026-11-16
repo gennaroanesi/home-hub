@@ -126,6 +126,17 @@ Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,
   month, a lump sum, a different payment, or "paid off by" → the payment
   needed; months and interest saved vs the current payment.
 
+### Last day of the month (2026-11-16)
+
+`homeFinanceRecurring.lastDayOfMonth`: a monthly / quarterly / … schedule
+due on each month's last day instead of its start date's day
+(`monthlyAnchor` in `lib/finance/dates.ts` anchors it to a 31st, which
+`addMonthsAnchored` clamps). Honored everywhere the schedule's dates are
+computed: the sync's roll-forward, mark-paid, projections, the budget's
+occurrence counts, the week plan and the review page. `save_finance_schedule
+lastDayOfMonth` moves `nextDate` to that month's end; a switch on the bills
+form and on the loan editor's new-schedule option.
+
 ### Tracking payments against the lender (2026-11-16)
 
 - **The lender's schedule is the source of truth for payments.** "Import
@@ -147,9 +158,10 @@ Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,
   is marked `estimated`.
 - **The scheduled transaction that pays it** (`homeFinanceLoan.recurringId`;
   "Paid by" in the loan editor: pick a bill or create one from the terms,
-  `save_finance_loan newSchedule` → monthly, P&I + escrow, next due on the
-  next payment date, `matchPattern` for the sync, `endDate` at the contract's
-  end). When the finance sync links a posted transaction to that schedule it
+  `save_finance_loan newSchedule` → monthly, P&I + escrow or the `amount`
+  actually paid, next due on the next payment date (or `nextDate`),
+  `lastDayOfMonth` for month-end payments, `matchPattern` for the sync,
+  `endDate` at the contract's end). When the finance sync links a posted transaction to that schedule it
   also records the payment on the loan (`lib/finance/loan-capture.ts`,
   `source: BANK`, estimated split, `transactionId`; a payment already on that
   date just gains the link; a manual balance moves by the principal). The

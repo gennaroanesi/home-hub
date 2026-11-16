@@ -2,7 +2,7 @@
 // projecting an account's balance forward from its schedules. Matching is
 // ported from gennaroanesi.com (components/finance/recurring-match.ts).
 
-import { addDays, advanceByCadence, occurrencesBetween, type Cadence } from "./dates";
+import { addDays, advanceByCadence, monthlyAnchor, occurrencesBetween, type Cadence } from "./dates";
 import { patternMatches } from "./categories";
 import type { RecurringLike, TxLike } from "./types";
 
@@ -103,8 +103,9 @@ export function nextDateAfter(rule: RecurringLike, txDate: string): string | nul
   const seed = rule.nextDate ?? rule.startDate ?? txDate;
   if (cadence === "ONCE" || txDate < seed) return null;
   let next = seed;
+  const anchor = monthlyAnchor(rule);
   for (let guard = 0; next <= txDate && guard < 500; guard++) {
-    const step = advanceByCadence(next, cadence, cadence === "WEEKLY" || cadence === "BIWEEKLY" ? null : rule.startDate);
+    const step = advanceByCadence(next, cadence, anchor);
     if (step <= next) break;
     next = step;
   }
@@ -113,15 +114,15 @@ export function nextDateAfter(rule: RecurringLike, txDate: string): string | nul
 
 /**
  * "Mark paid" by hand: one step past the current due date, or null for a
- * one-time schedule (it's done). Weekly cadences don't use a day-of-month anchor.
+ * one-time schedule (it's done). Weekly cadences don't use a day-of-month
+ * anchor; lastDayOfMonth schedules keep landing on the month's last day.
  */
-export function nextDueAfterPaid(rule: Pick<RecurringLike, "cadence" | "nextDate" | "startDate">): string | null {
+export function nextDueAfterPaid(rule: Pick<RecurringLike, "cadence" | "nextDate" | "startDate" | "lastDayOfMonth">): string | null {
   const cur = rule.nextDate ?? rule.startDate;
   if (!cur) return null;
   const cadence = (rule.cadence ?? "MONTHLY") as Cadence;
   if (cadence === "ONCE") return null;
-  const anchor = cadence === "WEEKLY" || cadence === "BIWEEKLY" ? null : rule.startDate;
-  return advanceByCadence(cur, cadence, anchor);
+  return advanceByCadence(cur, cadence, monthlyAnchor(rule));
 }
 
 export type ProjectedEvent = { date: string; amount: number; description: string; recurringId: string };

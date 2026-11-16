@@ -209,6 +209,13 @@ describe("the lender's schedule and the scheduled transaction", () => {
     expect(r.loan.schedule).toMatchObject({ id: s.id, description: "BMW", account: "Joint checking" });
     expect(tables.homeFinanceLoan[0].recurringId).toBe(s.id);
 
+    // The actual payment and the month's last day, when asked.
+    await run("save_finance_loan", { loanId: r.loan.id, recurringId: null });
+    const custom = await run("save_finance_loan", { loanId: r.loan.id, newSchedule: { accountId: "chk", amount: 2000, nextDate: "2026-11-20", lastDayOfMonth: true } });
+    expect(tables.homeFinanceRecurring[1]).toMatchObject({ amount: -2000, nextDate: "2026-11-30", startDate: "2026-11-30", lastDayOfMonth: true });
+    expect(custom.loan.schedule).toMatchObject({ amount: -2000, nextDate: "2026-11-30" });
+    await run("save_finance_loan", { loanId: r.loan.id, recurringId: s.id });
+
     const m = await run("save_finance_loan", { accountId: "mort", loanType: "MORTGAGE", originalPrincipal: 449577, interestRate: 0.045, termMonths: 360, firstPaymentDate: "2022-12-01" });
     expect(await fail("save_finance_loan", { loanId: m.loan.id, recurringId: s.id })).toMatch(/already pays/);
     const unlinked = await run("save_finance_loan", { loanId: r.loan.id, recurringId: null });

@@ -57,6 +57,7 @@ type Form = {
   active: boolean;
   url: string;
   notes: string;
+  lastDayOfMonth: boolean;
 };
 
 function emptyForm(accountId: string): Form {
@@ -67,6 +68,7 @@ function emptyForm(accountId: string): Form {
     cadence: "MONTHLY",
     nextDate: todayIso(),
     endDate: "",
+    lastDayOfMonth: false,
     accountId,
     toAccountId: "",
     category: "",
@@ -88,6 +90,7 @@ function formFrom(s: Schedule): Form {
     cadence: (s.cadence ?? "MONTHLY") as Cadence,
     nextDate: s.nextDate ?? s.startDate ?? "",
     endDate: s.endDate ?? "",
+    lastDayOfMonth: !!s.lastDayOfMonth,
     accountId: s.accountId ?? "",
     toAccountId: s.toAccountId ?? "",
     category: s.category ?? "",
@@ -196,6 +199,7 @@ export default function ScheduledPage() {
       cadence: form.cadence,
       nextDate: form.nextDate,
       endDate: form.endDate || null,
+      lastDayOfMonth: form.lastDayOfMonth && !["ONCE", "WEEKLY", "BIWEEKLY"].includes(form.cadence),
       category: form.category.trim() || null,
       ...(form.accountId ? { accountId: form.accountId } : {}),
       toAccountId: form.type === "TRANSFER" ? form.toAccountId || null : null,
@@ -385,7 +389,12 @@ export default function ScheduledPage() {
                       <SelectItem key={c}>{CADENCE_LABELS[c]}</SelectItem>
                     ))}
                   </Select>
-                  <Input label="Next due" type="date" value={form.nextDate} onValueChange={(v) => setForm({ ...form, nextDate: v })} isRequired />
+                  <Input label="Next due" type="date" value={form.nextDate} onValueChange={(v) => setForm({ ...form, nextDate: v })} isRequired description={form.lastDayOfMonth ? "Moved to that month's last day" : undefined} />
+                  {!["ONCE", "WEEKLY", "BIWEEKLY"].includes(form.cadence) && (
+                    <Switch className="sm:col-span-2" size="sm" isSelected={form.lastDayOfMonth} onValueChange={(v) => setForm({ ...form, lastDayOfMonth: v })}>
+                      Due on the last day of the month
+                    </Switch>
+                  )}
                   <Select label="Account" selectedKeys={form.accountId ? [form.accountId] : []} onChange={(e) => setForm({ ...form, accountId: e.target.value })}>
                     {refs.accounts.map((a) => (
                       <SelectItem key={a.id}>{a.name}</SelectItem>
