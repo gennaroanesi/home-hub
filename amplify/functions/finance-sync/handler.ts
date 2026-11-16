@@ -12,11 +12,17 @@
 // Entry points:
 //   EventBridge schedule (3×/day)        → 14-day window
 //   syncFinance mutation                 → { days?, accountId?, dryRun? }
-//   listSimplefinAccounts mutation       → SimpleFIN accounts on the token
-//                                          (id, institution, name; no
+//   listSimplefinAccounts mutation       → SimpleFIN accounts on every
+//                                          connection (id, institution,
+//                                          name, whose connection; no
 //                                          balances or transactions) for
 //                                          the account mapping picker
+//
+// There is one SimpleFIN connection per person (lib/finance/simplefin-
+// connections.ts); each access URL is read from Secrets Manager at run time
+// and mapped accounts are pulled per connection, only the ids mapped to it.
 
+import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
@@ -25,6 +31,7 @@ import type { Schema } from "../../data/resource";
 import { listAllPages } from "../../../lib/list-all.js";
 import { txIndexQuery } from "../../../lib/finance/data.js";
 import { fetchAccounts, maskAccessUrl } from "../../../lib/finance/simplefin.js";
+import { SIMPLEFIN_CONNECTIONS, groupBySimplefinConnection, simplefinConnection, type SimplefinConnection } from "../../../lib/finance/simplefin-connections.js";
 import {
   balanceNeedsUpdate,
   buildDedupIndex,
@@ -141,32 +148,72 @@ export const handler = async (event: any = {}) => {
   return runSync({ trigger: scheduled ? "CRON" : "MANUAL", days: event?.days, accountId: event?.accountId, dryRun: event?.dryRun === true });
 };
 
+// ── Access URLs ───────────────────────────────────────────────────────────────
+
+const secrets = new SecretsManagerClient({});
+const ACCESS_URL_TTL_MS = 15 * 60 * 1000;
+const accessUrlCache = new Map<string, { url: string | null; at: number }>();
+
+/**
+ * The connection's access URL, or null when its secret doesn't exist yet (the
+ * connection isn't set up). Other failures throw. Cached briefly across warm
+ * invocations so a re-claimed token is picked up without a redeploy.
+ */
+async function accessUrlFor(conn: SimplefinConnection): Promise<string | null> {
+  const hit = accessUrlCache.get(conn.key);
+  if (hit && Date.now() - hit.at < ACCESS_URL_TTL_MS) return hit.url;
+  let url: string | null = null;
+  try {
+    const res = await secrets.send(new GetSecretValueCommand({ SecretId: conn.secretName }));
+    const parsed = res.SecretString ? (JSON.parse(res.SecretString) as { accessUrl?: string }) : {};
+    url = parsed.accessUrl?.trim() || null;
+  } catch (e) {
+    if ((e as { name?: string }).name !== "ResourceNotFoundException") throw e;
+  }
+  accessUrlCache.set(conn.key, { url, at: Date.now() });
+  return url;
+}
+
+const notSetUp = (conn: SimplefinConnection) => `${conn.label}'s SimpleFIN connection isn't set up yet (no access URL in ${conn.secretName}; run scripts/setup-simplefin-connection.mjs)`;
+
 // ── Account discovery ─────────────────────────────────────────────────────────
 
 async function listSimplefinAccounts() {
-  const accessUrl = process.env.SIMPLEFIN_ACCESS_URL;
-  if (!accessUrl) return { accounts: [], error: "SIMPLEFIN_ACCESS_URL not set" };
   const c = await getClient();
   const mapped = new Map(
     (await listAllPages<{ id: string; name: string; simplefinAccountId?: string | null }>(c.models.homeFinanceAccount))
       .filter((a) => a.simplefinAccountId)
       .map((a) => [a.simplefinAccountId!.trim(), a]),
   );
-  try {
-    // Balances-only call: names and ids, never the personal accounts' activity.
-    const { accounts, errors } = await fetchAccounts(accessUrl, { allAccounts: true, balancesOnly: true, pending: false });
-    return {
-      accounts: accounts.map((a) => ({
-        id: a.id,
-        institution: a.orgName,
-        name: a.name,
-        mappedTo: mapped.get(a.id) ? { id: mapped.get(a.id)!.id, name: mapped.get(a.id)!.name } : null,
-      })),
-      bridgeErrors: errors,
-    };
-  } catch (e) {
-    return { accounts: [], error: e instanceof Error ? e.message : String(e) };
+  const accounts: { id: string; institution: string; name: string; connection: string; mappedTo: { id: string; name: string } | null }[] = [];
+  const connections: { key: string; label: string; ok: boolean; error: string | null }[] = [];
+  const bridgeErrors: string[] = [];
+  for (const conn of SIMPLEFIN_CONNECTIONS) {
+    try {
+      const accessUrl = await accessUrlFor(conn);
+      if (!accessUrl) {
+        connections.push({ key: conn.key, label: conn.label, ok: false, error: notSetUp(conn) });
+        continue;
+      }
+      // Balances-only call: names and ids, never the personal accounts' activity.
+      const res = await fetchAccounts(accessUrl, { allAccounts: true, balancesOnly: true, pending: false });
+      bridgeErrors.push(...res.errors.map((e) => `${conn.label}: ${e}`));
+      for (const a of res.accounts) {
+        accounts.push({
+          id: a.id,
+          institution: a.orgName,
+          name: a.name,
+          connection: conn.key,
+          mappedTo: mapped.get(a.id) ? { id: mapped.get(a.id)!.id, name: mapped.get(a.id)!.name } : null,
+        });
+      }
+      connections.push({ key: conn.key, label: conn.label, ok: true, error: null });
+    } catch (e) {
+      connections.push({ key: conn.key, label: conn.label, ok: false, error: e instanceof Error ? e.message : String(e) });
+    }
   }
+  const error = connections.every((x) => !x.ok) ? connections.map((x) => x.error).join("; ") : undefined;
+  return { accounts, connections, bridgeErrors, ...(error ? { error } : {}) };
 }
 
 // ── Sync ──────────────────────────────────────────────────────────────────────
@@ -177,11 +224,10 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   const today = todayIso();
   const windowFrom = addDays(today, -(opts.days ?? 14));
   const windowTo = today;
-  const accessUrl = process.env.SIMPLEFIN_ACCESS_URL;
   const errors: string[] = [];
   const bridgeErrors: string[] = [];
   const c = await getClient();
-  console.log(`[finance-sync] trigger=${opts.trigger} dryRun=${!!opts.dryRun} window=${windowFrom}→${windowTo} access=${accessUrl ? maskAccessUrl(accessUrl) : "(missing)"}`);
+  console.log(`[finance-sync] trigger=${opts.trigger} dryRun=${!!opts.dryRun} window=${windowFrom}→${windowTo}`);
 
   const log = (status: SyncSummary["status"], counts: Partial<SyncSummary> & { txDuplicate?: number; txFailed?: number }, perAccount: PerAccount[] = []) =>
     writeSyncLog(c, {
@@ -202,11 +248,6 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   if (opts.accountId) mapped = mapped.filter((a) => a.id === opts.accountId);
 
   const empty = { accountsChecked: mapped.length, txPulled: 0, txInserted: 0, txUpdated: 0, balancesUpdated: 0, linked: 0 };
-  if (!accessUrl) {
-    errors.push("SIMPLEFIN_ACCESS_URL not set");
-    await log("ERROR", empty);
-    return { ok: false, status: "ERROR", ...empty, errors };
-  }
   if (mapped.length === 0) {
     console.log("[finance-sync] no mapped accounts; snapshots only");
     if (!opts.dryRun) await upsertSnapshots(c, allAccounts, today, errors);
@@ -214,18 +255,39 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     return { ok: true, status: "OK", ...empty, errors };
   }
 
-  const byId = new Map(mapped.map((a) => [a.simplefinAccountId.trim() as string, a]));
-  let sfAccounts: Awaited<ReturnType<typeof fetchAccounts>>["accounts"];
-  try {
-    const res = await fetchAccounts(accessUrl, { start: windowFrom, end: addDays(windowTo, 1), pending: true, accountIds: [...byId.keys()] });
-    bridgeErrors.push(...(res.errors ?? []));
-    // Defense in depth: never touch an account we didn't ask for.
-    sfAccounts = res.accounts.filter((a) => byId.has(a.id));
-  } catch (e) {
-    errors.push(`SimpleFIN fetch failed: ${e instanceof Error ? e.message : String(e)}`);
+  // One SimpleFIN call per connection, each asking only for the ids mapped to
+  // it. A connection that fails (or isn't set up) is reported and skipped;
+  // the others still sync. Accounts on a failed connection are left out of
+  // `mapped` so they aren't stamped as synced.
+  const byId = new Map<string, any>(); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const sfAccounts: Awaited<ReturnType<typeof fetchAccounts>>["accounts"] = [];
+  const synced: typeof mapped = [];
+  for (const [key, group] of groupBySimplefinConnection(mapped)) {
+    const conn = simplefinConnection(key);
+    if (!conn) {
+      errors.push(`Unknown SimpleFIN connection "${key}" on ${group.map((a) => a.name).join(", ")}`);
+      continue;
+    }
+    const ids = new Map(group.map((a) => [a.simplefinAccountId.trim() as string, a]));
+    try {
+      const accessUrl = await accessUrlFor(conn);
+      if (!accessUrl) throw new Error(notSetUp(conn));
+      console.log(`[finance-sync] ${conn.label}: ${ids.size} account(s) via ${maskAccessUrl(accessUrl)}`);
+      const res = await fetchAccounts(accessUrl, { start: windowFrom, end: addDays(windowTo, 1), pending: true, accountIds: [...ids.keys()] });
+      bridgeErrors.push(...(res.errors ?? []).map((e) => `${conn.label}: ${e}`));
+      // Defense in depth: never touch an account we didn't ask for.
+      sfAccounts.push(...res.accounts.filter((a) => ids.has(a.id)));
+      for (const [id, a] of ids) byId.set(id, a);
+      synced.push(...group);
+    } catch (e) {
+      errors.push(`SimpleFIN fetch (${conn.label}) failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  if (synced.length === 0) {
     await log("ERROR", empty);
     return { ok: false, status: "ERROR", ...empty, errors };
   }
+  mapped = synced;
   const txPulled = sfAccounts.reduce((n, s) => n + s.transactions.length, 0);
 
   // Classify.

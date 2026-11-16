@@ -20,10 +20,12 @@ import { EmptyState, Money, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { ACCOUNT_TYPES, ACCOUNT_TYPE_LABELS, RETIREMENT_TYPES, RETIREMENT_TYPE_LABELS, accountTypeLabel, isInvested } from "@/lib/finance/accounts";
 import { listHoldings, txIndexQuery } from "@/lib/finance/data";
+import { DEFAULT_SIMPLEFIN_CONNECTION, SIMPLEFIN_CONNECTIONS, simplefinConnectionLabel } from "@/lib/finance/simplefin-connections";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-type SfAccount = { id: string; institution: string; name: string; mappedTo: { id: string; name: string } | null };
+type SfAccount = { id: string; institution: string; name: string; connection: string; mappedTo: { id: string; name: string } | null };
+type SfConnection = { key: string; label: string; ok: boolean; error: string | null };
 
 type Form = {
   id?: string;
@@ -42,6 +44,7 @@ type Form = {
   apr: string;
   apy: string;
   simplefinAccountId: string;
+  simplefinConnection: string;
   notes: string;
 };
 
@@ -61,6 +64,7 @@ const EMPTY: Form = {
   apr: "",
   apy: "",
   simplefinAccountId: "",
+  simplefinConnection: DEFAULT_SIMPLEFIN_CONNECTION,
   notes: "",
 };
 
@@ -86,6 +90,7 @@ export default function FinanceAccountsPage() {
   const [sfOpen, setSfOpen] = useState(false);
   const [sfLoading, setSfLoading] = useState(false);
   const [sfAccounts, setSfAccounts] = useState<SfAccount[]>([]);
+  const [sfConnections, setSfConnections] = useState<SfConnection[]>([]);
   const [sfError, setSfError] = useState<string | null>(null);
 
   const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
@@ -109,6 +114,7 @@ export default function FinanceAccountsPage() {
       apr: pctIn(a.apr),
       apy: pctIn(a.apy),
       simplefinAccountId: a.simplefinAccountId ?? "",
+      simplefinConnection: a.simplefinConnection ?? DEFAULT_SIMPLEFIN_CONNECTION,
       notes: a.notes ?? "",
     });
   }
@@ -141,6 +147,7 @@ export default function FinanceAccountsPage() {
       apr: form.type === "CREDIT" || form.type === "LOAN" ? pctOut(form.apr) : null,
       apy: form.type === "SAVINGS" ? pctOut(form.apy) : null,
       simplefinAccountId: sfId,
+      simplefinConnection: sfId ? form.simplefinConnection : null,
       notes: form.notes.trim() || null,
       ...(balanceChanged ? { balanceUpdatedAt: new Date().toISOString() } : {}),
     };
@@ -189,6 +196,7 @@ export default function FinanceAccountsPage() {
       const data = parseJsonLayers(r.data) ?? {};
       if (data.error) setSfError(data.error);
       setSfAccounts(data.accounts ?? []);
+      setSfConnections(data.connections ?? []);
     } catch (e) {
       setSfError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -247,7 +255,7 @@ export default function FinanceAccountsPage() {
                     {a.last4 && <span>••{a.last4}</span>}
                     {a.simplefinAccountId ? (
                       <span className="text-success-600 flex items-center gap-1">
-                        <FaLink /> SimpleFIN · synced {ago(a.lastSyncAt)}
+                        <FaLink /> SimpleFIN ({simplefinConnectionLabel(a.simplefinConnection)}) · synced {ago(a.lastSyncAt)}
                       </span>
                     ) : (
                       <span className="flex items-center gap-1">
@@ -344,6 +352,18 @@ export default function FinanceAccountsPage() {
                     description={isInvested(form.type) ? "Syncs value, positions and transactions 3×/day; its transactions stay out of the budget" : "Linked accounts sync balance and transactions 3×/day"}
                     className="flex-1"
                   />
+                  <Select
+                    label="Connection"
+                    aria-label="Whose SimpleFIN connection"
+                    selectedKeys={[form.simplefinConnection]}
+                    onSelectionChange={(k) => set("simplefinConnection", String(Array.from(k)[0] ?? DEFAULT_SIMPLEFIN_CONNECTION))}
+                    className="w-36 mb-6"
+                    description=" "
+                  >
+                    {SIMPLEFIN_CONNECTIONS.map((c) => (
+                      <SelectItem key={c.key}>{c.label}</SelectItem>
+                    ))}
+                  </Select>
                   <Button variant="flat" startContent={<FaLink />} onPress={openSimplefin} className="mb-6">
                     Pick
                   </Button>
@@ -380,46 +400,62 @@ export default function FinanceAccountsPage() {
         <ModalContent>
           <ModalHeader>Link a SimpleFIN account</ModalHeader>
           <ModalBody>
-            <p className="text-xs text-default-500">Names only; balances and activity are pulled only for the accounts linked here.</p>
+            <p className="text-xs text-default-500">Names only; balances and activity are pulled only for the accounts linked here. One list per person&apos;s SimpleFIN connection.</p>
             {sfLoading ? (
               <div className="flex justify-center py-8">
                 <Spinner />
               </div>
             ) : sfError ? (
               <div className="text-sm text-danger">{sfError}</div>
-            ) : sfAccounts.length === 0 ? (
-              <div className="text-sm text-default-500">SimpleFIN returned no accounts.</div>
             ) : (
-              <ul className="flex flex-col divide-y divide-default-100">
-                {sfAccounts.map((s) => {
-                  const mine = form?.id && s.mappedTo?.id === form.id;
-                  const taken = s.mappedTo && !mine;
+              <div className="flex flex-col gap-4">
+                {(sfConnections.length ? sfConnections : SIMPLEFIN_CONNECTIONS.map((c) => ({ ...c, ok: true, error: null }))).map((conn) => {
+                  const rows = sfAccounts.filter((s) => s.connection === conn.key);
                   return (
-                    <li key={s.id} className="flex items-center gap-2 py-2">
-                      <div className="flex-1 min-w-0">
-                        <div className="text-sm font-medium truncate">{s.name}</div>
-                        <div className="text-xs text-default-500">
-                          {s.institution}
-                          {s.mappedTo && ` · linked to ${s.mappedTo.name}`}
-                        </div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant={form?.simplefinAccountId === s.id ? "solid" : "flat"}
-                        color={form?.simplefinAccountId === s.id ? "primary" : "default"}
-                        isDisabled={!!taken}
-                        onPress={() => {
-                          set("simplefinAccountId", s.id);
-                          if (form && !form.institution) set("institution", s.institution);
-                          setSfOpen(false);
-                        }}
-                      >
-                        {form?.simplefinAccountId === s.id ? "Selected" : taken ? "Taken" : "Use"}
-                      </Button>
-                    </li>
+                    <div key={conn.key}>
+                      <div className="text-sm font-semibold mb-1">{conn.label}&apos;s SimpleFIN</div>
+                      {!conn.ok ? (
+                        <div className="text-xs text-warning-600">{conn.error}</div>
+                      ) : rows.length === 0 ? (
+                        <div className="text-xs text-default-500">No accounts on this connection yet.</div>
+                      ) : (
+                        <ul className="flex flex-col divide-y divide-default-100">
+                          {rows.map((s) => {
+                            const selected = form?.simplefinAccountId === s.id && form?.simplefinConnection === s.connection;
+                            const mine = form?.id && s.mappedTo?.id === form.id;
+                            const taken = s.mappedTo && !mine;
+                            return (
+                              <li key={s.id} className="flex items-center gap-2 py-2">
+                                <div className="flex-1 min-w-0">
+                                  <div className="text-sm font-medium truncate">{s.name}</div>
+                                  <div className="text-xs text-default-500">
+                                    {s.institution}
+                                    {s.mappedTo && ` · linked to ${s.mappedTo.name}`}
+                                  </div>
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant={selected ? "solid" : "flat"}
+                                  color={selected ? "primary" : "default"}
+                                  isDisabled={!!taken}
+                                  onPress={() => {
+                                    set("simplefinAccountId", s.id);
+                                    set("simplefinConnection", s.connection);
+                                    if (form && !form.institution) set("institution", s.institution);
+                                    setSfOpen(false);
+                                  }}
+                                >
+                                  {selected ? "Selected" : taken ? "Taken" : "Use"}
+                                </Button>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
                   );
                 })}
-              </ul>
+              </div>
             )}
           </ModalBody>
           <ModalFooter>

@@ -57,6 +57,7 @@ import { wardrobeSuggest } from "./functions/wardrobe-suggest/resource";
 import { wardrobeTryOn } from "./functions/wardrobe-try-on/resource";
 import { ops } from "./functions/ops/resource";
 import { financeSync } from "./functions/finance-sync/resource";
+import { SIMPLEFIN_CONNECTIONS } from "../lib/finance/simplefin-connections";
 import { paycheckProcessor } from "./functions/paycheck-processor/resource";
 import { invoiceProcessor } from "./functions/invoice-processor/resource";
 import { weekReview } from "./functions/week-review/resource";
@@ -393,17 +394,20 @@ new scheduler.CfnSchedule(recurringStack, "dailySummarySchedule", {
 // from SimpleFIN, classifies and reconciles transactions, links them to
 // scheduled transactions and upserts today's balance snapshots.
 //
-// The SimpleFIN access URL is the one gennaroanesi.com already stores in
-// Secrets Manager (same account). It can see personal accounts too, so the
-// Lambda only requests mapped ids (lib/finance/simplefin.ts enforces it).
-// SimpleFIN Bridge rate-limits per token; gennaroanesi.com also pulls 3×/day,
-// so these runs sit 30 min after its ~4/12/19h Chicago runs.
+// One SimpleFIN connection per person (lib/finance/simplefin-connections.ts),
+// each an access URL in Secrets Manager that the Lambda reads at run time, so
+// a connection whose secret isn't there yet reports that instead of failing
+// the deploy. Gennaro's is the token gennaroanesi.com stores (same account).
+// Every token can see that person's own accounts too, so the Lambda only
+// requests mapped ids (lib/finance/simplefin.ts enforces it).
+// SimpleFIN Bridge rate-limits per token; gennaroanesi.com also pulls 3×/day
+// on Gennaro's, so these runs sit 30 min after its ~4/12/19h Chicago runs.
 
 const financeSyncLambda = backend.financeSync.resources.lambda as LambdaFunction;
 const financeSyncStack = Stack.of(financeSyncLambda);
-const simplefinSecret = secretsmanager.Secret.fromSecretNameV2(financeSyncStack, "SimplefinSecret", "gennaroanesi/simplefin");
-simplefinSecret.grantRead(financeSyncLambda);
-financeSyncLambda.addEnvironment("SIMPLEFIN_ACCESS_URL", simplefinSecret.secretValueFromJson("accessUrl").unsafeUnwrap());
+for (const conn of SIMPLEFIN_CONNECTIONS) {
+  secretsmanager.Secret.fromSecretNameV2(financeSyncStack, `SimplefinSecret-${conn.key}`, conn.secretName).grantRead(financeSyncLambda);
+}
 financeSyncLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
 
 const financeSyncScheduleRole = new iam.Role(financeSyncStack, "financeSyncSchedulerRole", {

@@ -11,6 +11,7 @@ export type AccountLike = {
   active?: boolean | null;
   minBalance?: number | null;
   simplefinAccountId?: string | null;
+  simplefinConnection?: string | null;
 };
 
 export type TxLike = {

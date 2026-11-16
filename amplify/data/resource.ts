@@ -973,9 +973,13 @@ const schema = a
         apr: a.float(), // CREDIT/LOAN, decimal (0.0625)
         apy: a.float(), // SAVINGS, decimal
         // SimpleFIN Bridge account id ("ACT-…"). When set, finance-sync
-        // pulls this account's balance and transactions. The token is
-        // shared with gennaroanesi.com, so only mapped ids are requested.
+        // pulls this account's balance and transactions. Each token also
+        // sees personal accounts, so only mapped ids are requested.
         simplefinAccountId: a.string(),
+        // Which SimpleFIN connection (whose subscription) the id belongs
+        // to: a key from lib/finance/simplefin-connections.ts. Null = the
+        // first one (rows from before there were two).
+        simplefinConnection: a.string(),
         balanceUpdatedAt: a.datetime(),
         lastSyncAt: a.datetime(),
         lastSyncDetails: a.string(), // JSON summary of the last run for this account

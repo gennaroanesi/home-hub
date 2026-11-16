@@ -79,9 +79,10 @@ Household differences from gennaroanesi.com:
 | Where | What |
 |---|---|
 | `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…GoalMilestone`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date), `…Holding` (identifier accountId+holdingKey); `syncFinance` and `listSimplefinAccounts` mutations |
-| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `data.ts` (loading through the indexes) |
+| `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `simplefin-connections.ts` (one connection per person), `data.ts` (loading through the indexes) |
 | `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, syncs positions for invested accounts, writes a sync log |
-| `lib/ops/finance.ts` | `get_finance_summary`, `list_finance_transactions`, `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh` and the pages' writes |
+| `lib/ops/finance.ts` | `get_finance_summary` (+ per-account buffer / projected low, last sync), `get_finance_budget` (month / quarter / year / last3, cadence filter), `list_finance_transactions` (`categories` = any of), `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule` (`markPaid`), `list_finance_goals`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh`, the pages' writes and the phone |
+| `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings). All through the ops; sheets in `mobile/components/finance/` |
 | `pages/finance/` | Overview, Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
 
 ## Paychecks, tax outlook, invoices (2026-11-09)
@@ -143,28 +144,49 @@ a bank that gives the posted charge a different SimpleFIN id than the
 pending one (the pending row would stay) — check after the first weeks of
 real data.
 
-The access URL is the one gennaroanesi.com uses (Secrets Manager
-`gennaroanesi/simplefin`, same AWS account). That token can see the personal
-accounts too, so:
+**Connections (2026-11-15).** There is one SimpleFIN subscription per person,
+listed in `lib/finance/simplefin-connections.ts` (`key`, `label`, Secrets
+Manager `secretName`): Gennaro's is the token gennaroanesi.com uses
+(`gennaroanesi/simplefin`, same AWS account), Cristine's is
+`home-hub/simplefin/cristine`. Each secret holds `{"accessUrl": "…"}`.
+`homeFinanceAccount.simplefinConnection` says which connection an account's
+`simplefinAccountId` belongs to (null = the first, for rows from before).
+The Lambda reads the secrets at run time (15-minute cache), so a connection
+whose secret doesn't exist yet shows "isn't set up yet" in the picker and the
+sync log instead of failing the deploy; `backend.ts` only grants read on both
+names. Adding a third person is a line in that file plus a secret.
 
-- the sync only asks SimpleFIN for the ids mapped on `homeFinanceAccount`
+Each token can see that person's own accounts too, so:
+
+- the sync asks SimpleFIN once per connection, only for the ids mapped to it
   (`fetchAccounts` throws if called without ids unless `allAccounts` is set,
-  and the handler drops anything it didn't ask for);
+  and the handler drops anything it didn't ask for). A connection that fails
+  is reported and skipped; the others still sync (status PARTIAL);
 - the account picker (`listSimplefinAccounts`) uses `balances-only=1` and
-  returns only id, institution and name. Anyone in `home-users` can see that
-  list, i.e. the names of the personal accounts on the token. Moving to a
-  separate SimpleFIN connection later is a secret swap in `backend.ts`.
-- SimpleFIN rate-limits per token. gennaroanesi.com pulls at roughly 4/12/19h
-  Chicago; these runs are 30 minutes later.
+  returns only id, institution, name and the connection key, grouped per
+  person in the modal ("Gennaro's SimpleFIN" / "Cristine's SimpleFIN").
+  Anyone in `home-users` can see those names;
+- SimpleFIN rate-limits per token. gennaroanesi.com pulls Gennaro's at
+  roughly 4/12/19h Chicago; these runs are 30 minutes later. Cristine's token
+  is only used here.
+
+`scripts/setup-simplefin-connection.mjs --connection cristine --setup-token
+<token>` claims a SimpleFIN Bridge setup token (one use) and stores the access
+URL in the secret (never printed, only masked); `--check` lists the account
+names a stored URL sees.
 
 ## Setting it up (once the joint account exists)
 
 1. Deploy. Check the first scheduled run wrote a `homeFinanceSyncLog` row
    (status OK, 0 accounts) — or press *Sync now* on any finance page.
-2. Add the bank connection for the joint account in SimpleFIN Bridge (same
-   SimpleFIN login as gennaroanesi.com).
+2. Add the bank connection in SimpleFIN Bridge, in whichever person's
+   SimpleFIN subscription holds that bank login. For a connection that
+   isn't stored yet (Cristine's), create a setup token there (New App) and
+   run `scripts/setup-simplefin-connection.mjs --connection cristine
+   --setup-token <token>` with `AWS_PROFILE=amplify-dev`.
 3. *Finance → Accounts → Add*, type Checking, no owners (= joint), set a
-   buffer (`minBalance`), then *Pick* the SimpleFIN account. *Sync now*.
+   buffer (`minBalance`), then *Pick* the SimpleFIN account from the right
+   person's list (this also sets the connection). *Sync now*.
 4. *Rules*: copy the built-in rules to editable ones, then add one rule per
    person for their incoming transfer ("transfer from … 1234" → person,
    category Contribution) so contributions are attributed automatically.
@@ -187,7 +209,7 @@ accounts too, so:
   new-merchant charge posts. `get_finance_summary` already computes the low
   point; the check would reuse `lib/finance/recurring.ts` and `budget.ts`.
 - A finance line in the daily summary (upcoming debits today/tomorrow).
-- Mobile screen (`more/finance`), reading the same ops.
+- Phone: review, paychecks, invoices, rules, groups and tax outlook are web-only; new budget lines, account setup and manual transactions too.
 - Budget rollover (`rollover` is stored but not applied; gennaroanesi.com
   freezes period rows for it in `financeBudgetPeriod`).
 - Loans (mortgage / car amortization) if the payoff view is wanted here.
