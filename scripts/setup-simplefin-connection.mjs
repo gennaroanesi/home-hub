@@ -13,6 +13,7 @@
 // URL can see (balances-only call), to confirm the right banks are connected.
 
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 
 const args = Object.fromEntries(
   process.argv.slice(2).reduce((acc, a, i, arr) => {
@@ -22,7 +23,7 @@ const args = Object.fromEntries(
 );
 
 const CONNECTIONS = {
-  gennaro: "gennaroanesi/simplefin",
+  gennaro: "home-hub/simplefin/gennaro", // gennaroanesi.com keeps its own copy in gennaroanesi/simplefin
   cristine: "home-hub/simplefin/cristine",
 };
 const key = args.connection;
@@ -32,7 +33,9 @@ if (!secretName) {
   process.exit(1);
 }
 const region = process.env.AWS_REGION ?? "us-east-1";
-const aws = (...a) => execFileSync("aws", ["secretsmanager", ...a, "--region", region, "--output", "json"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+// Homebrew's aws isn't always on PATH for node; AWS_CLI overrides.
+const AWS_BIN = process.env.AWS_CLI ?? (existsSync("/opt/homebrew/bin/aws") ? "/opt/homebrew/bin/aws" : "aws");
+const aws = (...a) => execFileSync(AWS_BIN, ["secretsmanager", ...a, "--region", region, "--output", "json"], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 
 function mask(url) {
   try {

@@ -21,8 +21,10 @@ export type SimplefinConnection = {
 };
 
 export const SIMPLEFIN_CONNECTIONS: readonly SimplefinConnection[] = [
-  // gennaroanesi.com's token, shared with its personal sync (same AWS account).
-  { key: "gennaro", label: "Gennaro", secretName: "gennaroanesi/simplefin" },
+  // A copy of gennaroanesi.com's token (`gennaroanesi/simplefin`, same AWS
+  // account), which its personal sync still uses: if the token is ever
+  // re-claimed, both secrets need the new URL.
+  { key: "gennaro", label: "Gennaro", secretName: "home-hub/simplefin/gennaro" },
   { key: "cristine", label: "Cristine", secretName: "home-hub/simplefin/cristine" },
 ];
 

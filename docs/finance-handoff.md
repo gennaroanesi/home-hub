@@ -146,9 +146,11 @@ real data.
 
 **Connections (2026-11-15).** There is one SimpleFIN subscription per person,
 listed in `lib/finance/simplefin-connections.ts` (`key`, `label`, Secrets
-Manager `secretName`): Gennaro's is the token gennaroanesi.com uses
-(`gennaroanesi/simplefin`, same AWS account), Cristine's is
-`home-hub/simplefin/cristine`. Each secret holds `{"accessUrl": "…"}`.
+Manager `secretName`): Gennaro's is `home-hub/simplefin/gennaro`, a copy
+(made 2026-11-15) of the token gennaroanesi.com keeps using in
+`gennaroanesi/simplefin` (same AWS account; re-claiming the token means
+updating both), Cristine's is `home-hub/simplefin/cristine`. Each secret
+holds `{"accessUrl": "…"}`.
 `homeFinanceAccount.simplefinConnection` says which connection an account's
 `simplefinAccountId` belongs to (null = the first, for rows from before).
 The Lambda reads the secrets at run time (15-minute cache), so a connection
