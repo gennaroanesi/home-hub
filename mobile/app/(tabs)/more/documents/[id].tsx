@@ -1,13 +1,10 @@
 // Document detail. Metadata view + actions:
-//   - Download → Face ID gate → /api/d/<key> redirect → file
-//     Falls back to Duo Push (existing /api/documents/download endpoint)
-//     when Face ID hardware/enrollment is unavailable.
+//   - Download / Reveal → lib/document-download: a sensitive doc asks
+//     for Face ID, then the server's Duo push (banner while waiting),
+//     and comes back as a short-lived signed link / the number. A doc
+//     marked not sensitive opens with neither.
 //   - Edit → DocumentFormModal
 //   - Delete → confirm + remove S3 object + remove row
-//
-// Web stays Duo-only. Both surfaces gate the same backend act — the
-// short-link redirect is unauthenticated; revealing the URL is the
-// thing the gate protects.
 
 import { useCallback, useEffect, useState } from "react";
 import {
@@ -59,6 +56,8 @@ export default function DocumentDetail() {
   // Once the user has unlocked the number for this screen viewing,
   // keep it visible until they back out. Cleared when `doc` reloads.
   const [revealedNumber, setRevealedNumber] = useState<string | null>(null);
+  // "Approve the Duo push on your phone…" while a push is pending.
+  const [duoStatus, setDuoStatus] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -78,14 +77,18 @@ export default function DocumentDetail() {
     if (revealing) return;
     setRevealing(true);
     try {
-      const result = await revealDocumentNumber({
-        documentId: doc.id,
-        s3Key: doc.s3Key,
-        documentNumber: doc.documentNumber,
-        isSensitive: doc.isSensitive,
-      });
+      const result = await revealDocumentNumber(
+        {
+          documentId: doc.id,
+          s3Key: doc.s3Key,
+          documentNumber: doc.documentNumber,
+          isSensitive: doc.isSensitive,
+        },
+        { onStatus: setDuoStatus }
+      );
       if (!result.ok) {
-        Alert.alert("Couldn't reveal", result.error);
+        if (result.error !== "Cancelled")
+          Alert.alert("Couldn't reveal", result.error);
         return;
       }
       if (result.documentNumber) setRevealedNumber(result.documentNumber);
@@ -101,14 +104,18 @@ export default function DocumentDetail() {
     if (downloading) return;
     setDownloading(true);
     try {
-      const result = await downloadDocument({
-        documentId: doc.id,
-        s3Key: doc.s3Key,
-        documentNumber: doc.documentNumber,
-        isSensitive: doc.isSensitive,
-      });
+      const result = await downloadDocument(
+        {
+          documentId: doc.id,
+          s3Key: doc.s3Key,
+          documentNumber: doc.documentNumber,
+          isSensitive: doc.isSensitive,
+        },
+        { onStatus: setDuoStatus }
+      );
       if (!result.ok) {
-        Alert.alert("Download failed", result.error);
+        if (result.error !== "Cancelled")
+          Alert.alert("Download failed", result.error);
         return;
       }
       if (result.url) {
@@ -216,15 +223,31 @@ export default function DocumentDetail() {
               <Text style={styles.secondaryBtnText}>Edit</Text>
             </Pressable>
           </View>
-          <Text style={styles.openHint}>
-            {documentIsSensitive(doc)
-              ? "Confirms with Face ID. Falls back to Duo Push if Face ID isn't set up."
-              : "Not sensitive: opens without Face ID."}
-          </Text>
+          {duoStatus ? (
+            <View style={styles.duoBanner}>
+              <ActivityIndicator size="small" color="#735f55" />
+              <Text style={styles.duoBannerText}>{duoStatus}</Text>
+            </View>
+          ) : (
+            <Text style={styles.openHint}>
+              {documentIsSensitive(doc)
+                ? "Confirms with Face ID, then a Duo push to your phone."
+                : "Not sensitive: opens without Face ID or Duo."}
+            </Text>
+          )}
 
           <View style={styles.metaCard}>
             <MetaRow label="Type" value={DOCUMENT_TYPE_LABEL[(doc.type as DocumentType) ?? "OTHER"]} />
             <MetaRow label="Owner" value={ownerLabel(doc, people)} divider />
+            <MetaRow
+              label="Sensitive"
+              value={
+                documentIsSensitive(doc)
+                  ? "Yes — Face ID + Duo"
+                  : "No — opens without Duo"
+              }
+              divider
+            />
             {!!doc.documentNumber && (
               <View style={[styles.metaRow, styles.metaRowDivider]}>
                 <Text style={styles.metaLabel}>Number</Text>
@@ -330,6 +353,11 @@ function DocumentSummary({
           {exp}
         </Text>
       )}
+      {!documentIsSensitive(doc) && (
+        <View style={styles.badge}>
+          <Text style={styles.badgeText}>no Duo</Text>
+        </View>
+      )}
     </View>
   );
 }
@@ -401,6 +429,14 @@ const styles = StyleSheet.create({
   summarySub: { fontSize: 13, color: "#666" },
   summaryExpiry: { fontSize: 13, color: "#888", marginTop: 4 },
   summaryExpiryWarn: { color: "#a44", fontWeight: "500" },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: "#eee",
+    marginTop: 4,
+  },
+  badgeText: { fontSize: 10, color: "#666", fontWeight: "500" },
 
   actions: { flexDirection: "row", gap: 8 },
   primaryBtn: {
@@ -436,6 +472,21 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
     lineHeight: 17,
   },
+
+  duoBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+    marginBottom: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#faf6f3",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#e0d8d2",
+  },
+  duoBannerText: { color: "#735f55", fontSize: 13, flex: 1 },
 
   metaCard: {
     backgroundColor: "#fff",

@@ -39,9 +39,15 @@ import {
   DOCUMENT_TYPE_LABEL,
   type Document,
   type DocumentType,
+  documentIsSensitive,
 } from "../lib/documents";
+import {
+  approveMarkNotSensitive,
+  documentViewUrl,
+} from "../lib/document-download";
 import { uploadDocumentFile, type UploadedDocFile } from "../lib/documents-upload";
-import { type Person } from "../lib/use-people";
+import { useAllPeople, type Person } from "../lib/use-people";
+import { PeoplePicker } from "./PeoplePicker";
 
 interface Props {
   visible: boolean;
@@ -66,6 +72,7 @@ export function DocumentFormModal({
   const [type, setType] = useState<DocumentType>("OTHER");
   const [scope, setScope] = useState<"PERSONAL" | "HOUSEHOLD">("PERSONAL");
   const [ownerPersonId, setOwnerPersonId] = useState<string | null>(null);
+  const { people: allPeople } = useAllPeople();
   const [documentNumber, setDocumentNumber] = useState("");
   const [issuer, setIssuer] = useState("");
   const [issuedDate, setIssuedDate] = useState("");
@@ -73,6 +80,10 @@ export function DocumentFormModal({
   const [showIssuedPicker, setShowIssuedPicker] = useState(false);
   const [showExpiresPicker, setShowExpiresPicker] = useState(false);
   const [notes, setNotes] = useState("");
+  // Opening the file / number needs Face ID + Duo unless this is off.
+  const [isSensitive, setIsSensitive] = useState(true);
+  // Duo wait text while saving a loosening change.
+  const [duoStatus, setDuoStatus] = useState<string | null>(null);
   // Pending file replacement: null = keep existing s3Key, set =
   // upload this on save.
   const [pendingFile, setPendingFile] = useState<{
@@ -95,6 +106,7 @@ export function DocumentFormModal({
       setIssuedDate(doc.issuedDate ?? "");
       setExpiresDate(doc.expiresDate ?? "");
       setNotes(doc.notes ?? "");
+      setIsSensitive(documentIsSensitive(doc));
       setPendingFile(null);
     } else {
       setTitle("");
@@ -106,8 +118,10 @@ export function DocumentFormModal({
       setIssuedDate("");
       setExpiresDate("");
       setNotes("");
+      setIsSensitive(true);
       setPendingFile(null);
     }
+    setDuoStatus(null);
   }, [visible, doc, myPersonId]);
 
   // ── File pickers ─────────────────────────────────────────────────────────
@@ -185,8 +199,23 @@ export function DocumentFormModal({
       }
     }
 
+    // Loosening protection (now opens without Duo) needs a Duo push
+    // first, like the web. A new doc saved not sensitive counts too;
+    // turning it back on needs nothing.
+    const loosening = !isSensitive && (!doc || documentIsSensitive(doc));
+
     setBusy(true);
     try {
+      if (loosening) {
+        const approved = await approveMarkNotSensitive(title.trim(), {
+          onStatus: setDuoStatus,
+        });
+        if (!approved.ok) {
+          Alert.alert("Not saved", approved.error);
+          return;
+        }
+      }
+
       let uploaded: UploadedDocFile | null = null;
       if (pendingFile) {
         setUploading(true);
@@ -207,6 +236,7 @@ export function DocumentFormModal({
         issuedDate: issuedDate || null,
         expiresDate: expiresDate || null,
         notes: notes.trim() || null,
+        isSensitive,
         ...(uploaded
           ? {
               s3Key: uploaded.s3Key,
@@ -242,7 +272,10 @@ export function DocumentFormModal({
 
   // ── Render ───────────────────────────────────────────────────────────────
 
-  const householdMembers = people; // already filtered to home-users by usePeople
+  // Anyone can own a document (web offers every active person), not just
+  // the household; the passed household list covers the first load.
+  const ownerChoices = allPeople.length ? allPeople : people;
+
   const fileLabel = pendingFile
     ? `New: ${pendingFile.filename}`
     : doc?.s3Key
@@ -272,6 +305,12 @@ export function DocumentFormModal({
             )}
           </Pressable>
         </View>
+        {duoStatus && (
+          <View style={styles.duoBanner}>
+            <ActivityIndicator size="small" />
+            <Text style={styles.duoBannerText}>{duoStatus}</Text>
+          </View>
+        )}
 
         <ScrollView
           contentContainerStyle={styles.body}
@@ -319,27 +358,19 @@ export function DocumentFormModal({
           {scope === "PERSONAL" && (
             <>
               <Text style={styles.label}>Owner</Text>
-              <View style={styles.chipRow}>
-                {householdMembers.map((p) => {
-                  const on = ownerPersonId === p.id;
-                  return (
-                    <Pressable
-                      key={p.id}
-                      onPress={() => setOwnerPersonId(p.id)}
-                      style={[styles.chip, on && styles.chipOn]}
-                      disabled={busy}
-                    >
-                      <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                        {p.name}
-                      </Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
+              <PeoplePicker
+                single
+                required
+                title="Owner"
+                people={ownerChoices}
+                selectedIds={ownerPersonId ? [ownerPersonId] : []}
+                onChange={(ids) => setOwnerPersonId(ids[0] ?? null)}
+                disabled={busy}
+              />
             </>
           )}
 
-          {doc?.s3Key && <FilePreview s3Key={doc.s3Key} title={doc.title} />}
+          {doc?.s3Key && <FilePreview doc={doc} />}
 
           <Text style={styles.label}>Number (optional)</Text>
           <TextInput
@@ -407,6 +438,22 @@ export function DocumentFormModal({
               <Text style={styles.fileBtnText}>PDF</Text>
             </Pressable>
           </View>
+          <View style={styles.scopeSwitchRow}>
+            <Text style={styles.label}>Sensitive</Text>
+            <Switch
+              value={isSensitive}
+              onValueChange={setIsSensitive}
+              disabled={busy}
+            />
+          </View>
+          <Text style={styles.hint}>
+            {isSensitive
+              ? "Opening the file or number needs Face ID and a Duo push."
+              : doc && !documentIsSensitive(doc)
+                ? "Opens without Face ID or Duo, here, on the web and from Janet."
+                : "Opens without Face ID or Duo, here, on the web and from Janet. Saving asks for a Duo push."}
+          </Text>
+
           {uploading && (
             <View style={styles.uploadingRow}>
               <ActivityIndicator size="small" />
@@ -535,46 +582,91 @@ const dateStyles = StyleSheet.create({
   },
 });
 
-// Inline preview for an existing document. Image renders directly via
-// expo-image; PDF gets a tap target that opens the in-app Safari sheet
-// (handles PDF rendering natively, no extra dep). The s3 key is the
-// secret — we only render this in edit mode, which already required
-// Face ID to open.
-function FilePreview({ s3Key, title }: { s3Key: string; title: string }) {
+// Inline preview for an existing document. The file comes as a
+// short-lived signed link from the web's content API (same gate as
+// View: nothing for a not-sensitive doc, Face ID + Duo otherwise), so
+// it loads on its own only when that costs nothing; a sensitive doc
+// waits for a tap rather than firing a Duo push just for opening Edit.
+// Image renders via expo-image; PDF opens in the in-app Safari sheet.
+function FilePreview({ doc }: { doc: Document }) {
+  const s3Key = doc.s3Key ?? "";
   const ext = (s3Key.split(".").pop() ?? "").toLowerCase();
   const isImage = ["jpg", "jpeg", "png", "webp", "gif"].includes(ext);
   const isPdf = ext === "pdf";
-  const url = (() => {
-    // Inline so this component doesn't depend on document-download.
-    const filename = s3Key.replace(/^home\/documents\//, "");
-    const base =
-      process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
-    return `${base}/api/d/${filename}`;
-  })();
+  const sensitive = documentIsSensitive(doc);
+  const [url, setUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+
+  async function load(): Promise<string | null> {
+    if (url) return url;
+    setLoading(true);
+    try {
+      const result = await documentViewUrl(
+        { documentId: doc.id, s3Key: doc.s3Key, isSensitive: doc.isSensitive },
+        { onStatus: setStatus }
+      );
+      if (!result.ok) {
+        if (result.error !== "Cancelled") Alert.alert("Preview failed", result.error);
+        return null;
+      }
+      setUrl(result.url ?? null);
+      return result.url ?? null;
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    setUrl(null);
+    if (isImage && !sensitive) void load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [doc.id, s3Key]);
+
+  async function openPdf() {
+    const u = await load();
+    if (u) await WebBrowser.openBrowserAsync(u);
+  }
 
   return (
     <>
       <Text style={styles.label}>Preview</Text>
-      {isImage ? (
+      {isImage && url ? (
         <Image
           source={{ uri: url }}
           style={previewStyles.image}
           contentFit="contain"
-          accessibilityLabel={title}
+          accessibilityLabel={doc.title}
         />
-      ) : isPdf ? (
+      ) : isImage || isPdf ? (
         <Pressable
-          onPress={() => WebBrowser.openBrowserAsync(url)}
+          onPress={isPdf ? openPdf : () => void load()}
           style={previewStyles.pdfTile}
+          disabled={loading}
         >
-          <Ionicons name="document-text-outline" size={28} color="#735f55" />
+          <Ionicons
+            name={isPdf ? "document-text-outline" : "image-outline"}
+            size={28}
+            color="#735f55"
+          />
           <View style={{ flex: 1 }}>
             <Text style={previewStyles.pdfTitle} numberOfLines={1}>
-              {title}
+              {doc.title}
             </Text>
-            <Text style={previewStyles.pdfHint}>Tap to open PDF</Text>
+            <Text style={previewStyles.pdfHint}>
+              {status ??
+                (loading
+                  ? "Loading…"
+                  : isPdf
+                    ? "Tap to open PDF"
+                    : "Tap to show the image")}
+            </Text>
           </View>
-          <Ionicons name="open-outline" size={18} color="#888" />
+          {loading ? (
+            <ActivityIndicator size="small" />
+          ) : (
+            <Ionicons name="open-outline" size={18} color="#888" />
+          )}
         </Pressable>
       ) : (
         <Text style={previewStyles.unsupported}>
@@ -688,4 +780,16 @@ const styles = StyleSheet.create({
     marginTop: 8,
   },
   uploadingText: { color: "#666", fontSize: 13 },
+  hint: { color: "#888", fontSize: 12, lineHeight: 17 },
+  duoBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: "#faf6f3",
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: "#e0d8d2",
+  },
+  duoBannerText: { color: "#735f55", fontSize: 13, flex: 1 },
 });

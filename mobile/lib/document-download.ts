@@ -1,27 +1,32 @@
-// Mobile document download flow with Face ID gate + Duo fallback.
+// Mobile document open / download / reveal flow.
 //
-// Default path: Face ID → if pass, construct the /api/d/<key> redirect
-// URL locally and hand it to Linking. The unguessable s3 key is the
-// shared secret; revealing it requires the local biometric gate.
+// Everything goes through the web's two-step content API (shared client
+// in ../../lib/document-content.ts), which hands back a 5-minute signed
+// S3 link and the number:
+//   - Not sensitive (floor plans, warranties): no Face ID, no Duo; the
+//     first GET /api/documents/<id>/content answers 200.
+//   - Sensitive: Face ID on the device first (cancel aborts; no hardware
+//     or a failed match just moves on), then the server's Duo gate: a
+//     push to the signed-in person's own phone, polled until approved,
+//     denied or 90s pass. `onStatus` lets the screen show the wait.
 //
-// Fallback (no Face ID hardware / not enrolled / user cancelled): hit
-// the existing /api/documents/download endpoint with the user's
-// homePersonAuth.duoUsername. The web's Duo flow handles the rest —
-// fires a push to the user's Duo Mobile app, waits ~60s, returns the
-// same URL on approval.
-//
-// Web has no Face ID equivalent worth wiring; the web Documents page
-// keeps using Duo directly. Both surfaces gate the same backend act.
+// The old /api/d/<key> short link redirected to plain S3, which only
+// answers on the home network, so it isn't used here any more.
 
 import { File, Paths } from "expo-file-system";
 import * as Sharing from "expo-sharing";
 import * as WebBrowser from "expo-web-browser";
 
-import { requireLocalAuth, type LocalAuthOutcome } from "./local-auth";
+import { requireLocalAuth } from "./local-auth";
 import { getClient } from "./amplify";
 import { resolveCurrentPerson } from "./current-person";
 import { authedFetch } from "./authed-fetch";
-import { documentIsSensitive } from "./documents";
+import {
+  documentIsSensitive,
+  fetchDocumentContent,
+  readDocumentResponse,
+  type ContentFetch,
+} from "./documents";
 
 const WEB_BASE_URL =
   process.env.EXPO_PUBLIC_WEB_BASE_URL ?? "https://home.cristinegennaro.com";
@@ -34,33 +39,50 @@ export interface DownloadInput {
 }
 
 export type DownloadResult =
-  | { ok: true; url?: string; documentNumber?: string; via: "faceid" | "duo" | "open" }
+  | { ok: true; url?: string; documentNumber?: string; via: "duo" | "open" }
   | { ok: false; error: string };
 
-/** Construct the short-link redirect URL from an s3 key. The redirect
- *  itself is unauthenticated (UUID is the secret); revealing the URL
- *  is what the Face ID / Duo gate protects. */
-export function urlFromS3Key(s3Key: string): string {
-  const filename = s3Key.replace(/^home\/documents\//, "");
-  return `${WEB_BASE_URL}/api/d/${filename}`;
+export interface GateOptions {
+  /** Progress text while waiting on Duo ("Approve the Duo push…"); null when done. */
+  onStatus?: (message: string | null) => void;
 }
 
-/** Open the file (s3Key) when present, else fall back to the number. */
+/** Waiting copy for the Duo push, shared by the screens. */
+export function duoWaitingMessage(duoUsername?: string): string {
+  return duoUsername
+    ? `Approve the Duo push on your phone (${duoUsername})…`
+    : "Approve the Duo push on your phone…";
+}
+
+const webFetch: ContentFetch = (path, init) =>
+  authedFetch(`${WEB_BASE_URL}${path}`, init);
+
+/** Signed link to the file (as an attachment) when present, else the number. */
 export async function downloadDocument(
-  input: DownloadInput
+  input: DownloadInput,
+  opts?: GateOptions
 ): Promise<DownloadResult> {
-  return runGated(input, "file", "Confirm document download");
+  return runGated(input, "file", "Confirm document download", true, opts);
 }
 
 /** Reveal the document number specifically. Used when a doc has both
  *  a file and a number — the file path doesn't expose the number. */
 export async function revealDocumentNumber(
-  input: DownloadInput
+  input: DownloadInput,
+  opts?: GateOptions
 ): Promise<DownloadResult> {
   if (!input.documentNumber) {
     return { ok: false, error: "This document has no number to reveal" };
   }
-  return runGated(input, "number", "Reveal document number");
+  return runGated(input, "number", "Reveal document number", false, opts);
+}
+
+/** Signed inline link to the file, for viewing / previews. */
+export async function documentViewUrl(
+  input: DownloadInput,
+  opts?: GateOptions
+): Promise<DownloadResult> {
+  return runGated(input, "file", "View document", false, opts);
 }
 
 type RevealMode = "file" | "number";
@@ -68,57 +90,65 @@ type RevealMode = "file" | "number";
 async function runGated(
   input: DownloadInput,
   mode: RevealMode,
-  promptMessage: string
+  promptMessage: string,
+  download: boolean,
+  opts?: GateOptions
 ): Promise<DownloadResult> {
-  // Marked not sensitive (floor plans, warranties): no Face ID / Duo.
-  if (!documentIsSensitive(input)) return revealAfterAuth(input, mode, "open");
-  const localAuth = await requireLocalAuth({ promptMessage });
-
-  if (localAuth.ok) {
-    return revealAfterAuth(input, mode, "faceid");
-  }
-
-  // Face ID gate didn't pass. If the user explicitly cancelled, don't
-  // surprise them by escalating to Duo — abort. If hardware/enrollment
-  // is missing, fall through to Duo as the second factor.
-  if (localAuth.reason === "cancelled") {
-    return { ok: false, error: "Cancelled" };
-  }
-
-  return runDuoFallback(input, mode, localAuth);
-}
-
-function revealAfterAuth(
-  input: DownloadInput,
-  mode: RevealMode,
-  via: "faceid" | "duo" | "open"
-): DownloadResult {
-  if (mode === "number") {
-    if (!input.documentNumber) {
-      return { ok: false, error: "Document has no number" };
+  const sensitive = documentIsSensitive(input);
+  if (sensitive) {
+    // Face ID first (the phone's own gate). Cancel aborts rather than
+    // surprising the user with a push; anything else moves on to Duo,
+    // which the server requires regardless.
+    const localAuth = await requireLocalAuth({ promptMessage });
+    if (!localAuth.ok && localAuth.reason === "cancelled") {
+      return { ok: false, error: "Cancelled" };
     }
-    return { ok: true, documentNumber: input.documentNumber, via };
+    opts?.onStatus?.("Sending Duo push…");
   }
-  // mode === "file"
-  if (input.s3Key) {
-    return { ok: true, url: urlFromS3Key(input.s3Key), via };
+
+  try {
+    const result = await fetchDocumentContent(input.documentId, {
+      fetch: webFetch,
+      download,
+      onDuoPush: (duoUsername) => opts?.onStatus?.(duoWaitingMessage(duoUsername)),
+    });
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          result.reason === "denied"
+            ? `Not approved. ${result.error}`
+            : result.reason === "timeout"
+              ? "No answer to the Duo push within 90 seconds — try again."
+              : result.error,
+      };
+    }
+    const { url, documentNumber } = result.content;
+    const via = sensitive ? "duo" : "open";
+    if (mode === "number") {
+      if (!documentNumber) return { ok: false, error: "Document has no number" };
+      return { ok: true, documentNumber, via };
+    }
+    if (url) return { ok: true, url, documentNumber, via };
+    if (documentNumber) return { ok: true, documentNumber, via };
+    return { ok: false, error: "Document has no file or number" };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    opts?.onStatus?.(null);
   }
-  if (input.documentNumber) {
-    return { ok: true, documentNumber: input.documentNumber, via };
-  }
-  return { ok: false, error: "Document has no file or number" };
 }
 
-async function runDuoFallback(
-  input: DownloadInput,
-  mode: RevealMode,
-  authOutcome: LocalAuthOutcome
-): Promise<DownloadResult> {
-  if (authOutcome.ok) {
-    return revealAfterAuth(input, mode, "faceid");
-  }
+// ── Loosening approval ────────────────────────────────────────────────────
+//
+// Marking a document not sensitive (so it opens without Duo) needs a Duo
+// push first, same as the web form: POST /api/documents/approve waits up
+// to 20s for the phone and says yes or no. The push goes to the
+// signed-in person's linked Duo account.
 
-  const client = getClient();
+async function myDuoUsername(): Promise<
+  { ok: true; duoUsername: string } | { ok: false; error: string }
+> {
   const { person } = await resolveCurrentPerson();
   if (!person) {
     return {
@@ -127,45 +157,42 @@ async function runDuoFallback(
         "Couldn't identify the signed-in person — link your account on the web first.",
     };
   }
-
-  const { data: authRows, errors } = await client.models.homePersonAuth.list({
+  const { data: authRows, errors } = await getClient().models.homePersonAuth.list({
     filter: { personId: { eq: person.id } },
   });
-  if (errors?.length) {
-    return { ok: false, error: errors[0].message };
-  }
+  if (errors?.length) return { ok: false, error: errors[0].message };
   const duoUsername = authRows?.[0]?.duoUsername;
   if (!duoUsername) {
     return {
       ok: false,
       error:
-        "Face ID isn't set up and no Duo account is linked. Link Duo on the web's /security page.",
+        "Marking a document not sensitive needs Duo. Link it on the web's /security page first.",
     };
   }
+  return { ok: true, duoUsername };
+}
 
-  // For "number" mode skip s3Key in the request so the web endpoint
-  // returns the number rather than a download URL.
-  const res = await authedFetch(`${WEB_BASE_URL}/api/documents/download`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      documentId: input.documentId,
-      duoUsername,
-      s3Key: mode === "file" ? input.s3Key ?? undefined : undefined,
-      documentNumber: input.documentNumber ?? undefined,
-    }),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as
-      | { error?: string }
-      | null;
-    return { ok: false, error: body?.error ?? `Duo request failed (${res.status})` };
+export async function approveMarkNotSensitive(
+  documentTitle: string,
+  opts?: GateOptions
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const who = await myDuoUsername();
+  if (!who.ok) return who;
+  opts?.onStatus?.(duoWaitingMessage(who.duoUsername));
+  try {
+    const res = await authedFetch(`${WEB_BASE_URL}/api/documents/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ documentTitle }),
+    });
+    const body = await readDocumentResponse(res);
+    if (!res.ok) return { ok: false, error: body.error ?? "Duo approval failed" };
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    opts?.onStatus?.(null);
   }
-  const body = (await res.json()) as {
-    url?: string;
-    documentNumber?: string;
-  };
-  return { ok: true, url: body.url, documentNumber: body.documentNumber, via: "duo" };
 }
 
 // ── View + share helpers ──────────────────────────────────────────────────
@@ -174,14 +201,14 @@ async function runDuoFallback(
 // renders the file inline via the in-app Safari sheet (handles PDF and
 // images natively). Share downloads the bytes to a cache file and hands
 // it to the iOS share sheet so the user can AirDrop / save to Files /
-// send via Messages with the actual file payload (not just a public URL).
+// send via Messages with the actual file payload (not just a link).
 
 /** Open the file in an in-app browser sheet. Face ID / Duo gated. */
-export async function viewDocument(input: DownloadInput): Promise<{
-  ok: boolean;
-  error?: string;
-}> {
-  const result = await downloadDocument(input);
+export async function viewDocument(
+  input: DownloadInput,
+  opts?: GateOptions
+): Promise<{ ok: boolean; error?: string }> {
+  const result = await documentViewUrl(input, opts);
   if (!result.ok) return { ok: false, error: result.error };
   if (!result.url) return { ok: false, error: "This document has no file to view." };
   await WebBrowser.openBrowserAsync(result.url);
@@ -190,9 +217,10 @@ export async function viewDocument(input: DownloadInput): Promise<{
 
 /** Download the file to a local cache and trigger the iOS share sheet. */
 export async function shareDocument(
-  input: DownloadInput & { filename?: string | null }
+  input: DownloadInput & { filename?: string | null },
+  opts?: GateOptions
 ): Promise<{ ok: boolean; error?: string }> {
-  const result = await downloadDocument(input);
+  const result = await downloadDocument(input, opts);
   if (!result.ok) return { ok: false, error: result.error };
   if (!result.url) return { ok: false, error: "This document has no file to share." };
 

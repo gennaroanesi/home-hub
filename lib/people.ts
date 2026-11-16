@@ -69,6 +69,91 @@ export function pickerSections<P extends PickerPerson>(people: P[], query = ""):
   return sections.filter((s) => s.people.length > 0);
 }
 
+export interface ContactSection<P> {
+  key: Circle | "NONE";
+  label: string;
+  people: P[];
+}
+
+export interface ContactLike extends PickerPerson {
+  email?: string | null;
+  phoneNumber?: string | null;
+  notes?: string | null;
+}
+
+/** Every word of `query` appears in the name, email, phone or notes (accent-insensitive). */
+export function contactMatches(p: ContactLike, query: string): boolean {
+  const words = fold(query).split(/\s+/).filter(Boolean);
+  if (!words.length) return true;
+  const hay = fold([p.name, p.email, p.phoneNumber, p.notes].filter(Boolean).join(" "));
+  return words.every((w) => hay.includes(w));
+}
+
+/**
+ * The contact book (everyone not in the household) grouped by circle:
+ * Family, Friends, Work, Other, then Unsorted (no circle), A–Z within each,
+ * filtered by `query`. Empty sections are left out.
+ */
+export function contactSections<P extends ContactLike>(people: P[], query = ""): ContactSection<P>[] {
+  const sections: ContactSection<P>[] = [
+    ...CIRCLES.map((c) => ({ key: c, label: CIRCLE_LABELS[c], people: [] as P[] })),
+    { key: "NONE", label: "Unsorted", people: [] },
+  ];
+  const byKey = new Map(sections.map((s) => [s.key, s]));
+  for (const p of people) {
+    if (inHousehold(p) || !contactMatches(p, query)) continue;
+    byKey.get(circleLabel(p.circle) ? (p.circle as Circle) : "NONE")!.people.push(p);
+  }
+  for (const s of sections) s.people.sort((a, b) => a.name.localeCompare(b.name));
+  return sections.filter((s) => s.people.length > 0);
+}
+
+/** Timezones offered on the Household edit form. */
+export const COMMON_TIMEZONES = [
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Paris",
+  "Europe/Rome",
+  "Asia/Tokyo",
+  "UTC",
+];
+
+/** The person's groups without nulls. */
+export function personGroups(p: { groups?: (string | null)[] | null }): string[] {
+  return (p.groups ?? []).filter((g): g is string => !!g);
+}
+
+/** Groups an admin can toggle for this person: a login-less member (a kid) can only hold home-users. */
+export function editableGroups(p: { cognitoUsername?: string | null }): string[] {
+  return p.cognitoUsername ? ASSIGNABLE_GROUPS : [HOUSEHOLD_GROUP];
+}
+
+/** Same members, any order. */
+export function sameGroups(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((v) => b.includes(v));
+}
+
+/** "ana@x.com · America/Chicago · WA off" under a member's name. */
+export function memberLine(p: {
+  email?: string | null;
+  defaultTimezone?: string | null;
+  notifyWhatsApp?: boolean | null;
+  notifyPush?: boolean | null;
+}): string {
+  return [p.email, p.defaultTimezone, p.notifyWhatsApp === false ? "WA off" : null, p.notifyPush === false ? "Push off" : null]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+/** Contacts an admin can invite or add to the household: not in it and no login yet. */
+export function invitableContacts<P extends { groups?: (string | null)[] | null; cognitoUsername?: string | null }>(people: P[]): P[] {
+  return people.filter((p) => !inHousehold(p) && !p.cognitoUsername);
+}
+
 /** "Mar 4", plus the age they turn this year when the year is known (1900 = unknown). */
 export function birthdayLabel(birthday: string | null | undefined, todayIso: string): string | null {
   if (!birthday) return null;

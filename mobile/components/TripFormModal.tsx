@@ -32,7 +32,8 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
-import { type Person } from "../lib/use-people";
+import { type Person, useAllPeople } from "../lib/use-people";
+import { PeoplePicker } from "./PeoplePicker";
 import {
   TRIP_TYPE_CONFIG,
   type Trip,
@@ -44,7 +45,8 @@ const TRIP_TYPES: TripType[] = ["LEISURE", "WORK", "FLYING", "FAMILY"];
 interface Props {
   visible: boolean;
   trip: Trip | null; // null = create
-  people: Person[];
+  /** Fallback while every person (contacts too) loads; the picker offers all of them, like the web. */
+  people?: Person[];
   onClose: () => void;
   onSaved: (info?: { toast?: string }) => void;
 }
@@ -87,6 +89,8 @@ export function TripFormModal({ visible, trip, people, onClose, onSaved }: Props
   const [notes, setNotes] = useState("");
   const [participantIds, setParticipantIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const { people: allPeople } = useAllPeople();
+  const pickable = allPeople.length ? allPeople : people ?? [];
 
   useEffect(() => {
     if (!visible) return;
@@ -118,12 +122,6 @@ export function TripFormModal({ visible, trip, people, onClose, onSaved }: Props
     setShowStartPicker(false);
     setShowEndPicker(false);
   }, [visible, trip]);
-
-  function toggleParticipant(id: string) {
-    setParticipantIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  }
 
   async function save() {
     if (!name.trim()) {
@@ -383,23 +381,13 @@ export function TripFormModal({ visible, trip, people, onClose, onSaved }: Props
           />
 
           <Text style={styles.label}>Participants</Text>
-          <View style={styles.chipRow}>
-            {people.map((p) => {
-              const on = participantIds.includes(p.id);
-              return (
-                <Pressable
-                  key={p.id}
-                  onPress={() => toggleParticipant(p.id)}
-                  style={[styles.chip, on && styles.chipOn]}
-                  disabled={busy}
-                >
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                    {p.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <PeoplePicker
+            people={pickable}
+            selectedIds={participantIds}
+            onChange={setParticipantIds}
+            title="Participants"
+            disabled={busy}
+          />
           <Text style={styles.muted}>None selected = household trip</Text>
 
           <Text style={styles.label}>Notes</Text>

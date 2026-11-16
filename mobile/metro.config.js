@@ -16,5 +16,11 @@ const workspaceRoot = path.resolve(projectRoot, "..");
 
 const config = getDefaultConfig(projectRoot);
 config.watchFolders = [workspaceRoot];
+// Shared root lib/ files that import packages (lib/dashboard.ts → rrule)
+// resolve them from the root node_modules locally, but an EAS build only
+// installs mobile/'s. Fall back to mobile's copy.
+config.resolver.extraNodeModules = {
+  rrule: path.resolve(projectRoot, "node_modules/rrule"),
+};
 
 module.exports = config;

@@ -108,6 +108,14 @@ export interface RelationView {
   role: string;
 }
 
+/** "Gabrielle (spouse) · Eva (daughter)": personId's relations, skipping people not in `byId`. */
+export function relationsLine(personId: string, rows: RelationshipRow[], byId: Map<string, { name: string }>): string {
+  return relationsOf(personId, rows)
+    .filter((r) => byId.has(r.otherPersonId))
+    .map((r) => `${byId.get(r.otherPersonId)!.name} (${r.role})`)
+    .join(" · ");
+}
+
 /** Everyone related to personId, each with what they are to that person ("Eva: son"). */
 export function relationsOf(personId: string, rows: RelationshipRow[]): RelationView[] {
   const out: RelationView[] = [];

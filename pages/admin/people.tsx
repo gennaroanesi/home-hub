@@ -39,7 +39,15 @@ import { FaPen, FaArrowLeft, FaCodeBranch, FaEnvelope } from "react-icons/fa";
 import DefaultLayout from "@/layouts/default";
 import { HOUSEHOLD_GROUP } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
-import { ASSIGNABLE_GROUPS, inHousehold } from "@/lib/people";
+import {
+  COMMON_TIMEZONES,
+  editableGroups,
+  inHousehold,
+  invitableContacts,
+  memberLine,
+  personGroups,
+  sameGroups,
+} from "@/lib/people";
 import {
   MergeModal,
   PersonAvatar,
@@ -52,24 +60,8 @@ import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
-const COMMON_TIMEZONES = [
-  "America/New_York",
-  "America/Chicago",
-  "America/Denver",
-  "America/Los_Angeles",
-  "America/Sao_Paulo",
-  "Europe/London",
-  "Europe/Paris",
-  "Europe/Rome",
-  "Asia/Tokyo",
-  "UTC",
-];
 
 const NEW_PERSON = "__new";
-
-function rowGroups(p: Person): string[] {
-  return (p.groups ?? []).filter((g): g is string => !!g);
-}
 
 function MemberCard({
   person,
@@ -84,9 +76,6 @@ function MemberCard({
   onEdit: () => void;
   onMerge: () => void;
 }) {
-  const muted: string[] = [];
-  if (person.notifyWhatsApp === false) muted.push("WA off");
-  if (person.notifyPush === false) muted.push("Push off");
   return (
     <Card>
       <CardBody className="flex flex-row items-center gap-3 px-4 py-3">
@@ -99,15 +88,13 @@ function MemberCard({
             )}
           </p>
           <div className="flex items-center gap-1 flex-wrap mt-0.5">
-            {rowGroups(person).map((g) => (
+            {personGroups(person).map((g) => (
               <Chip key={g} size="sm" variant="flat" color="primary">
                 {g}
               </Chip>
             ))}
             <span className="text-xs text-default-400">
-              {[person.email, person.defaultTimezone, ...muted]
-                .filter(Boolean)
-                .join(" · ")}
+              {memberLine(person)}
             </span>
           </div>
           {relations && (
@@ -200,10 +187,7 @@ export default function HouseholdPage() {
   const members = useMemo(() => people.filter(inHousehold), [people]);
   // Contacts without a login yet: an invite can turn one into a member,
   // keeping their faces, birthday and history.
-  const invitable = useMemo(
-    () => people.filter((p) => !inHousehold(p) && !p.cognitoUsername),
-    [people],
-  );
+  const invitable = useMemo(() => invitableContacts(people), [people]);
 
   function openEdit(p: Person) {
     setEditing(p);
@@ -216,7 +200,7 @@ export default function HouseholdPage() {
     setNotifyWhatsApp(p.notifyWhatsApp !== false);
     setNotifyPush(p.notifyPush !== false);
     setActive(p.active !== false);
-    setGroups(rowGroups(p));
+    setGroups(personGroups(p));
     editModal.onOpen();
   }
 
@@ -244,7 +228,7 @@ export default function HouseholdPage() {
     }
 
     // Group changes route through the admin mutation so Cognito stays in sync.
-    if (isAdmin && !sameSet(rowGroups(saved), groups)) {
+    if (isAdmin && !sameGroups(personGroups(saved), groups)) {
       try {
         const res = await client.mutations.setPersonGroups({
           personId: saved.id,
@@ -497,10 +481,7 @@ export default function HouseholdPage() {
                         Groups {isAdmin ? "" : "(read-only)"}
                       </p>
                       <div className="flex gap-2 flex-wrap">
-                        {(editing.cognitoUsername
-                          ? ASSIGNABLE_GROUPS
-                          : [HOUSEHOLD_GROUP]
-                        ).map((g) => {
+                        {editableGroups(editing).map((g) => {
                           const on = groups.includes(g);
                           return (
                             <Chip
@@ -659,8 +640,4 @@ export default function HouseholdPage() {
       </div>
     </DefaultLayout>
   );
-}
-
-function sameSet(a: string[], b: string[]): boolean {
-  return a.length === b.length && a.every((v) => b.includes(v));
 }

@@ -2,7 +2,9 @@
 // the web page (/week): get_week_plan, set_day_status, assign_event_people,
 // set_pet_day, mark_week_reviewed, set_week_notes (lib/ops/week.ts). Tap a person's day to
 // set office/home/PTO, tap an event to say who it's for, tap the pet's day
-// to mark daycare.
+// to mark daycare. The week's notes are markdown, rendered in place; Edit
+// opens a text box with its own Save (set_week_notes), separate from the
+// review mark, which can be undone.
 
 import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
@@ -15,6 +17,7 @@ import { usePerson } from "../../../lib/use-person";
 import { usePeople } from "../../../lib/use-people";
 import { EventFormModal } from "../../../components/EventFormModal";
 import { TaskFormModal } from "../../../components/TaskFormModal";
+import { Markdown } from "../../../components/Markdown";
 import type { OpName } from "../../../../lib/ops/registry";
 
 type Plan = Extract<OpCallResult<"get_week_plan">, { result: unknown }>["result"];
@@ -61,7 +64,9 @@ export default function WeekPlanner() {
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const { people } = usePeople();
-  const [notes, setNotes] = useState("");
+  // Notes being edited (null = showing the rendered notes).
+  const [draft, setDraft] = useState<string | null>(null);
+  const [savingNotes, setSavingNotes] = useState(false);
   // Day a new event starts on (null = closed), and the new-task form.
   const [eventDate, setEventDate] = useState<string | null>(null);
   const [taskOpen, setTaskOpen] = useState(false);
@@ -72,13 +77,29 @@ export default function WeekPlanner() {
     else {
       setError(null);
       setPlan(r.result);
-      setNotes(r.result.review?.notes ?? "");
     }
   }, [weekStart]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  // A half-typed draft belongs to its week: drop it when the week changes
+  // (reloads of the same week, e.g. after setting a status, keep it).
+  useEffect(() => {
+    setDraft(null);
+  }, [plan?.weekStart]);
+
+  async function saveNotes() {
+    if (!plan || draft === null) return;
+    if (draft === (plan.review?.notes ?? "")) return setDraft(null);
+    setSavingNotes(true);
+    const r = await callOp("set_week_notes", { weekStart: plan.weekStart, notes: draft });
+    setSavingNotes(false);
+    if ("error" in r) return Alert.alert("Couldn't save notes", r.error);
+    setDraft(null);
+    await load();
+  }
 
   async function onRefresh() {
     setRefreshing(true);
@@ -132,6 +153,7 @@ export default function WeekPlanner() {
 
   const flagged = new Set(plan.attention.flatMap((a) => a.eventKeys ?? []));
   const reviewed = !!plan.review?.reviewedAt;
+  const savedNotes = plan.review?.notes ?? "";
 
   const eventRow = (e: WeekEvent) => (
     <Pressable key={e.key} onPress={() => pickPeople(e)} style={({ pressed }) => [styles.event, flagged.has(e.key) && styles.eventFlagged, pressed && styles.pressed]}>
@@ -157,29 +179,78 @@ export default function WeekPlanner() {
         </Pressable>
       </View>
 
-      <ScrollView contentContainerStyle={styles.body} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
-        {/* The review itself first: notes for the week and "reviewed". */}
+      <ScrollView contentContainerStyle={styles.body} keyboardShouldPersistTaps="handled" refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
+        {/* The review itself first: notes for the week (markdown, saved on their own) and "reviewed". */}
         <View style={styles.card}>
-          <TextInput
-            style={styles.notesInput}
-            placeholder="Notes for the week (Cris drives Thursday…)"
-            placeholderTextColor="#aaa"
-            value={notes}
-            onChangeText={setNotes}
-            onEndEditing={() => {
-              if (notes !== (plan.review?.notes ?? "")) void write("set_week_notes", { weekStart: plan.weekStart, notes });
-            }}
-            multiline
-          />
-          <Pressable
-            onPress={() => write("mark_week_reviewed", { weekStart: plan.weekStart, reviewed: !reviewed, notes, ...(me ? { personName: me } : {}) })}
-            style={({ pressed }) => [styles.reviewBtn, reviewed && styles.reviewBtnDone, pressed && styles.pressed]}
-          >
-            <Ionicons name={reviewed ? "checkmark-circle" : "checkmark-circle-outline"} size={20} color={reviewed ? "#735f55" : "#fff"} />
-            <Text style={[styles.reviewText, reviewed && styles.reviewTextDone]}>
-              {reviewed ? `Reviewed${plan.review?.reviewedBy ? ` by ${plan.review.reviewedBy}` : ""} · tap to undo` : "Mark week reviewed"}
-            </Text>
-          </Pressable>
+          <View style={styles.personRow}>
+            <Text style={styles.notesLabel}>Notes for the week</Text>
+            {draft === null && (
+              <Pressable onPress={() => setDraft(savedNotes)} hitSlop={8} style={({ pressed }) => [styles.addEvent, pressed && styles.pressed]}>
+                <Ionicons name="pencil" size={13} color="#735f55" />
+                <Text style={styles.quickText}>{savedNotes ? "Edit" : "Add notes"}</Text>
+              </Pressable>
+            )}
+          </View>
+          {draft !== null ? (
+            <>
+              <TextInput
+                style={styles.notesInput}
+                placeholder="Cris drives Thursday; book Dolce for Wednesday…"
+                placeholderTextColor="#aaa"
+                value={draft}
+                onChangeText={setDraft}
+                editable={!savingNotes}
+                autoFocus
+                multiline
+                textAlignVertical="top"
+              />
+              <View style={styles.personRow}>
+                <Text style={styles.notesHint}>Markdown: **bold**, - list, - [ ] to-do</Text>
+                <View style={styles.notesActions}>
+                  <Pressable onPress={() => setDraft(null)} disabled={savingNotes} hitSlop={6} style={({ pressed }) => [styles.notesCancel, pressed && styles.pressed]}>
+                    <Text style={styles.quickText}>Cancel</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={saveNotes}
+                    disabled={savingNotes || draft === savedNotes}
+                    style={({ pressed }) => [styles.notesSave, (savingNotes || draft === savedNotes) && styles.disabled, pressed && styles.pressed]}
+                  >
+                    {savingNotes ? <ActivityIndicator size="small" color="#fff" /> : <Text style={styles.notesSaveText}>Save notes</Text>}
+                  </Pressable>
+                </View>
+              </View>
+            </>
+          ) : savedNotes ? (
+            <Pressable onPress={() => setDraft(savedNotes)} accessibilityHint="Edit the notes">
+              <Markdown content={savedNotes} />
+            </Pressable>
+          ) : (
+            <Pressable onPress={() => setDraft("")}>
+              <Text style={styles.notesPlaceholder}>Cris drives Thursday; book Dolce for Wednesday…</Text>
+            </Pressable>
+          )}
+          {reviewed ? (
+            <View style={styles.personRow}>
+              <View style={styles.reviewedLine}>
+                <Ionicons name="checkmark-circle" size={18} color="#2a5a45" />
+                <Text style={styles.reviewedText}>
+                  Reviewed{plan.review?.reviewedBy ? ` by ${plan.review.reviewedBy}` : ""}{" "}
+                  {new Date(plan.review!.reviewedAt!).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+                </Text>
+              </View>
+              <Pressable onPress={() => write("mark_week_reviewed", { weekStart: plan.weekStart, reviewed: false })} hitSlop={8} style={({ pressed }) => pressed && styles.pressed}>
+                <Text style={styles.quickText}>Undo</Text>
+              </Pressable>
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => write("mark_week_reviewed", { weekStart: plan.weekStart, ...(me ? { personName: me } : {}) })}
+              style={({ pressed }) => [styles.reviewBtn, pressed && styles.pressed]}
+            >
+              <Ionicons name="checkmark-circle-outline" size={20} color="#fff" />
+              <Text style={styles.reviewText}>Mark week reviewed</Text>
+            </Pressable>
+          )}
           <View style={styles.quickRow}>
             <Pressable onPress={() => setEventDate(plan.weekStart)} style={({ pressed }) => [styles.quickBtn, pressed && styles.pressed]}>
               <Ionicons name="add" size={16} color="#735f55" />
@@ -333,10 +404,13 @@ function Sections({ plan }: { plan: Plan }) {
     },
     {
       title: "Travel",
-      rows: [
-        ...s.travel.trips.map((t) => ({ left: `✈️ ${t.name}`, right: `${dayShort(t.startDate)}–${dayShort(t.endDate)}${t.checklist ? ` · ${t.checklist.done}/${t.checklist.total}` : ""}` })),
-        ...s.travel.legs.map((l) => ({ left: `   ${l.label}`, right: `${dayShort(l.date)} ${fmtTime(l.time)}` })),
-      ],
+      // Each trip with its legs and reservations under it, like the web card.
+      // Times are the wall clock at that place, as entered (lib/week-sections.ts).
+      rows: s.travel.trips.flatMap((t) => [
+        { left: `✈️ ${t.name}`, right: `${dayShort(t.startDate)}–${dayShort(t.endDate)}${t.checklist ? ` · ${t.checklist.done}/${t.checklist.total}` : ""}` },
+        ...s.travel.legs.filter((l) => l.tripName === t.name).map((l) => ({ left: `   ${l.label}`, right: `${dayShort(l.date)} ${fmtTime(l.time)}` })),
+        ...s.travel.reservations.filter((r) => r.tripName === t.name).map((r) => ({ left: `   ${r.name}`, right: `${dayShort(r.date)} ${fmtTime(r.time)}` })),
+      ]),
     },
     {
       title: "Care",
@@ -416,11 +490,18 @@ const styles = StyleSheet.create({
   householdLabel: { fontSize: 11, color: "#999", letterSpacing: 0.5 },
   pressed: { opacity: 0.6 },
   reviewBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, backgroundColor: "#735f55", borderRadius: 12, paddingVertical: 14 },
-  reviewBtnDone: { backgroundColor: "#fff", borderWidth: 1, borderColor: "#735f55" },
   reviewText: { color: "#fff", fontSize: 15, fontWeight: "600" },
-  reviewTextDone: { color: "#735f55" },
-  notes: { color: "#666", fontSize: 13, paddingHorizontal: 4 },
-  notesInput: { fontSize: 14, color: "#333", minHeight: 40, borderWidth: StyleSheet.hairlineWidth, borderColor: "#ddd", borderRadius: 8, padding: 8 },
+  reviewedLine: { flex: 1, flexDirection: "row", alignItems: "center", gap: 6 },
+  reviewedText: { flex: 1, fontSize: 13, color: "#555" },
+  notesLabel: { fontSize: 12, color: "#888" },
+  notesPlaceholder: { fontSize: 14, color: "#aaa", paddingVertical: 2 },
+  notesInput: { fontSize: 14, color: "#333", minHeight: 120, maxHeight: 320, borderWidth: StyleSheet.hairlineWidth, borderColor: "#ddd", borderRadius: 8, padding: 8 },
+  notesHint: { flex: 1, fontSize: 11, color: "#999" },
+  notesActions: { flexDirection: "row", alignItems: "center", gap: 12 },
+  notesCancel: { paddingVertical: 6 },
+  notesSave: { backgroundColor: "#735f55", borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, minWidth: 96, alignItems: "center" },
+  notesSaveText: { color: "#fff", fontSize: 13, fontWeight: "600" },
+  disabled: { opacity: 0.4 },
   quickRow: { flexDirection: "row", gap: 8 },
   quickBtn: { flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, borderWidth: 1, borderColor: "#735f55", borderRadius: 10, paddingVertical: 8 },
   quickText: { color: "#735f55", fontSize: 13, fontWeight: "600" },

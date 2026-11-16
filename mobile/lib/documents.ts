@@ -8,7 +8,12 @@
 import type { Schema } from "../../amplify/data/resource";
 import { type Person } from "./use-people";
 
-export { documentIsSensitive, documentFileUrl } from "../../lib/documents";
+export { documentIsSensitive } from "../../lib/documents";
+export {
+  fetchDocumentContent,
+  readDocumentResponse,
+  type ContentFetch,
+} from "../../lib/document-content";
 
 export type Document = Schema["homeDocument"]["type"];
 

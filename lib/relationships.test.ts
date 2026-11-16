@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findPairRow, normalizeRelationship, relationsOf } from "./relationships";
+import { findPairRow, normalizeRelationship, relationsLine, relationsOf } from "./relationships";
 
 describe("relationships", () => {
   it("stores inverse kinds swapped, words included", () => {
@@ -31,5 +31,16 @@ describe("relationships", () => {
     const rows = [{ id: "r1", personId: "a", relatedPersonId: "b", kind: "GRANDPARENT" }];
     expect(relationsOf("a", rows)[0].role).toBe("grandchild");
     expect(findPairRow(rows, "b", "a")?.id).toBe("r1");
+  });
+
+  it("relations line names each relation, skipping unknown people", () => {
+    const rows = [
+      { id: "r1", personId: "p", relatedPersonId: "e", kind: "PARENT", inverseLabel: "daughter" },
+      { id: "r2", personId: "p", relatedPersonId: "g", kind: "SPOUSE" },
+      { id: "r3", personId: "gone", relatedPersonId: "p", kind: "FRIEND" },
+    ];
+    const byId = new Map([["e", { name: "Eva" }], ["g", { name: "Gennaro" }]]);
+    expect(relationsLine("p", rows, byId)).toBe("Eva (daughter) · Gennaro (spouse)");
+    expect(relationsLine("nobody", rows, byId)).toBe("");
   });
 });

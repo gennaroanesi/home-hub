@@ -1,6 +1,8 @@
 // Calendar tab — agenda view of upcoming events.
 //
-// We show the next 60 days expanded from the homeCalendarEvent table.
+// We show the next 60 days expanded from the homeCalendarEvent table,
+// read through the feed settings (lib/calendar-feeds.ts eventsFor, use
+// CALENDAR) like the web calendar.
 // Recurring events are expanded via lib/calendar.expandEvents so a
 // weekly meeting whose base startAt is months back still shows up
 // every Monday in the agenda. Days are grouped with sticky-style
@@ -20,12 +22,12 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getClient } from "../../lib/amplify";
 import {
   expandEvents,
   formatDayLabel,
   formatEventTime,
   isoDate,
+  loadCalendarEvents,
   type AgendaEvent,
 } from "../../lib/calendar";
 import { formatAssignees, usePeople, type Person } from "../../lib/use-people";
@@ -51,10 +53,14 @@ export default function Calendar() {
   const [modalOpen, setModalOpen] = useState(false);
 
   const load = useCallback(async () => {
-    const client = getClient();
-    const { data } = await client.models.homeCalendarEvent.list();
-    setEvents(data ?? []);
-    setLoading(false);
+    try {
+      // Feeds not used for "Calendar & home" are left out; feed-owned
+      // events carry their owner, so the person filter and the
+      // assignee line see them.
+      setEvents(await loadCalendarEvents("CALENDAR"));
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {

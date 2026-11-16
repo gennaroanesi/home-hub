@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { birthdayLabel, daysToBirthday, inHousehold, circleLabel, pickerSections } from "./people";
+import {
+  birthdayLabel,
+  daysToBirthday,
+  inHousehold,
+  circleLabel,
+  pickerSections,
+  contactMatches,
+  contactSections,
+  editableGroups,
+  invitableContacts,
+  memberLine,
+  personGroups,
+  sameGroups,
+} from "./people";
 
 describe("people helpers", () => {
   it("labels birthdays with the age when the year is known", () => {
@@ -46,5 +59,48 @@ describe("people helpers", () => {
     ]);
     expect(pickerSections(people, " jose ").map((s) => [s.key, s.people.map((p) => p.id)])).toEqual([["FAMILY", ["j"]]]);
     expect(pickerSections(people, "nobody")).toEqual([]);
+  });
+  it("contact sections: circles then Unsorted, household left out, search spans email / phone / notes", () => {
+    const people = [
+      { id: "c", name: "Cristine", groups: ["home-users"], circle: "FAMILY" },
+      { id: "j", name: "José", circle: "FAMILY", notes: "plays tennis" },
+      { id: "a", name: "Ana", circle: "FAMILY", email: "ana@example.com" },
+      { id: "m", name: "Mike", circle: "WORK", phoneNumber: "+15125550000" },
+      { id: "o", name: "Olga", circle: "OTHER" },
+      { id: "x", name: "Xavier" },
+      { id: "q", name: "Quinn", circle: "ENEMY" },
+    ];
+    expect(contactSections(people).map((s) => [s.key, s.people.map((p) => p.id)])).toEqual([
+      ["FAMILY", ["a", "j"]],
+      ["WORK", ["m"]],
+      ["OTHER", ["o"]],
+      ["NONE", ["q", "x"]],
+    ]);
+    expect(contactSections(people, "TENNIS").map((s) => s.people.map((p) => p.id))).toEqual([["j"]]);
+    expect(contactSections(people, "555").map((s) => s.key)).toEqual(["WORK"]);
+    expect(contactSections(people, "cristine")).toEqual([]);
+    expect(contactMatches({ id: "j", name: "José Silva" }, "jose silva")).toBe(true);
+    expect(contactMatches({ id: "j", name: "José Silva" }, "jose costa")).toBe(false);
+    expect(contactMatches({ id: "j", name: "José" }, "  ")).toBe(true);
+  });
+
+  it("household helpers: groups, editable groups, member line, invitable", () => {
+    expect(personGroups({ groups: ["home-users", null, "admins"] })).toEqual(["home-users", "admins"]);
+    expect(personGroups({})).toEqual([]);
+    expect(editableGroups({ cognitoUsername: "abc" })).toEqual(["home-users", "admins"]);
+    expect(editableGroups({ cognitoUsername: null })).toEqual(["home-users"]);
+    expect(sameGroups(["a", "b"], ["b", "a"])).toBe(true);
+    expect(sameGroups(["a"], ["a", "b"])).toBe(false);
+    expect(memberLine({ email: "g@x.com", defaultTimezone: "America/Chicago", notifyWhatsApp: false, notifyPush: true })).toBe(
+      "g@x.com · America/Chicago · WA off",
+    );
+    expect(memberLine({ notifyPush: false })).toBe("Push off");
+    const people = [
+      { id: "m", groups: ["home-users"], cognitoUsername: "m" },
+      { id: "k", groups: ["home-users"], cognitoUsername: null },
+      { id: "g", groups: [], cognitoUsername: "g" },
+      { id: "c", groups: [], cognitoUsername: null },
+    ];
+    expect(invitableContacts(people).map((p) => p.id)).toEqual(["c"]);
   });
 });

@@ -2,6 +2,12 @@
 // calendar events, and any tasks that are overdue / due today / have
 // no due date but aren't done. Pull-to-refresh re-fetches.
 //
+// Events go through the feed settings (eventsFor, use CALENDAR, like the
+// web home page), recurring ones expanded, and a busy day (a work
+// calendar full of blocks) condenses to its first event, "+N more" (tap
+// to expand) and the one that ends last: lib/dashboard.ts condenseDay.
+// "Later this week" is grouped by day, events and tasks interleaved.
+//
 // Phase 1A: bare-RN components, plain useState. We'll factor common
 // list / card primitives out into components/ once a second tab needs
 // the same shape.
@@ -22,22 +28,35 @@ import { Ionicons } from "@expo/vector-icons";
 import { RRule } from "rrule";
 
 import { getClient } from "../../lib/amplify";
+import { loadCalendarEvents } from "../../lib/calendar";
 import { registerForPushNotifications } from "../../lib/push";
 import { usePeople } from "../../lib/use-people";
 import { usePerson } from "../../lib/use-person";
 import { Monogram } from "../../components/Monogram";
 import { TaskFormModal } from "../../components/TaskFormModal";
 import { EventFormModal } from "../../components/EventFormModal";
+import {
+  addLocalDays,
+  condenseDay,
+  eventOccurrences,
+  fmtTimeRange,
+  localYmd,
+  relativeDayLabel,
+  startOfLocalDay,
+  type DayLine,
+  type EventOccurrence,
+} from "../../../lib/dashboard";
 import type { Schema } from "../../../amplify/data/resource";
 
 type Task = Schema["homeTask"]["type"];
 type Event = Schema["homeCalendarEvent"]["type"];
+type Occ = EventOccurrence<Event>;
 
 interface TodayData {
   todayTasks: Task[];
   laterTasks: Task[];
-  todayEvents: Event[];
-  laterEvents: Event[];
+  /** Event occurrences from today through LATER_DAYS, keyed by local day (YYYY-MM-DD), in day order. */
+  eventDays: Map<string, Occ[]>;
 }
 
 const LATER_DAYS = 7;
@@ -55,6 +74,8 @@ export default function Today() {
   const [editingEvent, setEditingEvent] = useState<Event | null>(null);
   const [eventModalOpen, setEventModalOpen] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  // Busy days the user expanded past "+N more".
+  const [expandedDays, setExpandedDays] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (!toast) return;
@@ -64,35 +85,25 @@ export default function Today() {
 
   const load = useCallback(async () => {
     const client = getClient();
-    const [tasksRes, eventsRes] = await Promise.all([
+    const [tasksRes, events] = await Promise.all([
       client.models.homeTask.list({
         filter: { isCompleted: { eq: false } },
       }),
-      client.models.homeCalendarEvent.list(),
+      loadCalendarEvents("CALENDAR"),
     ]);
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
-    const endOfDay = new Date(startOfDay);
-    endOfDay.setDate(endOfDay.getDate() + 1);
-    const endOfWeek = new Date(startOfDay);
-    endOfWeek.setDate(endOfWeek.getDate() + LATER_DAYS);
+    const startOfDay = startOfLocalDay(new Date());
+    const endOfDay = addLocalDays(startOfDay, 1);
+    const endOfWeek = addLocalDays(startOfDay, LATER_DAYS);
 
-    // Bucket events by start time. Recurring events are skipped here
-    // (we don't expand on Today — they live in the Calendar agenda).
-    const allEvents = eventsRes.data ?? [];
-    const todayEvents = allEvents
-      .filter((e) => {
-        const start = new Date(e.startAt);
-        return start >= startOfDay && start < endOfDay;
-      })
-      .sort((a, b) => a.startAt.localeCompare(b.startAt));
-    const laterEvents = allEvents
-      .filter((e) => {
-        const start = new Date(e.startAt);
-        return start >= endOfDay && start < endOfWeek;
-      })
-      .sort((a, b) => a.startAt.localeCompare(b.startAt));
+    // Occurrences (recurring expanded) by local day; one already in
+    // progress shows under today, as on the web home page.
+    const eventDays = new Map<string, Occ[]>();
+    for (const occ of eventOccurrences(events, startOfDay, endOfWeek)) {
+      const key = localYmd(occ.start < startOfDay ? startOfDay : occ.start);
+      if (!eventDays.has(key)) eventDays.set(key, []);
+      eventDays.get(key)!.push(occ);
+    }
 
     // Bucket tasks by effective due date:
     //   - dueDate set: today bucket if overdue/today, later if within window.
@@ -132,7 +143,7 @@ export default function Today() {
     todayTasks.sort(taskCmp);
     laterTasks.sort(taskCmp);
 
-    setData({ todayTasks, laterTasks, todayEvents, laterEvents });
+    setData({ todayTasks, laterTasks, eventDays });
   }, []);
 
   useEffect(() => {
@@ -174,6 +185,37 @@ export default function Today() {
     );
   }
 
+  const now = new Date();
+  const todayKey = localYmd(now);
+  const lines = (key: string) => condenseDay(data?.eventDays.get(key) ?? [], expandedDays.has(key));
+  const todayLines = data ? lines(todayKey) : [];
+  const laterDays = data ? buildLaterDays(data, todayKey, now, lines) : [];
+
+  // One condensed calendar line: an event, or "+N more" that expands its day.
+  const renderLine = (line: DayLine<Event>, dayKey: string, i: number) =>
+    line.kind === "more" ? (
+      <Pressable
+        key={`more-${dayKey}-${i}`}
+        onPress={() => setExpandedDays((s) => new Set(s).add(dayKey))}
+        style={styles.row}
+      >
+        <Text style={styles.rowTime} />
+        <Ionicons name="ellipsis-horizontal" size={16} color="#aaa" style={styles.rowKindIcon} />
+        <View style={styles.rowBody}>
+          <Text style={styles.moreText}>+{line.count} more</Text>
+        </View>
+      </Pressable>
+    ) : (
+      <EventRow
+        key={`e-${line.occ.event.id}-${line.occ.start.getTime()}`}
+        occ={line.occ}
+        onPress={() => {
+          setEditingEvent(line.occ.event);
+          setEventModalOpen(true);
+        }}
+      />
+    );
+
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
       {toast && (
@@ -202,20 +244,10 @@ export default function Today() {
           <>
             <SuperSection title="Today">
               <Section title="Events">
-                {data.todayEvents.length === 0 ? (
+                {todayLines.length === 0 ? (
                   <EmptyRow>Nothing on the calendar today.</EmptyRow>
                 ) : (
-                  data.todayEvents.map((e) => (
-                    <EventRow
-                      key={e.id}
-                      event={e}
-                      showDay={false}
-                      onPress={() => {
-                        setEditingEvent(e);
-                        setEventModalOpen(true);
-                      }}
-                    />
-                  ))
+                  todayLines.map((line, i) => renderLine(line, todayKey, i))
                 )}
               </Section>
               <Section title="Tasks">
@@ -238,34 +270,30 @@ export default function Today() {
               </Section>
             </SuperSection>
 
-            {(data.laterEvents.length > 0 || data.laterTasks.length > 0) && (
+            {laterDays.length > 0 && (
               <SuperSection title="Later this week">
                 <View style={styles.sectionBody}>
-                  {mergeLaterItems(data.laterEvents, data.laterTasks).map(
-                    (item) =>
-                      item.kind === "event" ? (
-                        <EventRow
-                          key={`e-${item.event.id}`}
-                          event={item.event}
-                          showDay
-                          onPress={() => {
-                            setEditingEvent(item.event);
-                            setEventModalOpen(true);
-                          }}
-                        />
-                      ) : (
-                        <TaskRow
-                          key={`t-${item.task.id}`}
-                          task={item.task}
-                          now={new Date()}
-                          showDay
-                          onPress={() => {
-                            setEditingTask(item.task);
-                            setTaskModalOpen(true);
-                          }}
-                        />
-                      )
-                  )}
+                  {laterDays.map(({ key, label, items }) => (
+                    <View key={key}>
+                      <Text style={styles.dayLabel}>{label}</Text>
+                      {items.map((item, i) =>
+                        item.kind === "task" ? (
+                          <TaskRow
+                            key={`t-${item.task.id}`}
+                            task={item.task}
+                            now={now}
+                            showDay={false}
+                            onPress={() => {
+                              setEditingTask(item.task);
+                              setTaskModalOpen(true);
+                            }}
+                          />
+                        ) : (
+                          renderLine(item.line, key, i)
+                        )
+                      )}
+                    </View>
+                  ))}
                 </View>
               </SuperSection>
             )}
@@ -324,21 +352,19 @@ function EmptyRow({ children }: { children: React.ReactNode }) {
   return <Text style={styles.empty}>{children}</Text>;
 }
 
-function EventRow({
-  event,
-  showDay,
-  onPress,
-}: {
-  event: Event;
-  showDay: boolean;
-  onPress: () => void;
-}) {
-  const start = new Date(event.startAt);
-  const time = event.isAllDay ? "All day" : formatTime(event.startAt);
-  const label = showDay ? `${shortWeekday(start)} ${time}` : time;
+function EventRow({ occ, onPress }: { occ: Occ; onPress: () => void }) {
+  const { event } = occ;
+  // Start–end when the event has an end ("10:35–11:00 AM"), like the web home page.
+  const label = occ.allDay
+    ? "All day"
+    : event.endAt
+      ? fmtTimeRange(occ.start, occ.end)
+      : formatTime(occ.start.toISOString());
   return (
     <Pressable onPress={onPress} style={styles.row}>
-      <Text style={styles.rowTime}>{label}</Text>
+      <Text style={styles.rowTime} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.8}>
+        {label}
+      </Text>
       <Ionicons
         name="calendar-outline"
         size={16}
@@ -461,32 +487,62 @@ function effectiveTaskDate(t: Task): Date | null {
 }
 
 type LaterItem =
-  | { kind: "event"; sortKey: number; event: Event }
-  | { kind: "task"; sortKey: number; task: Task };
+  | { kind: "line"; line: DayLine<Event> }
+  | { kind: "task"; task: Task };
 
-/** Interleave events + tasks under "Later this week" by their effective
- *  date. Mirrors how the user thinks about the next 7 days — "what's
- *  next" wins over "what kind of thing it is". Tasks without any date
- *  signal sink to the bottom. */
-function mergeLaterItems(events: Event[], tasks: Task[]): LaterItem[] {
-  const items: LaterItem[] = [
-    ...events.map(
-      (e): LaterItem => ({
-        kind: "event",
-        sortKey: new Date(e.startAt).getTime(),
-        event: e,
-      })
-    ),
-    ...tasks.map(
-      (t): LaterItem => ({
-        kind: "task",
-        sortKey: effectiveTaskDate(t)?.getTime() ?? Number.POSITIVE_INFINITY,
-        task: t,
-      })
-    ),
-  ];
-  items.sort((a, b) => a.sortKey - b.sortKey);
-  return items;
+interface LaterDay {
+  key: string;
+  label: string;
+  items: LaterItem[];
+}
+
+/** "Later this week", one group per day after today: that day's
+ *  condensed calendar lines with its tasks interleaved by time ("what's
+ *  next" wins over "what kind of thing it is"). All-day events lead;
+ *  "+N more" sits right after the day's first event. */
+function buildLaterDays(
+  data: TodayData,
+  todayKey: string,
+  now: Date,
+  lines: (key: string) => DayLine<Event>[]
+): LaterDay[] {
+  const tasksByDay = new Map<string, { at: number; task: Task }[]>();
+  for (const task of data.laterTasks) {
+    const date = effectiveTaskDate(task);
+    if (!date) continue; // the later bucket only holds dated tasks
+    const key = localYmd(date);
+    if (!tasksByDay.has(key)) tasksByDay.set(key, []);
+    tasksByDay.get(key)!.push({ at: date.getTime(), task });
+  }
+
+  const keys = [...new Set([...data.eventDays.keys(), ...tasksByDay.keys()])]
+    .filter((k) => k > todayKey)
+    .sort();
+
+  return keys.map((key) => {
+    let prev = Number.NEGATIVE_INFINITY;
+    const events = lines(key).map((line) => {
+      const at =
+        line.kind === "more"
+          ? prev
+          : line.occ.allDay
+            ? Number.NEGATIVE_INFINITY
+            : line.occ.start.getTime();
+      prev = at;
+      return { at, item: { kind: "line", line } as LaterItem };
+    });
+    const tasks = tasksByDay.get(key) ?? []; // already in time order (laterTasks is sorted)
+    const items: LaterItem[] = [];
+    let t = 0;
+    for (const e of events) {
+      while (t < tasks.length && tasks[t].at < e.at) items.push({ kind: "task", task: tasks[t++].task });
+      items.push(e.item);
+    }
+    while (t < tasks.length) items.push({ kind: "task", task: tasks[t++].task });
+
+    const [y, m, d] = key.split("-").map(Number);
+    return { key, label: relativeDayLabel(new Date(y, m - 1, d), now), items };
+  });
 }
 
 function formatToday(): string {
@@ -559,7 +615,17 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 12,
   },
-  rowTime: { width: 70, color: "#666", fontSize: 13 },
+  // Wide enough for an event's "11:30 AM–1:00 PM".
+  rowTime: { width: 104, color: "#666", fontSize: 13 },
+  moreText: { fontSize: 14, color: "#999" },
+  dayLabel: {
+    fontSize: 12,
+    fontWeight: "600",
+    color: "#888",
+    paddingHorizontal: 12,
+    paddingTop: 10,
+    paddingBottom: 2,
+  },
   rowKindIcon: { opacity: 0.85 },
   rowBody: { flex: 1 },
   rowTitleRow: { flexDirection: "row", alignItems: "center", gap: 6 },

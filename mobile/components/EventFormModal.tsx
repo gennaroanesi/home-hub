@@ -32,7 +32,8 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
-import { type Person } from "../lib/use-people";
+import { type Person, useAllPeople } from "../lib/use-people";
+import { PeoplePicker } from "./PeoplePicker";
 import type { Schema } from "../../amplify/data/resource";
 import { AttachmentSection } from "./AttachmentSection";
 
@@ -43,7 +44,8 @@ interface Props {
   event: Event | null;
   /** Default ISO date (YYYY-MM-DD) when creating from a non-today day. */
   defaultDate?: string;
-  people: Person[];
+  /** Fallback while every person (contacts too) loads; the picker offers all of them, like the web. */
+  people?: Person[];
   onClose: () => void;
   onSaved: () => void;
 }
@@ -107,6 +109,8 @@ export function EventFormModal({
   const [assignedIds, setAssignedIds] = useState<string[]>([]);
   const [recurrence, setRecurrence] = useState("");
   const [busy, setBusy] = useState(false);
+  const { people: allPeople } = useAllPeople();
+  const pickable = allPeople.length ? allPeople : people ?? [];
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
 
@@ -140,12 +144,6 @@ export function EventFormModal({
     setShowStartPicker(false);
     setShowEndPicker(false);
   }, [visible, event, defaultDate]);
-
-  function toggleAssignee(id: string) {
-    setAssignedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  }
 
   function onChangeStart(picked: Date) {
     const delta = picked.getTime() - startAt.getTime();
@@ -354,23 +352,14 @@ export function EventFormModal({
           )}
 
           <Text style={styles.label}>Assigned to</Text>
-          <View style={styles.chipRow}>
-            {people.map((p) => {
-              const on = assignedIds.includes(p.id);
-              return (
-                <Pressable
-                  key={p.id}
-                  onPress={() => toggleAssignee(p.id)}
-                  style={[styles.chip, on && styles.chipOn]}
-                  disabled={formDisabled}
-                >
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>
-                    {p.name}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <PeoplePicker
+            people={pickable}
+            selectedIds={assignedIds}
+            onChange={setAssignedIds}
+            placeholder="Household"
+            title="Assigned to"
+            disabled={formDisabled}
+          />
           <Text style={styles.muted}>None selected = household event</Text>
 
           <Text style={styles.label}>Recurrence</Text>

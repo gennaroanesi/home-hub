@@ -36,6 +36,7 @@ import { PeoplePicker } from "@/components/people-picker";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
 import { documentIsSensitive } from "@/lib/documents";
+import { fetchDocumentContent, readDocumentResponse } from "@/lib/document-content";
 import { resolveCurrentPerson } from "@/lib/current-person";
 import type { Schema } from "@/amplify/data/resource";
 
@@ -164,21 +165,6 @@ function docToForm(doc: HomeDocument): FormState {
   };
 }
 
-// The download route answers JSON, but if it runs past the hosting
-// timeout the platform returns an HTML error page instead.
-async function readDownloadResponse(res: Response): Promise<{ url?: string; documentNumber?: string; expiresAt?: string; error?: string }> {
-  try {
-    return await res.json();
-  } catch {
-    return {
-      error:
-        res.status === 504 || res.status === 502
-          ? "Timed out waiting for Duo approval — try again and approve the push within ~20 seconds."
-          : `Unexpected response (${res.status})`,
-    };
-  }
-}
-
 export default function DocumentsPage() {
   const router = useRouter();
   const [documents, setDocuments] = useState<HomeDocument[]>([]);
@@ -257,33 +243,15 @@ export default function DocumentsPage() {
   // a push (POST /approval) and poll /content with the approval until
   // the phone answers. Returns null after telling the user why.
   const fetchContent = useCallback(async (doc: HomeDocument, download: boolean): Promise<{ url?: string; documentNumber?: string } | null> => {
-    const path = `/api/documents/${doc.id}/content${download ? "?download=1" : ""}`;
-    const fail = (description: string) => {
-      addToast({ title: `Couldn't open ${doc.title}`, description, color: "danger" });
-      return null;
-    };
-    let res = await fetch(path);
-    if (res.ok) return res.json();
-    const first = await readDownloadResponse(res);
-    if (res.status !== 403 || first.error !== "duo_required") return fail(first.error ?? `Error ${res.status}`);
-
-    const ask = await fetch(`/api/documents/${doc.id}/approval`, { method: "POST" });
-    const asked = (await ask.json().catch(() => ({}))) as { approval?: string | null; duoUsername?: string; error?: string };
-    if (!ask.ok) return fail(asked.error ?? `Error ${ask.status}`);
-    if (!asked.approval) {
-      res = await fetch(path);
-      return res.ok ? res.json() : fail((await readDownloadResponse(res)).error ?? `Error ${res.status}`);
-    }
-    addToast({ title: "Sending Duo push", description: `To ${asked.duoUsername}'s phone — approve it there…`, color: "primary" });
-    const deadline = Date.now() + 90_000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 2000));
-      res = await fetch(path, { headers: { "X-Document-Approval": asked.approval } });
-      if (res.status === 202) continue;
-      if (res.ok) return res.json();
-      return fail((await readDownloadResponse(res)).error ?? `Error ${res.status}`);
-    }
-    return fail("No answer from your phone — try again.");
+    const result = await fetchDocumentContent(doc.id, {
+      fetch: (path, init) => fetch(path, init),
+      download,
+      onDuoPush: (duoUsername) =>
+        addToast({ title: "Sending Duo push", description: `To ${duoUsername}'s phone — approve it there…`, color: "primary" }),
+    });
+    if (result.ok) return result.content;
+    addToast({ title: `Couldn't open ${doc.title}`, description: result.error, color: "danger" });
+    return null;
   }, []);
 
   const handleDownload = useCallback(async (doc: HomeDocument) => {
@@ -436,9 +404,9 @@ export default function DocumentsPage() {
         const res = await fetch("/api/documents/approve", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ duoUsername: myDuoUsername, documentTitle: form.title.trim() }),
+          body: JSON.stringify({ documentTitle: form.title.trim() }),
         });
-        const data = await readDownloadResponse(res);
+        const data = await readDocumentResponse(res);
         if (!res.ok) {
           addToast({ title: "Not saved", description: data.error ?? "Duo approval failed", color: "danger" });
           return;

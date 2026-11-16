@@ -26,7 +26,8 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 import { getClient } from "../lib/amplify";
 import { resolveCurrentPerson } from "../lib/current-person";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
-import { type Person } from "../lib/use-people";
+import { type Person, useAllPeople } from "../lib/use-people";
+import { PeoplePicker } from "./PeoplePicker";
 import type { Schema } from "../../amplify/data/resource";
 import { AttachmentSection } from "./AttachmentSection";
 
@@ -44,7 +45,8 @@ type Task = Schema["homeTask"]["type"];
 interface Props {
   visible: boolean;
   task: Task | null; // null = create
-  people: Person[];
+  /** Fallback while every person (contacts too) loads; the picker offers all of them, like the web. */
+  people?: Person[];
   onClose: () => void;
   /**
    * Fires after a successful write. The optional `toast` lets the parent
@@ -72,6 +74,8 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
   const [showDuePicker, setShowDuePicker] = useState(false);
   const [recurrence, setRecurrence] = useState<string>(""); // empty = none
   const [busy, setBusy] = useState(false);
+  const { people: allPeople } = useAllPeople();
+  const pickable = allPeople.length ? allPeople : people ?? [];
 
   // Reset form when the modal opens. Avoids stale state leaking across
   // create-then-edit cycles.
@@ -94,12 +98,6 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
     }
     setShowDuePicker(false);
   }, [visible, task]);
-
-  function toggleAssignee(id: string) {
-    setAssignedIds((prev) =>
-      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
-    );
-  }
 
   async function save() {
     if (!title.trim()) {
@@ -294,21 +292,14 @@ export function TaskFormModal({ visible, task, people, onClose, onSaved }: Props
           />
 
           <Text style={styles.label}>Assigned to</Text>
-          <View style={styles.chipRow}>
-            {people.map((p) => {
-              const on = assignedIds.includes(p.id);
-              return (
-                <Pressable
-                  key={p.id}
-                  onPress={() => toggleAssignee(p.id)}
-                  style={[styles.chip, on && styles.chipOn]}
-                  disabled={busy}
-                >
-                  <Text style={[styles.chipText, on && styles.chipTextOn]}>{p.name}</Text>
-                </Pressable>
-              );
-            })}
-          </View>
+          <PeoplePicker
+            people={pickable}
+            selectedIds={assignedIds}
+            onChange={setAssignedIds}
+            placeholder="Household"
+            title="Assigned to"
+            disabled={busy}
+          />
           <Text style={styles.muted}>None selected = household task</Text>
 
           <Text style={styles.label}>Due date</Text>

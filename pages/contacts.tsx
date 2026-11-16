@@ -60,6 +60,7 @@ import {
   daysToBirthday,
   inHousehold,
   circleLabel,
+  contactMatches,
 } from "@/lib/people";
 import {
   MergeModal,
@@ -146,7 +147,6 @@ export default function ContactsPage() {
   const byId = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
 
   const shown = useMemo(() => {
-    const q = query.trim().toLowerCase();
     const rows = contacts.filter((p) => {
       if (
         relFilter === "NONE"
@@ -154,10 +154,7 @@ export default function ContactsPage() {
           : relFilter !== "ALL" && p.circle !== relFilter
       )
         return false;
-      if (!q) return true;
-      return [p.name, p.email, p.phoneNumber, p.notes].some((v) =>
-        v?.toLowerCase().includes(q),
-      );
+      return contactMatches(p, query);
     });
     if (sort === "birthday") {
       rows.sort(

@@ -34,6 +34,8 @@ const FEATURE_ROWS: FeatureRow[] = [
   { label: "Trips", icon: "airplane-outline", route: "/more/trips" },
   { label: "Documents", icon: "document-text-outline", route: "/more/documents" },
   { label: "Pets", icon: "paw-outline", route: "/more/pets" },
+  { label: "Contacts", icon: "people-outline", route: "/more/contacts" },
+  { label: "Household", icon: "home-outline", route: "/more/household" },
 ];
 
 export default function More() {

@@ -1,4 +1,5 @@
-// Reminders — browse + pause/resume/delete only. Creating reminders
+// Reminders — browse + pause/resume/delete, and change who a PERSON
+// reminder goes to (PeoplePickerSheet). Creating reminders
 // is a Janet flow ("remind us every morning at 8am to take vitamins")
 // because the items blob is rich and the natural-language path is
 // dramatically faster on mobile than a form. The web /reminders page
@@ -23,7 +24,8 @@ import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../lib/amplify";
-import { usePeople } from "../../../lib/use-people";
+import { useAllPeople } from "../../../lib/use-people";
+import { PeoplePickerSheet } from "../../../components/PeoplePicker";
 import type { Schema } from "../../../../amplify/data/resource";
 
 type Reminder = Schema["homeReminder"]["type"];
@@ -60,7 +62,10 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export default function Reminders() {
-  const { people } = usePeople();
+  // Everyone, not just the household: a reminder can go to a contact
+  // (the web's Person picker offers all active people).
+  const { people } = useAllPeople();
+  const [personFor, setPersonFor] = useState<Reminder | null>(null);
   const [reminders, setReminders] = useState<Reminder[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -106,6 +111,9 @@ export default function Reminders() {
         onPress: () => toggleStatus(r),
       });
     }
+    if (r.targetKind === "PERSON") {
+      buttons.push({ text: "Change person", onPress: () => setPersonFor(r) });
+    }
     buttons.push({
       text: "Delete",
       style: "destructive",
@@ -126,6 +134,19 @@ export default function Reminders() {
         id: r.id,
         status: next,
       });
+      if (errors?.length) throw new Error(errors[0].message);
+    } catch (err: any) {
+      Alert.alert("Update failed", err?.message ?? String(err));
+      void load();
+    }
+  }
+
+  async function changePerson(r: Reminder, personId: string) {
+    if (personId === r.personId) return;
+    setReminders((prev) => prev.map((x) => (x.id === r.id ? { ...x, personId } : x)));
+    try {
+      const client = getClient();
+      const { errors } = await client.models.homeReminder.update({ id: r.id, personId });
       if (errors?.length) throw new Error(errors[0].message);
     } catch (err: any) {
       Alert.alert("Update failed", err?.message ?? String(err));
@@ -217,6 +238,19 @@ export default function Reminders() {
           )}
         />
       )}
+
+      <PeoplePickerSheet
+        visible={!!personFor}
+        single
+        required
+        title="Person"
+        people={people}
+        selectedIds={personFor?.personId ? [personFor.personId] : []}
+        onChange={(ids) => {
+          if (personFor && ids[0]) void changePerson(personFor, ids[0]);
+        }}
+        onClose={() => setPersonFor(null)}
+      />
     </SafeAreaView>
   );
 }

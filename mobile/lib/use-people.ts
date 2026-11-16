@@ -10,6 +10,7 @@ import { Hub } from "aws-amplify/utils";
 
 import { getClient } from "./amplify";
 import { householdMembers } from "./household";
+import { listAllPages } from "../../lib/list-all";
 import type { Schema } from "../../amplify/data/resource";
 
 export type Person = Schema["homePerson"]["type"];
@@ -17,10 +18,16 @@ export type Person = Schema["homePerson"]["type"];
 let cached: Person[] | null = null;
 let inFlight: Promise<Person[]> | null = null;
 
+// Everyone pickable: the household plus the contact book (active rows).
+let allCached: Person[] | null = null;
+let allInFlight: Promise<Person[]> | null = null;
+
 Hub.listen("auth", (data) => {
   if (data?.payload?.event === "signedOut") {
     cached = null;
     inFlight = null;
+    allCached = null;
+    allInFlight = null;
   }
 });
 
@@ -43,6 +50,51 @@ export function usePeople(): { people: Person[]; loading: boolean } {
     inFlight
       .then((rows) => {
         cached = rows;
+        if (!cancelled) {
+          setPeople(rows);
+          setLoading(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { people, loading };
+}
+
+async function fetchAllPeople(): Promise<Person[]> {
+  const client = getClient();
+  // Walk every page — .list caps one response at 1 MB regardless of limit.
+  const rows = await listAllPages<Person>(client.models.homePerson, { limit: 1000 });
+  return rows.filter((p) => p.active !== false);
+}
+
+/**
+ * Every active homePerson — household and contacts — for people pickers
+ * (trip participants, assignees, reminder person), same set the web
+ * pages load. Use usePeople() where only the household belongs.
+ */
+export function useAllPeople(): { people: Person[]; loading: boolean } {
+  const [people, setPeople] = useState<Person[]>(allCached ?? []);
+  const [loading, setLoading] = useState(allCached === null);
+
+  useEffect(() => {
+    if (allCached) return;
+    if (!allInFlight) {
+      allInFlight = fetchAllPeople();
+      // Let a later mount retry after a failure.
+      allInFlight.catch(() => {
+        allInFlight = null;
+      });
+    }
+    let cancelled = false;
+    allInFlight
+      .then((rows) => {
+        allCached = rows;
         if (!cancelled) {
           setPeople(rows);
           setLoading(false);

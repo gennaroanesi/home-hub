@@ -162,16 +162,7 @@ export function MergeModal({
 }
 
 /** "Gabrielle (spouse) · Eva (daughter)" for a card. */
-export function relationsLine(
-  personId: string,
-  rels: RelationshipRow[],
-  byId: Map<string, Pick<Person, "name">>,
-): string {
-  return relationsOf(personId, rels)
-    .filter((r) => byId.has(r.otherPersonId))
-    .map((r) => `${byId.get(r.otherPersonId)!.name} (${r.role})`)
-    .join(" · ");
-}
+export { relationsLine } from "@/lib/relationships";
 
 /**
  * The relationships section of a person's edit dialog: who's related to

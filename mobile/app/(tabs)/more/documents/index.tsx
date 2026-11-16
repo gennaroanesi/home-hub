@@ -1,8 +1,9 @@
 // Documents list. Search by title + scope filter (Mine /
 // Household / All) + type filter (passport, license, …). Tap a row
 // to EXPAND it inline — the card opens to show full metadata
-// (number behind a Face ID Reveal gate), notes, and Edit/Delete
-// actions. View / Share / Download icons live in the row header
+// (number behind a Face ID + Duo Reveal gate), notes, and Edit/Delete
+// actions. Not-sensitive docs carry a "no Duo" badge and open without
+// either gate; while a Duo push is out, a banner says so. View / Share / Download icons live in the row header
 // and are always reachable. The "+" header opens the form
 // modal in create mode.
 //
@@ -36,16 +37,17 @@ import {
   type Document,
   type DocumentType,
   compareDocs,
+  documentIsSensitive,
   expiryLabel,
   isExpiringSoon,
   ownerLabel,
 } from "../../../../lib/documents";
 import {
   downloadDocument,
+  revealDocumentNumber,
   shareDocument,
   viewDocument,
 } from "../../../../lib/document-download";
-import { revealDocumentNumber } from "../../../../lib/document-download";
 import { requireLocalAuth } from "../../../../lib/local-auth";
 import { usePeople } from "../../../../lib/use-people";
 import { usePerson } from "../../../../lib/use-person";
@@ -75,6 +77,9 @@ export default function DocumentsList() {
     value: string;
   } | null>(null);
   const [revealing, setRevealing] = useState(false);
+  // "Approve the Duo push on your phone…" while a push is pending.
+  const [duoStatus, setDuoStatus] = useState<string | null>(null);
+  const gate = { onStatus: setDuoStatus };
 
   const load = useCallback(async () => {
     const client = getClient();
@@ -133,14 +138,15 @@ export default function DocumentsList() {
   }
 
   async function onEdit(d: Document) {
-    // The edit form exposes documentNumber and an inline file preview,
-    // both sensitive. Gate behind Face ID. If the device has no Face ID,
-    // fall through and open the form — there's no second-factor fallback
-    // here today.
-    const auth = await requireLocalAuth({
-      promptMessage: "Edit document",
-    });
-    if (!auth.ok && auth.reason === "cancelled") return;
+    // The edit form exposes documentNumber, so a sensitive doc is gated
+    // behind Face ID. If the device has no Face ID, fall through and
+    // open the form — there's no second-factor fallback here today.
+    if (documentIsSensitive(d)) {
+      const auth = await requireLocalAuth({
+        promptMessage: "Edit document",
+      });
+      if (!auth.ok && auth.reason === "cancelled") return;
+    }
     setEditing(d);
     setModalOpen(true);
   }
@@ -179,11 +185,15 @@ export default function DocumentsList() {
     }
     setRevealing(true);
     try {
-      const result = await revealDocumentNumber({
-        documentId: d.id,
-        s3Key: d.s3Key,
-        documentNumber: d.documentNumber,
-      });
+      const result = await revealDocumentNumber(
+        {
+          documentId: d.id,
+          s3Key: d.s3Key,
+          documentNumber: d.documentNumber,
+          isSensitive: d.isSensitive,
+        },
+        gate
+      );
       if (!result.ok) {
         if (result.error !== "Cancelled")
           Alert.alert("Couldn't reveal", result.error);
@@ -202,22 +212,30 @@ export default function DocumentsList() {
       Alert.alert("Nothing to view", "This document has no file attached.");
       return;
     }
-    const result = await viewDocument({
-      documentId: d.id,
-      s3Key: d.s3Key,
-      documentNumber: d.documentNumber,
-    });
+    const result = await viewDocument(
+      {
+        documentId: d.id,
+        s3Key: d.s3Key,
+        documentNumber: d.documentNumber,
+        isSensitive: d.isSensitive,
+      },
+      gate
+    );
     if (!result.ok && result.error && result.error !== "Cancelled") {
       Alert.alert("View failed", result.error);
     }
   }
 
   async function onDownload(d: Document) {
-    const result = await downloadDocument({
-      documentId: d.id,
-      s3Key: d.s3Key,
-      documentNumber: d.documentNumber,
-    });
+    const result = await downloadDocument(
+      {
+        documentId: d.id,
+        s3Key: d.s3Key,
+        documentNumber: d.documentNumber,
+        isSensitive: d.isSensitive,
+      },
+      gate
+    );
     if (!result.ok) {
       if (result.error !== "Cancelled")
         Alert.alert("Download failed", result.error);
@@ -235,12 +253,16 @@ export default function DocumentsList() {
       Alert.alert("Nothing to share", "This document has no file attached.");
       return;
     }
-    const result = await shareDocument({
-      documentId: d.id,
-      s3Key: d.s3Key,
-      documentNumber: d.documentNumber,
-      filename: d.originalFilename,
-    });
+    const result = await shareDocument(
+      {
+        documentId: d.id,
+        s3Key: d.s3Key,
+        documentNumber: d.documentNumber,
+        isSensitive: d.isSensitive,
+        filename: d.originalFilename,
+      },
+      gate
+    );
     if (!result.ok && result.error && result.error !== "Cancelled") {
       Alert.alert("Share failed", result.error);
     }
@@ -329,6 +351,13 @@ export default function DocumentsList() {
         </ScrollView>
       </View>
 
+      {duoStatus && (
+        <View style={styles.duoBanner}>
+          <ActivityIndicator size="small" color="#735f55" />
+          <Text style={styles.duoBannerText}>{duoStatus}</Text>
+        </View>
+      )}
+
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator />
@@ -412,6 +441,7 @@ function DocumentCard({
   const expiring = isExpiringSoon(doc);
   const expiry = expiryLabel(doc);
   const hasFile = !!doc.s3Key;
+  const sensitive = documentIsSensitive(doc);
 
   return (
     <View style={[styles.card, expanded && styles.cardExpanded]}>
@@ -421,9 +451,16 @@ function DocumentCard({
           <Text style={styles.rowTitle} numberOfLines={1}>
             {doc.title}
           </Text>
-          <Text style={styles.rowMeta}>
-            {DOCUMENT_TYPE_LABEL[type]} · {ownerName}
-          </Text>
+          <View style={styles.rowMetaLine}>
+            <Text style={styles.rowMeta} numberOfLines={1}>
+              {DOCUMENT_TYPE_LABEL[type]} · {ownerName}
+            </Text>
+            {!sensitive && (
+              <View style={styles.badge}>
+                <Text style={styles.badgeText}>no Duo</Text>
+              </View>
+            )}
+          </View>
           {expiry && (
             <Text style={[styles.rowExpiry, expiring && styles.rowExpiryWarn]}>
               {expiry}
@@ -493,6 +530,10 @@ function DocumentCard({
               value={doc.scope === "HOUSEHOLD" ? "Household" : "Personal"}
             />
           )}
+          <MetaRow
+            label="Sensitive"
+            value={sensitive ? "Yes — Face ID + Duo" : "No — opens without Duo"}
+          />
           {!!doc.issuer && <MetaRow label="Issuer" value={doc.issuer} />}
           {!!doc.issuedDate && (
             <MetaRow label="Issued" value={formatDate(doc.issuedDate)} />
@@ -681,7 +722,35 @@ const styles = StyleSheet.create({
   rowEmoji: { fontSize: 22 },
   rowMain: { flex: 1 },
   rowTitle: { fontSize: 15, color: "#222", fontWeight: "500" },
-  rowMeta: { fontSize: 13, color: "#666", marginTop: 2 },
+  rowMetaLine: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 2,
+  },
+  rowMeta: { fontSize: 13, color: "#666", flexShrink: 1 },
+  badge: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
+    backgroundColor: "#eee",
+  },
+  badgeText: { fontSize: 10, color: "#666", fontWeight: "500" },
+
+  duoBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginHorizontal: 20,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 10,
+    backgroundColor: "#faf6f3",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "#e0d8d2",
+  },
+  duoBannerText: { color: "#735f55", fontSize: 13, flex: 1 },
   rowExpiry: { fontSize: 12, color: "#888", marginTop: 1 },
   rowExpiryWarn: { color: "#a44", fontWeight: "500" },
 

@@ -8,9 +8,30 @@
 
 import { RRule } from "rrule";
 
+import { eventsFor, type FeedUse } from "../../lib/calendar-feeds";
+import { listAllPages } from "../../lib/list-all";
 import type { Schema } from "../../amplify/data/resource";
+import { getClient } from "./amplify";
 
 type Event = Schema["homeCalendarEvent"]["type"];
+type Feed = Schema["homeCalendarFeed"]["type"];
+
+/**
+ * Every event row (all pages; a single list() stops at 100) as `use`
+ * should see them: per-feed settings applied by lib/calendar-feeds.ts
+ * `eventsFor`, the same reader the web uses. Drops feeds not used there
+ * and fills an unassigned feed event's people from its feed's owner.
+ * Imported events stay read-only in EventFormModal, so the filled-in
+ * people are never written back.
+ */
+export async function loadCalendarEvents(use: FeedUse): Promise<Array<Event & { feedOwned: boolean }>> {
+  const client = getClient();
+  const [events, feeds] = await Promise.all([
+    listAllPages<Event>(client.models.homeCalendarEvent, { limit: 1000 }),
+    listAllPages<Feed>(client.models.homeCalendarFeed),
+  ]);
+  return eventsFor(events, feeds, use);
+}
 
 export interface AgendaEvent {
   event: Event;
