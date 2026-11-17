@@ -27,6 +27,28 @@ import { simplefinConnectionLabel } from "../../../../../lib/finance/simplefin-c
 type Summary = OpResultOf<"get_finance_summary">;
 type Holdings = OpResultOf<"list_finance_holdings">;
 
+/** Account sections, in display order: one per type (lib/finance/accounts.ts ACCOUNT_TYPES). */
+const TYPE_SECTIONS: Array<{ type: string; label: string; invested?: boolean }> = [
+  { type: "CHECKING", label: "Checking" },
+  { type: "SAVINGS", label: "Savings" },
+  { type: "CASH", label: "Cash" },
+  { type: "CREDIT", label: "Credit cards" },
+  { type: "LOAN", label: "Loans" },
+  { type: "RETIREMENT", label: "Retirement", invested: true },
+  { type: "BROKERAGE", label: "Brokerage", invested: true },
+  { type: "OTHER", label: "Other" },
+];
+const sectionOf = (type: string | null | undefined) => (TYPE_SECTIONS.some((t) => t.type === type) ? type! : "OTHER");
+
+function SectionHeader({ label, total }: { label: string; total: number }) {
+  return (
+    <View style={[fs.rowBetween, { paddingHorizontal: 4 }]}>
+      <Text style={fs.label}>{label}</Text>
+      <Money value={total} cents={false} style={{ fontWeight: "600" }} />
+    </View>
+  );
+}
+
 export default function FinanceAccounts() {
   const { people } = usePeople();
   const [summary, setSummary] = useState<Summary | null>(null);
@@ -75,7 +97,13 @@ export default function FinanceAccounts() {
     const row = byId.get(id);
     if (row) setEditing({ account: row });
   };
-  const cash = (summary?.accounts ?? []).filter((a) => !a.invested);
+  // One section per account type, in this order (invested types get the positions view).
+  const cashGroups = TYPE_SECTIONS.filter((t) => !t.invested)
+    .map((t) => ({ ...t, accounts: (summary?.accounts ?? []).filter((a) => !a.invested && sectionOf(a.type) === t.type) }))
+    .filter((g) => g.accounts.length > 0);
+  const investedGroups = TYPE_SECTIONS.filter((t) => t.invested)
+    .map((t) => ({ ...t, accounts: (holdings?.accounts ?? []).filter((a) => sectionOf(byId.get(a.id)?.type) === t.type) }))
+    .filter((g) => g.accounts.length > 0);
   const inactive = (rows ?? []).filter((a) => a.active === false);
 
   return (
@@ -86,9 +114,11 @@ export default function FinanceAccounts() {
       ) : (
         <ScrollView contentContainerStyle={fs.body} refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}>
           {rows.length === 0 && <Text style={fs.empty}>No accounts yet. Tap + to add the joint checking account, then link it to SimpleFIN so transactions sync three times a day.</Text>}
-          {cash.length > 0 && (
-            <Card title="Cash">
-              {cash.map((a, i) => {
+          {cashGroups.map((g) => (
+            <View key={g.type} style={{ gap: 8 }}>
+              <SectionHeader label={g.label} total={g.accounts.reduce((s, a) => s + a.balance, 0)} />
+              <Card>
+              {g.accounts.map((a, i) => {
                 const row = byId.get(a.id);
                 const belowNow = a.minBalance != null && a.balance < a.minBalance;
                 const dips = !belowNow && a.lowPoint && a.minBalance != null && a.lowPoint.balance < a.minBalance;
@@ -118,16 +148,14 @@ export default function FinanceAccounts() {
                   </Pressable>
                 );
               })}
-            </Card>
-          )}
+              </Card>
+            </View>
+          ))}
 
-          {holdings && holdings.accounts.length > 0 && (
-            <>
-              <View style={[fs.rowBetween, { paddingHorizontal: 4 }]}>
-                <Text style={fs.label}>Invested</Text>
-                <Money value={holdings.total} cents={false} style={{ fontWeight: "600" }} />
-              </View>
-              {holdings.accounts.map((a) => {
+          {investedGroups.map((g, gi) => (
+            <View key={g.type} style={{ gap: 8 }}>
+              <SectionHeader label={g.label} total={g.accounts.reduce((s, a) => s + a.balance, 0)} />
+              {g.accounts.map((a) => {
                 const row = byId.get(a.id);
                 const expanded = open.has(a.id);
                 const toggle = () => setOpen((o) => (o.has(a.id) ? new Set([...o].filter((x) => x !== a.id)) : new Set([...o, a.id])));
@@ -184,9 +212,11 @@ export default function FinanceAccounts() {
                   </Card>
                 );
               })}
-              <Text style={[fs.muted, { paddingHorizontal: 4 }]}>Values as SimpleFIN last reported them. Invested accounts feed goals, not the budget.</Text>
-            </>
-          )}
+              {gi === investedGroups.length - 1 && (
+                <Text style={[fs.muted, { paddingHorizontal: 4 }]}>Values as SimpleFIN last reported them. Invested accounts feed goals, not the budget.</Text>
+              )}
+            </View>
+          ))}
 
           {inactive.length > 0 && (
             <Card title="Inactive">
