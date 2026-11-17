@@ -11,6 +11,7 @@ import {
   nextOccurrence,
   earliestNextOccurrence,
 } from "../../../lib/reminder-schedule.js";
+import { DEPARTURE_REMINDER_KIND, departureMessage, ensureTripPrep } from "../../../lib/trip-prep.js";
 import {
   getHouseholdTimezone,
   resolveReminderTimezone,
@@ -175,6 +176,50 @@ function composeDeterministic(
   return `*${reminder.name}*\n${list}`;
 }
 
+// A trip's "last look" reminder (lib/trip-prep.ts): what's still unchecked
+// on the trip's checklists right now, not when the reminder was made.
+async function composeDeparture(tripId: string, fallback: string): Promise<string> {
+  try {
+    const { data: trip } = await client.models.homeTrip.get({ id: tripId });
+    const { data: lists } = await client.models.homeChecklist.list({
+      filter: { entityType: { eq: "TRIP" }, entityId: { eq: tripId } },
+      limit: 1000,
+    });
+    const active = (lists ?? []).filter((l) => l.isArchived !== true).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+    const withItems = await Promise.all(
+      active.map(async (l) => {
+        const { data: items } = await client.models.homeChecklistItem.list({ filter: { checklistId: { eq: l.id } }, limit: 1000 });
+        return { name: l.name, items: (items ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)) };
+      }),
+    );
+    return departureMessage(trip?.name ?? "your trip", withItems);
+  } catch (err) {
+    console.warn(`reminder-sweep: couldn't read checklists for trip ${tripId}:`, err);
+    return fallback;
+  }
+}
+
+// Once an hour, make sure every upcoming trip has its auto checklists and
+// departure reminder (lib/trip-prep.ts), in case a save path didn't.
+async function prepUpcomingTrips(now: Date, householdTz: string) {
+  const today = now.toISOString().slice(0, 10);
+  const horizon = new Date(now.getTime() + 21 * 86400_000).toISOString().slice(0, 10);
+  const { data: trips } = await client.models.homeTrip.list({
+    filter: { and: [{ endDate: { ge: today } }, { startDate: { le: horizon } }] },
+    limit: 1000,
+  });
+  for (const t of trips ?? []) {
+    try {
+      const r = await ensureTripPrep(client, t.id, { now, householdTz });
+      if (r.checklistsAdded.length || r.reminder === "created" || r.reminder === "moved") {
+        console.log(`reminder-sweep: trip prep ${t.name}: ${JSON.stringify(r)}`);
+      }
+    } catch (err) {
+      console.warn(`reminder-sweep: trip prep failed for ${t.id}:`, err);
+    }
+  }
+}
+
 // ── Per-reminder processing ─────────────────────────────────────────────────
 
 async function processReminder(
@@ -260,7 +305,9 @@ async function processReminder(
   }
 
   // Compose message text
-  const text = reminder.useLlm
+  const text = reminder.kind === DEPARTURE_REMINDER_KIND && reminder.parentId
+    ? await composeDeparture(reminder.parentId, reminder.name)
+    : reminder.useLlm
     ? await composeWithLlm(
         { name: reminder.name, kind: reminder.kind },
         dueItems,
@@ -351,6 +398,8 @@ export const handler: Handler = async () => {
   // resolved inside processReminder when the reminder is PERSON-targeted.
   const householdTz = await getHouseholdTimezone(client);
   console.log(`reminder-sweep: household TZ = ${householdTz}`);
+
+  if (now.getUTCMinutes() < 5) await prepUpcomingTrips(now, householdTz);
 
   // Find reminders whose scheduledAt has come due. Filter on PENDING
   // status to skip paused/cancelled/expired reminders.

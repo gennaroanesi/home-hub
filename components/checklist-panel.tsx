@@ -9,7 +9,7 @@ import { Spinner, addToast } from "@heroui/react";
 import {
   FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy,
   FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight, FaLink,
-  FaArchive, FaBoxOpen,
+  FaArchive, FaBoxOpen, FaPlane,
 } from "react-icons/fa";
 import {
   DndContext,
@@ -453,6 +453,18 @@ export function ChecklistPanel({
     });
     await loadData();
     onArchiveChange?.();
+  }
+
+  // Templates only: copy onto every trip (lib/trip-prep.ts attaches it on
+  // each trip save, and the reminder sweep catches upcoming trips hourly).
+  async function toggleAutoAttachTrips(cl: Checklist) {
+    const next = !(cl.autoAttachTrips === true);
+    await client.models.homeChecklist.update({ id: cl.id, autoAttachTrips: next });
+    addToast({
+      title: next ? "Added to every trip" : "No longer added to trips",
+      description: next ? `"${cl.name}" will be copied onto new and upcoming trips` : `Trips that already have "${cl.name}" keep their copy`,
+    });
+    await loadData();
   }
 
   async function duplicateChecklist(source: Checklist, targetEntityType?: EntityType, targetEntityId?: string) {
@@ -1031,6 +1043,11 @@ export function ChecklistPanel({
                             Archived
                           </span>
                         )}
+                        {entityType === "TEMPLATE" && cl.autoAttachTrips === true && (
+                          <span className="text-[10px] uppercase tracking-wider text-primary bg-primary-50 px-1.5 py-0.5 rounded">
+                            Every trip
+                          </span>
+                        )}
                       </div>
                       {items.length > 0 && (
                         <p className="text-xs text-default-400">{doneCount}/{items.length} done</p>
@@ -1046,6 +1063,18 @@ export function ChecklistPanel({
                       {entityType !== "TEMPLATE" && (
                         <Button size="sm" isIconOnly variant="light" title="Save as template" onPress={() => saveAsTemplate(cl)}>
                           <FaFileImport size={10} />
+                        </Button>
+                      )}
+                      {entityType === "TEMPLATE" && (
+                        <Button
+                          size="sm"
+                          isIconOnly
+                          variant={cl.autoAttachTrips === true ? "flat" : "light"}
+                          color={cl.autoAttachTrips === true ? "primary" : "default"}
+                          title={cl.autoAttachTrips === true ? "Added to every trip (click to stop)" : "Add to every trip"}
+                          onPress={() => toggleAutoAttachTrips(cl)}
+                        >
+                          <FaPlane size={10} />
                         </Button>
                       )}
                       <Button size="sm" isIconOnly variant="light" onPress={() => { setEditingChecklistId(cl.id); setEditingChecklistName(cl.name); }}>

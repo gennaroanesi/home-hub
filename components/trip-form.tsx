@@ -16,6 +16,7 @@ import { RemindersSection } from "@/components/reminders-section";
 import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForTrip } from "@/lib/reminder-defaults";
 import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
+import { ensureTripPrepQuietly } from "@/lib/trip-prep";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
 import { tzAbbreviation } from "@/lib/timezone";
 import { AttachmentSection } from "@/components/attachment-section";
@@ -160,6 +161,9 @@ export const TripForm = React.forwardRef<TripFormHandle, TripFormProps>(function
     if (saved?.id) {
       await syncLegs(saved.id, form.legs, allLegs);
       await syncReservations(saved.id, form.reservations, allReservations);
+      // Auto checklists + the "last look" reminder before departure.
+      const prep = await ensureTripPrepQuietly(client, saved.id);
+      if (prep?.checklistsAdded.length) addToast({ title: "Checklists added", description: prep.checklistsAdded.join(", ") });
       // Promote create → edit locally so subsequent actions in the
       // same modal (e.g. adding a reminder after saving) see the
       // trip's id without waiting for the parent to re-pass `trip`.

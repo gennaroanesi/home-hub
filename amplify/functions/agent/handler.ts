@@ -20,6 +20,7 @@ import {
   pauseRemindersFor,
 } from "../../../lib/reminder-parent.js";
 import { cascadeDeleteNotesFor } from "../../../lib/note-parent.js";
+import { ensureTripPrepQuietly } from "../../../lib/trip-prep.js";
 import {
   DEFAULT_ICAO,
   fetchAirportWeather,
@@ -2586,7 +2587,9 @@ async function executeTool(
         participantIds,
       });
       if (errors) return JSON.stringify({ error: errors[0].message });
-      return JSON.stringify({ success: true, tripId: data?.id, name: input.name });
+      // Auto checklists + the "last look" reminder before departure (lib/trip-prep.ts).
+      const prep = data?.id ? await ensureTripPrepQuietly(client, data.id) : null;
+      return JSON.stringify({ success: true, tripId: data?.id, name: input.name, checklistsAdded: prep?.checklistsAdded ?? [] });
     }
 
     case "update_trip": {
@@ -2602,6 +2605,7 @@ async function executeTool(
       }
       const { data, errors } = await client.models.homeTrip.update(updates);
       if (errors) return JSON.stringify({ error: errors[0].message });
+      if (data?.id) await ensureTripPrepQuietly(client, data.id);
       return JSON.stringify({ success: true, tripId: data?.id, name: data?.name });
     }
 
@@ -2653,6 +2657,7 @@ async function executeTool(
         sortOrder: input.sortOrder ?? 0,
       });
       if (errors) return JSON.stringify({ error: errors[0].message });
+      await ensureTripPrepQuietly(client, input.tripId);
       return JSON.stringify({ success: true, legId: data?.id, tripId: input.tripId });
     }
 
@@ -2673,6 +2678,7 @@ async function executeTool(
       if (input.sortOrder !== undefined) updates.sortOrder = input.sortOrder;
       const { data, errors } = await client.models.homeTripLeg.update(updates);
       if (errors) return JSON.stringify({ error: errors[0].message });
+      if (data?.tripId) await ensureTripPrepQuietly(client, data.tripId);
       return JSON.stringify({ success: true, legId: data?.id });
     }
 

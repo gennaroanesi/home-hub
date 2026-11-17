@@ -29,6 +29,7 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
+import { ensureTripPrepQuietly } from "../../lib/trip-prep";
 import {
   LEG_MODE_EMOJI,
   LEG_MODE_LABEL,
@@ -197,6 +198,8 @@ export function TripLegFormModal({
         if (errors?.length) throw new Error(errors[0].message);
         onSaved({ toast: "Leg added" });
       }
+      // The departure reminder follows the first leg (lib/trip-prep.ts).
+      await ensureTripPrepQuietly(client, tripId);
       onClose();
     } catch (err: any) {
       Alert.alert("Save failed", err?.message ?? String(err));

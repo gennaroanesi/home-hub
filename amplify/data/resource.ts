@@ -1988,6 +1988,11 @@ const schema = a
         // filter reads `isArchived === true` explicitly.
         isArchived: a.boolean().default(false),
         archivedAt: a.datetime(),
+        // TEMPLATE only: copied onto every trip automatically (lib/trip-prep.ts).
+        autoAttachTrips: a.boolean(),
+        // On a copy made by trip prep: the template it came from, so it's
+        // attached once per trip.
+        sourceTemplateId: a.id(),
         items: a.hasMany("homeChecklistItem", "checklistId"),
       })
       .secondaryIndexes((index) => [

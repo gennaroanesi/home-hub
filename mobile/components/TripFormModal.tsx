@@ -32,6 +32,7 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
+import { ensureTripPrepQuietly } from "../../lib/trip-prep";
 import { type Person, useAllPeople } from "../lib/use-people";
 import { PeoplePicker } from "./PeoplePicker";
 import {
@@ -165,11 +166,14 @@ export function TripFormModal({ visible, trip, people, onClose, onSaved }: Props
           ...payload,
         });
         if (errors?.length) throw new Error(errors[0].message);
+        await ensureTripPrepQuietly(client, trip.id);
         onSaved({ toast: "Trip updated" });
       } else {
-        const { errors } = await client.models.homeTrip.create(payload);
+        const { data: created, errors } = await client.models.homeTrip.create(payload);
         if (errors?.length) throw new Error(errors[0].message);
-        onSaved({ toast: "Trip created" });
+        // Auto checklists + the "last look" reminder before departure (lib/trip-prep.ts).
+        const prep = created ? await ensureTripPrepQuietly(client, created.id) : null;
+        onSaved({ toast: prep?.checklistsAdded.length ? `Trip created · added ${prep.checklistsAdded.join(", ")}` : "Trip created" });
       }
       onClose();
     } catch (err: any) {
