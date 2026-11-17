@@ -92,19 +92,19 @@ describe("get_finance_summary", () => {
 });
 
 describe("update_finance_transaction", () => {
-  it("sets a manual category and person, and remembers a rule on top of the seeded table", async () => {
+  it("sets a manual category and contributor, and remembers a rule on top of the seeded table", async () => {
     const { ctx, tables } = setup({
       homePerson: people,
       homeFinanceAccount: [joint],
-      homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -30, description: "SQ *BLUE BOTTLE AUSTIN", date: today, category: null }],
+      homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: 500, description: "ZELLE FROM CRISTINE R", date: today, category: null }],
     });
-    const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Dining", personName: "Cristine", rememberPattern: "BLUE BOTTLE" });
-    expect(out.result).toMatchObject({ category: "Dining", personId: "cris", ruleCreated: true });
+    const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Contribution", personName: "Cristine", rememberPattern: "ZELLE FROM CRISTINE" });
+    expect(out.result).toMatchObject({ category: "Contribution", personId: "cris", ruleCreated: true });
     expect(tables.homeFinanceTransaction[0]).toMatchObject({ categorySource: "MANUAL", personSource: "MANUAL" });
     const rules = tables.homeFinanceCategoryRule;
     expect(rules.length).toBeGreaterThan(10); // bundled rules copied in first
     const top = [...rules].sort((a, b) => a.sortOrder - b.sortOrder)[0];
-    expect(top).toMatchObject({ pattern: "BLUE BOTTLE", category: "Dining", personId: "cris" });
+    expect(top).toMatchObject({ pattern: "ZELLE FROM CRISTINE", category: "Contribution", personId: "cris" });
   });
 
   it("refuses a pattern that doesn't match the transaction", async () => {
@@ -589,5 +589,13 @@ describe("ledgers (household vs personal budgets)", () => {
     expect(nick.result.ledger).toBe("cris");
     const guest: any = await runOp(ctx, "get_finance_budget", { ledger: "nobody" });
     expect(guest.error).toMatch(/No ledger/);
+  });
+});
+
+describe("a transaction's person is only a contributor", () => {
+  it("refuses a person on money out and points at the ledger", async () => {
+    const { ctx } = setup({ homePerson: people, homeFinanceAccount: [joint], homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -30, description: "HEB", date: today }] });
+    const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", personName: "Cristine" });
+    expect(out.error).toMatch(/only set on money in.*ledger/s);
   });
 });

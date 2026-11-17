@@ -409,7 +409,8 @@ function planChange(tx: any, rules: ReturnType<typeof rulesFromDbRows>): Change 
   const change: Change = { tx };
   const src = tx.categorySource ?? null;
   if (src !== "MANUAL" && category && category !== (tx.category ?? "")) change.category = category;
-  if (tx.personSource !== "MANUAL" && personId && personId !== tx.personId) change.personId = personId;
+  // A person is only a contributor (money in); spending's owner is its ledger.
+  if ((tx.amount ?? 0) > 0 && tx.personSource !== "MANUAL" && personId && personId !== tx.personId) change.personId = personId;
   return change.category !== undefined || change.personId !== undefined ? change : null;
 }
 

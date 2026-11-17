@@ -279,7 +279,7 @@ export default function FinanceAccountDetailPage() {
                         <Chip size="sm" variant="flat" color={cat === UNCATEGORIZED ? "warning" : "default"}>
                           {cat}
                         </Chip>
-                        {t.personId && <PersonChip personId={t.personId} people={refs.people} />}
+                        {t.personId && (t.amount ?? 0) > 0 && <PersonChip personId={t.personId} people={refs.people} />}
                         {t.status === "PENDING" && (
                           <Chip size="sm" variant="dot" color="warning">
                             pending

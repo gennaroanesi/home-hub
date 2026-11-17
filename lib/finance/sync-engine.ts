@@ -60,7 +60,9 @@ export function sfTxToDraft(sfTx: SfTransaction, accountId: string, rules?: Cate
     status: sfTx.pending ? "PENDING" : "POSTED",
     category,
     categorySource: category ? "RULE" : null,
-    personId,
+    // A person on a transaction is only ever a contributor (money in); whose
+    // budget spending counts in is the ledger (lib/finance/ledger.ts).
+    personId: sfTx.amount > 0 ? personId : null,
     importHash: importHash(sfTx.posted, sfTx.amount, description),
     sfTransactionId: sfTx.id,
   };

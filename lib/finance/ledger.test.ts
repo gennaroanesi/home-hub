@@ -134,3 +134,31 @@ describe("ledger budgets", () => {
     expect(txsForLedger(txs, accounts, G).map((t) => t.amount)).toEqual([-40]);
   });
 });
+
+describe("transfers between personal and household accounts", () => {
+  it("money moved into a household account is its owner's contribution; money moved back out counts against it", () => {
+    const m = inKindContributions(
+      [
+        // The sync paired both sides as a transfer.
+        tx({ accountId: "joint", amount: 2000, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "gCard" }),
+        tx({ accountId: "gCard", amount: -2000, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "joint" }),
+        tx({ accountId: "joint", amount: -300, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "cCard" }),
+        // Between two household accounts: nobody's contribution.
+        tx({ accountId: "joint", amount: 500, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "jointBoth" }),
+      ],
+      accounts,
+      window,
+    );
+    expect(Object.fromEntries(m)).toEqual({ [G]: 2000, [C]: -300 });
+  });
+
+  it("feeds the household contribution lines and the personal 'to the household'", () => {
+    const lines = [line({ name: "Gennaro → household", kind: "INCOME", personId: G, amount: 2500 })];
+    const txs = [
+      tx({ accountId: "joint", amount: 2000, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "gCard" }),
+      tx({ accountId: "gCard", amount: -2000, type: "TRANSFER", category: TRANSFER_CATEGORY, toAccountId: "joint" }),
+    ];
+    expect(ledgerBudget(HOUSEHOLD, lines, txs, [], accounts, window, TODAY).incomeViews[0].spent).toBe(2000);
+    expect(ledgerBudget(G, lines, txs, [], accounts, window, TODAY).toHousehold).toEqual({ planned: 2500, sent: 2000 });
+  });
+});

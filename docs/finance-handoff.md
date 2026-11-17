@@ -113,6 +113,14 @@ the household's; `lib/finance/ledger.ts`. Everyone sees every ledger.
   and the plan comes out of what they have left to allocate. A personal
   INCOME line is their own income (paychecks; a personal slice with no
   person is the owner's).
+- **A transaction's person is only a contributor.** `personId` means who
+  put money in (a Contribution from an account not linked here); spending
+  has no person, its owner is the ledger. The sync, the rules re-apply and
+  `update_finance_transaction` only set it on money in. A transfer the sync
+  paired between someone's own account and a household one needs no person:
+  money into the household account counts as the source account owner's
+  contribution, money back out against it (`inKindContributions`, counted on
+  the household side only).
 - **Everything** (`allLedgersBudget`) shows the ledgers side by side: every
   line measured in its own ledger, personal income only (the household's
   contribution lines are money between ledgers, as are Contribution rows in

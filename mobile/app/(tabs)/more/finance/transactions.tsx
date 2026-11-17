@@ -176,7 +176,7 @@ function TxRow({ tx, onPress }: { tx: FinanceTx; onPress: () => void }) {
     fmtDate(tx.date),
     tx.items?.length ? `Itemized · ${new Set(tx.items.map((i) => i.category)).size} categories` : tx.category,
     tx.categorySource === "LLM" ? "guessed" : null,
-    tx.person,
+    tx.person && (tx.amount ?? 0) > 0 ? `from ${tx.person}` : null,
     // Whose budget, when not the household's (an itemized charge may split).
     tx.items?.some((i) => i.ledger && i.ledger !== tx.ledger) ? "split budget" : tx.ledger !== "household" ? `${tx.ledgerName}'s` : null,
     tx.status === "PENDING" ? "pending" : null,

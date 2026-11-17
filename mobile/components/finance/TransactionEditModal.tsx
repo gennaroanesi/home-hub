@@ -1,4 +1,4 @@
-// Edit one transaction: category, person, which budget it counts in
+// Edit one transaction: category, which budget it counts in, the contributor (money in only)
 // (lib/finance/ledger.ts), notes, "remember for similar" (a rule,
 // rememberPattern) and itemizing a charge across categories and budgets.
 // Same op and rules as the web's transaction window
@@ -124,9 +124,11 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
         </Field>
       )}
 
-      <Field label="Person (contributor or spender)">
-        <PersonChips people={people} value={person} onChange={setPerson} noneLabel="No one" />
-      </Field>
+      {(tx.amount ?? 0) > 0 && (
+        <Field label="Contributor" hint="Who put this money in.">
+          <PersonChips people={people} value={person} onChange={setPerson} noneLabel="No one" />
+        </Field>
+      )}
 
       <Field label="Notes">
         <Input value={notes} onChangeText={setNotes} placeholder="Notes" multiline />
@@ -186,7 +188,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
           <Switch value={remember} onValueChange={setRemember} />
         </View>
         {remember && (
-          <Field label="When the description contains" hint="Plain text (any case) or /regex/flags. Applies the category and person above to future transactions.">
+          <Field label="When the description contains" hint="Plain text (any case) or /regex/flags. Applies the category (and contributor, on money in) above to future transactions.">
             <Input value={pattern} onChangeText={setPattern} autoCapitalize="characters" autoCorrect={false} />
           </Field>
         )}

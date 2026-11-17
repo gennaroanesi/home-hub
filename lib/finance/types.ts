@@ -30,6 +30,7 @@ export type TxLike = {
   recurringId?: string | null;
   lineItems?: string | null; // JSON [{ name, amount, category, quantity?, ledger? }] (categories.ts)
   ledger?: string | null; // whose budget, when not the account's (ledger.ts)
+  toAccountId?: string | null; // TRANSFER: the other account
 };
 
 export type RecurringLike = {

@@ -20,7 +20,7 @@
 //   household's contribution lines are money moving between ledgers, so
 //   they're left out of it.
 
-import { categoryParts, isExcludedFromBudget, parseLineItems, INCOME_CATEGORIES, type LineItem } from "./categories";
+import { categoryParts, effectiveCategory, isExcludedFromBudget, parseLineItems, INCOME_CATEGORIES, TRANSFER_CATEGORY, type LineItem } from "./categories";
 import { householdBudget, type BudgetLine, type HouseholdBudgetView } from "./budget";
 import type { DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
@@ -98,19 +98,28 @@ export function txsForLedger<T extends TxLike & { ledger?: string | null }>(txs:
 }
 
 /**
- * Per person, what they contributed to the household by paying for it
- * directly: household spending on their own accounts, minus their personal
- * spending paid with household money. Posted money out in the window only,
- * not spend-group rows, not transfers and card payments.
+ * Per person, what they contributed to the household other than through a
+ * Contribution row: money moved between their own account and a household
+ * one (a transfer the sync paired: in counts for them, back out against),
+ * plus household spending paid from their own accounts, minus personal
+ * spending paid with household money. Posted, in the window, not
+ * spend-group rows; card payments and other transfers aren't spending.
  */
 export function inKindContributions(txs: (TxLike & { ledger?: string | null })[], accounts: AccountLike[], window: DateRange): Map<string, number> {
   const byId = new Map(accounts.map((a) => [a.id, accountLedger(a)]));
   const out = new Map<string, number>();
   const add = (k: string, n: number) => out.set(k, (out.get(k) ?? 0) + n);
   for (const tx of txs) {
-    if (tx.status === "PENDING" || tx.spendGroupId || (tx.amount ?? 0) >= 0) continue;
+    if (tx.status === "PENDING" || tx.spendGroupId) continue;
     if ((tx.date ?? "") < window.fromIso || (tx.date ?? "") > window.toIso) continue;
     const acct = byId.get(tx.accountId) ?? HOUSEHOLD;
+    // Transfers are counted on the household side only, so a pair counts once.
+    if (tx.toAccountId && (tx.type === "TRANSFER" || effectiveCategory(tx) === TRANSFER_CATEGORY)) {
+      const other = byId.get(tx.toAccountId) ?? HOUSEHOLD;
+      if (acct === HOUSEHOLD && other !== HOUSEHOLD) add(other, tx.amount ?? 0);
+      continue;
+    }
+    if ((tx.amount ?? 0) >= 0) continue;
     for (const part of ledgerParts(tx, acct)) {
       if (part.ledger === acct) continue;
       // Only what the budget counts as spending moves between ledgers.

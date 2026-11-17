@@ -140,7 +140,8 @@ export default function TransactionsPage() {
         if (account && t.accountId !== account) return false;
         // An itemized charge matches any of its items' categories.
         if (category && !t._cats.includes(category)) return false;
-        if (person === HOUSEHOLD ? !!t.personId : person && t.personId !== person) return false;
+        // Contributor: money in from that person.
+        if (person && !((t.amount ?? 0) > 0 && t.personId === person)) return false;
         if (group === NONE ? !!t.spendGroupId : group && t.spendGroupId !== group) return false;
         if (direction === "in" && (t.amount ?? 0) <= 0) return false;
         if (direction === "out" && (t.amount ?? 0) >= 0) return false;
@@ -208,8 +209,8 @@ export default function TransactionsPage() {
             <SelectItem key={c}>{c}</SelectItem>
           ))}
         </Select>
-        <Select size="sm" label="Person" selectedKeys={person ? [person] : []} onChange={(e) => setPerson(e.target.value)}>
-          {[{ id: HOUSEHOLD, name: "No one" }, ...refs.people].map((p) => (
+        <Select size="sm" label="Contributor" selectedKeys={person ? [person] : []} onChange={(e) => setPerson(e.target.value)}>
+          {refs.people.map((p) => (
             <SelectItem key={p.id}>{p.name}</SelectItem>
           ))}
         </Select>
@@ -335,7 +336,11 @@ export default function TransactionsPage() {
                         {src && !parseLineItems(t) && <span className="opacity-60"> · {src}</span>}
                       </Chip>
                     )}
-                    {t.personId && <PersonChip personId={t.personId} people={refs.people} />}
+                    {t.personId && (t.amount ?? 0) > 0 && (
+                      <span className="flex items-center gap-1">
+                        from <PersonChip personId={t.personId} people={refs.people} />
+                      </span>
+                    )}
                     {(t._ledgers.length > 1 || t._ledgers[0] !== HOUSEHOLD_LEDGER) && (
                       <Chip size="sm" variant="dot" color="secondary" title="Whose budget it counts in">
                         {t._ledgers.length > 1 ? `Split · ${[...new Set(t._ledgers as string[])].map((k) => ledgerLabel(k, refs.people)).join(" + ")}` : `${ledgerLabel(t._ledgers[0], refs.people)}'s`}
@@ -518,7 +523,7 @@ function EditModal({
           {tx.categorySource === "LLM" && category === (tx.category ?? "") && (
             <p className="text-xs text-default-500 -mt-2">Guessed by the classifier. Saving confirms it, so the sync won&apos;t change it.</p>
           )}
-          <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Person (contributor or spender)" />
+          {(tx.amount ?? 0) > 0 && <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Contributor (who put this money in)" />}
           {owners.length > 0 && (
             <>
               <LedgerSelect value={ledger} onChange={setLedger} owners={owners} people={refs.people} defaultLabel={accountDefault} />
@@ -548,7 +553,7 @@ function EditModal({
             </Checkbox>
             {remember && (
               <>
-                <Input size="sm" label="When the description contains" description="Plain text (any case) or /regex/flags. Applies the category and person above to future transactions." value={pattern} onValueChange={setPattern} />
+                <Input size="sm" label="When the description contains" description="Plain text (any case) or /regex/flags. Applies the category (and contributor, on money in) above to future transactions." value={pattern} onValueChange={setPattern} />
               </>
             )}
           </div>
@@ -655,7 +660,6 @@ const KEEP = "__keep";
 function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; refs: Refs; owners: { id: string }[]; onClose: () => void; onSaved: () => void }) {
   const [category, setCategory] = useState("");
   const [ledger, setLedger] = useState(KEEP);
-  const [person, setPerson] = useState(KEEP);
   const [group, setGroup] = useState(KEEP);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(0);
@@ -663,7 +667,6 @@ function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; ref
   async function save() {
     const base: Record<string, unknown> = {};
     if (category.trim()) base.category = category.trim();
-    if (person !== KEEP) base.personId = person === HOUSEHOLD ? null : person;
     if (group !== KEEP) base.spendGroupId = group === NONE ? null : group;
     if (ledger !== KEEP) base.ledger = ledger === NONE ? null : ledger;
     if (!Object.keys(base).length) return onClose();
@@ -687,11 +690,6 @@ function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; ref
         <ModalBody className="gap-3">
           <p className="text-xs text-default-500">Only the fields you set change.</p>
           <FreeCombobox label="Category" placeholder="Leave unchanged" value={category} onValueChange={setCategory} options={refs.categories} />
-          <Select label="Person" selectedKeys={[person]} onChange={(e) => e.target.value && setPerson(e.target.value)}>
-            {[{ id: KEEP, name: "Leave unchanged" }, { id: HOUSEHOLD, name: "No one" }, ...refs.people].map((p) => (
-              <SelectItem key={p.id}>{p.name}</SelectItem>
-            ))}
-          </Select>
           <Select label="Spend group" selectedKeys={[group]} onChange={(e) => e.target.value && setGroup(e.target.value)}>
             {[{ id: KEEP, name: "Leave unchanged" }, { id: NONE, name: "No group" }, ...refs.groups].map((g) => (
               <SelectItem key={g.id}>{g.name}</SelectItem>
@@ -746,8 +744,8 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
       category: category.trim() || null,
       categorySource: category.trim() ? "MANUAL" : null,
       status: "POSTED",
-      personId: person || null,
-      personSource: person ? "MANUAL" : null,
+      personId: type === "INCOME" ? person || null : null,
+      personSource: type === "INCOME" && person ? "MANUAL" : null,
       spendGroupId: group || null,
       notes: notes.trim() || null,
     });
@@ -782,7 +780,7 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
               </div>
               <Input label="Description" value={description} onValueChange={setDescription} />
               <FreeCombobox label="Category" value={category} onValueChange={setCategory} options={refs.categories} />
-              <PersonSelect value={person} onChange={setPerson} people={refs.people} />
+              {type === "INCOME" && <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Contributor" />}
               <GroupSelect value={group} onChange={setGroup} groups={refs.groups} />
               <Input label="Notes" value={notes} onValueChange={setNotes} />
             </>

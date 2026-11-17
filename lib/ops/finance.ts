@@ -433,7 +433,7 @@ const TxOut = z.object({
   amount: z.number().describe("Positive = money in, negative = money out"),
   category: z.string(),
   categorySource: z.string().nullable().describe("RULE, LLM (guessed) or MANUAL"),
-  person: z.string().nullable(),
+  person: z.string().nullable().describe("Money in: who contributed it"),
   personId: z.string().nullable(),
   account: z.string().nullable(),
   accountId: z.string(),
@@ -461,7 +461,7 @@ export const listFinanceTransactions = defineOp({
     category: z.string().optional(),
     categories: z.array(z.string()).optional().describe("Any of these categories (a budget line's categories)."),
     uncategorized: z.boolean().optional(),
-    personId: z.string().optional(),
+    personId: z.string().optional().describe("Contributor: money in from this person."),
     personName: z.string().optional(),
     accountId: z.string().optional(),
     spendGroupId: z.string().optional(),
@@ -534,11 +534,11 @@ export const updateFinanceTransaction = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Change a transaction's category, person, spend group, goal, notes, ledger (whose budget it counts in: household or a person) or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
+    "Change a transaction's category, ledger (whose budget it counts in: household or a person), contributor (money in only), spend group, goal, notes or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
   input: z.object({
     transactionId: z.string(),
     category: z.string().nullable().optional(),
-    personId: z.string().nullable().optional().describe("Who it's attributed to (contributor or spender); null = household."),
+    personId: z.string().nullable().optional().describe("Money in only: who contributed it (a contribution from an account not linked here). Spending has no person: use ledger for whose budget it counts in."),
     personName: z.string().nullable().optional(),
     spendGroupId: z.string().nullable().optional(),
     goalId: z.string().nullable().optional(),
@@ -556,6 +556,8 @@ export const updateFinanceTransaction = defineOp({
     const { data: tx } = await ctx.client.models.homeFinanceTransaction.get({ id: input.transactionId });
     if (!tx) throw new OpError(`No transaction ${input.transactionId}. Use list_finance_transactions to find the id.`);
     const personId = await personRef(ctx, input);
+    if (personId && (tx.amount ?? 0) < 0)
+      throw new OpError("A person is only set on money in (who contributed it). For spending, set ledger: whose budget it counts in (household or a person).");
     const patch: Record<string, unknown> = {};
     if (input.category !== undefined) {
       const cat = input.category?.trim() || null;
