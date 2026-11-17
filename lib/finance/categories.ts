@@ -179,7 +179,8 @@ export function effectiveCategory(tx: InferInput, rules: CategoryRule[] = CATEGO
 // quantity? }]. Its spending then counts per item category instead of the
 // charge's own. Ported from gennaroanesi.com.
 
-export type LineItem = { name?: string | null; amount: number; category: string; quantity?: number | null };
+/** `ledger`: whose budget the item counts in, when not the charge's (lib/finance/ledger.ts). */
+export type LineItem = { name?: string | null; amount: number; category: string; quantity?: number | null; ledger?: string | null };
 
 /**
  * The stored lineItems, validated, or null when absent, empty or
@@ -200,7 +201,8 @@ export function parseLineItems(tx: { lineItems?: unknown }): LineItem[] | null {
     const amount = Number(it?.amount);
     const category = String(it?.category ?? "").trim();
     if (!Number.isFinite(amount) || !category) continue;
-    items.push({ name: it?.name == null ? null : String(it.name), amount: Math.abs(amount), category, quantity: it?.quantity == null ? null : Number(it.quantity) });
+    const ledger = typeof it?.ledger === "string" && it.ledger.trim() ? it.ledger.trim() : null;
+    items.push({ name: it?.name == null ? null : String(it.name), amount: Math.abs(amount), category, quantity: it?.quantity == null ? null : Number(it.quantity), ...(ledger ? { ledger } : {}) });
   }
   return items.length ? items : null;
 }

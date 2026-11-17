@@ -25,6 +25,7 @@ import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, ledgerLabel, ledgerOf, ledgerParts, ledgerPeople } from "../finance/ledger";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -75,6 +76,28 @@ async function personRef(ctx: OpContext, input: { personId?: string | null; pers
   if (!p) throw new OpError(`No person named "${input.personName}"`);
   return p.id;
 }
+
+/**
+ * A ledger given as "household", "all" (when allowed), a person id or a
+ * person's name → its key. undefined when not given; null clears (back to
+ * the account's ledger).
+ */
+async function ledgerRef(ctx: OpContext, v: string | null | undefined, opts: { allowAll?: boolean } = {}): Promise<string | null | undefined> {
+  if (v === undefined) return undefined;
+  if (v === null || !v.trim()) return null;
+  const want = v.trim().toLowerCase();
+  if (want === HOUSEHOLD || want === "joint") return HOUSEHOLD;
+  if (want === ALL_LEDGERS || want === "everything") {
+    if (!opts.allowAll) throw new OpError(`"${v}" isn't a ledger here: use household or a person`);
+    return ALL_LEDGERS;
+  }
+  const all = await people(ctx);
+  const p = all.find((x) => x.id === v.trim()) ?? all.find((x) => x.name.toLowerCase() === want) ?? all.find((x) => x.name.toLowerCase().split(/\s+/)[0] === want);
+  if (!p) throw new OpError(`No ledger "${v}": use household${opts.allowAll ? ", all" : ""} or a person's name`);
+  return p.id;
+}
+
+const LEDGER_PARAM = z.string().describe('Whose budget: "household" (the joint money), a person\'s name or id (their personal money), or "all" (everything side by side). Default household.');
 
 function nameOf(all: Person[], id: string | null | undefined): string | null {
   return id ? all.find((p) => p.id === id)?.name ?? null : null;
@@ -159,7 +182,7 @@ export const getFinanceSummary = defineOp({
     ]);
     const active = accounts.filter((a) => a.active !== false);
     const txs = await listTransactions(ctx.client, { ...window, accountIds: householdAccounts(accounts).map((a) => a.id) });
-    const view = householdBudget(lines, txs, schedules, window, today);
+    const view = ledgerBudget(HOUSEHOLD, lines, txs, schedules, accounts, window, today);
 
     // Next 14 days of scheduled money movement on cash accounts.
     const horizon = addDays(today, 14);
@@ -276,10 +299,16 @@ export const getFinanceBudget = defineOp({
   input: z.object({
     period: PERIOD_PARAM.optional(),
     include: z.array(z.enum(BUDGET_PERIODS)).optional().describe("Line cadences to show; default depends on the period (see description)."),
+    ledger: LEDGER_PARAM.optional(),
   }),
   output: z.object({
     period: z.string().describe("The period as a param (2026-11, 2026-Q4, 2026, last3)"),
     label: z.string(),
+    ledger: z.string().describe("household, all, or the person's id"),
+    ledgerName: z.string(),
+    ledgers: z.array(z.object({ key: z.string(), name: z.string() })).describe("Every budget there is to look at: household, each person's own, all"),
+    toHousehold: z.object({ planned: z.number(), sent: z.number() }).nullable().describe("Personal ledger: what this person planned to put into the household and what it counts as received (transfers + paid directly)"),
+    paidDirectly: z.array(z.object({ personId: z.string(), person: z.string().nullable(), amount: z.number() })).describe("Household ledger: per person, household spending they paid from their own accounts (minus their personal spending from joint money); already in their contribution"),
     fromIso: z.string(),
     toIso: z.string(),
     include: z.array(z.string()),
@@ -300,6 +329,7 @@ export const getFinanceBudget = defineOp({
         seriesId: z.string(),
         id: z.string(),
         name: z.string(),
+        ledger: z.string().describe("household or a person id"),
         categories: z.array(z.string()),
         period: z.string(),
         amount: z.number().describe("Per the line's own period"),
@@ -320,9 +350,14 @@ export const getFinanceBudget = defineOp({
     const period = periodFromParam(input.period) ?? periodContaining("month", today);
     const range = periodRange(period, today);
     const include = input.include?.length ? new Set<string>(input.include) : defaultCadences(period.kind);
+    const ledger = (await ledgerRef(ctx, input.ledger, { allowAll: true })) ?? HOUSEHOLD;
     const [accounts, lines, schedules, folks] = await Promise.all([listAccounts(ctx.client), listBudgetLines(ctx.client), listSchedules(ctx.client), people(ctx)]);
     const txs = await listTransactions(ctx.client, { fromIso: range.fromIso, toIso: range.toIso, accountIds: householdAccounts(accounts).map((a) => a.id) });
-    const view = filterBudgetView(householdBudget(lines, txs, schedules, range, today), include);
+    const full =
+      ledger === ALL_LEDGERS
+        ? allLedgersBudget(ledgerPeople(folks as any[]).map((p) => p.id), lines, txs, schedules, accounts, range, today)
+        : ledgerBudget(ledger, lines, txs, schedules, accounts, range, today);
+    const view = { ...full, ...filterBudgetView(full, include) };
     const plan = (v: (typeof view.incomeViews)[number]) => ({
       seriesId: v.line.seriesId,
       id: v.line.id,
@@ -338,6 +373,11 @@ export const getFinanceBudget = defineOp({
       label: range.label,
       fromIso: range.fromIso,
       toIso: range.toIso,
+      ledger,
+      ledgerName: ledgerLabel(ledger, folks),
+      ledgers: [HOUSEHOLD, ...ledgerPeople(folks as any[]).map((p) => p.id), ALL_LEDGERS].map((key) => ({ key, name: ledgerLabel(key, folks) })),
+      toHousehold: view.toHousehold ? { planned: r2(view.toHousehold.planned), sent: r2(view.toHousehold.sent) } : null,
+      paidDirectly: [...view.paidDirectly].filter(([, n]) => Math.abs(n) >= 0.005).map(([personId, amount]) => ({ personId, person: nameOf(folks, personId), amount: r2(amount) })),
       include: BUDGET_PERIODS.filter((p) => include.has(p)),
       elapsed: Math.round(elapsed * 1000) / 1000,
       planned: r2(view.planned),
@@ -355,6 +395,7 @@ export const getFinanceBudget = defineOp({
         seriesId: v.line.seriesId,
         id: v.line.id,
         name: v.line.name,
+        ledger: v.line.ledger?.trim() || HOUSEHOLD,
         categories: bucketCategories(v.line),
         period: v.line.period ?? "MONTHLY",
         amount: r2(v.line.amount ?? 0),
@@ -379,6 +420,7 @@ const LineItemSchema = z.object({
   amount: z.number().positive().describe("The item's cost (positive); items are scaled to the charge, so tax and shipping needn't be spread by hand"),
   category: z.string().min(1),
   quantity: z.number().nullable().optional(),
+  ledger: z.string().nullable().optional().describe('Whose budget this item counts in when not the charge\'s: "household" or a person\'s name or id (groceries for the house on a personal card)'),
 });
 
 const TxOut = z.object({
@@ -398,6 +440,9 @@ const TxOut = z.object({
   recurringId: z.string().nullable(),
   notes: z.string().nullable(),
   items: z.array(LineItemSchema).nullable().describe("Itemization, when the charge is split across categories"),
+  ledger: z.string().describe("Whose budget it counts in: household or a person id (an itemized charge: its own, items may differ)"),
+  ledgerName: z.string(),
+  ledgerSet: z.boolean().describe("true when set on the transaction; false = the account's default"),
 });
 
 export const listFinanceTransactions = defineOp({
@@ -418,6 +463,7 @@ export const listFinanceTransactions = defineOp({
     accountId: z.string().optional(),
     spendGroupId: z.string().optional(),
     direction: z.enum(["in", "out"]).optional(),
+    ledger: z.string().optional().describe('Only what counts in this budget: "household" or a person\'s name or id (an itemized charge matches when any item does).'),
     limit: z.number().int().min(1).max(500).optional().describe("Default 50."),
   }),
   output: z.object({ count: z.number(), total: z.number(), transactions: z.array(TxOut) }),
@@ -426,9 +472,11 @@ export const listFinanceTransactions = defineOp({
     const fromIso = input.from ?? addDays(today, -30);
     const toIso = input.to ?? today;
     const personId = await personRef(ctx, input);
+    const wantLedger = await ledgerRef(ctx, input.ledger);
     const [accounts, folks, ruleRows] = await Promise.all([listAccounts(ctx.client), people(ctx), listCategoryRules(ctx.client)]);
     const rules = rulesFromDbRows(ruleRows);
     const accName = new Map(accounts.map((a) => [a.id, a.name]));
+    const accLedger = new Map(accounts.map((a) => [a.id, accountLedger(a)]));
     const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id) });
     const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const matched = txs.filter((t) => {
@@ -442,6 +490,7 @@ export const listFinanceTransactions = defineOp({
       }
       if (personId && t.personId !== personId) return false;
       if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
+      if (wantLedger && !ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD).some((p) => p.ledger === wantLedger)) return false;
       if (input.direction === "in" && (t.amount ?? 0) <= 0) return false;
       if (input.direction === "out" && (t.amount ?? 0) >= 0) return false;
       const hay = `${t.description ?? ""} ${t.notes ?? ""}`.toLowerCase();
@@ -467,6 +516,9 @@ export const listFinanceTransactions = defineOp({
         recurringId: t.recurringId ?? null,
         notes: t.notes ?? null,
         items: parseLineItems(t),
+        ledger: ledgerOf(t, accLedger.get(t.accountId) ?? HOUSEHOLD),
+        ledgerName: ledgerLabel(ledgerOf(t, accLedger.get(t.accountId) ?? HOUSEHOLD), folks),
+        ledgerSet: !!t.ledger,
       })),
     };
   },
@@ -479,7 +531,7 @@ export const updateFinanceTransaction = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Change a transaction's category, person, spend group, goal, notes or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
+    "Change a transaction's category, person, spend group, goal, notes, ledger (whose budget it counts in: household or a person) or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
   input: z.object({
     transactionId: z.string(),
     category: z.string().nullable().optional(),
@@ -489,6 +541,11 @@ export const updateFinanceTransaction = defineOp({
     goalId: z.string().nullable().optional(),
     notes: z.string().nullable().optional(),
     lineItems: z.array(LineItemSchema).nullable().optional().describe("The full itemization (replaces any existing); null or [] removes it."),
+    ledger: z
+      .string()
+      .nullable()
+      .optional()
+      .describe('Whose budget the whole charge counts in: "household" or a person\'s name or id; null = the account\'s default (joint accounts → household, a personal account → its owner). For a mixed purchase, itemize and set ledger per item instead.'),
     rememberPattern: z.string().optional().describe("Substring or /regex/flags; creates a rule at the top of the rule list."),
   }),
   output: z.object({ transactionId: z.string(), category: z.string(), personId: z.string().nullable(), ruleCreated: z.boolean() }),
@@ -509,8 +566,13 @@ export const updateFinanceTransaction = defineOp({
     if (input.spendGroupId !== undefined) patch.spendGroupId = input.spendGroupId;
     if (input.goalId !== undefined) patch.goalId = input.goalId;
     if (input.notes !== undefined) patch.notes = input.notes;
+    if (input.ledger !== undefined) patch.ledger = await ledgerRef(ctx, input.ledger);
     if (input.lineItems !== undefined) {
-      const items = (input.lineItems ?? []).map((i) => ({ name: i.name?.trim() || null, amount: r2(i.amount), category: i.category.trim(), ...(i.quantity != null ? { quantity: i.quantity } : {}) }));
+      const items = [];
+      for (const i of input.lineItems ?? []) {
+        const ledger = await ledgerRef(ctx, i.ledger ?? undefined);
+        items.push({ name: i.name?.trim() || null, amount: r2(i.amount), category: i.category.trim(), ...(i.quantity != null ? { quantity: i.quantity } : {}), ...(ledger ? { ledger } : {}) });
+      }
       patch.lineItems = items.length ? JSON.stringify(items) : null;
     }
     if (!Object.keys(patch).length && !input.rememberPattern) throw new OpError("Nothing to change");
@@ -567,6 +629,7 @@ const BudgetOut = z.object({
   period: z.string(),
   effectiveFrom: z.string(),
   effectiveTo: z.string().nullable(),
+  ledger: z.string().describe("household or a person id"),
 });
 
 /** Runs a series plan in order; returns the row the first write produced. */
@@ -607,6 +670,7 @@ export const saveFinanceBudget = defineOp({
     endOn: DATE.optional().describe("Last day the budget applies; ends the series."),
     label: z.string().optional().describe("Why it changed, e.g. 'baby arrives'."),
     notes: z.string().optional(),
+    ledger: z.string().optional().describe('Whose budget the line is in: "household" (default on create) or a person\'s name or id. A personal INCOME line is that person\'s own income (paychecks); household INCOME lines are what each person contributes.'),
   }),
   output: z.object({ action: z.enum(["created", "changed", "corrected", "ended", "removed"]), budget: BudgetOut }),
   async run(ctx, input) {
@@ -625,6 +689,7 @@ export const saveFinanceBudget = defineOp({
       period: l.period ?? "MONTHLY",
       effectiveFrom: l.effectiveFrom,
       effectiveTo: l.effectiveTo ?? null,
+      ledger: l.ledger?.trim() || HOUSEHOLD,
     });
 
     const series = input.seriesId ? lines.filter((l) => l.seriesId === input.seriesId && l.active !== false) : [];
@@ -665,6 +730,9 @@ export const saveFinanceBudget = defineOp({
     const base = version ?? resolveBudgetLines(series, effectiveFrom)[0] ?? latest;
 
     const personId = await personRef(ctx, input);
+    const ledgerIn = await ledgerRef(ctx, input.ledger);
+    const ledger = ledgerIn ?? (base?.ledger?.trim() || HOUSEHOLD);
+    const sameLedger = (l: BudgetLine) => (l.ledger?.trim() || HOUSEHOLD) === ledger;
     const kind = input.kind ?? (base ? budgetKind(base) : "EXPENSE");
     const name = input.name?.trim() || base?.name;
     const amount = input.amount ?? base?.amount;
@@ -672,7 +740,8 @@ export const saveFinanceBudget = defineOp({
     if (!name) throw new OpError("name is required");
     if (amount == null) throw new OpError("amount is required");
     if (kind === "EXPENSE" && !categories.length) throw new OpError("A spending line needs at least one category");
-    const contributor = personId === undefined ? base?.personId ?? null : personId;
+    // A personal income line is the owner's own income.
+    const contributor = personId === undefined ? base?.personId ?? (ledger !== HOUSEHOLD ? ledger : null) : personId;
     if (kind === "INCOME" && !contributor) throw new OpError("An income line needs the person who contributes (personId or personName)");
     let savingsAccount: string | null = base?.accountId ?? null;
     if (input.accountId || input.accountName) {
@@ -693,7 +762,8 @@ export const saveFinanceBudget = defineOp({
         ...lines.map((l) => l.effectiveFrom ?? "").filter((d) => d > effectiveFrom && (effectiveTo == null || d <= effectiveTo)),
       ];
       for (const d of [...new Set(checkDates)]) {
-        const others = resolveBudgetLines(lines, d).filter((l) => l.seriesId !== input.seriesId && budgetKind(l) === "EXPENSE");
+        // Only within the same ledger: Groceries can be in the household's budget and in someone's own.
+        const others = resolveBudgetLines(lines, d).filter((l) => l.seriesId !== input.seriesId && budgetKind(l) === "EXPENSE" && sameLedger(l));
         for (const c of categories) {
           const clash = others.find((l) => bucketCategories(l).some((x) => x.toLowerCase() === c.toLowerCase()));
           if (clash) throw new OpError(`"${c}" is already in "${clash.name}" on ${d}. Remove it there first (save_finance_budget with that seriesId and categories), or pick another category.`);
@@ -714,6 +784,7 @@ export const saveFinanceBudget = defineOp({
       rollover: base?.rollover ?? false,
       label: input.label ?? (sameRange ? base?.label ?? null : null),
       notes: input.notes ?? base?.notes ?? null,
+      ledger: ledger === HOUSEHOLD ? null : ledger,
     };
 
     const writes = planSeriesChange(series, next, effectiveFrom, effectiveTo);

@@ -40,12 +40,18 @@ import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { CadenceFilter, useCadenceFilter } from "@/components/finance/cadence-filter";
 import { householdAccounts } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
+import { ALL_LEDGERS, HOUSEHOLD, allLedgersBudget, ledgerBudget, ledgerLabel, linesForLedger, txsForLedger } from "@/lib/finance/ledger";
+import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export default function BudgetPage() {
   const refs = useFinanceRefs();
   const today = todayIso();
+  // Whose budget: household, a person (their own money), or everything (?ledger=).
+  const ledgerState = useLedger(refs.people);
+  const { ledger, setLedger, personal, label: whose } = ledgerState;
+  const ledgerPeopleList = ledgerState.people;
   const { period, range, setPeriod } = usePeriod(() => periodContaining("month", today));
 
   const [lines, setLines] = useState<BudgetLine[]>([]);
@@ -84,9 +90,17 @@ export default function BudgetPage() {
   }, [load]);
 
   const { include, setInclude } = useCadenceFilter(period.kind);
-  const fullView = useMemo(() => householdBudget(lines, txs, schedules, range, today), [lines, txs, schedules, range, today]);
-  const view = useMemo(() => filterBudgetView(fullView, include), [fullView, include]);
-  const series = useMemo(() => listBudgetSeries(lines, today), [lines, today]);
+  const fullView = useMemo(
+    () =>
+      ledger === ALL_LEDGERS
+        ? allLedgersBudget(ledgerPeopleList.map((p) => p.id), lines, txs, schedules, refs.accounts, range, today)
+        : ledgerBudget(ledger, lines, txs, schedules, refs.accounts, range, today),
+    [ledger, ledgerPeopleList, lines, txs, schedules, refs.accounts, range, today],
+  );
+  const view = useMemo(() => ({ ...fullView, ...filterBudgetView(fullView, include) }), [fullView, include]);
+  const series = useMemo(() => listBudgetSeries(ledger === ALL_LEDGERS ? lines : linesForLedger(lines, ledger), today), [lines, ledger, today]);
+  // A line's transactions are its own ledger's share of each charge.
+  const txsOf = (lineLedger: string | null | undefined) => txsForLedger(txs, refs.accounts, lineLedger?.trim() || HOUSEHOLD);
   const elapsed = view.expenseViews[0]?.elapsed ?? view.incomeViews[0]?.elapsed;
   // New lines and changes start no earlier than this month: past months keep their budget.
   const newFrom = range.fromIso > monthStart(today) ? range.fromIso : monthStart(today);
@@ -120,7 +134,7 @@ export default function BudgetPage() {
       const lastFull = shiftMonth(monthStart(today), -1);
       const from = shiftMonth(lastFull, -2);
       const hist = await listTransactions(financeClient, { fromIso: from, toIso: monthEnd(lastFull), accountIds: activeAccountIds });
-      setSeeds(seedFromHistory(hist, monthsIn({ fromIso: from, toIso: lastFull })));
+      setSeeds(seedFromHistory(txsForLedger(hist, refs.accounts, ledger), monthsIn({ fromIso: from, toIso: lastFull })));
     } finally {
       setSeeding(false);
     }
@@ -128,7 +142,7 @@ export default function BudgetPage() {
 
   function addToLine(category: string) {
     const target = view.expenseViews.find((v) => v.line.seriesId === pickTarget);
-    if (!target) return setDraft(emptyDraft(newFrom, { name: category, categories: [category] }));
+    if (!target) return setDraft(emptyDraft(newFrom, { name: category, categories: [category], ledger: personal ? ledger : HOUSEHOLD }));
     const d = draftFromLine(target.line, newFrom);
     setDraft({ ...d, categories: [...d.categories, category] });
   }
@@ -139,11 +153,14 @@ export default function BudgetPage() {
       subtitle="What we planned to put in and spend, and how it's going"
       onSynced={load}
       actions={
-        <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setDraft(emptyDraft(newFrom))}>
-          New line
-        </Button>
+        ledger === ALL_LEDGERS ? undefined : (
+          <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setDraft(emptyDraft(newFrom, { ledger }))}>
+            New line
+          </Button>
+        )
       }
     >
+      <LedgerTabs state={ledgerState} />
       <div className="mb-4 flex flex-wrap items-center gap-3">
         {/* Switching month / quarter / year goes back to that kind's default lines. */}
         <PeriodPicker value={period} onChange={(p) => setPeriod(p, p.kind !== period.kind ? { dropParams: ["include"] } : {})} />
@@ -173,7 +190,11 @@ export default function BudgetPage() {
 
           {/* Headline */}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat label="We planned to put in" value={view.planned} sub={<>received <Money value={view.received} /></>} />
+            <Stat
+              label={ledger === HOUSEHOLD ? "We planned to put in" : ledger === ALL_LEDGERS ? "Planned income, everyone" : `${whose}'s planned income`}
+              value={view.planned}
+              sub={<>received <Money value={view.received} /></>}
+            />
             <Stat
               label="Budgeted to spend"
               value={view.allocated}
@@ -185,6 +206,7 @@ export default function BudgetPage() {
                     <>{fmtCurrency(view.unallocated)} not allocated</>
                   )}
                   {view.savingsPlanned > 0 && <> after {fmtCurrency(view.savingsPlanned, { cents: false })} to savings</>}
+                  {view.toHousehold && view.toHousehold.planned > 0 && <> and {fmtCurrency(view.toHousehold.planned, { cents: false })} to the household</>}
                 </>
               }
             />
@@ -196,30 +218,75 @@ export default function BudgetPage() {
             />
           </div>
 
-          {/* Contributions */}
+          {/* Contributions (household) / income (a person's own, or everyone's) */}
           <Card>
-            <CardHeader className="font-semibold">Contributions</CardHeader>
+            <CardHeader className="font-semibold">{ledger === HOUSEHOLD ? "Contributions" : "Income"}</CardHeader>
             <CardBody className="gap-3 pt-0">
               {view.incomeViews.length === 0 ? (
                 <p className="text-sm text-default-500">
-                  No contribution lines yet. Add one per person (&quot;Contribution&quot;) so the budget knows what comes in.
-                  <Button size="sm" variant="light" color="primary" className="ml-2" onPress={() => setDraft(emptyDraft(newFrom, { kind: "INCOME" }))}>
-                    Add contribution
-                  </Button>
+                  {ledger === HOUSEHOLD
+                    ? <>No contribution lines yet. Add one per person (&quot;Contribution&quot;) so the budget knows what comes in.</>
+                    : <>No income lines yet. Add what comes in (pay) so the budget knows what there is to spend.</>}
+                  {ledger !== ALL_LEDGERS && (
+                    <Button size="sm" variant="light" color="primary" className="ml-2" onPress={() => setDraft(emptyDraft(newFrom, { kind: "INCOME", ledger }))}>
+                      {ledger === HOUSEHOLD ? "Add contribution" : "Add income"}
+                    </Button>
+                  )}
                 </p>
               ) : (
-                view.incomeViews.map((v) => (
-                  <PlanRow
-                    key={v.line.id}
-                    v={v}
-                    tag={<PersonChip personId={v.line.personId} people={refs.people} />}
-                    onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
-                    onEnd={() => endSeries(v.line.seriesId, v.line.name)}
-                  />
-                ))
+                view.incomeViews.map((v) => {
+                  const direct = ledger === HOUSEHOLD ? view.paidDirectly.get(v.line.personId ?? "") ?? 0 : 0;
+                  return (
+                    <PlanRow
+                      key={v.line.id}
+                      v={v}
+                      tag={
+                        <span className="flex flex-wrap items-center gap-2">
+                          <PersonChip personId={v.line.personId} people={refs.people} />
+                          {Math.abs(direct) >= 0.01 && (
+                            <span className="text-xs text-default-500" title="Household spending paid from their own accounts, minus their personal spending paid with household money">
+                              {direct > 0 ? "incl." : "less"} {fmtCurrency(Math.abs(direct))} {direct > 0 ? "paid directly" : "personal from joint"}
+                            </span>
+                          )}
+                        </span>
+                      }
+                      onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
+                      onEnd={() => endSeries(v.line.seriesId, v.line.name)}
+                    />
+                  );
+                })
               )}
             </CardBody>
           </Card>
+
+          {/* A person's own budget: what they put into the household. */}
+          {view.toHousehold && (
+            <Card>
+              <CardHeader className="font-semibold flex justify-between">
+                <span>To the household</span>
+                <Button size="sm" variant="light" color="primary" onPress={() => setLedger(HOUSEHOLD)}>
+                  Household budget
+                </Button>
+              </CardHeader>
+              <CardBody className="gap-2 pt-0">
+                {view.toHousehold.planned > 0 ? (
+                  <>
+                    <BudgetBar spent={Math.max(0, view.toHousehold.sent)} budgeted={view.toHousehold.planned} income />
+                    <p className="text-sm">
+                      <Money value={view.toHousehold.sent} /> <span className="text-default-400">of</span> <Money value={view.toHousehold.planned} cents={false} /> planned
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-sm">
+                    <Money value={view.toHousehold.sent} /> so far
+                  </p>
+                )}
+                <p className="text-xs text-default-500">
+                  Transfers into the joint account plus household spending {whose} paid from their own accounts. The plan is {whose}&apos;s contribution line in the household budget.
+                </p>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Savings */}
           <Card>
@@ -228,7 +295,7 @@ export default function BudgetPage() {
               {view.savingsViews.length === 0 ? (
                 <p className="text-sm text-default-500">
                   No savings lines. Add one to plan what moves into a savings account each month; it&apos;s measured by what lands there.
-                  <Button size="sm" variant="light" color="primary" className="ml-2" onPress={() => setDraft(emptyDraft(newFrom, { kind: "SAVINGS" }))}>
+                  <Button size="sm" variant="light" color="primary" className="ml-2" isDisabled={ledger === ALL_LEDGERS} onPress={() => setDraft(emptyDraft(newFrom, { kind: "SAVINGS", ledger }))}>
                     Add savings
                   </Button>
                 </p>
@@ -256,7 +323,7 @@ export default function BudgetPage() {
               {view.expenseViews.length === 0 ? (
                 <EmptyState title="No spending lines for this period">
                   Add one, or{" "}
-                  <Button size="sm" variant="light" color="primary" isLoading={seeding} onPress={startFromHistory}>
+                  <Button size="sm" variant="light" color="primary" isLoading={seeding} isDisabled={ledger === ALL_LEDGERS} onPress={startFromHistory}>
                     start from history
                   </Button>
                 </EmptyState>
@@ -278,7 +345,8 @@ export default function BudgetPage() {
                       share={view.allocated > 0 ? v.budgeted / view.allocated : null}
                       open={expanded === v.line.seriesId}
                       onToggle={() => setExpanded(expanded === v.line.seriesId ? null : v.line.seriesId)}
-                      txs={expanded === v.line.seriesId ? budgetTransactions(txs, range, bucketCategories(v.line)) : []}
+                      txs={expanded === v.line.seriesId ? budgetTransactions(txsOf(v.line.ledger), range, bucketCategories(v.line)) : []}
+                      owner={ledger === ALL_LEDGERS ? ledgerLabel(v.line.ledger, refs.people) : undefined}
                       onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
                       onEnd={() => endSeries(v.line.seriesId, v.line.name)}
                     />
@@ -324,7 +392,7 @@ export default function BudgetPage() {
           )}
 
           {/* Seed from history */}
-          <Card>
+          {ledger !== ALL_LEDGERS && <Card>
             <CardHeader className="font-semibold flex justify-between">
               <span>Start from history</span>
               <Button size="sm" variant="flat" startContent={<FaHistory />} isLoading={seeding} onPress={startFromHistory}>
@@ -353,7 +421,7 @@ export default function BudgetPage() {
                             {s.monthly.map((m) => fmtCurrency(m, { cents: false })).join(" · ")}
                           </span>
                           <Money value={s.median} cents={false} />
-                          <Button size="sm" variant="flat" onPress={() => setDraft(emptyDraft(newFrom, { name: s.category, categories: [s.category], amount: String(Math.ceil(s.median / 10) * 10) }))}>
+                          <Button size="sm" variant="flat" onPress={() => setDraft(emptyDraft(newFrom, { name: s.category, categories: [s.category], amount: String(Math.ceil(s.median / 10) * 10), ledger }))}>
                             Budget it
                           </Button>
                         </span>
@@ -363,7 +431,7 @@ export default function BudgetPage() {
                 )}
               </CardBody>
             )}
-          </Card>
+          </Card>}
 
           {/* Inventory */}
           <Card>
@@ -377,8 +445,13 @@ export default function BudgetPage() {
                     <summary className="cursor-pointer flex flex-wrap items-center gap-2 py-1">
                       <span className="font-medium">{s.name}</span>
                       <Chip size="sm" variant="flat">
-                        {s.kind === "INCOME" ? "Contribution" : s.kind === "SAVINGS" ? "Savings" : "Spending"}
+                        {s.kind === "INCOME" ? ((s.latest.ledger?.trim() || HOUSEHOLD) === HOUSEHOLD ? "Contribution" : "Income") : s.kind === "SAVINGS" ? "Savings" : "Spending"}
                       </Chip>
+                      {ledger === ALL_LEDGERS && (
+                        <Chip size="sm" variant="flat" color="secondary">
+                          {ledgerLabel(s.latest.ledger, refs.people)}
+                        </Chip>
+                      )}
                       {s.liveNow && (
                         <Chip size="sm" color="success" variant="flat">
                           in force
@@ -523,8 +596,11 @@ function ExpenseRow({
   onEdit,
   onEnd,
   share,
+  owner,
 }: {
   v: BudgetLineView;
+  /** Whose budget, on the Everything view. */
+  owner?: string;
   /** This line's budget as a fraction of all spending lines (null when there's no total). */
   share: number | null;
   open: boolean;
@@ -550,6 +626,7 @@ function ExpenseRow({
           </Chip>
         )}
       </span>
+      {owner && <span className="block text-xs text-secondary-600">{owner}</span>}
       {(cats.length > 1 || cats[0] !== v.line.name) && <span className="block text-xs text-default-400 truncate">{cats.join(", ")}</span>}
     </button>
   );

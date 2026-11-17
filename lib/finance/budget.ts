@@ -42,6 +42,8 @@ export type BudgetLine = {
   active?: boolean | null;
   label?: string | null;
   notes?: string | null;
+  /** Whose budget: "household" (or null) or a person id (lib/finance/ledger.ts). */
+  ledger?: string | null;
 };
 
 export function budgetKind(line: BudgetLine): BudgetKind {
@@ -162,6 +164,7 @@ export function planBudgetChange(
       rollover: next.rollover ?? false,
       label: next.label ?? null,
       notes: next.notes ?? null,
+      ledger: next.ledger ?? null,
       effectiveFrom,
       effectiveTo: null,
       active: true,
@@ -188,12 +191,13 @@ const valuesOf = (l: BudgetLine): LineValues => ({
   rollover: l.rollover ?? false,
   label: l.label ?? null,
   notes: l.notes ?? null,
+  ledger: l.ledger ?? null,
 });
 
 /** Same budget, ignoring dates and label/notes. */
 function sameValues(a: BudgetLine, b: BudgetLine): boolean {
   const key = (l: BudgetLine) =>
-    JSON.stringify([budgetKind(l), l.name, l.personId ?? null, l.accountId ?? null, bucketCategories(l).sort(), Number(l.amount ?? 0), l.period ?? "MONTHLY"]);
+    JSON.stringify([budgetKind(l), l.ledger ?? null, l.name, l.personId ?? null, l.accountId ?? null, bucketCategories(l).sort(), Number(l.amount ?? 0), l.period ?? "MONTHLY"]);
   return key(a) === key(b);
 }
 
@@ -492,6 +496,8 @@ export type HouseholdBudgetView = {
   planned: number;
   /** What actually came in, all contributors. */
   received: number;
+  /** received, per contributor ("" = unattributed). */
+  receivedByPersonId: Map<string, number>;
   /** Sum of EXPENSE lines. */
   allocated: number;
   /** Sum of SAVINGS lines. */
@@ -559,11 +565,14 @@ export function householdBudget(
   rules: RecurringLike[],
   window: DateRange,
   todayIso: string,
+  /** Contributions that didn't arrive as money in, per person (paid for the household directly; lib/finance/ledger.ts). */
+  inKind?: Map<string, number>,
 ): HouseholdBudgetView {
   const inForce = resolveBudgetLines(lines, resolutionDate(window, todayIso));
   const spentByCat = spendByCategory(txs, window);
   const committed = committedByCategory(rules, window);
   const received = receivedByPerson(txs, window);
+  for (const [person, amount] of inKind ?? []) received.set(person, (received.get(person) ?? 0) + amount);
   const saved = savedByAccount(txs, window);
   // Several lines can share a person (monthly + a quarterly travel fund) or a
   // savings account. Money isn't tagged to a line, so each gets a share of
@@ -602,6 +611,7 @@ export function householdBudget(
     window,
     planned,
     received: [...received.values()].reduce((s, n) => s + n, 0),
+    receivedByPersonId: received,
     allocated,
     savingsPlanned,
     saved: savingsViews.reduce((s, v) => s + v.spent, 0),

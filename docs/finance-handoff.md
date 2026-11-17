@@ -86,6 +86,44 @@ Household differences from gennaroanesi.com:
 | `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings, SimpleFIN connection + last sync; add / edit / link / delete via `AccountFormModal`, writing `homeFinanceAccount` directly through `lib/finance/account-form.ts`, the same code as the web form). Everything else through the ops; sheets in `mobile/components/finance/` |
 | `pages/finance/` | Overview, Net worth, Loans (detail), Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
 
+## Personal budgets: ledgers (2026-11-16)
+
+Each adult (a household member with a login) has a personal budget next to
+the household's; `lib/finance/ledger.ts`. Everyone sees every ledger.
+
+- **Whose money.** An account with no owner or several is the household's;
+  one owner makes it theirs (`accountLedger`). A transaction counts in its
+  account's ledger unless `homeFinanceTransaction.ledger` says otherwise
+  ("household" or a person id); an itemized charge can send each item
+  elsewhere (`lineItems[].ledger`, else the charge's). Set in the
+  transaction window ("Counts in", per item too), bulk edit, or Janet
+  (`update_finance_transaction` `ledger`, items' `ledger`).
+- **The math doesn't change.** Each ledger's budget is `householdBudget`
+  over that ledger's slice of every transaction (`sliceForLedger`: whole,
+  cut down to its items, or nothing) and that ledger's lines
+  (`homeFinanceBudget.ledger`, null = household). Category exclusivity is
+  per ledger: Groceries can be in the household's budget and in someone's
+  own. Scheduled transactions count in their account's ledger.
+- **Paid personally for the household = contribution.** Household spending
+  on a personal account adds to that person's household contribution
+  (received), and personal spending from joint money subtracts
+  (`inKindContributions`; `paidDirectly` in the view, "incl. $X paid
+  directly" on the line). A personal view shows `toHousehold`: their
+  contribution line(s) as the plan, transfers in + paid directly as sent,
+  and the plan comes out of what they have left to allocate. A personal
+  INCOME line is their own income (paychecks; a personal slice with no
+  person is the owner's).
+- **Everything** (`allLedgersBudget`) shows the ledgers side by side: every
+  line measured in its own ledger, personal income only (the household's
+  contribution lines are money between ledgers, as are Contribution rows in
+  the review).
+- Where: Budget and Review have Household / person / Everything tabs
+  (`components/finance/ledger-tabs.tsx`, `?ledger=`), Transactions a
+  "Budget" filter and a chip on rows that count somewhere other than the
+  household; Overview and `get_finance_summary` are the household's;
+  `get_finance_budget` takes `ledger` (name, id, household, all) and lists
+  them; the phone's budget has ledger chips.
+
 ## Net worth: assets and loans (2026-11-16)
 
 Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,

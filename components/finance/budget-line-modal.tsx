@@ -20,6 +20,7 @@ import { callOp } from "@/lib/ops-client";
 import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, type BudgetLine, type BudgetPeriod } from "@/lib/finance/budget";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { fmtDate } from "@/lib/finance/dates";
+import { HOUSEHOLD, ledgerLabel } from "@/lib/finance/ledger";
 
 export type BudgetDraft = {
   seriesId?: string;
@@ -39,6 +40,8 @@ export type BudgetDraft = {
   effectiveTo: string;
   label: string;
   notes: string;
+  /** Whose budget: "household" or a person id (lib/finance/ledger.ts). */
+  ledger: string;
 };
 
 /**
@@ -62,11 +65,12 @@ export function draftFromLine(line: BudgetLine, effectiveFrom: string, mode?: Bu
     effectiveTo: "",
     label: "",
     notes: line.notes ?? "",
+    ledger: line.ledger?.trim() || HOUSEHOLD,
   };
 }
 
 export function emptyDraft(effectiveFrom: string, patch: Partial<BudgetDraft> = {}): BudgetDraft {
-  return { mode: "range", effectiveTo: "", kind: "EXPENSE", name: "", categories: [], personId: "", accountId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ...patch };
+  return { mode: "range", effectiveTo: "", kind: "EXPENSE", name: "", categories: [], personId: "", accountId: "", amount: "", period: "MONTHLY", effectiveFrom, label: "", notes: "", ledger: HOUSEHOLD, ...patch };
 }
 
 function rangeText(from: string | null, to: string | null): string {
@@ -98,6 +102,8 @@ export function BudgetLineModal({
   const set = (patch: Partial<BudgetDraft>) => setD({ ...d, ...patch });
   const catOptions = [...new Set([...categories, ...d.categories])].sort((a, b) => a.localeCompare(b));
   const editing = !!d.seriesId;
+  const personal = d.ledger !== HOUSEHOLD;
+  const whose = ledgerLabel(d.ledger, people);
 
   async function save() {
     if (!d) return;
@@ -114,7 +120,10 @@ export function BudgetLineModal({
         ? { categories: d.categories }
         : d.kind === "SAVINGS"
           ? { accountId: d.accountId || undefined }
-          : { personId: d.personId || undefined }),
+          : personal
+            ? {}
+            : { personId: d.personId || undefined }),
+      ledger: d.ledger,
       amount,
       period: d.period,
       ...(correcting
@@ -132,7 +141,10 @@ export function BudgetLineModal({
   return (
     <Modal isOpen onClose={onClose} size="lg" scrollBehavior="inside">
       <ModalContent>
-        <ModalHeader>{editing ? `Change “${d.name}”` : "New budget line"}</ModalHeader>
+        <ModalHeader className="flex flex-col gap-0.5">
+          <span>{editing ? `Change “${d.name}”` : "New budget line"}</span>
+          <span className="text-xs font-normal text-default-500">{personal ? `${whose}'s own budget` : "Household budget"}</span>
+        </ModalHeader>
         <ModalBody className="gap-3">
           <Select
             label="Kind"
@@ -141,12 +153,12 @@ export function BudgetLineModal({
             onSelectionChange={(k) => set({ kind: (Array.from(k as Set<string>)[0] as BudgetDraft["kind"]) ?? "EXPENSE" })}
           >
             <SelectItem key="EXPENSE">Spending (categories)</SelectItem>
-            <SelectItem key="INCOME">Contribution (a person puts in)</SelectItem>
+            <SelectItem key="INCOME">{personal ? "Income (paychecks and other money in)" : "Contribution (a person puts in)"}</SelectItem>
             <SelectItem key="SAVINGS">Savings (moved into an account)</SelectItem>
           </Select>
           <Input
             label="Name"
-            placeholder={d.kind === "INCOME" ? "Gennaro's contribution" : d.kind === "SAVINGS" ? "Joint savings" : "Groceries & dining"}
+            placeholder={d.kind === "INCOME" ? (personal ? `${whose}'s pay` : "Gennaro's contribution") : d.kind === "SAVINGS" ? "Joint savings" : "Groceries & dining"}
             value={d.name}
             onValueChange={(name) => set({ name })}
           />
@@ -157,7 +169,7 @@ export function BudgetLineModal({
                 selectionMode="multiple"
                 selectedKeys={new Set(d.categories)}
                 onSelectionChange={(k) => set({ categories: Array.from(k as Set<string>) })}
-                description="A category can be in only one spending line at a time."
+                description={`A category can be in only one spending line at a time in ${personal ? `${whose}'s` : "the household"} budget.`}
               >
                 {catOptions.map((c) => (
                   <SelectItem key={c} textValue={c}>
@@ -197,7 +209,7 @@ export function BudgetLineModal({
                   </SelectItem>
                 ))}
             </Select>
-          ) : (
+          ) : personal ? null : (
             <Select label="Contributor" selectedKeys={d.personId ? new Set([d.personId]) : new Set()} onSelectionChange={(k) => set({ personId: (Array.from(k as Set<string>)[0] as string) ?? "" })}>
               {people.map((p) => (
                 <SelectItem key={p.id} textValue={p.name}>

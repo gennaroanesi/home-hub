@@ -28,6 +28,7 @@ import { callOp } from "@/lib/ops-client";
 import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
+import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts, ledgerPeople } from "@/lib/finance/ledger";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -62,6 +63,7 @@ export default function TransactionsPage() {
   const [group, setGroup] = useState("");
   const [direction, setDirection] = useState("");
   const [query, setQuery] = useState("");
+  const [ledgerFilter, setLedgerFilter] = useState("");
   const [filtersReady, setFiltersReady] = useState(false);
 
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -79,6 +81,7 @@ export default function TransactionsPage() {
     setGroup(qs(q.group));
     setDirection(qs(q.dir));
     setQuery(qs(q.q));
+    setLedgerFilter(qs(q.ledger));
     const p = qs(q.period) || qs(q.month);
     if (p === LAST_90 || /^\d{4}-\d{2}$/.test(p)) setPeriod(p);
     // A group filter usually spans more than a month.
@@ -118,13 +121,22 @@ export default function TransactionsPage() {
   }, [today, period]);
 
   const accName = useMemo(() => new Map(refs.accounts.map((a) => [a.id, a.name])), [refs.accounts]);
+  const accLedger = useMemo(() => new Map(refs.accounts.map((a) => [a.id, accountLedger(a)])), [refs.accounts]);
+  const owners = useMemo(() => ledgerPeople(refs.people as any[]), [refs.people]);
   const groupName = useMemo(() => new Map(refs.groups.map((g) => [g.id, g.name])), [refs.groups]);
 
   const rows = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean);
     return txs
-      .map((t) => ({ ...t, _cat: effectiveCategory(t, refs.rules), _cats: categoryParts(t, refs.rules).map((p) => p.category) }))
+      .map((t) => ({
+        ...t,
+        _cat: effectiveCategory(t, refs.rules),
+        _cats: categoryParts(t, refs.rules).map((p) => p.category),
+        _ledgers: ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD_LEDGER).map((p) => p.ledger),
+      }))
       .filter((t) => {
+        // Counts (at least partly) in that budget.
+        if (ledgerFilter && !t._ledgers.includes(ledgerFilter)) return false;
         if (account && t.accountId !== account) return false;
         // An itemized charge matches any of its items' categories.
         if (category && !t._cats.includes(category)) return false;
@@ -135,7 +147,7 @@ export default function TransactionsPage() {
         const hay = `${t.description ?? ""} ${t.notes ?? ""} ${t._cats.join(" ")} ${(parseLineItems(t) ?? []).map((i) => i.name ?? "").join(" ")}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       });
-  }, [txs, refs.rules, account, category, person, group, direction, query]);
+  }, [txs, refs.rules, accLedger, account, category, person, group, direction, query, ledgerFilter]);
 
   const totals = useMemo(() => {
     let inflow = 0;
@@ -155,7 +167,7 @@ export default function TransactionsPage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [refs.categories, refs.rules, txs]);
 
-  const filtersActive = !!(account || category || person || group || direction || query);
+  const filtersActive = !!(account || category || person || group || direction || query || ledgerFilter);
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
   function toggle(id: string) {
@@ -180,7 +192,7 @@ export default function TransactionsPage() {
         </Button>
       }
     >
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-7 gap-2 mb-3">
+      <div className={`grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 ${owners.length ? "lg:grid-cols-8" : "lg:grid-cols-7"}`}>
         <Select size="sm" label="Period" selectedKeys={[period]} onChange={(e) => e.target.value && setPeriod(e.target.value)}>
           {periodOptions.map((o) => (
             <SelectItem key={o.key}>{o.label}</SelectItem>
@@ -206,6 +218,13 @@ export default function TransactionsPage() {
             <SelectItem key={g.id}>{g.name}</SelectItem>
           ))}
         </Select>
+        {owners.length > 0 && (
+          <Select size="sm" label="Budget" selectedKeys={ledgerFilter ? [ledgerFilter] : []} onChange={(e) => setLedgerFilter(e.target.value)}>
+            {[HOUSEHOLD_LEDGER, ...owners.map((p) => p.id)].map((k) => (
+              <SelectItem key={k}>{ledgerLabel(k, refs.people)}</SelectItem>
+            ))}
+          </Select>
+        )}
         <Select size="sm" label="Direction" selectedKeys={direction ? [direction] : []} onChange={(e) => setDirection(e.target.value)}>
           <SelectItem key="in">Money in</SelectItem>
           <SelectItem key="out">Money out</SelectItem>
@@ -239,6 +258,7 @@ export default function TransactionsPage() {
                 setGroup("");
                 setDirection("");
                 setQuery("");
+                setLedgerFilter("");
               }}
             >
               Clear filters
@@ -316,6 +336,11 @@ export default function TransactionsPage() {
                       </Chip>
                     )}
                     {t.personId && <PersonChip personId={t.personId} people={refs.people} />}
+                    {(t._ledgers.length > 1 || t._ledgers[0] !== HOUSEHOLD_LEDGER) && (
+                      <Chip size="sm" variant="dot" color="secondary" title="Whose budget it counts in">
+                        {t._ledgers.length > 1 ? `Split · ${[...new Set(t._ledgers as string[])].map((k) => ledgerLabel(k, refs.people)).join(" + ")}` : `${ledgerLabel(t._ledgers[0], refs.people)}'s`}
+                      </Chip>
+                    )}
                     {t.spendGroupId && (
                       <Chip size="sm" variant="flat" color="secondary">
                         {groupName.get(t.spendGroupId) ?? "group"}
@@ -336,6 +361,8 @@ export default function TransactionsPage() {
           tx={editing}
           refs={refs}
           accountName={accName.get(editing.accountId) ?? ""}
+          accountLedgerKey={accLedger.get(editing.accountId) ?? HOUSEHOLD_LEDGER}
+          owners={owners}
           onClose={() => setEditing(null)}
           onSaved={() => {
             setEditing(null);
@@ -348,6 +375,7 @@ export default function TransactionsPage() {
         <BulkModal
           ids={[...selected]}
           refs={refs}
+          owners={owners}
           onClose={() => setBulkOpen(false)}
           onSaved={() => {
             setBulkOpen(false);
@@ -395,7 +423,36 @@ function GroupSelect({ value, onChange, groups }: { value: string; onChange: (v:
   );
 }
 
-function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs: Refs; accountName: string; onClose: () => void; onSaved: () => void }) {
+/** "Counts in": whose budget. "" = the account's default. */
+function LedgerSelect({ value, onChange, owners, people, defaultLabel, label = "Counts in", size }: { value: string; onChange: (v: string) => void; owners: { id: string }[]; people: Refs["people"]; defaultLabel: string; label?: string; size?: "sm" | "md" }) {
+  const DEFAULT = "__default";
+  return (
+    <Select size={size} label={label} selectedKeys={[value || DEFAULT]} onChange={(e) => e.target.value && onChange(e.target.value === DEFAULT ? "" : e.target.value)}>
+      {[{ key: DEFAULT, name: defaultLabel }, { key: HOUSEHOLD_LEDGER, name: "Household budget" }, ...owners.map((p) => ({ key: p.id, name: `${ledgerLabel(p.id, people)}'s own budget` }))].map((o) => (
+        <SelectItem key={o.key}>{o.name}</SelectItem>
+      ))}
+    </Select>
+  );
+}
+
+function EditModal({
+  tx,
+  refs,
+  accountName,
+  accountLedgerKey,
+  owners,
+  onClose,
+  onSaved,
+}: {
+  tx: any;
+  refs: Refs;
+  accountName: string;
+  accountLedgerKey: string;
+  owners: { id: string }[];
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [ledger, setLedger] = useState<string>(tx.ledger ?? "");
   const [category, setCategory] = useState<string>(tx.category ?? "");
   const [person, setPerson] = useState<string>(tx.personId ?? "");
   const [group, setGroup] = useState<string>(tx.spendGroupId ?? "");
@@ -404,7 +461,10 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
   const [pattern, setPattern] = useState(suggestPattern(tx.description));
   const [saving, setSaving] = useState(false);
   const stored = useMemo(() => parseLineItems(tx), [tx]);
-  const [items, setItems] = useState<ItemDraft[]>(() => (stored ?? []).map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category })));
+  const [items, setItems] = useState<ItemDraft[]>(() => (stored ?? []).map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category, ledger: i.ledger ?? "" })));
+  // Where the charge counts when nothing is set on it: its account's budget.
+  const accountDefault = `${ledgerLabel(accountLedgerKey, refs.people)}${accountLedgerKey === HOUSEHOLD_LEDGER ? "" : "'s own"} budget (the account's)`;
+  const chargeLedger = ledger || accountLedgerKey;
   const manual = !tx.sfTransactionId;
 
   async function save() {
@@ -415,12 +475,13 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
     if (person !== (tx.personId ?? "")) input.personId = person || null;
     if (group !== (tx.spendGroupId ?? "")) input.spendGroupId = group || null;
     if (notes !== (tx.notes ?? "")) input.notes = notes || null;
+    if (ledger !== (tx.ledger ?? "")) input.ledger = ledger || null;
     const rows = items.filter((i) => i.name.trim() || i.amount.trim() || i.category.trim());
     if (rows.some((i) => !(Number(i.amount) > 0) || !i.category.trim())) {
       return addToast({ title: "Each item needs an amount and a category", color: "warning" });
     }
-    const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim() }));
-    const before = (stored ?? []).map((i) => ({ name: i.name ?? null, amount: i.amount, category: i.category }));
+    const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim(), ...(i.ledger ? { ledger: i.ledger } : {}) }));
+    const before = (stored ?? []).map((i) => ({ name: i.name ?? null, amount: i.amount, category: i.category, ...(i.ledger ? { ledger: i.ledger } : {}) }));
     if (JSON.stringify(next) !== JSON.stringify(before)) input.lineItems = next.length ? next : null;
     if (remember && pattern.trim()) input.rememberPattern = pattern.trim();
     if (Object.keys(input).length === 1) return onClose();
@@ -458,6 +519,15 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
             <p className="text-xs text-default-500 -mt-2">Guessed by the classifier. Saving confirms it, so the sync won&apos;t change it.</p>
           )}
           <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Person (contributor or spender)" />
+          {owners.length > 0 && (
+            <>
+              <LedgerSelect value={ledger} onChange={setLedger} owners={owners} people={refs.people} defaultLabel={accountDefault} />
+              {chargeLedger === HOUSEHOLD_LEDGER && accountLedgerKey !== HOUSEHOLD_LEDGER && (tx.amount ?? 0) < 0 && (
+                <p className="text-xs text-default-500 -mt-2">Paid from {ledgerLabel(accountLedgerKey, refs.people)}&apos;s account for the household: counts as their contribution.</p>
+              )}
+              {items.length > 0 && <p className="text-xs text-default-500 -mt-2">Items can count in a different budget each (below).</p>}
+            </>
+          )}
           <GroupSelect value={group} onChange={setGroup} groups={refs.groups} />
           <Input label="Notes" value={notes} onValueChange={setNotes} />
           {(tx.amount ?? 0) < 0 && (
@@ -466,7 +536,10 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
               onChange={setItems}
               charge={Math.abs(tx.amount ?? 0)}
               categories={refs.categories}
-              start={() => setItems([{ name: "", amount: String(Math.abs(tx.amount ?? 0)), category: category.trim() }, { name: "", amount: "", category: "" }])}
+              owners={owners}
+              people={refs.people}
+              chargeLedgerLabel={`${ledgerLabel(chargeLedger, refs.people)}${chargeLedger === HOUSEHOLD_LEDGER ? "" : "'s own"} budget (the charge's)`}
+              start={() => setItems([{ name: "", amount: String(Math.abs(tx.amount ?? 0)), category: category.trim(), ledger: "" }, { name: "", amount: "", category: "", ledger: "" }])}
             />
           )}
           <div className="rounded-lg border border-default-200 p-3 flex flex-col gap-2">
@@ -504,20 +577,38 @@ function EditModal({ tx, refs, accountName, onClose, onSaved }: { tx: any; refs:
 
 // ── Itemization ──────────────────────────────────────────────────────────────
 
-type ItemDraft = { name: string; amount: string; category: string };
+type ItemDraft = { name: string; amount: string; category: string; ledger: string };
 
 /**
  * Split one charge across categories (an Amazon order). Items needn't add
  * up exactly: they're scaled to the charge, so tax and shipping spread
  * proportionally (lib/finance/categories.ts categoryParts).
  */
-function ItemsEditor({ items, onChange, charge, categories, start }: { items: ItemDraft[]; onChange: (items: ItemDraft[]) => void; charge: number; categories: string[]; start: () => void }) {
+function ItemsEditor({
+  items,
+  onChange,
+  charge,
+  categories,
+  owners,
+  people,
+  chargeLedgerLabel,
+  start,
+}: {
+  items: ItemDraft[];
+  onChange: (items: ItemDraft[]) => void;
+  charge: number;
+  categories: string[];
+  owners: { id: string }[];
+  people: Refs["people"];
+  chargeLedgerLabel: string;
+  start: () => void;
+}) {
   const update = (i: number, patch: Partial<ItemDraft>) => onChange(items.map((it, j) => (j === i ? { ...it, ...patch } : it)));
   const sum = items.reduce((s, i) => s + (Number(i.amount) || 0), 0);
   if (!items.length) {
     return (
       <Button variant="flat" size="sm" startContent={<FaPlus />} onPress={start} className="self-start">
-        Itemize (split across categories)
+        Itemize (split across categories{owners.length ? " or budgets" : ""})
       </Button>
     );
   }
@@ -537,10 +628,15 @@ function ItemsEditor({ items, onChange, charge, categories, start }: { items: It
           <Button size="sm" isIconOnly variant="light" aria-label="Remove item" onPress={() => onChange(items.filter((_, j) => j !== i))}>
             <FaTrash />
           </Button>
+          {owners.length > 0 && (
+            <div className="col-span-2 sm:col-span-4">
+              <LedgerSelect size="sm" value={it.ledger} onChange={(v) => update(i, { ledger: v })} owners={owners} people={people} defaultLabel={chargeLedgerLabel} />
+            </div>
+          )}
         </div>
       ))}
       <div className="flex items-center justify-between">
-        <Button size="sm" variant="flat" startContent={<FaPlus />} onPress={() => onChange([...items, { name: "", amount: "", category: "" }])}>
+        <Button size="sm" variant="flat" startContent={<FaPlus />} onPress={() => onChange([...items, { name: "", amount: "", category: "", ledger: "" }])}>
           Add item
         </Button>
         <span className={`text-xs ${Math.abs(sum - charge) < 0.01 ? "text-default-500" : "text-warning-600"}`}>
@@ -556,8 +652,9 @@ function ItemsEditor({ items, onChange, charge, categories, start }: { items: It
 
 const KEEP = "__keep";
 
-function BulkModal({ ids, refs, onClose, onSaved }: { ids: string[]; refs: Refs; onClose: () => void; onSaved: () => void }) {
+function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; refs: Refs; owners: { id: string }[]; onClose: () => void; onSaved: () => void }) {
   const [category, setCategory] = useState("");
+  const [ledger, setLedger] = useState(KEEP);
   const [person, setPerson] = useState(KEEP);
   const [group, setGroup] = useState(KEEP);
   const [saving, setSaving] = useState(false);
@@ -568,6 +665,7 @@ function BulkModal({ ids, refs, onClose, onSaved }: { ids: string[]; refs: Refs;
     if (category.trim()) base.category = category.trim();
     if (person !== KEEP) base.personId = person === HOUSEHOLD ? null : person;
     if (group !== KEEP) base.spendGroupId = group === NONE ? null : group;
+    if (ledger !== KEEP) base.ledger = ledger === NONE ? null : ledger;
     if (!Object.keys(base).length) return onClose();
     setSaving(true);
     const failures: string[] = [];
@@ -599,6 +697,13 @@ function BulkModal({ ids, refs, onClose, onSaved }: { ids: string[]; refs: Refs;
               <SelectItem key={g.id}>{g.name}</SelectItem>
             ))}
           </Select>
+          {owners.length > 0 && (
+            <Select label="Counts in" selectedKeys={[ledger]} onChange={(e) => e.target.value && setLedger(e.target.value)}>
+              {[{ id: KEEP, name: "Leave unchanged" }, { id: NONE, name: "Each account's own budget" }, { id: HOUSEHOLD_LEDGER, name: "Household budget" }, ...owners.map((p) => ({ id: p.id, name: `${ledgerLabel(p.id, refs.people)}'s own budget` }))].map((o) => (
+                <SelectItem key={o.id}>{o.name}</SelectItem>
+              ))}
+            </Select>
+          )}
           {saving && <p className="text-xs text-default-500">{done} / {ids.length}…</p>}
         </ModalBody>
         <ModalFooter>

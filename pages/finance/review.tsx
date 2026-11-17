@@ -23,6 +23,9 @@ import { periodContaining, periodNoun, shiftPeriod } from "@/lib/finance/periods
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
+import { ALL_LEDGERS, HOUSEHOLD, inKindContributions, linesForLedger, txsForLedger } from "@/lib/finance/ledger";
+import { CONTRIBUTION_CATEGORY } from "@/lib/finance/categories";
+import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -47,8 +50,21 @@ export default function ReviewPage() {
   });
   const noun = periodNoun(period);
 
-  const [txs, setTxs] = useState<any[]>([]);
-  const [lines, setLines] = useState<BudgetLine[]>([]);
+  const [rawTxs, setTxs] = useState<any[]>([]);
+  const [rawLines, setLines] = useState<BudgetLine[]>([]);
+  // Whose money: the household's share of each charge, a person's, or everything
+  // (lib/finance/ledger.ts). Everything leaves out contributions (money moving
+  // between ledgers) and budget lines (each ledger has its own).
+  const ledgerState = useLedger(refs.people);
+  const { ledger } = ledgerState;
+  const txs = useMemo(
+    () =>
+      ledger === ALL_LEDGERS
+        ? rawTxs.filter((t) => !((t.amount ?? 0) > 0 && effectiveCategory(t) === CONTRIBUTION_CATEGORY))
+        : txsForLedger(rawTxs, refs.accounts, ledger),
+    [rawTxs, refs.accounts, ledger],
+  );
+  const lines = useMemo(() => (ledger === ALL_LEDGERS ? [] : linesForLedger(rawLines, ledger)), [rawLines, ledger]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -86,7 +102,12 @@ export default function ReviewPage() {
   const periodTxs = useMemo(() => txs.filter((t) => t.date >= range.fromIso && t.date <= range.toIso), [txs, range]);
 
   // In vs out
-  const received = useMemo(() => receivedByPerson(txs, range), [txs, range]);
+  const received = useMemo(() => {
+    const m = receivedByPerson(txs, range);
+    // Household spending someone paid from their own account is their contribution too.
+    if (ledger === HOUSEHOLD) for (const [p, n] of inKindContributions(rawTxs, refs.accounts, range)) m.set(p, (m.get(p) ?? 0) + n);
+    return m;
+  }, [txs, rawTxs, refs.accounts, range, ledger]);
   const totalIn = [...received.values()].reduce((s, n) => s + n, 0);
   const totalOut = useMemo(() => totalOutflow(txs, range), [txs, range]);
   const groupedOut = useMemo(
@@ -188,8 +209,9 @@ export default function ReviewPage() {
 
   return (
     <FinanceShell title="Review" subtitle={`How ${range.label} went`} onSynced={load}>
-      <div className="mb-4">
+      <div className="mb-4 flex flex-wrap items-center gap-3">
         <PeriodPicker value={period} onChange={setPeriod} allowFuture={false} />
+        <LedgerTabs state={ledgerState} className="" />
       </div>
 
       {loading || refs.loading ? (
@@ -204,7 +226,7 @@ export default function ReviewPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Card>
               <CardBody className="gap-2">
-                <span className="text-xs text-default-500">We put in</span>
+                <span className="text-xs text-default-500">{ledger === HOUSEHOLD ? "We put in" : ledger === ALL_LEDGERS ? "Came in, everyone" : `${ledgerState.label}'s income`}</span>
                 <Money value={totalIn} className="text-xl font-semibold" />
                 <div className="flex flex-col gap-1">
                   {[...received.entries()]

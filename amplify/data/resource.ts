@@ -1018,6 +1018,9 @@ const schema = a
         // totals split the charge across the items' categories, scaled to
         // the charge (lib/finance/categories.ts categoryParts).
         lineItems: a.string(),
+        // Whose budget: "household" or a person id; null = the account's
+        // (joint → household, one owner → that person). lib/finance/ledger.ts.
+        ledger: a.string(),
         sfTransactionId: a.string(), // SimpleFIN id: stable across pending → posted
         notes: a.string(),
       })
@@ -1081,6 +1084,7 @@ const schema = a
         effectiveTo: a.date(), // null = open-ended
         active: a.boolean().default(true),
         label: a.string(), // names the change: "baby arrives"
+        ledger: a.string(), // whose budget: "household" (or null) or a person id (lib/finance/ledger.ts)
         notes: a.string(),
       })
       .secondaryIndexes((index) => [index("seriesId")])

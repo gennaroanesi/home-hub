@@ -514,3 +514,78 @@ describe("list_finance_goals", () => {
     expect(all.result.goals.map((g: any) => g.id)).toEqual(["ef", "trip", "old"]);
   });
 });
+
+describe("ledgers (household vs personal budgets)", () => {
+  const folks = [
+    { id: "gen", name: "Gennaro Anesi", groups: ["home-users"], cognitoUsername: "g" },
+    { id: "cris", name: "Cristine", groups: ["home-users"], cognitoUsername: "c" },
+    { id: "guest", name: "Guest", groups: [], cognitoUsername: "x" },
+  ];
+  const cCard = { id: "ccard", name: "Cristine card", type: "CREDIT", ownerPersonIds: ["cris"], active: true };
+  const seed = () => ({
+    homePerson: folks,
+    homeFinanceAccount: [joint, cCard],
+    homeFinanceBudget: [
+      { id: "b1", seriesId: "c", name: "Cristine → household", kind: "INCOME", personId: "cris", amount: 2000, period: "MONTHLY", effectiveFrom: "2026-01-01" },
+      { id: "b2", seriesId: "food", name: "Food", kind: "EXPENSE", categories: ["Groceries"], amount: 900, period: "MONTHLY", effectiveFrom: "2026-01-01" },
+    ],
+    homeFinanceTransaction: [
+      { id: "t1", accountId: "joint", amount: 1500, category: "Contribution", personId: "cris", date: thisMonth, status: "POSTED" },
+      { id: "t2", accountId: "ccard", amount: -100, description: "TARGET", category: "Groceries", date: thisMonth, status: "POSTED" },
+      { id: "t3", accountId: "ccard", amount: -40, description: "SEPHORA", category: "Shopping", date: thisMonth, status: "POSTED" },
+    ],
+  });
+
+  it("moves a personal-card charge into the household budget, where it counts as her contribution", async () => {
+    const { ctx, tables } = setup(seed());
+    const before: any = await runOp(ctx, "get_finance_budget", {});
+    expect(before.result.lines[0]).toMatchObject({ name: "Food", spent: 0 });
+    expect(before.result.ledgers.map((l: any) => l.name)).toEqual(["Household", "Gennaro Anesi", "Cristine", "Everything"]);
+
+    const upd: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t2", ledger: "household" });
+    expect(upd.error).toBeUndefined();
+    expect(tables.homeFinanceTransaction.find((t) => t.id === "t2").ledger).toBe("household");
+
+    const after: any = await runOp(ctx, "get_finance_budget", {});
+    expect(after.result.lines[0]).toMatchObject({ name: "Food", spent: 100 });
+    expect(after.result.contributions[0]).toMatchObject({ person: "Cristine", spent: 1600 });
+    expect(after.result.paidDirectly).toEqual([{ personId: "cris", person: "Cristine", amount: 100 }]);
+
+    const hers: any = await runOp(ctx, "get_finance_budget", { ledger: "cristine" });
+    expect(hers.result).toMatchObject({ ledger: "cris", ledgerName: "Cristine", spentTotal: 40, toHousehold: { planned: 2000, sent: 1600 } });
+
+    const listed: any = await runOp(ctx, "list_finance_transactions", { ledger: "Cristine" });
+    expect(listed.result.transactions.map((t: any) => [t.id, t.ledgerName, t.ledgerSet])).toEqual([["t3", "Cristine", false]]);
+  });
+
+  it("itemizes one charge across budgets", async () => {
+    const { ctx, tables } = setup(seed());
+    const out: any = await runOp(ctx, "update_finance_transaction", {
+      transactionId: "t2",
+      lineItems: [
+        { name: "groceries", amount: 70, category: "Groceries", ledger: "household" },
+        { name: "lipstick", amount: 30, category: "Shopping" },
+      ],
+    });
+    expect(out.error).toBeUndefined();
+    expect(JSON.parse(tables.homeFinanceTransaction.find((t) => t.id === "t2").lineItems)).toEqual([
+      { name: "groceries", amount: 70, category: "Groceries", ledger: "household" },
+      { name: "lipstick", amount: 30, category: "Shopping" },
+    ]);
+    const hh: any = await runOp(ctx, "get_finance_budget", {});
+    expect(hh.result.lines[0]).toMatchObject({ name: "Food", spent: 70 });
+    const hers: any = await runOp(ctx, "get_finance_budget", { ledger: "Cristine" });
+    expect(hers.result.spentTotal).toBe(70); // $30 lipstick + $40 Sephora
+  });
+
+  it("keeps a personal line's categories apart from the household's, and a personal income line is the owner's", async () => {
+    const { ctx } = setup(seed());
+    const groceries: any = await runOp(ctx, "save_finance_budget", { name: "My groceries", categories: ["Groceries"], amount: 100, ledger: "Cristine" });
+    expect(groceries.error).toBeUndefined();
+    expect(groceries.result.budget.ledger).toBe("cris");
+    const pay: any = await runOp(ctx, "save_finance_budget", { name: "Pay", kind: "INCOME", amount: 5000, ledger: "cristine" });
+    expect(pay.result.budget).toMatchObject({ person: "Cristine", ledger: "cris" });
+    const guest: any = await runOp(ctx, "get_finance_budget", { ledger: "nobody" });
+    expect(guest.error).toMatch(/No ledger/);
+  });
+});

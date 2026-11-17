@@ -17,7 +17,8 @@ import { financeClient } from "@/components/finance/client";
 import { BudgetBar, EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { householdAccounts } from "@/lib/finance/accounts";
-import { householdBudget, type HouseholdBudgetView } from "@/lib/finance/budget";
+import { type HouseholdBudgetView } from "@/lib/finance/budget";
+import { HOUSEHOLD, ledgerBudget } from "@/lib/finance/ledger";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, todayIso } from "@/lib/finance/dates";
 import { listAssets, listBudgetLines, listGoals, listSchedules, listTransactions } from "@/lib/finance/data";
@@ -64,7 +65,8 @@ export default function FinanceOverviewPage() {
         listAssets(financeClient),
       ]);
       setAssets(assetRows);
-      setBudget(householdBudget(lines, txs, sched, month, today));
+      // The household's budget; personal ledgers have their own tabs on the budget page.
+      setBudget(ledgerBudget(HOUSEHOLD, lines, txs, sched, refs.accounts, month, today));
       setSchedules(sched);
       setGoals(goalProgress(goalRows, refs.accounts, today).filter((g) => g.goal.active !== false));
       setUncategorized(txs.filter((t) => effectiveCategory(t, refs.rules) === UNCATEGORIZED).length);

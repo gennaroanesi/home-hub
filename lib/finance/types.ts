@@ -28,7 +28,8 @@ export type TxLike = {
   spendGroupId?: string | null;
   goalId?: string | null;
   recurringId?: string | null;
-  lineItems?: string | null; // JSON [{ name, amount, category, quantity? }] (categories.ts)
+  lineItems?: string | null; // JSON [{ name, amount, category, quantity?, ledger? }] (categories.ts)
+  ledger?: string | null; // whose budget, when not the account's (ledger.ts)
 };
 
 export type RecurringLike = {

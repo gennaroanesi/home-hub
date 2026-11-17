@@ -1,4 +1,5 @@
-// Budget — the household budget for a month, quarter or year
+// Budget — the household budget (or one person's own, or everything: the
+// ledger chips) for a month, quarter or year
 // (get_finance_budget): contributions per person, savings, each spending
 // line's spent / remaining / pace, what isn't budgeted, and problems in the
 // budget's history. The cadence chips pick which lines show (monthly,
@@ -38,14 +39,16 @@ export default function FinanceBudget() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<BudgetLineRef | null>(null);
+  // Whose budget: household, a person's own, or all (lib/finance/ledger.ts).
+  const [ledger, setLedger] = useState("household");
 
   const load = useCallback(async () => {
-    const r = await callOp("get_finance_budget", { period: periodToParam(period), ...(include ? { include } : {}) });
+    const r = await callOp("get_finance_budget", { period: periodToParam(period), ledger, ...(include ? { include } : {}) });
     setLoading(false);
     if ("error" in r) return setError(r.error);
     setError(null);
     setB(r.result);
-  }, [period, include]);
+  }, [period, include, ledger]);
 
   useEffect(() => {
     setLoading(true);
@@ -86,6 +89,13 @@ export default function FinanceBudget() {
     <SafeAreaView style={fs.screen} edges={["top"]}>
       <FinanceHeader title="Budget" />
       <View style={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+        {(b?.ledgers.length ?? 0) > 2 && (
+          <View style={fs.chipRow}>
+            {b!.ledgers.map((l) => (
+              <Chip key={l.key} label={l.key === "all" ? "Everything" : l.name} on={ledger === l.key} onPress={() => setLedger(l.key)} />
+            ))}
+          </View>
+        )}
         <View style={fs.chipRow}>
           {KINDS.map((k) => (
             <Chip
@@ -137,7 +147,7 @@ export default function FinanceBudget() {
           )}
 
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-            <Stat label="Planned in" value={b.planned} sub={`received ${fmtCurrency(b.received)}`} />
+            <Stat label={b.ledger === "household" ? "Planned in" : "Planned income"} value={b.planned} sub={`received ${fmtCurrency(b.received)}`} />
             <Stat
               label="Budgeted to spend"
               value={b.allocated}
@@ -148,15 +158,33 @@ export default function FinanceBudget() {
             <Stat label="Spent in total" value={b.spentTotal} sub={b.overspend > 0 ? `${fmtCurrency(b.overspend)} over on some lines` : "no line over"} danger={b.overspend > 0} />
           </View>
 
-          <Card title="Contributions">
+          <Card title={b.ledger === "household" ? "Contributions" : "Income"}>
             {b.contributions.length === 0 ? (
-              <Text style={fs.muted}>No contribution lines for this period.</Text>
+              <Text style={fs.muted}>{b.ledger === "household" ? "No contribution lines for this period." : "No income lines for this period."}</Text>
             ) : (
-              b.contributions.map((c) => (
-                <PlanRow key={c.id} name={c.name} tag={c.person} period={c.period} spent={c.spent} budgeted={c.budgeted} onEdit={() => setEditing(c)} />
-              ))
+              b.contributions.map((c) => {
+                const direct = b.paidDirectly.find((p) => p.personId === c.personId)?.amount ?? 0;
+                const tag = [c.person, Math.abs(direct) >= 0.01 ? `${direct > 0 ? "incl." : "less"} ${fmtCurrency(Math.abs(direct))} ${direct > 0 ? "paid directly" : "personal from joint"}` : null].filter(Boolean).join(" · ");
+                return <PlanRow key={c.id} name={c.name} tag={tag || null} period={c.period} spent={c.spent} budgeted={c.budgeted} onEdit={() => setEditing(c)} />;
+              })
             )}
           </Card>
+
+          {b.toHousehold && (
+            <Card title="To the household">
+              {b.toHousehold.planned > 0 ? (
+                <>
+                  <BudgetBar spent={Math.max(0, b.toHousehold.sent)} budgeted={b.toHousehold.planned} income />
+                  <Text style={fs.text}>
+                    {fmtCurrency(b.toHousehold.sent)} of {fmtCurrency(b.toHousehold.planned, { cents: false })} planned
+                  </Text>
+                </>
+              ) : (
+                <Text style={fs.text}>{fmtCurrency(b.toHousehold.sent)} so far</Text>
+              )}
+              <Text style={fs.muted}>Transfers into the joint account plus household spending paid from {b.ledgerName}&apos;s own accounts.</Text>
+            </Card>
+          )}
 
           {(b.savings.length > 0 || b.savingsPlanned > 0) && (
             <Card title="Savings">
@@ -183,6 +211,7 @@ export default function FinanceBudget() {
                           {l.period !== "MONTHLY" ? <Text style={fs.muted}> · {CADENCE_LABELS[l.period as BudgetPeriod]?.toLowerCase() ?? l.period}</Text> : null}
                           {l.status === "over" ? <Text style={[fs.muted, { color: DANGER }]}> · ahead of pace</Text> : null}
                         </Text>
+                        {b.ledger === "all" && <Text style={[fs.muted, { color: ACCENT }]}>{b.ledgers.find((x) => x.key === l.ledger)?.name ?? "Household"}</Text>}
                         {showCats && (
                           <Text style={fs.muted} numberOfLines={1}>
                             {l.categories.join(", ")}
