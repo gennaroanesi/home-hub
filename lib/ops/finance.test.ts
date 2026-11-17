@@ -585,6 +585,8 @@ describe("ledgers (household vs personal budgets)", () => {
     expect(groceries.result.budget.ledger).toBe("cris");
     const pay: any = await runOp(ctx, "save_finance_budget", { name: "Pay", kind: "INCOME", amount: 5000, ledger: "cristine" });
     expect(pay.result.budget).toMatchObject({ person: "Cristine", ledger: "cris" });
+    const nick: any = await runOp(ctx, "get_finance_budget", { ledger: "Cris" });
+    expect(nick.result.ledger).toBe("cris");
     const guest: any = await runOp(ctx, "get_finance_budget", { ledger: "nobody" });
     expect(guest.error).toMatch(/No ledger/);
   });

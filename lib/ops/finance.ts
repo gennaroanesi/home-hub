@@ -92,7 +92,10 @@ async function ledgerRef(ctx: OpContext, v: string | null | undefined, opts: { a
     return ALL_LEDGERS;
   }
   const all = await people(ctx);
-  const p = all.find((x) => x.id === v.trim()) ?? all.find((x) => x.name.toLowerCase() === want) ?? all.find((x) => x.name.toLowerCase().split(/\s+/)[0] === want);
+  const first = (x: Person) => x.name.toLowerCase().split(/\s+/)[0];
+  // "Cristine" finds "Cris" and "Cris" finds "Cristine" (a nickname or the full name), when only one person fits.
+  const loose = all.filter((x) => want.length >= 3 && first(x).length >= 3 && (want.startsWith(first(x)) || first(x).startsWith(want)));
+  const p = all.find((x) => x.id === v.trim()) ?? all.find((x) => x.name.toLowerCase() === want) ?? all.find((x) => first(x) === want) ?? (loose.length === 1 ? loose[0] : undefined);
   if (!p) throw new OpError(`No ledger "${v}": use household${opts.allowAll ? ", all" : ""} or a person's name`);
   return p.id;
 }
