@@ -12,8 +12,8 @@ import { listAllPages } from "../list-all";
 /* eslint-disable @typescript-eslint/no-explicit-any */
 type Client = any;
 
-const TX_FIELDS = `id accountId amount type category categorySource description date status personId personSource
-  goalId spendGroupId toAccountId recurringId importHash sfTransactionId notes lineItems createdAt updatedAt`;
+export const TX_FIELDS = `id accountId amount type category categorySource description date status personId personSource
+  goalId spendGroupId toAccountId recurringId importHash sfTransactionId notes lineItems ledger createdAt updatedAt`;
 
 const TX_INDEX: Record<"AccountIdAndDate" | "SpendGroupId" | "RecurringId", { field: string; key: string; sortKey?: string }> = {
   AccountIdAndDate: { field: "listHomeFinanceTransactionByAccountIdAndDate", key: "accountId", sortKey: "date" },
