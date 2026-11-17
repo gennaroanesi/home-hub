@@ -209,7 +209,7 @@ export default function TransactionsPage() {
           ))}
         </Select>
         <Select size="sm" label="Person" selectedKeys={person ? [person] : []} onChange={(e) => setPerson(e.target.value)}>
-          {[{ id: HOUSEHOLD, name: "Household" }, ...refs.people].map((p) => (
+          {[{ id: HOUSEHOLD, name: "No one" }, ...refs.people].map((p) => (
             <SelectItem key={p.id}>{p.name}</SelectItem>
           ))}
         </Select>
@@ -406,7 +406,7 @@ type Refs = ReturnType<typeof useFinanceRefs>;
 function PersonSelect({ value, onChange, people, label = "Person" }: { value: string; onChange: (v: string) => void; people: Refs["people"]; label?: string }) {
   return (
     <Select label={label} selectedKeys={[value || HOUSEHOLD]} onChange={(e) => onChange(e.target.value === HOUSEHOLD ? "" : e.target.value)}>
-      {[{ id: HOUSEHOLD, name: "Household" }, ...people].map((p) => (
+      {[{ id: HOUSEHOLD, name: "No one" }, ...people].map((p) => (
         <SelectItem key={p.id}>{p.name}</SelectItem>
       ))}
     </Select>
@@ -688,7 +688,7 @@ function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; ref
           <p className="text-xs text-default-500">Only the fields you set change.</p>
           <FreeCombobox label="Category" placeholder="Leave unchanged" value={category} onValueChange={setCategory} options={refs.categories} />
           <Select label="Person" selectedKeys={[person]} onChange={(e) => e.target.value && setPerson(e.target.value)}>
-            {[{ id: KEEP, name: "Leave unchanged" }, { id: HOUSEHOLD, name: "Household" }, ...refs.people].map((p) => (
+            {[{ id: KEEP, name: "Leave unchanged" }, { id: HOUSEHOLD, name: "No one" }, ...refs.people].map((p) => (
               <SelectItem key={p.id}>{p.name}</SelectItem>
             ))}
           </Select>

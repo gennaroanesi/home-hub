@@ -1,5 +1,6 @@
-// Edit one transaction: category, person, notes, "remember for similar"
-// (a rule, rememberPattern) and itemizing a charge across categories.
+// Edit one transaction: category, person, which budget it counts in
+// (lib/finance/ledger.ts), notes, "remember for similar" (a rule,
+// rememberPattern) and itemizing a charge across categories and budgets.
 // Same op and rules as the web's transaction window
 // (update_finance_transaction): only changed fields are sent, and saving a
 // guessed (LLM) category as is confirms it.
@@ -12,15 +13,31 @@ import { callOp } from "../../lib/ops";
 import { usePeople } from "../../lib/use-people";
 import { UNCATEGORIZED, suggestPattern } from "../../../lib/finance/categories";
 import { fmtCurrency, fmtDate } from "../../../lib/finance/dates";
+import { HOUSEHOLD, ledgerPeople } from "../../../lib/finance/ledger";
 import { CategoryField, Field, FormSheet, Input, PersonChips, cleanAmount, ff } from "./form";
-import { ACCENT, Money, WARN, fs, type OpResultOf } from "./ui";
+import { ACCENT, Chip, Money, WARN, fs, type OpResultOf } from "./ui";
 
 export type FinanceTx = OpResultOf<"list_finance_transactions">["transactions"][number];
 
-type ItemDraft = { name: string; amount: string; category: string };
+type ItemDraft = { name: string; amount: string; category: string; ledger: string };
+
+/** Whose budget: "" = the default (the account's, or for an item the charge's), household, or a person. */
+function LedgerChips({ owners, value, onChange, defaultLabel }: { owners: Array<{ id: string; name: string }>; value: string; onChange: (v: string) => void; defaultLabel: string }) {
+  return (
+    <View style={fs.chipRow}>
+      <Chip label={defaultLabel} on={!value} onPress={() => onChange("")} />
+      <Chip label="Household" on={value === HOUSEHOLD} onPress={() => onChange(HOUSEHOLD)} />
+      {owners.map((p) => (
+        <Chip key={p.id} label={p.name} on={value === p.id} onPress={() => onChange(p.id)} />
+      ))}
+    </View>
+  );
+}
 
 export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx | null; onClose: () => void; onSaved: () => void }) {
   const { people } = usePeople();
+  const owners = useMemo(() => ledgerPeople(people as any[]) as Array<{ id: string; name: string }>, [people]);
+  const [ledger, setLedger] = useState("");
   const startCategory = tx && tx.category !== UNCATEGORIZED ? tx.category : "";
   const [category, setCategory] = useState("");
   const [person, setPerson] = useState("");
@@ -30,16 +47,17 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
   const [items, setItems] = useState<ItemDraft[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const storedItems = useMemo(() => (tx?.items ?? []).map((i) => ({ name: i.name ?? null, amount: i.amount, category: i.category })), [tx]);
+  const storedItems = useMemo(() => (tx?.items ?? []).map((i) => ({ name: i.name ?? null, amount: i.amount, category: i.category, ...(i.ledger ? { ledger: i.ledger } : {}) })), [tx]);
 
   useEffect(() => {
     if (!tx) return;
     setCategory(startCategory);
     setPerson(tx.personId ?? "");
+    setLedger(tx.ledgerSet ? tx.ledger : "");
     setNotes(tx.notes ?? "");
     setRemember(false);
     setPattern(suggestPattern(tx.description));
-    setItems(storedItems.map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category })));
+    setItems(storedItems.map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category, ledger: (i as { ledger?: string }).ledger ?? "" })));
   }, [tx]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!tx) return null;
@@ -52,10 +70,11 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
     const cat = category.trim();
     if (cat !== startCategory || (tx.categorySource === "LLM" && cat)) input.category = cat || null;
     if (person !== (tx.personId ?? "")) input.personId = person || null;
+    if (ledger !== (tx.ledgerSet ? tx.ledger : "")) input.ledger = ledger || null;
     if (notes !== (tx.notes ?? "")) input.notes = notes.trim() || null;
     const rows = items.filter((i) => i.name.trim() || i.amount.trim() || i.category.trim());
     if (rows.some((i) => !(Number(i.amount) > 0) || !i.category.trim())) return Alert.alert("Each item needs an amount and a category");
-    const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim() }));
+    const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim(), ...(i.ledger ? { ledger: i.ledger } : {}) }));
     if (JSON.stringify(next) !== JSON.stringify(storedItems)) input.lineItems = next.length ? next : null;
     if (remember && pattern.trim()) input.rememberPattern = pattern.trim();
     if (Object.keys(input).length === 1) return onClose();
@@ -96,8 +115,17 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
         <CategoryField value={category} onChange={setCategory} />
       </Field>
 
+      {owners.length > 0 && (
+        <Field
+          label="Counts in"
+          hint={tx.ledgerSet ? undefined : `Now: ${tx.ledgerName === "Household" ? "the household budget" : `${tx.ledgerName}'s own budget`}, from the account.`}
+        >
+          <LedgerChips owners={owners} value={ledger} onChange={setLedger} defaultLabel="Account's" />
+        </Field>
+      )}
+
       <Field label="Person (contributor or spender)">
-        <PersonChips people={people} value={person} onChange={setPerson} />
+        <PersonChips people={people} value={person} onChange={setPerson} noneLabel="No one" />
       </Field>
 
       <Field label="Notes">
@@ -110,8 +138,8 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
             style={ff.smallBtn}
             onPress={() =>
               setItems([
-                { name: "", amount: String(charge), category: category.trim() },
-                { name: "", amount: "", category: "" },
+                { name: "", amount: String(charge), category: category.trim(), ledger: "" },
+                { name: "", amount: "", category: "", ledger: "" },
               ])
             }
           >
@@ -136,10 +164,11 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
                   </Pressable>
                 </View>
                 <CategoryField value={it.category} onChange={(v) => update(i, { category: v })} placeholder="Category" />
+                {owners.length > 0 && <LedgerChips owners={owners} value={it.ledger} onChange={(v) => update(i, { ledger: v })} defaultLabel="Charge's" />}
               </View>
             ))}
             <View style={fs.rowBetween}>
-              <Pressable style={ff.smallBtn} onPress={() => setItems([...items, { name: "", amount: "", category: "" }])}>
+              <Pressable style={ff.smallBtn} onPress={() => setItems([...items, { name: "", amount: "", category: "", ledger: "" }])}>
                 <Ionicons name="add" size={14} color={ACCENT} />
                 <Text style={ff.smallBtnText}>Add item</Text>
               </Pressable>
