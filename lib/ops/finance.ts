@@ -15,10 +15,11 @@ import {
   planSeriesChange,
   resolveBudgetLines,
   budgetKind,
+  budgetTxRange,
   type BudgetLine,
   type SeriesWrite,
 } from "../finance/budget";
-import { allCategories, CATEGORY_RULES, categoryParts, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
+import { allCategories, CATEGORY_RULES, categoryCovers, categoryParts, coveringCategory, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
@@ -345,6 +346,23 @@ export const getFinanceBudget = defineOp({
         share: z.number().nullable().describe("This line's budget as a fraction of all spending lines"),
       }),
     ),
+    spans: z
+      .array(
+        z.object({
+          seriesId: z.string(),
+          id: z.string(),
+          name: z.string(),
+          ledger: z.string(),
+          categories: z.array(z.string()),
+          from: z.string(),
+          to: z.string(),
+          amount: z.number().describe("The whole budget for those dates"),
+          spent: z.number().describe("Spent in its categories (and their sub-categories) from `from` up to today"),
+          remaining: z.number(),
+          status: z.enum(["under", "over"]),
+        }),
+      )
+      .describe("One-off spending lines for a stretch of dates (baby prep until the birth) that overlap the period: each against everything spent over its own dates, no pacing; not in the period's totals"),
     unbudgeted: z.array(z.object({ category: z.string(), spent: z.number() })),
     issues: z.array(z.object({ name: z.string(), detail: z.string() })),
   }),
@@ -355,7 +373,7 @@ export const getFinanceBudget = defineOp({
     const include = input.include?.length ? new Set<string>(input.include) : defaultCadences(period.kind);
     const ledger = (await ledgerRef(ctx, input.ledger, { allowAll: true })) ?? HOUSEHOLD;
     const [accounts, lines, schedules, folks] = await Promise.all([listAccounts(ctx.client), listBudgetLines(ctx.client), listSchedules(ctx.client), people(ctx)]);
-    const txs = await listTransactions(ctx.client, { fromIso: range.fromIso, toIso: range.toIso, accountIds: householdAccounts(accounts).map((a) => a.id) });
+    const txs = await listTransactions(ctx.client, { ...budgetTxRange(lines, range), accountIds: householdAccounts(accounts).map((a) => a.id) });
     const full =
       ledger === ALL_LEDGERS
         ? allLedgersBudget(ledgerPeople(folks as any[]).map((p) => p.id), lines, txs, schedules, accounts, range, today)
@@ -409,6 +427,19 @@ export const getFinanceBudget = defineOp({
         status: v.status,
         pace: v.pace == null ? null : Math.round(v.pace * 100) / 100,
         share: view.allocated > 0 ? Math.round((v.budgeted / view.allocated) * 1000) / 1000 : null,
+      })),
+      spans: view.spanViews.map((v) => ({
+        seriesId: v.line.seriesId,
+        id: v.line.id,
+        name: v.line.name,
+        ledger: v.line.ledger?.trim() || HOUSEHOLD,
+        categories: bucketCategories(v.line),
+        from: v.line.effectiveFrom ?? "",
+        to: v.line.effectiveTo ?? "",
+        amount: r2(v.budgeted),
+        spent: r2(v.spent),
+        remaining: r2(v.remaining),
+        status: v.status === "over" ? ("over" as const) : ("under" as const),
       })),
       unbudgeted: view.unassigned.map((u) => ({ category: u.category, spent: r2(u.spent) })),
       issues: view.issues.map((i) => ({ name: i.name, detail: i.detail })),
@@ -486,10 +517,11 @@ export const listFinanceTransactions = defineOp({
       const cat = effectiveCategory(t, rules);
       if (input.uncategorized && cat !== UNCATEGORIZED) return false;
       // An itemized charge matches any of its items' categories.
-      if (input.category && !categoryParts(t, rules).some((p) => p.category.toLowerCase() === input.category!.toLowerCase())) return false;
+      // A parent category also matches its sub-categories ("Baby" → "Baby: Furniture").
+      if (input.category && !categoryParts(t, rules).some((p) => categoryCovers(input.category!.toLowerCase(), p.category.toLowerCase()))) return false;
       if (input.categories?.length) {
-        const want = new Set(input.categories.map((c) => c.toLowerCase()));
-        if (!categoryParts(t, rules).some((p) => want.has(p.category.toLowerCase()))) return false;
+        const want = input.categories.map((c) => c.toLowerCase());
+        if (!categoryParts(t, rules).some((p) => coveringCategory(p.category.toLowerCase(), want) != null)) return false;
       }
       if (personId && t.personId !== personId) return false;
       if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
@@ -656,7 +688,7 @@ export const saveFinanceBudget = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month; SAVINGS lines plan what moves into a savings account each month (accountId or accountName), measured by what actually lands there. Budgets are versioned: changing one (pass seriesId) sets it from effectiveFrom (default the 1st of this month) to effectiveTo (default: until the next existing version), trimming or splitting the versions around it, so other months keep the budget they had. A change with exactly a version's dates (or versionId alone) corrects it in place; removeVersionId deletes one. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
+    "Create or change a household budget line. EXPENSE lines cap spending over a set of categories ('Groceries & dining $1,200/month' covering Groceries, Dining, Food Delivery); INCOME lines record what a person plans to contribute to the joint account each month; SAVINGS lines plan what moves into a savings account each month (accountId or accountName), measured by what actually lands there. A one-off EXPENSE line (period ONCE) with effectiveFrom and effectiveTo is one amount for those dates ('$3,000 on baby furniture until the birth'): tracked against everything spent between them, no monthly pacing (get_finance_budget's spans). Sub-categories are named 'Parent: Child' ('Baby: Furniture'); a line on the parent covers them, a line on the sub-category takes it over. Budgets are versioned: changing one (pass seriesId) sets it from effectiveFrom (default the 1st of this month) to effectiveTo (default: until the next existing version), trimming or splitting the versions around it, so other months keep the budget they had. A change with exactly a version's dates (or versionId alone) corrects it in place; removeVersionId deletes one. Pass endOn with seriesId to stop a budget. A category can only be in one spending line at a time. Use get_finance_summary to see the lines and their seriesIds.",
   input: z.object({
     seriesId: z.string().optional().describe("Budget to change; leave out to create one."),
     name: z.string().optional(),
@@ -665,7 +697,7 @@ export const saveFinanceBudget = defineOp({
     personName: z.string().optional(),
     accountId: z.string().optional().describe("SAVINGS: the account the money goes into."),
     accountName: z.string().optional(),
-    categories: z.array(z.string()).optional().describe("EXPENSE: categories the line covers."),
+    categories: z.array(z.string()).optional().describe("EXPENSE: categories the line covers ('Baby' also covers 'Baby: Furniture'). A new sub-category is created just by naming it here."),
     amount: z.number().positive().optional(),
     period: z.enum(["MONTHLY", "QUARTERLY", "ANNUALLY", "ONCE"]).optional().describe("Default MONTHLY."),
     effectiveFrom: DATE.optional().describe("First day of the change. Default: the start of versionId, else the 1st of this month."),

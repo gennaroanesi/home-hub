@@ -197,6 +197,7 @@ export function allLedgersBudget(
   const incomeViews = views.filter((v) => v.ledger !== HOUSEHOLD).flatMap((v) => tag(v.incomeViews, v.ledger));
   const savingsViews = views.flatMap((v) => tag(v.savingsViews, v.ledger));
   const expenseViews = views.flatMap((v) => tag(v.expenseViews, v.ledger)).sort((a, b) => b.budgeted - a.budgeted);
+  const spanViews = views.flatMap((v) => tag(v.spanViews, v.ledger)).sort((a, b) => b.budgeted - a.budgeted);
   const unassigned = new Map<string, number>();
   for (const v of views) for (const u of v.unassigned) unassigned.set(u.category, (unassigned.get(u.category) ?? 0) + u.spent);
   const sum = <V>(vs: V[], f: (v: V) => number) => vs.reduce((s, v) => s + f(v), 0);
@@ -219,6 +220,7 @@ export function allLedgersBudget(
     incomeViews,
     savingsViews,
     expenseViews,
+    spanViews,
     unassigned: [...unassigned].map(([category, spent]) => ({ category, spent })).sort((a, b) => b.spent - a.spent),
     issues: views.flatMap((v) => v.issues),
     paidDirectly: new Map(),

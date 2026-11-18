@@ -6,7 +6,7 @@
 // plan what moves into a savings account (accountId) each period; that money
 // is a transfer, so it never counts as spending.
 
-import { categoryParts, effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
+import { categoryParts, coveringCategory, effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
 import { addDays, daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 
@@ -52,6 +52,55 @@ export function budgetKind(line: BudgetLine): BudgetKind {
 
 export function bucketCategories(line: BudgetLine): string[] {
   return (line.categories ?? []).filter((c): c is string => !!c && c.trim() !== "").map((c) => c.trim());
+}
+
+// ── Sub-categories ────────────────────────────────────────────────────────────
+
+/**
+ * Per-category amounts moved onto the line categories that cover them (a
+ * sub-category's spending counts for its parent's line unless a line names
+ * it); the rest keep their own name.
+ */
+export function rollUpCategories(byCategory: Map<string, number>, lineCategories: Iterable<string>): Map<string, number> {
+  const cats = [...lineCategories];
+  const out = new Map<string, number>();
+  for (const [cat, n] of byCategory) {
+    const key = coveringCategory(cat, cats) ?? cat;
+    out.set(key, (out.get(key) ?? 0) + n);
+  }
+  return out;
+}
+
+// ── Lines for a stretch of dates ──────────────────────────────────────────────
+
+/**
+ * A one-off spending line with an end date is one amount for those dates
+ * ("$3,000 on Baby: Furniture until the birth"): measured against everything
+ * spent between them, with no monthly pacing, and kept out of the period's
+ * totals. Without an end date a one-off line belongs to its start's period.
+ */
+export function isSpanLine(line: BudgetLine): boolean {
+  return (line.period ?? "MONTHLY") === "ONCE" && budgetKind(line) === "EXPENSE" && !!line.effectiveFrom && !!line.effectiveTo;
+}
+
+export function spanRange(line: BudgetLine): DateRange {
+  return { fromIso: line.effectiveFrom ?? "", toIso: line.effectiveTo ?? "", label: `${line.effectiveFrom} – ${line.effectiveTo}` };
+}
+
+/** The span lines overlapping a window. */
+export function spanLinesFor(lines: BudgetLine[], window: DateRange): BudgetLine[] {
+  return lines.filter((l) => l.active !== false && isSpanLine(l) && l.effectiveFrom! <= window.toIso && l.effectiveTo! >= window.fromIso);
+}
+
+/** The transactions a window's budget needs: the window, stretched to cover the span lines shown in it. */
+export function budgetTxRange(lines: BudgetLine[], window: DateRange): { fromIso: string; toIso: string } {
+  let fromIso = window.fromIso;
+  let toIso = window.toIso;
+  for (const l of spanLinesFor(lines, window)) {
+    if (l.effectiveFrom! < fromIso) fromIso = l.effectiveFrom!;
+    if (l.effectiveTo! > toIso) toIso = l.effectiveTo!;
+  }
+  return { fromIso, toIso };
 }
 
 // ── SCD resolution ────────────────────────────────────────────────────────────
@@ -350,9 +399,8 @@ export function spendByCategory(txs: TxLike[], window: DateRange): Map<string, n
  * items counts toward.
  */
 export function budgetTransactions<T extends TxLike>(txs: T[], window: DateRange, categories: string[]): T[] {
-  const want = new Set(categories);
   return txs
-    .filter((tx) => countsTowardBudget(tx, window) && spendParts(tx).some((p) => want.has(p.category)))
+    .filter((tx) => countsTowardBudget(tx, window) && spendParts(tx).some((p) => coveringCategory(p.category, categories) != null))
     .sort((a, b) => Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
 }
 
@@ -490,6 +538,36 @@ export function computeLineView(
   };
 }
 
+/**
+ * A span line (isSpanLine) over its own dates: everything spent in its
+ * categories (and their sub-categories) between them against the one amount.
+ * No pace: it's over only once the spending passes the amount.
+ */
+export function spanLineView(line: BudgetLine, txs: TxLike[], rules: RecurringLike[], todayIso: string): BudgetLineView {
+  const range = spanRange(line);
+  const cats = bucketCategories(line);
+  const pick = (m: Map<string, number>) => [...m].reduce((s, [c, n]) => s + (coveringCategory(c, cats) != null ? n : 0), 0);
+  const budgeted = Math.abs(line.amount ?? 0);
+  const spent = pick(spendByCategory(txs, range));
+  const committed = pick(committedByCategory(rules, range));
+  const elapsed = elapsedFraction(range, todayIso);
+  const remaining = budgeted - spent;
+  const daysLeft = Math.max(0, daysBetween(todayIso < range.fromIso ? range.fromIso : todayIso, range.toIso) + 1);
+  return {
+    line,
+    budgeted,
+    committed,
+    variable: budgeted - committed,
+    spent,
+    remaining,
+    elapsed,
+    expectedByNow: budgeted * elapsed,
+    pace: null,
+    status: spent > budgeted ? "over" : "under",
+    safeDailyRemaining: remaining > 0 && daysLeft > 0 ? remaining / daysLeft : 0,
+  };
+}
+
 export type HouseholdBudgetView = {
   window: DateRange;
   /** Planned contributions (INCOME lines). */
@@ -515,6 +593,8 @@ export type HouseholdBudgetView = {
   incomeViews: BudgetLineView[];
   savingsViews: BudgetLineView[];
   expenseViews: BudgetLineView[];
+  /** One-off lines for a stretch of dates overlapping the window, each measured over its own dates; not in the totals. */
+  spanViews: BudgetLineView[];
   /** Spending in categories no in-force line covers. */
   unassigned: Array<{ category: string; spent: number }>;
   issues: BudgetHistoryIssue[];
@@ -568,9 +648,14 @@ export function householdBudget(
   /** Contributions that didn't arrive as money in, per person (paid for the household directly; lib/finance/ledger.ts). */
   inKind?: Map<string, number>,
 ): HouseholdBudgetView {
-  const inForce = resolveBudgetLines(lines, resolutionDate(window, todayIso));
-  const spentByCat = spendByCategory(txs, window);
-  const committed = committedByCategory(rules, window);
+  const inForce = resolveBudgetLines(
+    lines.filter((l) => !isSpanLine(l)),
+    resolutionDate(window, todayIso),
+  );
+  const spans = spanLinesFor(lines, window);
+  const lineCats = inForce.filter((l) => budgetKind(l) === "EXPENSE").flatMap(bucketCategories);
+  const spentByCat = rollUpCategories(spendByCategory(txs, window), lineCats);
+  const committed = rollUpCategories(committedByCategory(rules, window), lineCats);
   const received = receivedByPerson(txs, window);
   for (const [person, amount] of inKind ?? []) received.set(person, (received.get(person) ?? 0) + amount);
   const saved = savedByAccount(txs, window);
@@ -599,9 +684,10 @@ export function householdBudget(
   const incomeViews = views.filter((v) => budgetKind(v.line) === "INCOME").sort((a, b) => a.line.name.localeCompare(b.line.name));
   const savingsViews = views.filter((v) => budgetKind(v.line) === "SAVINGS").sort((a, b) => a.line.name.localeCompare(b.line.name));
   const expenseViews = views.filter((v) => budgetKind(v.line) === "EXPENSE").sort((a, b) => b.budgeted - a.budgeted);
-  const covered = new Set(expenseViews.flatMap((v) => bucketCategories(v.line)));
+  const spanViews = spans.map((l) => spanLineView(l, txs, rules, todayIso)).sort((a, b) => b.budgeted - a.budgeted);
+  const covered = [...lineCats, ...spans.flatMap(bucketCategories)];
   const unassigned = [...spentByCat.entries()]
-    .filter(([c]) => !covered.has(c))
+    .filter(([c]) => coveringCategory(c, covered) == null)
     .map(([category, spent]) => ({ category, spent }))
     .sort((a, b) => b.spent - a.spent);
   const planned = incomeViews.reduce((s, v) => s + v.budgeted, 0);
@@ -622,6 +708,7 @@ export function householdBudget(
     incomeViews,
     savingsViews,
     expenseViews,
+    spanViews,
     unassigned,
     issues: validateBudgetHistory(lines, resolutionDate(window, todayIso)),
   };

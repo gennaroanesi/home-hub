@@ -17,7 +17,7 @@ import { callOp } from "../../../../lib/ops";
 import { BudgetLineModal, type BudgetLineRef } from "../../../../components/finance/BudgetLineModal";
 import { ACCENT, BudgetBar, Card, Chip, DANGER, FinanceHeader, WARN, fs, openFinance, type OpResultOf } from "../../../../components/finance/ui";
 import { BUDGET_PERIODS, type BudgetPeriod } from "../../../../../lib/finance/budget";
-import { fmtCurrency, monthStart, todayIso } from "../../../../../lib/finance/dates";
+import { fmtCurrency, fmtDate, monthStart, todayIso } from "../../../../../lib/finance/dates";
 import { periodContaining, periodRange, periodToParam, shiftPeriod, switchKind, type Period, type PeriodKind } from "../../../../../lib/finance/periods";
 
 type Budget = OpResultOf<"get_finance_budget">;
@@ -248,6 +248,46 @@ export default function FinanceBudget() {
               })
             )}
           </Card>
+
+          {b.spans.length > 0 && (
+            <Card title="For a stretch of dates">
+              <Text style={fs.muted}>Everything spent over each line&apos;s dates, against one amount. Not in this period&apos;s totals.</Text>
+              {b.spans.map((l, i) => {
+                const showCats = l.categories.length > 1 || l.categories[0] !== l.name;
+                const d = (iso: string) => fmtDate(iso, { month: "short", day: "numeric", year: "numeric" });
+                return (
+                  <View key={l.id} style={[{ gap: 4, paddingTop: 10 }, i > 0 && { borderTopWidth: 1, borderTopColor: "#f0f0f0" }]}>
+                    <View style={fs.rowBetween}>
+                      <Pressable style={{ flex: 1 }} onPress={() => openTransactions(l.name, l.categories)}>
+                        <Text style={[fs.text, { fontWeight: "500" }]} numberOfLines={1}>
+                          {l.name}
+                          {l.status === "over" ? <Text style={[fs.muted, { color: DANGER }]}> · over</Text> : null}
+                        </Text>
+                        {b.ledger === "all" && <Text style={[fs.muted, { color: ACCENT }]}>{b.ledgers.find((x) => x.key === l.ledger)?.name ?? "Household"}</Text>}
+                        <Text style={fs.muted} numberOfLines={1}>
+                          {d(l.from)} – {d(l.to)}
+                          {showCats ? ` · ${l.categories.join(", ")}` : ""}
+                        </Text>
+                      </Pressable>
+                      <Pressable onPress={() => setEditing({ ...l, period: "ONCE", span: { from: l.from, to: l.to } })} hitSlop={10}>
+                        <Ionicons name="pencil" size={16} color={ACCENT} />
+                      </Pressable>
+                    </View>
+                    <View style={fs.rowBetween}>
+                      <Text style={fs.money}>
+                        {fmtCurrency(l.spent)} <Text style={fs.muted}>of</Text> {fmtCurrency(l.amount, { cents: false })}
+                      </Text>
+                      <Text style={[fs.money, l.remaining < 0 && fs.danger]}>
+                        {fmtCurrency(l.remaining, { cents: false })}
+                        <Text style={[fs.muted, l.remaining < 0 && fs.danger]}> {l.remaining < 0 ? "over" : "left"}</Text>
+                      </Text>
+                    </View>
+                    <BudgetBar spent={l.spent} budgeted={l.amount} />
+                  </View>
+                );
+              })}
+            </Card>
+          )}
 
           {b.unbudgeted.length > 0 && (
             <Card title="Not budgeted">

@@ -17,7 +17,7 @@ import { addToast } from "@heroui/react";
 import { financeClient } from "@/components/finance/client";
 import type { PersonLite } from "@/components/finance/ui";
 import { callOp } from "@/lib/ops-client";
-import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, type BudgetLine, type BudgetPeriod } from "@/lib/finance/budget";
+import { BUDGET_PERIODS, BUDGET_PERIOD_LABELS, bucketCategories, budgetKind, isSpanLine, type BudgetLine, type BudgetPeriod } from "@/lib/finance/budget";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { fmtDate } from "@/lib/finance/dates";
 import { HOUSEHOLD, ledgerLabel } from "@/lib/finance/ledger";
@@ -50,10 +50,14 @@ export type BudgetDraft = {
  * change from `effectiveFrom`.
  */
 export function draftFromLine(line: BudgetLine, effectiveFrom: string, mode?: BudgetDraft["mode"]): BudgetDraft {
+  // A line for a stretch of dates is one amount for those dates: edit it with
+  // its own dates (exactly a version's dates corrects it in place), never
+  // split it from a date.
+  const span = isSpanLine(line) && !mode;
   return {
     seriesId: line.seriesId,
     version: { id: line.id, from: line.effectiveFrom ?? null, to: line.effectiveTo ?? null },
-    mode: mode ?? ((line.effectiveFrom ?? "") >= effectiveFrom ? "correct" : "range"),
+    mode: span ? "range" : mode ?? ((line.effectiveFrom ?? "") >= effectiveFrom ? "correct" : "range"),
     kind: budgetKind(line),
     name: line.name,
     categories: bucketCategories(line),
@@ -61,8 +65,8 @@ export function draftFromLine(line: BudgetLine, effectiveFrom: string, mode?: Bu
     accountId: line.accountId ?? "",
     amount: String(line.amount ?? ""),
     period: (line.period ?? "MONTHLY") as BudgetPeriod,
-    effectiveFrom,
-    effectiveTo: "",
+    effectiveFrom: span ? line.effectiveFrom! : effectiveFrom,
+    effectiveTo: span ? line.effectiveTo! : "",
     label: "",
     notes: line.notes ?? "",
     ledger: line.ledger?.trim() || HOUSEHOLD,
@@ -178,7 +182,14 @@ export function BudgetLineModal({
                 ))}
               </Select>
               <div className="flex gap-2 items-end">
-                <Input size="sm" label="Add a category not in the list" value={extraCat} onValueChange={setExtraCat} />
+                <Input
+                  size="sm"
+                  label="Add a category not in the list"
+                  placeholder="Baby: Furniture"
+                  description='Sub-category: "Parent: Child". A line on the parent covers its sub-categories.'
+                  value={extraCat}
+                  onValueChange={setExtraCat}
+                />
                 <Button
                   size="sm"
                   variant="flat"
@@ -226,7 +237,12 @@ export function BudgetLineModal({
               ))}
             </Select>
           </div>
-          {d.version && (
+          {d.kind === "EXPENSE" && d.period === "ONCE" && (
+            <span className="text-xs text-default-500">
+              With an end date, this is one amount for those dates (baby prep until the birth): everything spent between them counts, with no monthly pacing. Without one, it belongs to the month it starts in.
+            </span>
+          )}
+          {d.version && !(isSpanLine({ ...d, id: "", seriesId: "", effectiveFrom: d.version.from, effectiveTo: d.version.to, amount: 0 })) && (
             <div className="flex flex-col gap-1">
               <div className="flex gap-2">
                 <Button size="sm" variant={d.mode === "correct" ? "solid" : "flat"} color={d.mode === "correct" ? "primary" : "default"} onPress={() => set({ mode: "correct" })}>

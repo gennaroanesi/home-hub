@@ -25,7 +25,7 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
+import { categoryCovers, categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
 import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts, ledgerPeople } from "@/lib/finance/ledger";
@@ -139,7 +139,8 @@ export default function TransactionsPage() {
         if (ledgerFilter && !t._ledgers.includes(ledgerFilter)) return false;
         if (account && t.accountId !== account) return false;
         // An itemized charge matches any of its items' categories.
-        if (category && !t._cats.includes(category)) return false;
+        // A parent category also matches its sub-categories ("Baby" → "Baby: Furniture").
+        if (category && !t._cats.some((c: string) => categoryCovers(category, c))) return false;
         // Contributor: money in from that person.
         if (person && !((t.amount ?? 0) > 0 && t.personId === person)) return false;
         if (group === NONE ? !!t.spendGroupId : group && t.spendGroupId !== group) return false;

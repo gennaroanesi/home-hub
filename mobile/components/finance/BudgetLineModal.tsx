@@ -11,7 +11,17 @@ import { fmtDate, monthEnd, todayIso } from "../../../lib/finance/dates";
 import { Field, FormSheet, Input, cleanAmount, ff } from "./form";
 import { fs } from "./ui";
 
-export type BudgetLineRef = { seriesId: string; name: string; amount: number; period: string; categories?: string[] };
+export type BudgetLineRef = {
+  seriesId: string;
+  /** The version shown; a line for a stretch of dates is corrected in place. */
+  id?: string;
+  name: string;
+  amount: number;
+  period: string;
+  categories?: string[];
+  /** One amount for these dates (a one-off line with an end): changes keep its dates. */
+  span?: { from: string; to: string };
+};
 
 export function BudgetLineModal({ line, from, onClose, onSaved }: { line: BudgetLineRef | null; from: string; onClose: () => void; onSaved: () => void }) {
   const [name, setName] = useState("");
@@ -33,7 +43,7 @@ export function BudgetLineModal({ line, from, onClose, onSaved }: { line: Budget
     setBusy(true);
     const r = await callOp("save_finance_budget", {
       seriesId: line.seriesId,
-      effectiveFrom: from,
+      ...(line.span && line.id ? { versionId: line.id } : { effectiveFrom: from }),
       ...(name.trim() && name.trim() !== line.name ? { name: name.trim() } : {}),
       ...(amount.trim() && n > 0 ? { amount: n } : {}),
     });
@@ -62,18 +72,27 @@ export function BudgetLineModal({ line, from, onClose, onSaved }: { line: Budget
   }
 
   const perLabel = line.period === "MONTHLY" ? "month" : line.period === "QUARTERLY" ? "quarter" : line.period === "ANNUALLY" ? "year" : "once";
+  const d = (iso: string) => fmtDate(iso, { month: "short", day: "numeric", year: "numeric" });
   return (
     <FormSheet visible={!!line} title="Budget line" onClose={onClose} onSave={save} busy={busy}>
       {line.categories?.length ? <Text style={fs.muted}>Covers {line.categories.join(", ")}</Text> : null}
       <Field label="Name">
         <Input value={name} onChangeText={setName} />
       </Field>
-      <Field label={`Amount per ${perLabel}`} hint={`From ${fmtDate(from, { month: "long", year: "numeric" })} on; earlier months keep their amount.`}>
-        <Input value={amount} onChangeText={(v) => setAmount(cleanAmount(v))} placeholder={String(line.amount)} keyboardType="decimal-pad" />
-      </Field>
-      <Pressable style={ff.dangerBtn} onPress={end} disabled={busy}>
-        <Text style={ff.dangerText}>End this budget line</Text>
-      </Pressable>
+      {line.span ? (
+        <Field label="Amount" hint={`One amount for ${d(line.span.from)} – ${d(line.span.to)}. Change the dates on the web.`}>
+          <Input value={amount} onChangeText={(v) => setAmount(cleanAmount(v))} placeholder={String(line.amount)} keyboardType="decimal-pad" />
+        </Field>
+      ) : (
+        <>
+          <Field label={`Amount per ${perLabel}`} hint={`From ${fmtDate(from, { month: "long", year: "numeric" })} on; earlier months keep their amount.`}>
+            <Input value={amount} onChangeText={(v) => setAmount(cleanAmount(v))} placeholder={String(line.amount)} keyboardType="decimal-pad" />
+          </Field>
+          <Pressable style={ff.dangerBtn} onPress={end} disabled={busy}>
+            <Text style={ff.dangerText}>End this budget line</Text>
+          </Pressable>
+        </>
+      )}
     </FormSheet>
   );
 }

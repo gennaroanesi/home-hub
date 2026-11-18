@@ -25,6 +25,8 @@ import {
   BUDGET_PERIOD_LABELS,
   bucketCategories,
   budgetTransactions,
+  budgetTxRange,
+  spanRange,
   householdBudget,
   filterBudgetView,
   listBudgetSeries,
@@ -70,11 +72,9 @@ export default function BudgetPage() {
     if (refs.loading) return;
     setLoading(true);
     try {
-      const [l, s, t] = await Promise.all([
-        listBudgetLines(financeClient),
-        listSchedules(financeClient),
-        listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, accountIds: activeAccountIds }),
-      ]);
+      const [l, s] = await Promise.all([listBudgetLines(financeClient), listSchedules(financeClient)]);
+      // Lines for a stretch of dates count everything since they started.
+      const t = await listTransactions(financeClient, { ...budgetTxRange(l, range), accountIds: activeAccountIds });
       setLines(l);
       setSchedules(s);
       setTxs(t);
@@ -355,6 +355,31 @@ export default function BudgetPage() {
               )}
             </CardBody>
           </Card>
+
+          {/* One amount for a stretch of dates */}
+          {view.spanViews.length > 0 && (
+            <Card>
+              <CardHeader className="font-semibold flex flex-col items-start gap-0.5">
+                <span>For a stretch of dates</span>
+                <span className="text-xs text-default-500 font-normal">Everything spent over each line&apos;s dates, against one amount. Not in this period&apos;s totals.</span>
+              </CardHeader>
+              <CardBody className="pt-0">
+                <div className="flex flex-col divide-y divide-default-100">
+                  {view.spanViews.map((v) => (
+                    <SpanRow
+                      key={v.line.id}
+                      v={v}
+                      open={expanded === v.line.seriesId}
+                      onToggle={() => setExpanded(expanded === v.line.seriesId ? null : v.line.seriesId)}
+                      txs={expanded === v.line.seriesId ? budgetTransactions(txsOf(v.line.ledger), spanRange(v.line), bucketCategories(v.line)) : []}
+                      owner={ledger === ALL_LEDGERS ? ledgerLabel(v.line.ledger, refs.people) : undefined}
+                      onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
+                    />
+                  ))}
+                </div>
+              </CardBody>
+            </Card>
+          )}
 
           {/* Not budgeted */}
           {view.unassigned.length > 0 && (
@@ -704,3 +729,60 @@ function ExpenseRow({
   );
 }
 
+function SpanRow({ v, open, onToggle, txs, onEdit, owner }: { v: BudgetLineView; open: boolean; onToggle: () => void; txs: any[]; onEdit: () => void; owner?: string }) {
+  const cats = bucketCategories(v.line);
+  const d = (iso?: string | null) => (iso ? fmtDate(iso, { month: "short", day: "numeric", year: "numeric" }) : "?");
+  return (
+    <div className="py-3 text-sm flex flex-col gap-1.5">
+      <div className="flex items-start justify-between gap-2">
+        <button type="button" className="text-left min-w-0" onClick={onToggle}>
+          <span className="font-medium flex items-center gap-1">
+            {open ? <FaChevronUp className="text-xs shrink-0" /> : <FaChevronDown className="text-xs shrink-0" />}
+            <span className="truncate">{v.line.name}</span>
+            {v.status === "over" && (
+              <Chip size="sm" color="danger" variant="flat" className="ml-1 shrink-0">
+                over
+              </Chip>
+            )}
+          </span>
+          {owner && <span className="block text-xs text-secondary-600">{owner}</span>}
+          <span className="block text-xs text-default-400 truncate">
+            {d(v.line.effectiveFrom)} – {d(v.line.effectiveTo)}
+            {(cats.length > 1 || cats[0] !== v.line.name) && ` · ${cats.join(", ")}`}
+          </span>
+        </button>
+        <Button isIconOnly size="sm" variant="light" aria-label="Edit" onPress={onEdit}>
+          <FaPen className="text-xs" />
+        </Button>
+      </div>
+      <div className="flex items-baseline justify-between gap-2">
+        <span className="tabular-nums">
+          <Money value={v.spent} /> <span className="text-default-400">of</span> <Money value={v.budgeted} cents={false} />
+        </span>
+        <span className="tabular-nums text-right">
+          <Money value={v.remaining} cents={false} className={v.remaining < 0 ? "text-danger-600" : ""} />
+          <span className="text-xs ml-1 text-default-400">{v.remaining < 0 ? "over" : "left"}</span>
+        </span>
+      </div>
+      <BudgetBar spent={v.spent} budgeted={v.budgeted} />
+      {open && (
+        <div className="mt-1 ml-4 flex flex-col gap-1">
+          {txs.length === 0 ? (
+            <span className="text-default-500">No spending yet.</span>
+          ) : (
+            txs.map((t) => (
+              <div key={t.id} className="flex justify-between gap-2">
+                <span className="truncate">
+                  <span className="text-default-400 tabular-nums mr-2">{fmtDate(t.date)}</span>
+                  {t.description}
+                  <span className="text-default-400"> · {t.category}</span>
+                </span>
+                <Money value={t.amount} />
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}

@@ -34,6 +34,22 @@ export function isExcludedFromBudget(category: string): boolean {
   return EXCLUDED_FROM_BUDGET.has(category);
 }
 
+// ── Sub-categories ──────────────────────────────────────────────────────────
+
+/** Sub-categories are named "Parent: Child" ("Baby: Furniture"); a line on the parent covers them all. */
+export const SUBCATEGORY_SEPARATOR = ": ";
+
+export function categoryCovers(lineCategory: string, category: string): boolean {
+  return category === lineCategory || category.startsWith(lineCategory + SUBCATEGORY_SEPARATOR);
+}
+
+/** The most specific of `lineCategories` that covers `category`, or null. */
+export function coveringCategory(category: string, lineCategories: Iterable<string>): string | null {
+  let best: string | null = null;
+  for (const c of lineCategories) if (categoryCovers(c, category) && (best == null || c.length > best.length)) best = c;
+  return best;
+}
+
 /** Categories that are money in, not spending. */
 export const INCOME_CATEGORIES = new Set<string>(["Income", CONTRIBUTION_CATEGORY, "Interest"]);
 

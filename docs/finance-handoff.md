@@ -132,6 +132,33 @@ the household's; `lib/finance/ledger.ts`. Everyone sees every ledger.
   `get_finance_budget` takes `ledger` (name, id, household, all) and lists
   them; the phone's budget has ledger chips.
 
+## Budgets for a stretch of dates, and sub-categories (2026-11-17)
+
+For baby prep until the birth: "$3,000 on furniture, Nov 17 – May 27", no
+monthly pacing.
+
+- A one-off (`period: ONCE`) spending line **with an end date** is a span
+  line (`isSpanLine`, lib/finance/budget.ts): one amount for those dates,
+  measured against everything spent in its categories between them
+  (`spanLineView`). It shows in every period it overlaps, under "For a
+  stretch of dates" (`spanViews`; `get_finance_budget`'s `spans`), and is
+  kept out of the period's totals (allocated, spent on lines, overspend).
+  Over = spent past the amount; there's no pace. A one-off line without an
+  end date still belongs to the period it starts in.
+- Callers must load transactions back to the start of the span lines shown:
+  `budgetTxRange(lines, window)`. Everything else in the budget filters to
+  the window itself, so the extra rows don't leak into the month.
+- Editing a span line keeps its own dates (web: the modal opens on them, so
+  saving corrects it in place; phone: `versionId`), never "change from a
+  date", which would split it.
+- Sub-categories are plain category names "Parent: Child" ("Baby:
+  Furniture"; `categoryCovers` / `coveringCategory` in categories.ts). A line
+  on the parent covers its sub-categories; a line naming a sub-category
+  takes it over (most specific wins, `rollUpCategories`), so nothing counts
+  twice among the period's lines. The transaction filters (web and
+  `list_finance_transactions`) match sub-categories under a parent. A new
+  sub-category exists as soon as a budget line or a transaction uses it.
+
 ## Net worth: assets and loans (2026-11-16)
 
 Ported from gennaroanesi.com (`financeAsset`, `financeLoan`,
