@@ -1,6 +1,8 @@
-// Transactions — search and filter a month of household transactions
-// (list_finance_transactions: by words, account, category or only the
-// uncategorized), pull to refresh, tap one to edit its category, person,
+// Transactions — search, filter and sort household transactions
+// (list_finance_transactions) for a month or custom dates. The filter
+// button opens TransactionFiltersSheet (accounts, categories, contributors,
+// budget, direction, needs-a-category, sort); what's on shows as chips
+// under the search, each removable. Pull to refresh, tap one to edit its category, person,
 // notes, itemization or add a rule (TransactionEditModal). Opened from the
 // overview (?uncategorized=1), a budget line (?categories=A,B&month=…&title=…)
 // or an account (?accountId=…). Invested accounts' rows only show when that
@@ -13,7 +15,9 @@ import { useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { callOp } from "../../../../lib/ops";
-import { CategorySheet } from "../../../../components/finance/form";
+import { NO_FILTERS, SORT_LABELS, TransactionFiltersSheet, activeFilterCount, type TxFilters } from "../../../../components/finance/TransactionFiltersSheet";
+import { usePeople } from "../../../../lib/use-people";
+import { ledgerPeople } from "../../../../../lib/finance/ledger";
 import { TransactionEditModal, type FinanceTx } from "../../../../components/finance/TransactionEditModal";
 import { ACCENT, Chip, FinanceHeader, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../../components/finance/ui";
 import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "../../../../../lib/finance/dates";
@@ -29,10 +33,14 @@ export default function FinanceTransactions() {
   const [month, setMonth] = useState(() => (params.month && /^\d{4}-\d{2}$/.test(params.month) ? params.month : todayIso().slice(0, 7)));
   const [typed, setTyped] = useState("");
   const [query, setQuery] = useState("");
-  const [accountId, setAccountId] = useState(params.accountId ?? "");
-  const [categories, setCategories] = useState<string[]>(params.categories ? params.categories.split(",").filter(Boolean) : []);
-  const [uncategorized, setUncategorized] = useState(params.uncategorized === "1");
-  const [pickCategory, setPickCategory] = useState(false);
+  const { people } = usePeople();
+  const [filters, setFilters] = useState<TxFilters>(() => ({
+    ...NO_FILTERS,
+    accountIds: params.accountId ? [params.accountId] : [],
+    categories: params.categories ? params.categories.split(",").filter(Boolean) : [],
+    uncategorized: params.uncategorized === "1",
+  }));
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [data, setData] = useState<Result | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,23 +53,34 @@ export default function FinanceTransactions() {
     return () => clearTimeout(t);
   }, [typed]);
 
-  const range = useMemo(() => monthRange(`${month}-01`), [month]);
+  const monthWindow = useMemo(() => monthRange(`${month}-01`), [month]);
+  const range = useMemo(() => {
+    const c = filters.custom;
+    if (!c) return monthWindow;
+    const [fromIso, toIso] = c.from <= c.to ? [c.from, c.to] : [c.to, c.from];
+    const f = (iso: string) => fmtDate(iso, { month: "short", day: "numeric", year: "numeric" });
+    return { fromIso, toIso, label: `${f(fromIso)} – ${f(toIso)}` };
+  }, [monthWindow, filters.custom]);
 
   const load = useCallback(async () => {
     const r = await callOp("list_finance_transactions", {
       from: range.fromIso,
       to: range.toIso,
       limit: LIMIT,
+      sort: filters.sort,
       ...(query ? { query } : {}),
-      ...(accountId ? { accountId } : {}),
-      ...(categories.length ? { categories } : {}),
-      ...(uncategorized ? { uncategorized: true } : {}),
+      ...(filters.accountIds.length ? { accountIds: filters.accountIds } : {}),
+      ...(filters.categories.length ? { categories: filters.categories } : {}),
+      ...(filters.personIds.length ? { personIds: filters.personIds } : {}),
+      ...(filters.uncategorized ? { uncategorized: true } : {}),
+      ...(filters.direction ? { direction: filters.direction } : {}),
+      ...(filters.ledger ? { ledger: filters.ledger } : {}),
     });
     setLoading(false);
     if ("error" in r) return setError(r.error);
     setError(null);
     setData(r.result);
-  }, [range, query, accountId, categories, uncategorized]);
+  }, [range, query, filters]);
 
   useEffect(() => {
     setLoading(true);
@@ -78,13 +97,48 @@ export default function FinanceTransactions() {
   }
 
   const thisMonth = todayIso().slice(0, 7);
-  const shownAccounts = accounts.filter((a) => a.active || a.id === accountId);
+  const shownAccounts = accounts.filter((a) => a.active || filters.accountIds.includes(a.id));
+  const owners = useMemo(() => ledgerPeople(people as any[]), [people]); // eslint-disable-line @typescript-eslint/no-explicit-any
+  const ledgers = useMemo(() => [{ key: "household", name: "Household" }, ...owners.map((p) => ({ key: p.id, name: p.name }))], [owners]);
+  const nameOf = (list: Array<{ id: string; name: string }>, id: string) => list.find((x) => x.id === id)?.name ?? "?";
+  const count = activeFilterCount(filters);
+  // What's on, each removable.
+  const onChips: Array<{ key: string; label: string; remove: () => void; color?: string }> = [
+    ...(filters.uncategorized ? [{ key: "uncat", label: "Needs category", color: WARN, remove: () => setFilters({ ...filters, uncategorized: false }) }] : []),
+    ...(filters.direction ? [{ key: "dir", label: filters.direction === "in" ? "Money in" : "Money out", remove: () => setFilters({ ...filters, direction: "" as const }) }] : []),
+    ...(filters.ledger ? [{ key: "ledger", label: `Counts in ${ledgers.find((l) => l.key === filters.ledger)?.name ?? "?"}`, remove: () => setFilters({ ...filters, ledger: "" }) }] : []),
+    ...filters.accountIds.map((id) => ({ key: `a-${id}`, label: nameOf(accounts, id), remove: () => setFilters({ ...filters, accountIds: filters.accountIds.filter((x) => x !== id) }) })),
+    ...filters.categories.map((c) => ({ key: `c-${c}`, label: c, remove: () => setFilters({ ...filters, categories: filters.categories.filter((x) => x !== c) }) })),
+    ...filters.personIds.map((id) => ({ key: `p-${id}`, label: `from ${nameOf(people as any[], id)}`, remove: () => setFilters({ ...filters, personIds: filters.personIds.filter((x) => x !== id) }) })), // eslint-disable-line @typescript-eslint/no-explicit-any
+  ];
 
   return (
     <SafeAreaView style={fs.screen} edges={["top"]}>
-      <FinanceHeader title={params.title || "Transactions"} />
+      <FinanceHeader
+        title={params.title || "Transactions"}
+        right={
+          <Pressable onPress={() => setFiltersOpen(true)} hitSlop={10} style={{ padding: 4, flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Ionicons name={count ? "funnel" : "funnel-outline"} size={22} color={ACCENT} />
+            {count > 0 && (
+              <View style={{ backgroundColor: ACCENT, borderRadius: 9, minWidth: 18, height: 18, alignItems: "center", justifyContent: "center", paddingHorizontal: 4 }}>
+                <Text style={{ color: "#fff", fontSize: 11, fontWeight: "700" }}>{count}</Text>
+              </View>
+            )}
+          </Pressable>
+        }
+      />
 
       <View style={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
+        {filters.custom ? (
+          <View style={[fs.rowBetween, { paddingHorizontal: 4 }]}>
+            <Pressable onPress={() => setFiltersOpen(true)} style={{ flex: 1 }}>
+              <Text style={{ fontSize: 16, fontWeight: "600", color: "#333", textAlign: "center" }}>{range.label}</Text>
+            </Pressable>
+            <Pressable onPress={() => setFilters({ ...filters, custom: null })} hitSlop={10}>
+              <Ionicons name="close-circle" size={20} color="#bbb" />
+            </Pressable>
+          </View>
+        ) : (
         <View style={[fs.rowBetween, { paddingHorizontal: 4 }]}>
           <Pressable onPress={() => setMonth(shiftMonth(`${month}-01`, -1).slice(0, 7))} hitSlop={10}>
             <Ionicons name="chevron-back" size={22} color={ACCENT} />
@@ -96,6 +150,7 @@ export default function FinanceTransactions() {
             <Ionicons name="chevron-forward" size={22} color={ACCENT} />
           </Pressable>
         </View>
+        )}
         <View style={{ flexDirection: "row", alignItems: "center", backgroundColor: "#fff", borderRadius: 10, paddingHorizontal: 10, gap: 6 }}>
           <Ionicons name="search" size={16} color="#999" />
           <TextInput
@@ -110,12 +165,15 @@ export default function FinanceTransactions() {
           />
         </View>
         <ScrollView horizontal style={{ flexGrow: 0, flexShrink: 0 }} showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
-          <Chip label="Needs category" on={uncategorized} color={WARN} onPress={() => setUncategorized(!uncategorized)} />
-          <Chip label={categories.length ? `${categories.length === 1 ? categories[0] : `${categories.length} categories`} ✕` : "Category…"} on={categories.length > 0} onPress={() => (categories.length ? setCategories([]) : setPickCategory(true))} />
-          <Chip label="All accounts" on={!accountId} onPress={() => setAccountId("")} />
-          {shownAccounts.map((a) => (
-            <Chip key={a.id} label={a.name} on={accountId === a.id} onPress={() => setAccountId(accountId === a.id ? "" : a.id)} />
-          ))}
+          <Chip label={`↕ ${SORT_LABELS[filters.sort]}`} on={filters.sort !== "newest"} onPress={() => setFiltersOpen(true)} />
+          {onChips.length === 0 ? (
+            <>
+              <Chip label="Needs category" color={WARN} onPress={() => setFilters({ ...filters, uncategorized: true })} />
+              <Chip label="Filters…" onPress={() => setFiltersOpen(true)} />
+            </>
+          ) : (
+            onChips.map((c) => <Chip key={c.key} label={`${c.label} ✕`} on color={c.color} onPress={c.remove} />)
+          )}
         </ScrollView>
       </View>
 
@@ -148,14 +206,17 @@ export default function FinanceTransactions() {
         />
       )}
 
-      <CategorySheet
-        visible={pickCategory}
-        value=""
-        allowClear={false}
-        onClose={() => setPickCategory(false)}
-        onPick={(c) => {
-          setPickCategory(false);
-          if (c) setCategories([c]);
+      <TransactionFiltersSheet
+        visible={filtersOpen}
+        value={filters}
+        accounts={shownAccounts}
+        people={people.map((p) => ({ id: p.id, name: p.name }))}
+        ledgers={owners.length ? ledgers : []}
+        defaultRange={{ from: monthWindow.fromIso, to: monthWindow.toIso > todayIso() ? todayIso() : monthWindow.toIso }}
+        onClose={() => setFiltersOpen(false)}
+        onApply={(f) => {
+          setFiltersOpen(false);
+          setFilters(f);
         }}
       />
       <TransactionEditModal

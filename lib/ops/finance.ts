@@ -484,7 +484,7 @@ export const listFinanceTransactions = defineOp({
   domain: "finance",
   access: "read",
   description:
-    "Search the household account transactions, newest first. Default: the last 30 days, every account except 401k / IRA / brokerage ones (pass that accountId to see theirs). Filter by words in the description or notes, category, person, account or spend group, or only uncategorized ones. Returns the matching count and their total. Answers 'what did we spend at Costco this month?', 'show the uncategorized transactions', 'when did the mortgage go out?'. Use it to get a transactionId for update_finance_transaction.",
+    "Search the household account transactions, newest first. Default: the last 30 days, every account except 401k / IRA / brokerage ones (pass that accountId to see theirs). Filter by words in the description or notes, categories, contributors, accounts, budget (ledger), direction or spend group, or only uncategorized ones; sort by date, size or description. Returns the matching count and their total. Answers 'what did we spend at Costco this month?', 'show the uncategorized transactions', 'when did the mortgage go out?'. Use it to get a transactionId for update_finance_transaction.",
   input: z.object({
     from: DATE.optional(),
     to: DATE.optional(),
@@ -494,10 +494,16 @@ export const listFinanceTransactions = defineOp({
     uncategorized: z.boolean().optional(),
     personId: z.string().optional().describe("Contributor: money in from this person."),
     personName: z.string().optional(),
+    personIds: z.array(z.string()).optional().describe("Contributors: money in from any of these people."),
     accountId: z.string().optional(),
+    accountIds: z.array(z.string()).optional().describe("Any of these accounts (an invested account's rows only when it's listed)."),
     spendGroupId: z.string().optional(),
     direction: z.enum(["in", "out"]).optional(),
     ledger: z.string().optional().describe('Only what counts in this budget: "household" or a person\'s name or id (an itemized charge matches when any item does).'),
+    sort: z
+      .enum(["newest", "oldest", "largest", "smallest", "description"])
+      .optional()
+      .describe("Default newest. largest / smallest go by size, money in or out; description is A–Z."),
     limit: z.number().int().min(1).max(500).optional().describe("Default 50."),
   }),
   output: z.object({ count: z.number(), total: z.number(), transactions: z.array(TxOut) }),
@@ -511,7 +517,12 @@ export const listFinanceTransactions = defineOp({
     const rules = rulesFromDbRows(ruleRows);
     const accName = new Map(accounts.map((a) => [a.id, a.name]));
     const accLedger = new Map(accounts.map((a) => [a.id, accountLedger(a)]));
-    const txs = await listTransactions(ctx.client, { fromIso, toIso, accountIds: input.accountId ? [input.accountId] : accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id) });
+    const pickedAccounts = [...(input.accountId ? [input.accountId] : []), ...(input.accountIds ?? [])];
+    const txs = await listTransactions(ctx.client, {
+      fromIso,
+      toIso,
+      accountIds: pickedAccounts.length ? [...new Set(pickedAccounts)] : accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id),
+    });
     const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const matched = txs.filter((t) => {
       const cat = effectiveCategory(t, rules);
@@ -524,6 +535,7 @@ export const listFinanceTransactions = defineOp({
         if (!categoryParts(t, rules).some((p) => coveringCategory(p.category.toLowerCase(), want) != null)) return false;
       }
       if (personId && t.personId !== personId) return false;
+      if (input.personIds?.length && !((t.amount ?? 0) > 0 && input.personIds.includes(t.personId ?? ""))) return false;
       if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
       if (wantLedger && !ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD).some((p) => p.ledger === wantLedger)) return false;
       if (input.direction === "in" && (t.amount ?? 0) <= 0) return false;
@@ -531,6 +543,16 @@ export const listFinanceTransactions = defineOp({
       const hay = `${t.description ?? ""} ${t.notes ?? ""}`.toLowerCase();
       return words.every((w) => hay.includes(w));
     });
+    const size = (t: { amount?: number | null }) => Math.abs(t.amount ?? 0);
+    const byDate = (a: { date?: string | null }, b: { date?: string | null }) => (b.date ?? "").localeCompare(a.date ?? "");
+    const order: Record<string, (a: any, b: any) => number> = {
+      newest: byDate,
+      oldest: (a, b) => byDate(b, a),
+      largest: (a, b) => size(b) - size(a) || byDate(a, b),
+      smallest: (a, b) => size(a) - size(b) || byDate(a, b),
+      description: (a, b) => (a.description ?? "").localeCompare(b.description ?? "", undefined, { sensitivity: "base" }) || byDate(a, b),
+    };
+    matched.sort(order[input.sort ?? "newest"]);
     return {
       count: matched.length,
       total: r2(matched.reduce((s, t) => s + (t.amount ?? 0), 0)),

@@ -477,6 +477,31 @@ describe("list_finance_transactions for the phone", () => {
   });
 });
 
+describe("list_finance_transactions: several accounts and contributors, sorted", () => {
+  it("matches any picked account or contributor and sorts by date, size or description", async () => {
+    const card = { id: "card", name: "Card", type: "CREDIT", currentBalance: -100, active: true };
+    const other = { id: "other", name: "Other", type: "CHECKING", currentBalance: 0, active: true };
+    const day = (n: number) => `${thisMonth.slice(0, 8)}0${n}`;
+    const { ctx } = setup({
+      homePerson: people,
+      homeFinanceAccount: [joint, card, other],
+      homeFinanceTransaction: [
+        { id: "a", accountId: "joint", amount: -10, description: "Coffee", category: "Dining", date: day(1), status: "POSTED" },
+        { id: "b", accountId: "card", amount: -500, description: "Bed", category: "Home", date: day(2), status: "POSTED" },
+        { id: "c", accountId: "other", amount: -50, description: "Gas", category: "Fuel", date: day(3), status: "POSTED" },
+        { id: "d", accountId: "joint", amount: 200, description: "Zelle", category: "Contribution", personId: "cris", date: day(4), status: "POSTED" },
+        { id: "e", accountId: "joint", amount: 100, description: "Zelle", category: "Contribution", personId: "gen", date: day(5), status: "POSTED" },
+      ],
+    });
+    const ids = async (input: Record<string, unknown>) => ((await runOp(ctx, "list_finance_transactions", { from: thisMonth, ...input })) as any).result.transactions.map((t: any) => t.id);
+    expect(await ids({ accountIds: ["joint", "card"] })).toEqual(["e", "d", "b", "a"]);
+    expect(await ids({ personIds: ["cris", "gen"], sort: "oldest" })).toEqual(["d", "e"]);
+    expect(await ids({ sort: "largest" })).toEqual(["b", "d", "e", "c", "a"]);
+    expect(await ids({ sort: "smallest" })).toEqual(["a", "c", "e", "d", "b"]);
+    expect(await ids({ sort: "description" })).toEqual(["b", "a", "c", "e", "d"]);
+  });
+});
+
 describe("marking a schedule paid", () => {
   it("rolls nextDate one step, switches a one-time one off, and lists the fields an edit needs", async () => {
     const { ctx, tables } = setup({
