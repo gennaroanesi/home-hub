@@ -14,6 +14,28 @@ export const ACCOUNT_TYPE_LABELS: Record<string, string> = {
   OTHER: "Other",
 };
 
+/** How accounts are grouped on screen: by type, cash first, debt, then invested. */
+export const ACCOUNT_SECTIONS: Array<{ type: string; label: string }> = [
+  { type: "CHECKING", label: "Checking" },
+  { type: "SAVINGS", label: "Savings" },
+  { type: "CASH", label: "Cash" },
+  { type: "CREDIT", label: "Credit cards" },
+  { type: "LOAN", label: "Loans" },
+  { type: "RETIREMENT", label: "Retirement" },
+  { type: "BROKERAGE", label: "Brokerage" },
+  { type: "OTHER", label: "Other" },
+];
+
+/** Accounts in ACCOUNT_SECTIONS order, empty sections left out. */
+export function groupAccountsByType<T extends { type?: string | null }>(accounts: T[]): Array<{ type: string; label: string; accounts: T[]; total: number }> {
+  const known = new Set(ACCOUNT_SECTIONS.map((s) => s.type));
+  const sectionOf = (t: string | null | undefined) => (t && known.has(t) ? t : "OTHER");
+  return ACCOUNT_SECTIONS.map((s) => {
+    const mine = accounts.filter((a) => sectionOf(a.type) === s.type);
+    return { ...s, accounts: mine, total: mine.reduce((n, a) => n + ((a as { currentBalance?: number | null }).currentBalance ?? 0), 0) };
+  }).filter((g) => g.accounts.length > 0);
+}
+
 export const RETIREMENT_TYPES = ["_401K", "TRAD_IRA", "ROTH_IRA", "HSA", "SEP_IRA", "OTHER"] as const;
 
 export const RETIREMENT_TYPE_LABELS: Record<string, string> = {

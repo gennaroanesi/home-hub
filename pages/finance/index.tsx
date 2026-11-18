@@ -1,8 +1,11 @@
 "use client";
 
-// /finance — household money at a glance: account balances, this month's
-// budget headline, scheduled debits in the next 14 days with a projected
-// balance, goals, uncategorized count and the last SimpleFIN sync.
+// /finance — money at a glance for the household, one person, or everything
+// (?ledger=, like Budget): net worth, account balances grouped by type, this
+// month's budget headline, scheduled debits in the next 14 days with a
+// projected balance, goals, uncategorized count and the last SimpleFIN sync.
+// An account is the household's unless it has a single owner
+// (lib/finance/ledger.ts accountLedger); property is the household's.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import NextLink from "next/link";
@@ -16,9 +19,10 @@ import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { BudgetBar, EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
-import { householdAccounts } from "@/lib/finance/accounts";
+import { groupAccountsByType, householdAccounts } from "@/lib/finance/accounts";
 import { type HouseholdBudgetView } from "@/lib/finance/budget";
-import { HOUSEHOLD, ledgerBudget } from "@/lib/finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, txsForLedger } from "@/lib/finance/ledger";
+import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, todayIso } from "@/lib/finance/dates";
 import { listAssets, listBudgetLines, listGoals, listSchedules, listTransactions } from "@/lib/finance/data";
@@ -44,10 +48,12 @@ export default function FinanceOverviewPage() {
   const today = todayIso();
   const month = useMemo(() => monthRange(today), [today]);
   const [loading, setLoading] = useState(true);
-  const [budget, setBudget] = useState<HouseholdBudgetView | null>(null);
+  const ledgerState = useLedger(refs.people);
+  const { ledger } = ledgerState;
+  const ledgerIds = useMemo(() => ledgerState.people.map((p) => p.id), [ledgerState.people]);
+  const [data, setData] = useState<{ lines: any[]; txs: any[] } | null>(null);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [goals, setGoals] = useState<GoalProgress[]>([]);
-  const [uncategorized, setUncategorized] = useState(0);
   const [lastSync, setLastSync] = useState<any | null>(null);
   const [assets, setAssets] = useState<any[]>([]);
 
@@ -65,25 +71,40 @@ export default function FinanceOverviewPage() {
         listAssets(financeClient),
       ]);
       setAssets(assetRows);
-      // The household's budget; personal ledgers have their own tabs on the budget page.
-      setBudget(ledgerBudget(HOUSEHOLD, lines, txs, sched, refs.accounts, month, today));
+      setData({ lines, txs });
       setSchedules(sched);
       setGoals(goalProgress(goalRows, refs.accounts, today).filter((g) => g.goal.active !== false));
-      setUncategorized(txs.filter((t) => effectiveCategory(t, refs.rules) === UNCATEGORIZED).length);
       setLastSync(logs.sort((a, b) => (b.startedAt ?? "").localeCompare(a.startedAt ?? ""))[0] ?? null);
     } catch (e) {
       console.error("[finance] overview load failed", e);
     } finally {
       setLoading(false);
     }
-  }, [refs.loading, refs.accounts, refs.rules, month, today]);
+  }, [refs.loading, refs.accounts, month, today]);
 
   useEffect(() => {
     load();
   }, [load]);
 
-  const activeAccounts = refs.accounts.filter((a) => a.active !== false);
-  const worth = useMemo(() => netWorthNow(refs.accounts, assets), [refs.accounts, assets]);
+  // The selected ledger's accounts (and, for the household, the property).
+  const mineOnly = useCallback((a: any) => ledger === ALL_LEDGERS || accountLedger(a) === ledger, [ledger]);
+  const activeAccounts = useMemo(() => refs.accounts.filter((a) => a.active !== false && mineOnly(a)), [refs.accounts, mineOnly]);
+  const accountGroups = useMemo(() => groupAccountsByType(activeAccounts), [activeAccounts]);
+  const worth = useMemo(
+    () => netWorthNow(refs.accounts.filter(mineOnly), ledger === ALL_LEDGERS || ledger === HOUSEHOLD ? assets : []),
+    [refs.accounts, mineOnly, ledger, assets],
+  );
+  const budget: HouseholdBudgetView | null = useMemo(() => {
+    if (!data) return null;
+    return ledger === ALL_LEDGERS
+      ? allLedgersBudget(ledgerIds, data.lines, data.txs, schedules, refs.accounts, month, today)
+      : ledgerBudget(ledger, data.lines, data.txs, schedules, refs.accounts, month, today);
+  }, [data, ledger, ledgerIds, schedules, refs.accounts, month, today]);
+  const uncategorized = useMemo(() => {
+    if (!data) return 0;
+    const txs = ledger === ALL_LEDGERS ? data.txs : txsForLedger(data.txs, refs.accounts, ledger);
+    return txs.filter((t) => effectiveCategory(t, refs.rules) === UNCATEGORIZED).length;
+  }, [data, ledger, refs.accounts, refs.rules]);
 
   const outlooks: AccountOutlook[] = useMemo(() => {
     const horizon = addDays(today, 14);
@@ -143,12 +164,14 @@ export default function FinanceOverviewPage() {
 
   return (
     <FinanceShell title="Finance" subtitle={syncChip} onSynced={reloadAll}>
+      <LedgerTabs state={ledgerState} />
+
       {/* Net worth */}
       <NextLink href="/finance/net-worth" className="block mb-3">
         <Card isPressable shadow="sm" className="w-full">
           <CardBody className="flex flex-row flex-wrap items-baseline justify-between gap-x-6 gap-y-1">
             <span className="flex items-baseline gap-3">
-              <span className="text-xs uppercase text-default-500">Net worth</span>
+              <span className="text-xs uppercase text-default-500">{ledgerState.personal ? `${ledgerState.label}'s net worth` : ledger === HOUSEHOLD ? "Household net worth" : "Net worth"}</span>
               <Money value={worth.total} cents={false} className="text-2xl font-semibold" />
             </span>
             <span className="text-xs text-default-500 flex flex-wrap gap-x-3">
@@ -170,39 +193,49 @@ export default function FinanceOverviewPage() {
         </Card>
       </NextLink>
 
-      {/* Accounts */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 mb-5">
-        {activeAccounts.map((a) => {
-          const o = outlooks.find((x) => x.account.id === a.id);
-          const belowNow = a.minBalance != null && (a.currentBalance ?? 0) < a.minBalance;
-          return (
-            <NextLink key={a.id} href={`/finance/accounts/${a.id}`}>
-              <Card isPressable className="w-full" shadow="sm">
-                <CardBody className="gap-1">
-                  <div className="flex items-center justify-between gap-2">
-                    <span className="font-medium truncate">{a.name}</span>
-                    <Chip size="sm" variant="flat">
-                      {(a.type ?? "OTHER").toLowerCase()}
-                    </Chip>
-                  </div>
-                  <Money value={a.currentBalance ?? 0} className="text-2xl font-semibold" />
-                  <div className="text-xs text-default-500 flex items-center gap-2 flex-wrap">
-                    <span>updated {ago(a.balanceUpdatedAt)}</span>
-                    {a.institution && <span>· {a.institution}</span>}
-                  </div>
-                  {(belowNow || o?.belowBuffer) && (
-                    <div className="text-xs text-warning-600 flex items-center gap-1">
-                      <FaExclamationTriangle />
-                      {belowNow
-                        ? `Below the ${fmtCurrency(a.minBalance, { cents: false })} buffer`
-                        : `Dips to ${fmtCurrency(o!.low!.balance, { cents: false })} on ${fmtDate(o!.low!.date)}`}
-                    </div>
-                  )}
-                </CardBody>
-              </Card>
-            </NextLink>
-          );
-        })}
+      {/* Accounts, by type */}
+      <div className="flex flex-col gap-4 mb-5">
+        {accountGroups.length === 0 && <div className="text-sm text-default-500">No accounts here.</div>}
+        {accountGroups.map((g) => (
+          <section key={g.type}>
+            <div className="flex items-baseline justify-between mb-2 px-1">
+              <h3 className="text-xs uppercase tracking-wide text-default-500 font-semibold">{g.label}</h3>
+              <Money value={g.total} cents={false} className="text-sm font-semibold" />
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+              {g.accounts.map((a) => {
+                const o = outlooks.find((x) => x.account.id === a.id);
+                const belowNow = a.minBalance != null && (a.currentBalance ?? 0) < a.minBalance;
+                const owner = ledger !== HOUSEHOLD && !ledgerState.personal ? accountLedger(a) : null;
+                return (
+                  <NextLink key={a.id} href={`/finance/accounts/${a.id}`}>
+                    <Card isPressable className="w-full" shadow="sm">
+                      <CardBody className="gap-1">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="font-medium truncate">{a.name}</span>
+                          {owner && owner !== HOUSEHOLD ? <PersonChip personId={owner} people={refs.people} /> : owner === HOUSEHOLD ? <Chip size="sm" variant="flat">household</Chip> : null}
+                        </div>
+                        <Money value={a.currentBalance ?? 0} className="text-2xl font-semibold" />
+                        <div className="text-xs text-default-500 flex items-center gap-2 flex-wrap">
+                          <span>updated {ago(a.balanceUpdatedAt)}</span>
+                          {a.institution && <span>· {a.institution}</span>}
+                        </div>
+                        {(belowNow || o?.belowBuffer) && (
+                          <div className="text-xs text-warning-600 flex items-center gap-1">
+                            <FaExclamationTriangle />
+                            {belowNow
+                              ? `Below the ${fmtCurrency(a.minBalance, { cents: false })} buffer`
+                              : `Dips to ${fmtCurrency(o!.low!.balance, { cents: false })} on ${fmtDate(o!.low!.date)}`}
+                          </div>
+                        )}
+                      </CardBody>
+                    </Card>
+                  </NextLink>
+                );
+              })}
+            </div>
+          </section>
+        ))}
       </div>
 
       {loading && !budget ? (
@@ -215,7 +248,7 @@ export default function FinanceOverviewPage() {
           <Card shadow="sm">
             <CardHeader className="flex justify-between">
               <span className="font-semibold">{month.label}</span>
-              <NextLink href="/finance/budget" className="text-xs text-primary">
+              <NextLink href={ledger === HOUSEHOLD ? "/finance/budget" : `/finance/budget?ledger=${ledger}`} className="text-xs text-primary">
                 Budget →
               </NextLink>
             </CardHeader>
@@ -223,15 +256,15 @@ export default function FinanceOverviewPage() {
               {budget && (budget.incomeViews.length > 0 || budget.expenseViews.length > 0) ? (
                 <>
                   <div>
-                    <div className="text-xs uppercase text-default-500 mb-1">Contributions</div>
-                    {budget.incomeViews.length === 0 && <div className="text-sm text-default-500">No contribution lines in the budget.</div>}
+                    <div className="text-xs uppercase text-default-500 mb-1">{ledger === HOUSEHOLD ? "Contributions" : "Income"}</div>
+                    {budget.incomeViews.length === 0 && <div className="text-sm text-default-500">{ledger === HOUSEHOLD ? "No contribution lines in the budget." : "No income lines in the budget."}</div>}
                     <div className="flex flex-col gap-2">
                       {budget.incomeViews.map((v) => (
                         <div key={v.line.id} className="flex flex-col gap-1">
                           <div className="flex items-center justify-between text-sm">
                             <span className="flex items-center gap-2 min-w-0">
                               <span className="truncate">{v.line.name}</span>
-                              <PersonChip personId={v.line.personId} people={refs.people} />
+                              {ledger === HOUSEHOLD && <PersonChip personId={v.line.personId} people={refs.people} />}
                             </span>
                             <span>
                               <Money value={v.spent} /> <span className="text-default-500">of</span> <Money value={v.budgeted} cents={false} />
@@ -271,7 +304,7 @@ export default function FinanceOverviewPage() {
                     </div>
                   )}
                   {uncategorized > 0 && (
-                    <NextLink href="/finance/transactions?uncategorized=1" className="text-sm text-warning-600">
+                    <NextLink href={`/finance/transactions?uncategorized=1${ledger === HOUSEHOLD ? "" : `&ledger=${ledger}`}`} className="text-sm text-warning-600">
                       {uncategorized} transaction{uncategorized === 1 ? "" : "s"} need a category →
                     </NextLink>
                   )}
