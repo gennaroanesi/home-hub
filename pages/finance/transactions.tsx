@@ -26,7 +26,8 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { categoryCovers, categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
+import { NO_SPEND_GROUP, TX_SORTS, TX_SORT_LABELS, filterTransactions, sortTransactions, type TxSort } from "@/lib/finance/tx-filter";
+import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
 import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts, ledgerPeople } from "@/lib/finance/ledger";
@@ -39,7 +40,7 @@ const list = (v: string) => v.split(",").map((x) => x.trim()).filter(Boolean);
 // Filters wide enough to read: the menu is at least as wide as its longest names.
 const FILTER_SELECT = { classNames: { popoverContent: "min-w-[16rem]" }, popoverProps: { placement: "bottom-start" as const } };
 const HOUSEHOLD = "__household";
-const NONE = "__none";
+const NONE = NO_SPEND_GROUP;
 
 function sourceLabel(src: string | null | undefined): string | null {
   if (src === "LLM") return "guessed";
@@ -150,31 +151,30 @@ export default function TransactionsPage() {
   const owners = useMemo(() => ledgerPeople(refs.people as any[]), [refs.people]);
   const groupName = useMemo(() => new Map(refs.groups.map((g) => [g.id, g.name])), [refs.groups]);
 
+  const [sort, setSort] = useState<TxSort>("newest");
+  // Same rules as list_finance_transactions (lib/finance/tx-filter.ts).
   const rows = useMemo(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return txs
-      .map((t) => ({
-        ...t,
-        _cat: effectiveCategory(t, refs.rules),
-        _cats: categoryParts(t, refs.rules).map((p) => p.category),
-        _ledgers: ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD_LEDGER).map((p) => p.ledger),
-      }))
-      .filter((t) => {
-        // Counts (at least partly) in that budget.
-        if (ledgerFilter && !t._ledgers.includes(ledgerFilter)) return false;
-        if (accounts.length && !accounts.includes(t.accountId)) return false;
-        // An itemized charge matches any of its items' categories.
-        // A parent category also matches its sub-categories ("Baby" → "Baby: Furniture").
-        if (cats.length && !t._cats.some((c: string) => cats.some((want) => categoryCovers(want, c)))) return false;
-        // Contributor: money in from one of those people.
-        if (persons.length && !((t.amount ?? 0) > 0 && persons.includes(t.personId))) return false;
-        if (group === NONE ? !!t.spendGroupId : group && t.spendGroupId !== group) return false;
-        if (direction === "in" && (t.amount ?? 0) <= 0) return false;
-        if (direction === "out" && (t.amount ?? 0) >= 0) return false;
-        const hay = `${t.description ?? ""} ${t.notes ?? ""} ${t._cats.join(" ")} ${(parseLineItems(t) ?? []).map((i) => i.name ?? "").join(" ")}`.toLowerCase();
-        return words.every((w) => hay.includes(w));
-      });
-  }, [txs, refs.rules, accLedger, accounts, cats, persons, group, direction, query, ledgerFilter]);
+    const shown = filterTransactions(
+      txs,
+      {
+        query,
+        accountIds: accounts,
+        categories: cats.filter((c) => c !== UNCATEGORIZED),
+        uncategorized: cats.includes(UNCATEGORIZED),
+        personIds: persons,
+        spendGroupId: group || undefined,
+        direction: (direction || undefined) as "in" | "out" | undefined,
+        ledger: ledgerFilter || undefined,
+      },
+      { rules: refs.rules, accountLedger: (id) => accLedger.get(id) ?? HOUSEHOLD_LEDGER },
+    );
+    return sortTransactions(shown, sort).map((t) => ({
+      ...t,
+      _cat: effectiveCategory(t, refs.rules),
+      _cats: categoryParts(t, refs.rules).map((p) => p.category),
+      _ledgers: ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD_LEDGER).map((p) => p.ledger),
+    }));
+  }, [txs, refs.rules, accLedger, accounts, cats, persons, group, direction, query, ledgerFilter, sort]);
 
   const totals = useMemo(() => {
     let inflow = 0;
@@ -249,6 +249,11 @@ export default function TransactionsPage() {
         <Select {...FILTER_SELECT} size="sm" label="Direction" selectedKeys={direction ? [direction] : []} onChange={(e) => setDirection(e.target.value)}>
           <SelectItem key="in">Money in</SelectItem>
           <SelectItem key="out">Money out</SelectItem>
+        </Select>
+        <Select {...FILTER_SELECT} size="sm" label="Sort" selectedKeys={[sort]} onChange={(e) => e.target.value && setSort(e.target.value as TxSort)}>
+          {TX_SORTS.map((k) => (
+            <SelectItem key={k}>{TX_SORT_LABELS[k]}</SelectItem>
+          ))}
         </Select>
         <Input size="sm" label="Search" value={query} onValueChange={setQuery} startContent={<FaSearch className="text-default-400" />} isClearable onClear={() => setQuery("")} />
       </div>

@@ -10,7 +10,9 @@ import { Ionicons } from "@expo/vector-icons";
 import { CategorySheet, DateField, ff } from "./form";
 import { ACCENT, Chip, WARN, fs } from "./ui";
 
-export type TxSort = "newest" | "oldest" | "largest" | "smallest" | "description";
+import { TX_SORTS, TX_SORT_LABELS, type TxSort } from "../../../lib/finance/tx-filter";
+
+export type { TxSort };
 
 export type TxFilters = {
   /** null = the month picked on the screen. */
@@ -27,7 +29,7 @@ export type TxFilters = {
 
 export const NO_FILTERS: TxFilters = { custom: null, sort: "newest", direction: "", uncategorized: false, ledger: "", accountIds: [], categories: [], personIds: [] };
 
-export const SORT_LABELS: Record<TxSort, string> = { newest: "Newest", oldest: "Oldest", largest: "Largest", smallest: "Smallest", description: "A–Z" };
+export const SORT_LABELS = TX_SORT_LABELS;
 
 /** How many filters differ from none (sort and dates not counted). */
 export function activeFilterCount(f: TxFilters): number {
@@ -79,7 +81,7 @@ export function TransactionFiltersSheet({
         </View>
         <ScrollView contentContainerStyle={ff.body}>
           <Section label="Sort">
-            {(Object.keys(SORT_LABELS) as TxSort[]).map((k) => (
+            {TX_SORTS.map((k) => (
               <Chip key={k} label={SORT_LABELS[k]} on={d.sort === k} onPress={() => set({ sort: k })} />
             ))}
           </Section>

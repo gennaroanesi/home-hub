@@ -19,14 +19,15 @@ import {
   type BudgetLine,
   type SeriesWrite,
 } from "../finance/budget";
-import { allCategories, CATEGORY_RULES, categoryCovers, categoryParts, coveringCategory, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
+import { filterTransactions, sortTransactions, TX_SORTS } from "../finance/tx-filter";
+import { allCategories, CATEGORY_RULES, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
-import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, ledgerLabel, ledgerOf, ledgerParts, ledgerPeople } from "../finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople } from "../finance/ledger";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -488,7 +489,7 @@ export const listFinanceTransactions = defineOp({
   input: z.object({
     from: DATE.optional(),
     to: DATE.optional(),
-    query: z.string().optional().describe("Words that must all appear in the description or notes."),
+    query: z.string().optional().describe("Words that must all appear in the description, notes, categories or itemized item names."),
     category: z.string().optional(),
     categories: z.array(z.string()).optional().describe("Any of these categories (a budget line's categories)."),
     uncategorized: z.boolean().optional(),
@@ -501,7 +502,7 @@ export const listFinanceTransactions = defineOp({
     direction: z.enum(["in", "out"]).optional(),
     ledger: z.string().optional().describe('Only what counts in this budget: "household" or a person\'s name or id (an itemized charge matches when any item does).'),
     sort: z
-      .enum(["newest", "oldest", "largest", "smallest", "description"])
+      .enum(TX_SORTS)
       .optional()
       .describe("Default newest. largest / smallest go by size, money in or out; description is A–Z."),
     limit: z.number().int().min(1).max(500).optional().describe("Default 50."),
@@ -523,36 +524,23 @@ export const listFinanceTransactions = defineOp({
       toIso,
       accountIds: pickedAccounts.length ? [...new Set(pickedAccounts)] : accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id),
     });
-    const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
-    const matched = txs.filter((t) => {
-      const cat = effectiveCategory(t, rules);
-      if (input.uncategorized && cat !== UNCATEGORIZED) return false;
-      // An itemized charge matches any of its items' categories.
-      // A parent category also matches its sub-categories ("Baby" → "Baby: Furniture").
-      if (input.category && !categoryParts(t, rules).some((p) => categoryCovers(input.category!.toLowerCase(), p.category.toLowerCase()))) return false;
-      if (input.categories?.length) {
-        const want = input.categories.map((c) => c.toLowerCase());
-        if (!categoryParts(t, rules).some((p) => coveringCategory(p.category.toLowerCase(), want) != null)) return false;
-      }
-      if (personId && t.personId !== personId) return false;
-      if (input.personIds?.length && !((t.amount ?? 0) > 0 && input.personIds.includes(t.personId ?? ""))) return false;
-      if (input.spendGroupId && t.spendGroupId !== input.spendGroupId) return false;
-      if (wantLedger && !ledgerParts(t, accLedger.get(t.accountId) ?? HOUSEHOLD).some((p) => p.ledger === wantLedger)) return false;
-      if (input.direction === "in" && (t.amount ?? 0) <= 0) return false;
-      if (input.direction === "out" && (t.amount ?? 0) >= 0) return false;
-      const hay = `${t.description ?? ""} ${t.notes ?? ""}`.toLowerCase();
-      return words.every((w) => hay.includes(w));
-    });
-    const size = (t: { amount?: number | null }) => Math.abs(t.amount ?? 0);
-    const byDate = (a: { date?: string | null }, b: { date?: string | null }) => (b.date ?? "").localeCompare(a.date ?? "");
-    const order: Record<string, (a: any, b: any) => number> = {
-      newest: byDate,
-      oldest: (a, b) => byDate(b, a),
-      largest: (a, b) => size(b) - size(a) || byDate(a, b),
-      smallest: (a, b) => size(a) - size(b) || byDate(a, b),
-      description: (a, b) => (a.description ?? "").localeCompare(b.description ?? "", undefined, { sensitivity: "base" }) || byDate(a, b),
-    };
-    matched.sort(order[input.sort ?? "newest"]);
+    // Same rules as the web Transactions page (lib/finance/tx-filter.ts).
+    const matched = sortTransactions(
+      filterTransactions(
+        txs,
+        {
+          query: input.query,
+          categories: [...(input.category ? [input.category] : []), ...(input.categories ?? [])],
+          uncategorized: input.uncategorized,
+          personIds: [...(personId ? [personId] : []), ...(input.personIds ?? [])],
+          spendGroupId: input.spendGroupId,
+          direction: input.direction,
+          ledger: wantLedger ?? undefined,
+        },
+        { rules, accountLedger: (id) => accLedger.get(id) ?? HOUSEHOLD },
+      ),
+      input.sort,
+    );
     return {
       count: matched.length,
       total: r2(matched.reduce((s, t) => s + (t.amount ?? 0), 0)),
