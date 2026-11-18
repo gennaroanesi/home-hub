@@ -127,6 +127,11 @@ export function DateField({ value, onChange, placeholder = "Pick a date", cleara
 
 let categoriesCache: string[] | null = null;
 
+/** Drop the cached names (a new category was just saved on a budget line). */
+export function forgetFinanceCategories() {
+  categoriesCache = null;
+}
+
 /** Category names in use (rules + budgets), cached for the session. */
 export function useFinanceCategories(): string[] {
   const [cats, setCats] = useState<string[]>(categoriesCache ?? []);

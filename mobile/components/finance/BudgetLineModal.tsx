@@ -1,7 +1,8 @@
 // Change a budget line's name or amount from a month on, or end it. Budget
 // lines are versioned (save_finance_budget): the change starts on `from`
 // (no earlier than this month, as on the web), earlier months keep theirs.
-// New lines, categories and version history stay on the web's Budget page.
+// New spending lines: NewBudgetLineModal. Categories of an existing line and
+// version history stay on the web's Budget page.
 
 import { useEffect, useState } from "react";
 import { Alert, Pressable, Text } from "react-native";

@@ -15,7 +15,8 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { callOp } from "../../../../lib/ops";
 import { BudgetLineModal, type BudgetLineRef } from "../../../../components/finance/BudgetLineModal";
-import { ACCENT, BudgetBar, Card, Chip, DANGER, FinanceHeader, WARN, fs, openFinance, type OpResultOf } from "../../../../components/finance/ui";
+import { NewBudgetLineModal } from "../../../../components/finance/NewBudgetLineModal";
+import { ACCENT, BudgetBar, Card, Chip, DANGER, FinanceHeader, HeaderButton, WARN, fs, openFinance, type OpResultOf } from "../../../../components/finance/ui";
 import { BUDGET_PERIODS, type BudgetPeriod } from "../../../../../lib/finance/budget";
 import { fmtCurrency, fmtDate, monthStart, todayIso } from "../../../../../lib/finance/dates";
 import { periodContaining, periodRange, periodToParam, shiftPeriod, switchKind, type Period, type PeriodKind } from "../../../../../lib/finance/periods";
@@ -39,6 +40,7 @@ export default function FinanceBudget() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<BudgetLineRef | null>(null);
+  const [adding, setAdding] = useState(false);
   // Whose budget: household, a person's own, or all (lib/finance/ledger.ts).
   const [ledger, setLedger] = useState("household");
 
@@ -87,7 +89,7 @@ export default function FinanceBudget() {
 
   return (
     <SafeAreaView style={fs.screen} edges={["top"]}>
-      <FinanceHeader title="Budget" />
+      <FinanceHeader title="Budget" right={<HeaderButton icon="add" onPress={() => setAdding(true)} disabled={!b} />} />
       <View style={{ paddingHorizontal: 16, gap: 8, paddingBottom: 8 }}>
         {(b?.ledgers.length ?? 0) > 2 && (
           <View style={fs.chipRow}>
@@ -304,6 +306,18 @@ export default function FinanceBudget() {
         </ScrollView>
       )}
 
+      <NewBudgetLineModal
+        visible={adding}
+        ledger={ledger}
+        ledgerName={b?.ledgerName ?? "Household"}
+        from={newFrom}
+        today={today}
+        onClose={() => setAdding(false)}
+        onSaved={() => {
+          setAdding(false);
+          void load();
+        }}
+      />
       <BudgetLineModal
         line={editing}
         from={newFrom}
