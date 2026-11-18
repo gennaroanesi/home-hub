@@ -1,8 +1,9 @@
 "use client";
 
-// /finance/transactions — the household ledger across accounts. Month (or
-// last-90-days) window, filters (initial values from the query string:
-// ?account=&category=&uncategorized=1&person=&group=&dir=in|out&q=), row
+// /finance/transactions — the household ledger across accounts. Month,
+// last-90-days or custom dates, filters (initial values from the query
+// string: ?account=a,b&category=c,d&uncategorized=1&person=&group=&dir=in|out
+// &q=&from=&to=; account, category and contributor take several), row
 // edit through the update_finance_transaction op (with "remember for
 // similar" → a category rule), bulk edit, and manual rows for accounts
 // that don't sync from SimpleFIN.
@@ -33,6 +34,10 @@ import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts,
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const LAST_90 = "last90";
+const CUSTOM = "custom";
+const list = (v: string) => v.split(",").map((x) => x.trim()).filter(Boolean);
+// Filters wide enough to read: the menu is at least as wide as its longest names.
+const FILTER_SELECT = { classNames: { popoverContent: "min-w-[16rem]" }, popoverProps: { placement: "bottom-start" as const } };
 const HOUSEHOLD = "__household";
 const NONE = "__none";
 
@@ -57,9 +62,11 @@ export default function TransactionsPage() {
   const [loading, setLoading] = useState(true);
 
   // Filters
-  const [account, setAccount] = useState("");
-  const [category, setCategory] = useState("");
-  const [person, setPerson] = useState("");
+  const [accounts, setAccounts] = useState<string[]>([]);
+  const [cats, setCats] = useState<string[]>([]);
+  const [persons, setPersons] = useState<string[]>([]);
+  const [customFrom, setCustomFrom] = useState(() => addDays(today, -30));
+  const [customTo, setCustomTo] = useState(today);
   const [group, setGroup] = useState("");
   const [direction, setDirection] = useState("");
   const [query, setQuery] = useState("");
@@ -75,48 +82,66 @@ export default function TransactionsPage() {
   useEffect(() => {
     if (!router.isReady || filtersReady) return;
     const q = router.query;
-    setAccount(qs(q.account));
-    setCategory(qs(q.uncategorized) === "1" ? UNCATEGORIZED : qs(q.category));
-    setPerson(qs(q.person));
+    setAccounts(list(qs(q.account)));
+    setCats(qs(q.uncategorized) === "1" ? [UNCATEGORIZED] : list(qs(q.category)));
+    setPersons(list(qs(q.person)));
     setGroup(qs(q.group));
     setDirection(qs(q.dir));
     setQuery(qs(q.q));
     setLedgerFilter(qs(q.ledger));
     const p = qs(q.period) || qs(q.month);
-    if (p === LAST_90 || /^\d{4}-\d{2}$/.test(p)) setPeriod(p);
+    const from = qs(q.from);
+    const to = qs(q.to);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(from)) {
+      setCustomFrom(from);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(to)) setCustomTo(to);
+      setPeriod(CUSTOM);
+    } else if (p === LAST_90 || /^\d{4}-\d{2}$/.test(p)) setPeriod(p);
     // A group filter usually spans more than a month.
     else if (qs(q.group) || qs(q.uncategorized) === "1") setPeriod(LAST_90);
     setFiltersReady(true);
   }, [router.isReady, router.query, filtersReady]);
 
   const range: DateRange = useMemo(
-    () => (period === LAST_90 ? { fromIso: addDays(today, -90), toIso: today, label: "Last 90 days" } : monthRange(`${period}-01`)),
-    [period, today],
+    () =>
+      period === LAST_90
+        ? { fromIso: addDays(today, -90), toIso: today, label: "Last 90 days" }
+        : period === CUSTOM
+          ? {
+              fromIso: customFrom <= customTo ? customFrom : customTo,
+              toIso: customFrom <= customTo ? customTo : customFrom,
+              label: `${fmtDate(customFrom, { month: "short", day: "numeric", year: "numeric" })} – ${fmtDate(customTo, { month: "short", day: "numeric", year: "numeric" })}`,
+            }
+          : monthRange(`${period}-01`),
+    [period, today, customFrom, customTo],
   );
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
       // Invested accounts' rows only when one of them is picked in the filter.
-      setTxs(await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, ...(account ? { accountIds: [account] } : {}) }));
+      setTxs(await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, ...(accounts.length ? { accountIds: accounts } : {}) }));
     } catch (e) {
       addToast({ title: "Couldn't load transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
       setLoading(false);
     }
-  }, [range.fromIso, range.toIso, account]);
+  }, [range.fromIso, range.toIso, accounts]);
 
   useEffect(() => {
     if (filtersReady) load();
   }, [load, filtersReady]);
 
   const periodOptions = useMemo(() => {
-    const opts = [{ key: LAST_90, label: "Last 90 days" }];
+    const opts = [
+      { key: LAST_90, label: "Last 90 days" },
+      { key: CUSTOM, label: "Custom dates…" },
+    ];
     for (let i = 0; i < 24; i++) {
       const m = shiftMonth(today, -i);
       opts.push({ key: m.slice(0, 7), label: monthRange(m).label });
     }
-    if (period !== LAST_90 && !opts.some((o) => o.key === period)) opts.push({ key: period, label: monthRange(`${period}-01`).label });
+    if (period !== LAST_90 && period !== CUSTOM && !opts.some((o) => o.key === period)) opts.push({ key: period, label: monthRange(`${period}-01`).label });
     return opts;
   }, [today, period]);
 
@@ -137,19 +162,19 @@ export default function TransactionsPage() {
       .filter((t) => {
         // Counts (at least partly) in that budget.
         if (ledgerFilter && !t._ledgers.includes(ledgerFilter)) return false;
-        if (account && t.accountId !== account) return false;
+        if (accounts.length && !accounts.includes(t.accountId)) return false;
         // An itemized charge matches any of its items' categories.
         // A parent category also matches its sub-categories ("Baby" → "Baby: Furniture").
-        if (category && !t._cats.some((c: string) => categoryCovers(category, c))) return false;
-        // Contributor: money in from that person.
-        if (person && !((t.amount ?? 0) > 0 && t.personId === person)) return false;
+        if (cats.length && !t._cats.some((c: string) => cats.some((want) => categoryCovers(want, c)))) return false;
+        // Contributor: money in from one of those people.
+        if (persons.length && !((t.amount ?? 0) > 0 && persons.includes(t.personId))) return false;
         if (group === NONE ? !!t.spendGroupId : group && t.spendGroupId !== group) return false;
         if (direction === "in" && (t.amount ?? 0) <= 0) return false;
         if (direction === "out" && (t.amount ?? 0) >= 0) return false;
         const hay = `${t.description ?? ""} ${t.notes ?? ""} ${t._cats.join(" ")} ${(parseLineItems(t) ?? []).map((i) => i.name ?? "").join(" ")}`.toLowerCase();
         return words.every((w) => hay.includes(w));
       });
-  }, [txs, refs.rules, accLedger, account, category, person, group, direction, query, ledgerFilter]);
+  }, [txs, refs.rules, accLedger, accounts, cats, persons, group, direction, query, ledgerFilter]);
 
   const totals = useMemo(() => {
     let inflow = 0;
@@ -169,7 +194,7 @@ export default function TransactionsPage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [refs.categories, refs.rules, txs]);
 
-  const filtersActive = !!(account || category || person || group || direction || query || ledgerFilter);
+  const filtersActive = !!(accounts.length || cats.length || persons.length || group || direction || query || ledgerFilter);
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
   function toggle(id: string) {
@@ -194,40 +219,34 @@ export default function TransactionsPage() {
         </Button>
       }
     >
-      <div className={`grid grid-cols-2 md:grid-cols-4 gap-2 mb-3 ${owners.length ? "lg:grid-cols-8" : "lg:grid-cols-7"}`}>
-        <Select size="sm" label="Period" selectedKeys={[period]} onChange={(e) => e.target.value && setPeriod(e.target.value)}>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
+        <Select {...FILTER_SELECT} size="sm" label="Period" selectedKeys={[period]} onChange={(e) => e.target.value && setPeriod(e.target.value)}>
           {periodOptions.map((o) => (
             <SelectItem key={o.key}>{o.label}</SelectItem>
           ))}
         </Select>
-        <Select size="sm" label="Account" selectedKeys={account ? [account] : []} onChange={(e) => setAccount(e.target.value)}>
-          {refs.accounts.map((a) => (
-            <SelectItem key={a.id}>{a.name}</SelectItem>
-          ))}
-        </Select>
-        <Select size="sm" label="Category" selectedKeys={category ? [category] : []} onChange={(e) => setCategory(e.target.value)}>
-          {categoryOptions.map((c) => (
-            <SelectItem key={c}>{c}</SelectItem>
-          ))}
-        </Select>
-        <Select size="sm" label="Contributor" selectedKeys={person ? [person] : []} onChange={(e) => setPerson(e.target.value)}>
-          {refs.people.map((p) => (
-            <SelectItem key={p.id}>{p.name}</SelectItem>
-          ))}
-        </Select>
-        <Select size="sm" label="Group" selectedKeys={group ? [group] : []} onChange={(e) => setGroup(e.target.value)}>
+        {period === CUSTOM && (
+          <>
+            <Input size="sm" type="date" label="From" placeholder=" " value={customFrom} onValueChange={(v) => v && setCustomFrom(v)} />
+            <Input size="sm" type="date" label="To" placeholder=" " value={customTo} onValueChange={(v) => v && setCustomTo(v)} />
+          </>
+        )}
+        <MultiFilter label="Account" noun="accounts" values={accounts} onChange={setAccounts} options={refs.accounts.map((a) => ({ key: a.id, label: a.name }))} />
+        <MultiFilter label="Category" noun="categories" values={cats} onChange={setCats} options={categoryOptions.map((c) => ({ key: c, label: c }))} />
+        <MultiFilter label="Contributor" noun="people" values={persons} onChange={setPersons} options={refs.people.map((p) => ({ key: p.id, label: p.name }))} />
+        <Select {...FILTER_SELECT} size="sm" label="Group" selectedKeys={group ? [group] : []} onChange={(e) => setGroup(e.target.value)}>
           {[{ id: NONE, name: "No group" }, ...refs.groups].map((g) => (
             <SelectItem key={g.id}>{g.name}</SelectItem>
           ))}
         </Select>
         {owners.length > 0 && (
-          <Select size="sm" label="Budget" selectedKeys={ledgerFilter ? [ledgerFilter] : []} onChange={(e) => setLedgerFilter(e.target.value)}>
+          <Select {...FILTER_SELECT} size="sm" label="Budget" selectedKeys={ledgerFilter ? [ledgerFilter] : []} onChange={(e) => setLedgerFilter(e.target.value)}>
             {[HOUSEHOLD_LEDGER, ...owners.map((p) => p.id)].map((k) => (
               <SelectItem key={k}>{ledgerLabel(k, refs.people)}</SelectItem>
             ))}
           </Select>
         )}
-        <Select size="sm" label="Direction" selectedKeys={direction ? [direction] : []} onChange={(e) => setDirection(e.target.value)}>
+        <Select {...FILTER_SELECT} size="sm" label="Direction" selectedKeys={direction ? [direction] : []} onChange={(e) => setDirection(e.target.value)}>
           <SelectItem key="in">Money in</SelectItem>
           <SelectItem key="out">Money out</SelectItem>
         </Select>
@@ -254,9 +273,9 @@ export default function TransactionsPage() {
               variant="light"
               startContent={<FaRedo />}
               onPress={() => {
-                setAccount("");
-                setCategory("");
-                setPerson("");
+                setAccounts([]);
+                setCats([]);
+                setPersons([]);
                 setGroup("");
                 setDirection("");
                 setQuery("");
@@ -797,5 +816,43 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
         </ModalFooter>
       </ModalContent>
     </Modal>
+  );
+}
+
+/** A filter that takes several values: shows the one picked, or how many; ✕ clears. */
+function MultiFilter({
+  label,
+  noun,
+  values,
+  onChange,
+  options,
+}: {
+  label: string;
+  noun: string;
+  values: string[];
+  onChange: (v: string[]) => void;
+  options: Array<{ key: string; label: string }>;
+}) {
+  const byKey = new Map(options.map((o) => [o.key, o.label]));
+  // Keep a value from the URL visible even if it isn't an option (yet).
+  const all = [...options, ...values.filter((v) => !byKey.has(v)).map((v) => ({ key: v, label: v }))];
+  return (
+    <Select
+      {...FILTER_SELECT}
+      size="sm"
+      label={label}
+      selectionMode="multiple"
+      isClearable
+      onClear={() => onChange([])}
+      selectedKeys={new Set(values)}
+      onSelectionChange={(k) => onChange(Array.from(k as Set<string>))}
+      renderValue={(items) => (items.length === 1 ? items[0].textValue : `${items.length} ${noun}`)}
+    >
+      {all.map((o) => (
+        <SelectItem key={o.key} textValue={o.label}>
+          {o.label}
+        </SelectItem>
+      ))}
+    </Select>
   );
 }
