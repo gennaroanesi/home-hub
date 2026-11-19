@@ -11,7 +11,7 @@ import { callOp } from "../../lib/ops";
 import { householdMembers } from "../../lib/household";
 import { roomLabel } from "../../../lib/floorplan";
 import { listAllPages } from "../../../lib/list-all";
-import type { InventoryCategory } from "./ItemFormModal";
+import type { InventoryCategory, InventoryItem } from "./ItemFormModal";
 
 export interface InventoryRefs {
   categories: InventoryCategory[];
@@ -74,4 +74,10 @@ export function useInventoryRefs(): InventoryRefs {
 /** Push an item's page. The cast: expo-router's generated route types only learn new files on the next `expo start`. */
 export function openInventoryItem(id: string) {
   router.push({ pathname: "/more/inventory/[id]", params: { id } } as any); // eslint-disable-line @typescript-eslint/no-explicit-any
+}
+
+/** Every item, for the form's "installed on" picker (a list screen only has its own slice). */
+export async function loadAllInventoryItems(): Promise<InventoryItem[]> {
+  const r = await callOp("list_inventory", { status: "ALL", limit: 1000 });
+  return "error" in r ? [] : r.result.items;
 }

@@ -208,3 +208,46 @@ describe("ammo", () => {
     expect((await run(ctx({ personName: "Cris" }), "log_ammo_use", { caliber: "9mm", rounds: 5 })).error).toMatch(/No ammo of caliber/);
   });
 });
+
+describe("get_inventory_overview", () => {
+  const seed = () => {
+    const b = base();
+    return {
+      ...b,
+      homeInventoryItem: [
+        { ...b.homeInventoryItem[0], pricePaid: 20, imageKeys: ["home/inventory/pla.jpg"], createdAt: "2026-01-01T00:00:00Z" },
+        { ...b.homeInventoryItem[1], pricePaid: 5, ownerPersonId: "cris", createdAt: "2026-02-01T00:00:00Z" },
+        { id: "nozzle", name: "Hardened nozzle", categoryId: "print", status: "WISHLIST", estimatedPrice: 30 },
+        { id: "loose", name: "Mystery cable", status: "OWNED", createdAt: "2026-03-01T00:00:00Z" },
+        { id: "old", name: "Old printer", categoryId: "print", status: "SOLD" },
+      ],
+      homePrivateInventoryItem: b.homePrivateInventoryItem.map((i) => ({ ...i, pricePaid: i.id === "g19" ? 500 : 0 })),
+    };
+  };
+
+  it("rolls subcategories into their parent and counts private items only for their owner", async () => {
+    const { ctx } = setup(seed());
+    const r = (await run(ctx(), "get_inventory_overview", {})).result;
+    const cat = (label: string) => r.categories.find((c: any) => c.label === label);
+    expect(cat("3D printing")).toMatchObject({ count: 1, value: 60, wishlist: 1, imageKey: "home/inventory/pla.jpg", depth: 0 });
+    expect(cat("Filament")).toMatchObject({ count: 1, parentId: "print", depth: 1 });
+    expect(cat("Firearms")).toMatchObject({ count: 1, value: 500, private: true });
+    expect(cat("Uncategorized")).toMatchObject({ key: "none", count: 1 });
+    expect(cat("Gear")).toBeUndefined();
+    expect(r.statusCounts).toEqual({ WISHLIST: 1, DRAFT: 0, PAST: 1 });
+    expect(r.lowStock).toBe(0);
+    expect(r.owners.map((o: any) => o.label).sort()).toEqual(["Cris", "Gennaro", "Household"]);
+    expect(r.recent[0].name).toBe("Mystery cable");
+
+    const group = (await run(ctx({ groupChat: true }), "get_inventory_overview", {})).result;
+    expect(group.categories.some((c: any) => c.private)).toBe(false);
+    expect(group.hiddenPrivate).toBe(true);
+  });
+
+  it("list_inventory filters by category and room ids, 'none' for unset", async () => {
+    const { ctx } = setup(seed());
+    expect(names(await run(ctx(), "list_inventory", { categoryId: "print", status: "ALL" }))).toEqual(["Bambu PLA Basic", "Hardened nozzle", "Old printer"]);
+    expect(names(await run(ctx(), "list_inventory", { categoryId: "none" }))).toEqual(["Mystery cable"]);
+    expect((await run(ctx(), "list_inventory", { roomId: "none" })).result.count).toBe(6);
+  });
+});

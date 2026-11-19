@@ -110,6 +110,12 @@ Cognito username, i.e. `homePerson.cognitoUsername`.
   status (owned / wishlist); item detail with photos, spec fields, parts;
   add / edit form generated from the spec; quantity +/-; ammo "Log use"
   and caliber totals. Barcode scanning stays a later step.
+  The first page is a way in, not every item (there will be thousands):
+  `get_inventory_overview` gives counts and cost per category (rolled up
+  through subcategories), top-level room and owner, plus status counts and
+  the recently added; tiles open `list.tsx` for that slice
+  (`list_inventory` by `categoryId` / `roomId` / owner, `'none'` = unset),
+  and search goes to the server across everything.
 
 ### 6. Migration and retiring the old inventory
 

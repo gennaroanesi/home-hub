@@ -28,6 +28,7 @@ export function ItemFormModal({
   visible,
   item,
   defaultStatus,
+  defaultCategoryId,
   categories,
   items,
   lists,
@@ -39,6 +40,8 @@ export function ItemFormModal({
   visible: boolean;
   item: InventoryItem | null;
   defaultStatus: "OWNED" | "WISHLIST";
+  /** New items start in this category (the list it was added from). */
+  defaultCategoryId?: string;
   categories: InventoryCategory[];
   items: InventoryItem[];
   lists: Array<{ id: string; name: string }>;
@@ -64,7 +67,7 @@ export function ItemFormModal({
     setDetails(Object.fromEntries(Object.entries(e?.details ?? {}).map(([k, v]) => [k, s(v)])));
     setF({
       name: s(e?.name),
-      categoryId: s(e?.categoryId),
+      categoryId: s(e ? e.categoryId : defaultCategoryId),
       status: s(e?.status ?? defaultStatus),
       owner: e ? (e.petId ? `pet:${e.petId}` : e.pregnancyId ? `baby:${e.pregnancyId}` : (e.ownerPersonId ?? "household")) : "household",
       roomId: s(e?.roomId),
@@ -85,7 +88,7 @@ export function ItemFormModal({
       pricePaid: s(e?.pricePaid),
       priceSold: s(e?.priceSold),
     });
-  }, [visible, item, defaultStatus]);
+  }, [visible, item, defaultStatus, defaultCategoryId]);
 
   const category = categories.find((c) => c.id === f.categoryId);
   const type = (category?.detailType ?? null) as DetailType | null;

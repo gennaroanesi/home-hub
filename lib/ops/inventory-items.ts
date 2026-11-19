@@ -7,7 +7,7 @@
 
 import { z } from "zod/v4";
 import { approveDrafts } from "../inventory";
-import { DETAIL_SPECS, DETAIL_TYPES, detailSummary, type DetailField, type DetailType } from "../inventory-details";
+import { DETAIL_SPECS, DETAIL_TYPES, detailSpec, detailSummary, type DetailField, type DetailType } from "../inventory-details";
 import { caliberKey, caliberTotals, planAmmoUse, thresholdChanges, lotsOldestFirst } from "../inventory-ammo";
 import { createItem, deleteItem, detailTypeOfCategory, loadInventoryStore, moveItemTable, tableForCategory, updateItem, upsertDetail, type InventoryStore, type StoreItem } from "../inventory-store";
 import { categoryAndDescendants, categoryTree, isLowStock, matchCategory, sizeRank, wishlistSummary } from "../inventory";
@@ -355,6 +355,8 @@ export const listInventory = defineOp({
   input: z.object({
     status: z.enum([...STATUSES, "ALL"]).optional().describe("Default OWNED. WISHLIST = things to get; DRAFT = identified from a photo, not approved yet."),
     category: z.string().optional().describe("Category name or path ('Clothing', 'Clothing > Baby'); includes its subcategories."),
+    categoryId: z.string().optional().describe("Apps: a category id (with its subcategories), or 'none' for uncategorized items."),
+    roomId: z.string().optional().describe("Apps: a room id (with the closets inside it), or 'none' for items with no room."),
     detailType: z.enum(DETAIL_TYPES).optional().describe("Only items whose category has this detail type."),
     ownerName: z.string().optional().describe("A person, a pet ('Dolce'), 'household' for shared items, or 'baby'."),
     query: z.string().optional().describe("Matches name, brand, notes, tags, category, room, spot and detail text (color, caliber, part number…)."),
@@ -387,6 +389,8 @@ export const listInventory = defineOp({
       if (!match) noCategory(input.category, store.categories);
       categoryIds = categoryAndDescendants(match.category.id, store.categories);
     }
+    if (input.roomId) roomIds = input.roomId === "none" ? new Set() : roomAndDescendants(input.roomId, roomRows);
+    if (input.categoryId) categoryIds = input.categoryId === "none" ? new Set() : categoryAndDescendants(input.categoryId, store.categories);
     const owner = input.ownerName ? await resolveOwner(ctx, folks, input.ownerName) : null;
     let parentId: string | null = null;
     if (input.partsOf) {
@@ -399,9 +403,9 @@ export const listInventory = defineOp({
     const size = (input.size ?? "").toLowerCase().trim();
     const rows = store.items
       .filter((i) => status === "ALL" || i.status === status)
-      .filter((i) => !categoryIds || (!!i.categoryId && categoryIds.has(i.categoryId)))
+      .filter((i) => !categoryIds || (categoryIds.size === 0 ? !i.categoryId || !store.nodes.has(i.categoryId) : !!i.categoryId && categoryIds.has(i.categoryId)))
       .filter((i) => !input.detailType || detailTypeOfCategory(store.nodes, i.categoryId) === input.detailType)
-      .filter((i) => !roomIds || (!!i.roomId && roomIds.has(i.roomId)))
+      .filter((i) => !roomIds || (roomIds.size === 0 ? !i.roomId : !!i.roomId && roomIds.has(i.roomId)))
       .filter((i) => !parentId || i.parentItemId === parentId)
       .filter((i) => {
         if (!owner) return true;
@@ -426,6 +430,128 @@ export const listInventory = defineOp({
       count: rows.length,
       wishlist: status === "WISHLIST" ? (wishlistSummary(rows) as any) : null,
       items: rows.slice(0, input.limit ?? 100),
+      hiddenPrivate: !viewer.username,
+    };
+  },
+});
+
+// ── get_inventory_overview ──────────────────────────────────────────────────
+
+const Bucket = z.object({
+  key: z.string().describe("categoryId / roomId / owner key ('household', a person's name, 'pet:<id>', 'baby:<id>'); 'none' = not set"),
+  label: z.string(),
+  count: z.number().describe("Owned items in it (subcategories / closets included)"),
+  value: z.number().describe("What the owned items cost, quantity included"),
+  wishlist: z.number(),
+  imageKey: z.string().nullable().describe("A photo to show for it: its priciest owned item that has one"),
+});
+
+export const getInventoryOverview = defineOp({
+  name: "get_inventory_overview",
+  domain: "inventory",
+  access: "read",
+  description:
+    "The inventory at a glance: how many things we own and what they cost, per category (with subcategories), per room and per owner; how many are on the wishlist, waiting as drafts, sold or given away, or running low; and the most recently added. Answers 'how much is my camera gear worth?', 'what's in the inventory?', 'which room has the most stuff?'. Owner-only items (firearms, ammo) count only for their owner, never in a group chat. To see the items themselves use list_inventory.",
+  input: z.object({}),
+  output: z.object({
+    owned: z.object({ count: z.number(), value: z.number() }),
+    statusCounts: z.object({ WISHLIST: z.number(), DRAFT: z.number(), PAST: z.number() }),
+    wishlist: z.object({ count: z.number(), estimatedTotal: z.number(), missingPrice: z.number() }).partial().passthrough(),
+    lowStock: z.number().describe("Consumables at or below their low-stock level"),
+    categories: z.array(Bucket.extend({ parentId: z.string().nullable(), depth: z.number(), path: z.string(), detailType: z.string().nullable(), private: z.boolean() })).describe("In tree order; only categories with something owned or wished for"),
+    rooms: z.array(Bucket).describe("Top-level rooms, plus 'none'"),
+    owners: z.array(Bucket),
+    recent: z.array(ItemOut).describe("The 12 most recently added owned or wishlist items"),
+    hiddenPrivate: z.boolean(),
+  }),
+  async run(ctx) {
+    const folks = await people(ctx);
+    const viewer = await viewerOf(ctx, folks);
+    const [store, roomRows, petRows] = await Promise.all([loadInventoryStore(ctx.client, { viewer: viewer.username }), rooms(ctx), pets(ctx)]);
+    const out = itemOutFactory(store, roomRows, folks, petRows);
+    const rows = store.items.map((i) => ({ raw: i, o: out(i) }));
+    const cost = (o: ItemOutT) => (o.pricePaid ?? 0) * Math.max(1, o.quantity ?? 1);
+    const owned = rows.filter((r) => r.o.status === "OWNED");
+
+    type B = z.infer<typeof Bucket> & { best: number };
+    const bucket = (key: string, label: string): B => ({ key, label, count: 0, value: 0, wishlist: 0, imageKey: null, best: -1 });
+    const add = (b: B, o: ItemOutT) => {
+      if (o.status === "WISHLIST") return void b.wishlist++;
+      b.count++;
+      b.value += cost(o);
+      if (o.imageKeys[0] && cost(o) > b.best) {
+        b.best = cost(o);
+        b.imageKey = o.imageKeys[0];
+      }
+    };
+    const strip = ({ best: _b, ...b }: B) => ({ ...b, value: Math.round(b.value * 100) / 100 });
+    const counted = rows.filter((r) => r.o.status === "OWNED" || r.o.status === "WISHLIST");
+
+    // Categories: every ancestor gets the item too.
+    const nodes = categoryTree(store.categories);
+    const cats = new Map(nodes.map((n) => [n.category.id, bucket(n.category.id, n.category.name)]));
+    const none = bucket("none", "Uncategorized");
+    for (const { o } of counted) {
+      let id: string | null | undefined = o.categoryId && cats.has(o.categoryId) ? o.categoryId : null;
+      if (!id) add(none, o);
+      for (const seen = new Set<string>(); id && !seen.has(id); id = store.nodes.get(id)?.category.parentId) {
+        seen.add(id);
+        const b = cats.get(id);
+        if (b) add(b, o);
+      }
+    }
+    const categories = [
+      ...nodes.map((n) => ({
+        ...strip(cats.get(n.category.id)!),
+        parentId: n.depth === 0 ? null : (n.category.parentId ?? null),
+        depth: n.depth,
+        path: n.path,
+        detailType: n.detailType,
+        private: !!detailSpec(n.detailType)?.private,
+      })),
+      ...(none.count + none.wishlist > 0 ? [{ ...strip(none), parentId: null, depth: 0, path: "Uncategorized", detailType: null, private: false }] : []),
+    ].filter((c) => c.count + c.wishlist > 0);
+
+    // Rooms: rolled up to the top-level room.
+    const roomsById = new Map(roomRows.map((r) => [r.id, r]));
+    const topRoom = (id: string) => {
+      let r = roomsById.get(id);
+      for (let hops = 0; r?.parentId && roomsById.has(r.parentId) && hops < 20; hops++) r = roomsById.get(r.parentId);
+      return r;
+    };
+    const roomBuckets = new Map<string, B>();
+    for (const { o } of owned) {
+      const top = o.roomId ? topRoom(o.roomId) : undefined;
+      const key = top?.id ?? "none";
+      if (!roomBuckets.has(key)) roomBuckets.set(key, bucket(key, top ? roomLabel(top, roomsById) : "No room"));
+      add(roomBuckets.get(key)!, o);
+    }
+
+    const ownerBuckets = new Map<string, B>();
+    for (const { o } of counted) {
+      const key = o.pregnancyId ? `baby:${o.pregnancyId}` : o.petId ? `pet:${o.petId}` : o.ownerPersonId ? o.owner : "household";
+      if (!ownerBuckets.has(key)) ownerBuckets.set(key, bucket(key, o.ownerPersonId || o.petId || o.pregnancyId ? o.owner : "Household"));
+      add(ownerBuckets.get(key)!, o);
+    }
+    const ranked = (m: Map<string, B>) => [...m.values()].filter((b) => b.count + b.wishlist > 0).sort((a, b) => Number(a.key === "none") - Number(b.key === "none") || b.count - a.count).map(strip);
+
+    return {
+      owned: { count: owned.length, value: Math.round(owned.reduce((n, r) => n + cost(r.o), 0) * 100) / 100 },
+      statusCounts: {
+        WISHLIST: rows.filter((r) => r.o.status === "WISHLIST").length,
+        DRAFT: rows.filter((r) => r.o.status === "DRAFT").length,
+        PAST: rows.filter((r) => r.o.status === "SOLD" || r.o.status === "GIVEN_AWAY").length,
+      },
+      wishlist: wishlistSummary(rows.filter((r) => r.o.status === "WISHLIST").map((r) => r.o)) as any,
+      lowStock: owned.filter((r) => r.o.lowStock).length,
+      categories,
+      rooms: ranked(roomBuckets),
+      owners: ranked(ownerBuckets),
+      recent: counted
+        .filter((r) => r.raw.createdAt)
+        .sort((a, b) => String(b.raw.createdAt).localeCompare(String(a.raw.createdAt)))
+        .slice(0, 12)
+        .map((r) => r.o),
       hiddenPrivate: !viewer.username,
     };
   },
@@ -1033,6 +1159,7 @@ export const saveAmmoThreshold = defineOp({
 
 export const inventoryItemOps = [
   listInventory,
+  getInventoryOverview,
   getInventoryItem,
   manageInventoryItem,
   addInventoryItems,
