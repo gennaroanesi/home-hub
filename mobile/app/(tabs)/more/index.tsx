@@ -61,6 +61,7 @@ const FEATURE_ROWS: FeatureRow[] = [
       { label: "Trips", route: "/more/wardrobe?tab=trips" },
     ],
   },
+  { label: "Inventory", icon: "cube-outline", route: "/more/inventory" },
   { label: "Health", icon: "medkit-outline", route: "/more/health" },
   { label: "Documents", icon: "document-text-outline", route: "/more/documents" },
   { label: "Pets", icon: "paw-outline", route: "/more/pets" },

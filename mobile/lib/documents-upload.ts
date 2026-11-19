@@ -51,7 +51,7 @@ export async function uploadDocumentFile(args: {
   uri: string;
   contentType: string;
   filename?: string;
-  prefix?: "documents" | "pets" | "people" | "wardrobe";
+  prefix?: "documents" | "pets" | "people" | "wardrobe" | "inventory";
 }): Promise<UploadedDocFile> {
   const { uri, contentType, prefix } = args;
 

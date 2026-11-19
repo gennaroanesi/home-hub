@@ -195,12 +195,12 @@ const WEB_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 
 /**
  * Pick photos with the camera or library and upload them under
- * home/wardrobe/ (presigned /api/documents/upload-url, prefix "wardrobe",
+ * home/wardrobe/ or home/inventory/ (presigned /api/documents/upload-url,
  * like the web's uploadWardrobePhotos). Returns the new keys. `max` caps
  * a library pick. `webTypesOnly` (try-on reference photos) skips anything
  * but JPEG / PNG / WebP, which is all the renderer takes.
  */
-export async function pickWardrobePhotos(source: "camera" | "library", max = 6, webTypesOnly = false): Promise<string[]> {
+export async function pickWardrobePhotos(source: "camera" | "library", max = 6, webTypesOnly = false, prefix: "wardrobe" | "inventory" = "wardrobe"): Promise<string[]> {
   const perm =
     source === "camera" ? await ImagePicker.requestCameraPermissionsAsync() : await ImagePicker.requestMediaLibraryPermissionsAsync();
   if (!perm.granted) {
@@ -222,7 +222,7 @@ export async function pickWardrobePhotos(source: "camera" | "library", max = 6, 
       continue;
     }
     try {
-      const up = await uploadDocumentFile({ uri: a.uri, contentType, filename: a.fileName ?? "wardrobe.jpg", prefix: "wardrobe" });
+      const up = await uploadDocumentFile({ uri: a.uri, contentType, filename: a.fileName ?? `${prefix}.jpg`, prefix });
       keys.push(up.s3Key);
     } catch (err: any) {
       Alert.alert("Couldn't upload a photo", err?.message ?? String(err));
@@ -232,11 +232,11 @@ export async function pickWardrobePhotos(source: "camera" | "library", max = 6, 
 }
 
 /** Ask camera or library, then pick + upload. */
-export function choosePhotoSource(onKeys: (keys: string[]) => void, setBusy: (b: boolean) => void, max = 6, webTypesOnly = false) {
+export function choosePhotoSource(onKeys: (keys: string[]) => void, setBusy: (b: boolean) => void, max = 6, webTypesOnly = false, prefix: "wardrobe" | "inventory" = "wardrobe") {
   const run = async (src: "camera" | "library") => {
     setBusy(true);
     try {
-      const keys = await pickWardrobePhotos(src, max, webTypesOnly);
+      const keys = await pickWardrobePhotos(src, max, webTypesOnly, prefix);
       if (keys.length) onKeys(keys);
     } finally {
       setBusy(false);
