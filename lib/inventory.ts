@@ -151,11 +151,8 @@ export const PRIORITY_LABELS = {
   NICE_TO_HAVE: "Nice to have",
 } as const;
 
-export const CLOTHING_SIZE_PRESETS = {
-  baby: ["Preemie", "NB", "0-3M", "3-6M", "6-9M", "9-12M", "12-18M", "18-24M"],
-  toddler: ["2T", "3T", "4T", "5T"],
-  adult: ["XS", "S", "M", "L", "XL", "XXL"],
-} as const;
+export { CLOTHING_SIZE_PRESETS } from "./inventory-details";
+import { CLOTHING_SIZE_PRESETS } from "./inventory-details";
 
 // Order for sorting baby/toddler clothes by size; unknown sizes sort last.
 const SIZE_ORDER: string[] = [
@@ -263,20 +260,6 @@ export async function approveDrafts(client: DataClient, items: DraftLike[], toda
       draftStatus: null,
       ...(status === "OWNED" && !item.acquiredAt ? { acquiredAt: today } : {}),
     });
-    if (!errors?.length) n++;
-  }
-  return n;
-}
-
-/** Delete items along with their clothing / consumable detail rows. */
-export async function deleteInventoryItems(client: DataClient, itemIds: string[]): Promise<number> {
-  let n = 0;
-  for (const id of itemIds) {
-    for (const model of ["homeInventoryClothing", "homeInventoryConsumable"]) {
-      const { data } = await client.models[model].list({ filter: { itemId: { eq: id } }, limit: 100 });
-      for (const row of data ?? []) await client.models[model].delete({ id: row.id });
-    }
-    const { errors } = await client.models.homeInventoryItem.delete({ id });
     if (!errors?.length) n++;
   }
   return n;

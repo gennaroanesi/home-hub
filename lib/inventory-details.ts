@@ -45,6 +45,12 @@ const str = (v: unknown) => (v === null || v === undefined || v === "" ? null : 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
 const label = (f: DetailField | undefined, v: unknown) => (v == null || v === "" ? null : f?.optionLabels?.[String(v)] ?? String(v));
 
+export const CLOTHING_SIZE_PRESETS = {
+  baby: ["Preemie", "NB", "0-3M", "3-6M", "6-9M", "9-12M", "12-18M", "18-24M"],
+  toddler: ["2T", "3T", "4T", "5T"],
+  adult: ["XS", "S", "M", "L", "XL", "XXL"],
+} as const;
+
 const FIREARM_TYPES = ["HANDGUN", "RIFLE", "SHOTGUN", "SBR", "SUPPRESSOR", "OTHER"] as const;
 const AMMO_UNITS = ["ROUNDS", "BOX", "CASE"] as const;
 const FILAMENT_MATERIALS = ["PLA", "PLA_CF", "PETG", "PETG_CF", "ABS", "ASA", "TPU", "NYLON", "PA", "PA_CF", "PA6_GF", "PC", "PVA", "HIPS", "OTHER"] as const;
@@ -64,7 +70,7 @@ export const DETAIL_SPECS: Record<DetailType, DetailSpec> = {
     model: "homeInventoryClothing",
     private: false,
     fields: [
-      { key: "size", label: "Size", kind: "text", hint: "NB, 0-3M, 3T, M…" },
+      { key: "size", label: "Size", kind: "text", options: [...CLOTHING_SIZE_PRESETS.baby, ...CLOTHING_SIZE_PRESETS.toddler, ...CLOTHING_SIZE_PRESETS.adult] },
       { key: "color", label: "Color", kind: "text" },
       { key: "type", label: "Type", kind: "text", options: ["Onesie", "Sleeper", "Bodysuit", "Pants", "Shirt", "Sweater", "Jacket", "Dress", "Socks", "Hat", "Shoes"] },
       { key: "season", label: "Season", kind: "choice", options: ["ALL", "WARM", "COLD"], optionLabels: { ALL: "All year", WARM: "Warm", COLD: "Cold" } },

@@ -1,15 +1,14 @@
 "use client";
 
-// Household inventory + wishlist (the wishlist doubles as the private
-// baby registry).
+// Inventory + wishlist (the wishlist doubles as the private baby registry).
 //
-// Data model is modular: homeInventoryItem is the base row; items in a
-// category with a detail type also have a detail row (homeInventoryClothing /
-// homeInventoryConsumable) keyed by itemId. This page loads them and
-// joins them in memory. Janet writes the same tables (list_inventory,
-// manage_inventory_item, adjust_inventory_quantity) and also restocks
-// low consumables onto the shopping list automatically; here that's a
-// manual "Add to list" button.
+// Items come from and are saved through the inventory ops (list_inventory,
+// manage_inventory_item, …, lib/ops/inventory-items.ts), the same ones the
+// phone and Janet use: they join each item's detail fields (clothing,
+// consumable, firearm, ammo, filament, instrument, photography, electronic:
+// lib/inventory-details.ts), keep firearms and ammo to their owner, and
+// restock low consumables. The add / edit form's detail section is
+// generated from the same spec. docs/inventory-specialized.md.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
@@ -19,50 +18,44 @@ import { Spinner, addToast } from "@heroui/react";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
-import {
-  Modal,
-  ModalContent,
-  ModalHeader,
-  ModalBody,
-  ModalFooter,
-} from "@heroui/modal";
-import { FaBoxOpen, FaCamera, FaPlus, FaMinus, FaExternalLinkAlt, FaFolderOpen } from "react-icons/fa";
+import { Modal, ModalContent, ModalHeader, ModalBody, ModalFooter } from "@heroui/modal";
+import { FaBoxOpen, FaCamera, FaPlus, FaMinus, FaExternalLinkAlt, FaFolderOpen, FaLock } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
 import { CategoryManager } from "@/components/inventory/category-manager";
+import { DetailFields } from "@/components/inventory/detail-fields";
+import { AmmoPanel } from "@/components/inventory/ammo-panel";
 import { householdMembers } from "@/lib/household";
 import { babyProfileFor } from "@/lib/pregnancy";
 import { listAllPages } from "@/lib/list-all";
+import { callOp } from "@/lib/ops-client";
+import type { OpOutput } from "@/lib/ops/registry";
 import {
   ACQUIRED_VIA_LABELS,
-  CLOTHING_SIZE_PRESETS,
   INVENTORY_STATUSES,
   INVENTORY_STATUS_LABELS,
   PRIORITY_LABELS,
   categoryAndDescendants,
   categoryTree,
   formatUsd,
-  isLowStock,
   sizeRank,
   spentTotal,
   wishlistSummary,
   type CategoryNode,
   type InventoryStatus,
 } from "@/lib/inventory";
+import { DETAIL_SPECS, detailSpec, type DetailType } from "@/lib/inventory-details";
 import { roomAndDescendants, roomLabel } from "@/lib/floorplan";
-import { approveDrafts, deleteInventoryItems } from "@/lib/inventory";
 import { originalPhotoUrl, photoUrl } from "@/lib/image-loader";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
+type Item = OpOutput<"list_inventory">["items"][number];
 type Person = Schema["homePerson"]["type"];
 type Pregnancy = Schema["homePregnancy"]["type"];
-type Item = Schema["homeInventoryItem"]["type"];
 type Category = Schema["homeInventoryCategory"]["type"];
-type Clothing = Schema["homeInventoryClothing"]["type"];
-type Consumable = Schema["homeInventoryConsumable"]["type"];
 type ShoppingList = Schema["homeShoppingList"]["type"];
 type Room = Schema["homeRoom"]["type"];
 type Pet = Schema["homePet"]["type"];
@@ -84,25 +77,16 @@ const TABS: { key: Tab; label: string }[] = [
 ];
 
 // Owner filter / picker keys: "" = all (filter only), "household",
-// "baby:<pregnancyId>", or a homePerson id.
+// "baby:<pregnancyId>", "pet:<petId>", or a homePerson id. The ops take
+// the same keys as ownerName.
 const HOUSEHOLD = "household";
 const babyKey = (pregnancyId: string) => `baby:${pregnancyId}`;
-
 const petKey = (petId: string) => `pet:${petId}`;
 
 function ownerKeyOf(i: Item): string {
   if (i.pregnancyId) return babyKey(i.pregnancyId);
   if (i.petId) return petKey(i.petId);
   return i.ownerPersonId ?? HOUSEHOLD;
-}
-
-// Exactly one owner id is set (or none = household).
-function ownerFieldsFromKey(key: string): { ownerPersonId: string | null; pregnancyId: string | null; petId: string | null } {
-  const none = { ownerPersonId: null, pregnancyId: null, petId: null };
-  if (key.startsWith("baby:")) return { ...none, pregnancyId: key.slice(5) };
-  if (key.startsWith("pet:")) return { ...none, petId: key.slice(4) };
-  if (!key || key === HOUSEHOLD) return none;
-  return { ...none, ownerPersonId: key };
 }
 
 const PET_EMOJI: Record<string, string> = { DOG: "🐶", CAT: "🐱" };
@@ -113,6 +97,8 @@ function todayYmd(): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+const failed = (title: string, error: string) => addToast({ title, description: error, color: "danger" });
+
 // ── Page ─────────────────────────────────────────────────────────────────
 
 export default function InventoryPage() {
@@ -120,8 +106,6 @@ export default function InventoryPage() {
   const [loading, setLoading] = useState(true);
   const [items, setItems] = useState<Item[]>([]);
   const [categories, setCategories] = useState<Category[]>([]);
-  const [clothing, setClothing] = useState<Clothing[]>([]);
-  const [consumables, setConsumables] = useState<Consumable[]>([]);
   const [people, setPeople] = useState<Person[]>([]);
   const [pregnancies, setPregnancies] = useState<Pregnancy[]>([]);
   const [lists, setLists] = useState<ShoppingList[]>([]);
@@ -130,6 +114,7 @@ export default function InventoryPage() {
   const [floors, setFloors] = useState<Floor[]>([]);
   const [roomFilter, setRoomFilter] = useState("");
   const [defaultRoom, setDefaultRoom] = useState("");
+  const [version, setVersion] = useState(0);
 
   const [tab, setTab] = useState<Tab>("OWNED");
   const [category, setCategory] = useState("");
@@ -166,15 +151,21 @@ export default function InventoryPage() {
     }
   }, [router.isReady, router.query.roomId, router.query.new]);
 
+  async function loadItems() {
+    const r = await callOp(client, "list_inventory", { status: "ALL", limit: 1000 });
+    if ("error" in r) throw new Error(r.error);
+    setItems(r.result.items);
+    setVersion((v) => v + 1);
+    return r.result.items;
+  }
+
   async function loadAll() {
     try {
       // Rooms/floors are optional: an older amplify_outputs.json (before
       // the house map was deployed) simply doesn't have those models.
       const models = client.models as Partial<typeof client.models>;
-      const [it, cl, co, ppl, preg, sl, rm, fl, cat] = await Promise.all([
-        listAllPages<Item>(client.models.homeInventoryItem),
-        listAllPages<Clothing>(client.models.homeInventoryClothing),
-        listAllPages<Consumable>(client.models.homeInventoryConsumable),
+      const [it, ppl, preg, sl, rm, fl, cat] = await Promise.all([
+        loadItems(),
         listAllPages<Person>(client.models.homePerson),
         listAllPages<Pregnancy>(client.models.homePregnancy),
         listAllPages<ShoppingList>(client.models.homeShoppingList),
@@ -182,15 +173,11 @@ export default function InventoryPage() {
         models.homeFloor ? listAllPages<Floor>(models.homeFloor) : Promise.resolve([] as Floor[]),
         models.homeInventoryCategory ? listAllPages<Category>(models.homeInventoryCategory) : Promise.resolve([] as Category[]),
       ]);
-      // Separate so an older backend without petId doesn't block the page.
       listAllPages<Pet>(client.models.homePet).then(setPets, () => setPets([]));
       setCategories(cat);
       setRooms(rm);
       setFloors(fl);
       if (it.some((i) => i.status === "DRAFT")) setTab((cur) => (cur === "OWNED" ? "DRAFT" : cur));
-      setItems(it);
-      setClothing(cl);
-      setConsumables(co);
       setPeople(ppl);
       setPregnancies(preg);
       setLists(sl.filter((l) => !l.isArchived).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)));
@@ -201,9 +188,6 @@ export default function InventoryPage() {
       setLoading(false);
     }
   }
-
-  const clothingByItem = useMemo(() => new Map(clothing.map((c) => [c.itemId, c])), [clothing]);
-  const consumableByItem = useMemo(() => new Map(consumables.map((c) => [c.itemId, c])), [consumables]);
 
   // Owner options: household, the baby on the way, household members,
   // then anyone else who already owns something (e.g. a kid).
@@ -233,7 +217,7 @@ export default function InventoryPage() {
     return opts;
   }, [people, pregnancies, pets, items]);
 
-  const ownerLabel = (i: Item) => ownerOptions.find((o) => o.key === ownerKeyOf(i))?.label ?? "Unknown";
+  const ownerLabel = (i: Item) => ownerOptions.find((o) => o.key === ownerKeyOf(i))?.label ?? i.owner;
 
   // Rooms by floor, then name, labelled "Room › Closet".
   const roomOptions = useMemo<RoomOption[]>(() => {
@@ -244,17 +228,13 @@ export default function InventoryPage() {
       .sort((a, b) => a.level - b.level || a.label.localeCompare(b.label))
       .map(({ key, label, floor }) => ({ key, label, floor }));
   }, [rooms, floors]);
-  const roomLabelById = useMemo(() => new Map(roomOptions.map((o) => [o.key, o.label])), [roomOptions]);
   const roomFilterIds = useMemo(() => (roomFilter ? roomAndDescendants(roomFilter, rooms) : null), [roomFilter, rooms]);
 
   const categoryNodes = useMemo(() => categoryTree(categories), [categories]);
   const categoryFilterIds = useMemo(() => (category ? categoryAndDescendants(category, categories) : null), [category, categories]);
 
   const tabItems = useMemo(
-    () =>
-      items.filter((i) =>
-        tab === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === tab,
-      ),
+    () => items.filter((i) => (tab === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === tab)),
     [items, tab],
   );
 
@@ -266,15 +246,13 @@ export default function InventoryPage() {
       .filter((i) => !roomFilterIds || (!!i.roomId && roomFilterIds.has(i.roomId)))
       .filter((i) => {
         if (!q) return true;
-        const c = clothingByItem.get(i.id);
-        const room = i.roomId ? roomLabelById.get(i.roomId) : null;
-        return [i.name, i.brand, i.notes, room, i.location, ...(i.tags ?? []), c?.type, c?.color, c?.size]
+        return [i.name, i.brand, i.notes, i.room, i.location, ...i.tags, i.summary, i.parentName, ...Object.values(i.details ?? {}).filter((v) => typeof v === "string")]
           .filter(Boolean)
           .join(" ")
           .toLowerCase()
           .includes(q);
       });
-  }, [tabItems, categoryFilterIds, owner, roomFilterIds, roomLabelById, search, clothingByItem]);
+  }, [tabItems, categoryFilterIds, owner, roomFilterIds, search]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Item[]>();
@@ -293,90 +271,61 @@ export default function InventoryPage() {
         rows: rows.sort(
           (a, b) =>
             (tab === "WISHLIST" ? Number(a.priority !== "MUST_HAVE") - Number(b.priority !== "MUST_HAVE") : 0) ||
-            sizeRank(clothingByItem.get(a.id)?.size) - sizeRank(clothingByItem.get(b.id)?.size) ||
+            sizeRank(a.details?.size as string | undefined) - sizeRank(b.details?.size as string | undefined) ||
             a.name.localeCompare(b.name),
         ),
       }));
-  }, [visible, tab, clothingByItem, categoryNodes]);
+  }, [visible, tab, categoryNodes]);
 
   const wish = useMemo(() => wishlistSummary(visible), [visible]);
   const spent = useMemo(() => spentTotal(visible), [visible]);
-  const lowCount = useMemo(
-    () =>
-      items.filter((i) => {
-        const k = consumableByItem.get(i.id);
-        return i.status === "OWNED" && !!k && isLowStock(i.quantity, k.lowStockThreshold);
-      }).length,
-    [items, consumableByItem],
-  );
+  const lowCount = useMemo(() => items.filter((i) => i.lowStock).length, [items]);
+  const hasAmmo = useMemo(() => items.some((i) => i.detailType === "AMMO"), [items]);
 
   function upsertLocal(item: Item) {
     setItems((prev) => (prev.some((i) => i.id === item.id) ? prev.map((i) => (i.id === item.id ? item : i)) : [...prev, item]));
   }
 
   async function adjustQuantity(item: Item, delta: number) {
-    const next = Math.max(0, (item.quantity ?? 0) + delta);
-    const { data, errors } = await client.models.homeInventoryItem.update({ id: item.id, quantity: next });
-    if (errors?.length || !data) {
-      addToast({ title: "Update failed", description: errors?.[0]?.message, color: "danger" });
-      return;
-    }
-    upsertLocal(data);
+    const r = await callOp(client, "adjust_inventory_quantity", { itemId: item.id, delta });
+    if ("error" in r) return failed("Update failed", r.error);
+    upsertLocal({ ...item, quantity: r.result.after, lowStock: r.result.restock?.lowStock ?? item.lowStock });
+    if (r.result.restock?.addedToList) addToast({ title: `Running low: added to ${r.result.restock.addedToList}`, color: "warning" });
   }
 
-  async function approve(list: Item[]) {
-    const n = await approveDrafts(client, list, todayYmd());
-    addToast({ title: `Approved ${n} item${n === 1 ? "" : "s"}`, color: "success" });
-    await loadAll();
-  }
-
-  async function discard(list: Item[]) {
-    if (list.length > 1 && !confirm(`Discard ${list.length} drafts?`)) return;
-    const n = await deleteInventoryItems(client, list.map((i) => i.id));
-    addToast({ title: `Discarded ${n} draft${n === 1 ? "" : "s"}` });
-    await loadAll();
+  async function review(action: "approve" | "discard", list: Item[]) {
+    if (action === "discard" && list.length > 1 && !confirm(`Discard ${list.length} drafts?`)) return;
+    const r = await callOp(client, "review_inventory_drafts", { action, itemIds: list.map((i) => i.id) });
+    if ("error" in r) return failed("Couldn't update drafts", r.error);
+    const n = action === "approve" ? r.result.approved : r.result.discarded;
+    addToast({ title: `${action === "approve" ? "Approved" : "Discarded"} ${n} item${n === 1 ? "" : "s"}`, color: action === "approve" ? "success" : "default" });
+    await loadItems();
   }
 
   async function markOwned(item: Item) {
-    const { data, errors } = await client.models.homeInventoryItem.update({
-      id: item.id,
-      status: "OWNED",
-      acquiredAt: todayYmd(),
-      acquiredVia: item.acquiredVia ?? "PURCHASED",
-      ...((item.acquiredVia ?? "PURCHASED") === "PURCHASED" && item.pricePaid == null && item.estimatedPrice != null
-        ? { pricePaid: item.estimatedPrice }
-        : {}),
-    });
-    if (errors?.length || !data) {
-      addToast({ title: "Update failed", description: errors?.[0]?.message, color: "danger" });
-      return;
-    }
-    upsertLocal(data);
-    addToast({ title: `${data.name} moved to Owned`, description: "Edit it to record a gift or the actual price.", color: "success" });
+    const r = await callOp(client, "manage_inventory_item", { action: "mark_owned", itemId: item.id });
+    if ("error" in r) return failed("Update failed", r.error);
+    if (r.result.item) upsertLocal(r.result.item);
+    addToast({ title: `${item.name} moved to Owned`, description: "Edit it to record a gift or the actual price.", color: "success" });
   }
 
   async function addToShoppingList(item: Item) {
-    const k = consumableByItem.get(item.id);
-    const list =
-      lists.find((l) => l.id === k?.shoppingListId) ??
-      lists.find((l) => /supermarket|grocer/i.test(l.name)) ??
-      lists[0];
+    const listId = item.details?.shoppingListId as string | undefined;
+    const list = lists.find((l) => l.id === listId) ?? lists.find((l) => /supermarket|grocer/i.test(l.name)) ?? lists[0];
     if (!list) {
       addToast({ title: "No shopping list to add to", color: "warning" });
       return;
     }
+    const unit = item.details?.unit as string | undefined;
     const { errors } = await client.models.homeShoppingItem.create({
       listId: list.id,
       name: item.name,
-      notes: `Low stock (${item.quantity ?? 0}${k?.unit ? ` ${k.unit}` : ""} left)`,
+      notes: `Low stock (${item.quantity ?? 0}${unit ? ` ${unit}` : ""} left)`,
       isChecked: false,
       addedBy: "inventory",
       sortOrder: 0,
     });
-    if (errors?.length) {
-      addToast({ title: "Couldn't add to list", description: errors[0].message, color: "danger" });
-      return;
-    }
+    if (errors?.length) return failed("Couldn't add to list", errors[0].message);
     addToast({ title: `Added to ${list.name}`, color: "success" });
   }
 
@@ -407,9 +356,7 @@ export default function InventoryPage() {
         {/* Tabs */}
         <div className="flex flex-wrap gap-2 mb-4">
           {TABS.map((t) => {
-            const count = items.filter((i) =>
-              t.key === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === t.key,
-            ).length;
+            const count = items.filter((i) => (t.key === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === t.key)).length;
             if (t.key === "DRAFT" && count === 0 && tab !== "DRAFT") return null;
             return (
               <button
@@ -417,22 +364,14 @@ export default function InventoryPage() {
                 type="button"
                 onClick={() => setTab(t.key)}
                 className={`px-3 py-1 rounded-full text-sm ${
-                  tab === t.key
-                    ? "bg-primary text-primary-foreground"
-                    : t.key === "DRAFT"
-                      ? "bg-warning-100 text-warning-700"
-                      : "bg-default-100 text-default-600"
+                  tab === t.key ? "bg-primary text-primary-foreground" : t.key === "DRAFT" ? "bg-warning-100 text-warning-700" : "bg-default-100 text-default-600"
                 }`}
               >
                 {t.label} <span className="opacity-70">{count}</span>
               </button>
             );
           })}
-          {lowCount > 0 && (
-            <span className="px-3 py-1 rounded-full text-sm bg-warning-100 text-warning-700">
-              {lowCount} running low
-            </span>
-          )}
+          {lowCount > 0 && <span className="px-3 py-1 rounded-full text-sm bg-warning-100 text-warning-700">{lowCount} running low</span>}
         </div>
 
         {/* Filters */}
@@ -440,7 +379,7 @@ export default function InventoryPage() {
           <Input
             size="sm"
             aria-label="Search"
-            placeholder="Search name, brand, size, color, tags…"
+            placeholder="Search name, brand, size, color, caliber, part number…"
             value={search}
             onValueChange={setSearch}
             isClearable
@@ -458,27 +397,13 @@ export default function InventoryPage() {
               <SelectItem key={n.category.id}>{n.path}</SelectItem>
             ))}
           </Select>
-          <Select
-            size="sm"
-            aria-label="Owner"
-            placeholder="Everyone"
-            selectedKeys={owner ? [owner] : []}
-            onChange={(e) => setOwner(e.target.value)}
-            className="sm:max-w-[200px]"
-          >
+          <Select size="sm" aria-label="Owner" placeholder="Everyone" selectedKeys={owner ? [owner] : []} onChange={(e) => setOwner(e.target.value)} className="sm:max-w-[200px]">
             {ownerOptions.map((o) => (
               <SelectItem key={o.key}>{o.label}</SelectItem>
             ))}
           </Select>
           {roomOptions.length > 0 && (
-            <Select
-              size="sm"
-              aria-label="Room"
-              placeholder="Any room"
-              selectedKeys={roomFilter ? [roomFilter] : []}
-              onChange={(e) => setRoomFilter(e.target.value)}
-              className="sm:max-w-[220px]"
-            >
+            <Select size="sm" aria-label="Room" placeholder="Any room" selectedKeys={roomFilter ? [roomFilter] : []} onChange={(e) => setRoomFilter(e.target.value)} className="sm:max-w-[220px]">
               {roomOptions.map((o) => (
                 <SelectItem key={o.key} textValue={o.label}>
                   {o.label}
@@ -493,13 +418,12 @@ export default function InventoryPage() {
         {!loading && tab === "DRAFT" && visible.length > 0 && (
           <div className="mb-6 flex flex-wrap items-center gap-2 rounded-md border border-warning-200 bg-warning-50 px-3 py-2">
             <p className="text-sm text-warning-800 flex-1 min-w-[200px]">
-              {visible.length} item{visible.length === 1 ? "" : "s"} identified by Janet — check them, then approve.
-              Drafts don&apos;t count in totals, the map or low-stock refills.
+              {visible.length} item{visible.length === 1 ? "" : "s"} identified by Janet — check them, then approve. Drafts don&apos;t count in totals, the map or low-stock refills.
             </p>
-            <Button size="sm" color="success" variant="flat" onPress={() => approve(visible)}>
+            <Button size="sm" color="success" variant="flat" onPress={() => review("approve", visible)}>
               Approve all
             </Button>
-            <Button size="sm" color="danger" variant="light" onPress={() => discard(visible)}>
+            <Button size="sm" color="danger" variant="light" onPress={() => review("discard", visible)}>
               Discard all
             </Button>
           </div>
@@ -512,6 +436,7 @@ export default function InventoryPage() {
             <Stat label="No price yet" value={String(wish.unpriced)} muted={wish.unpriced === 0} />
           </div>
         )}
+        {!loading && tab === "OWNED" && hasAmmo && <AmmoPanel client={client} version={version} onChanged={() => void loadItems()} />}
         {!loading && tab === "OWNED" && spent > 0 && (
           <p className="mb-6 text-sm text-default-500">
             Spent on what&apos;s shown: <span className="font-semibold text-foreground">{formatUsd(spent)}</span>{" "}
@@ -526,11 +451,7 @@ export default function InventoryPage() {
         ) : grouped.length === 0 ? (
           <div className="text-center py-12 text-default-400">
             <p>{tabItems.length === 0 ? `Nothing here yet.` : "No items match these filters."}</p>
-            {tabItems.length === 0 && (
-              <p className="text-sm mt-1">
-                Add items here, or tell Janet — “add a stroller to the baby wishlist, about $400”.
-              </p>
-            )}
+            {tabItems.length === 0 && <p className="text-sm mt-1">Add items here, or tell Janet — “add a stroller to the baby wishlist, about $400”.</p>}
           </div>
         ) : (
           <div className="space-y-8">
@@ -544,18 +465,15 @@ export default function InventoryPage() {
                     <ItemRow
                       key={i.id}
                       item={i}
-                      clothing={clothingByItem.get(i.id)}
-                      consumable={consumableByItem.get(i.id)}
                       ownerLabel={ownerLabel(i)}
-                      roomLabel={i.roomId ? roomLabelById.get(i.roomId) : undefined}
                       onEdit={() => {
                         setEditing(i);
                         setModalOpen(true);
                       }}
                       onAdjust={(d) => adjustQuantity(i, d)}
                       onMarkOwned={() => markOwned(i)}
-                      onApprove={() => approve([i])}
-                      onDiscard={() => discard([i])}
+                      onApprove={() => review("approve", [i])}
+                      onDiscard={() => review("discard", [i])}
                       onAddToList={() => addToShoppingList(i)}
                     />
                   ))}
@@ -570,26 +488,18 @@ export default function InventoryPage() {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         editing={editing}
+        items={items}
         defaultStatus={tab === "WISHLIST" ? "WISHLIST" : "OWNED"}
         defaultCategory={category}
         categoryNodes={categoryNodes}
         defaultOwner={owner || HOUSEHOLD}
-        clothing={editing ? clothingByItem.get(editing.id) : undefined}
-        consumable={editing ? consumableByItem.get(editing.id) : undefined}
         ownerOptions={ownerOptions}
         roomOptions={roomOptions}
         defaultRoom={defaultRoom}
         lists={lists}
-        onSaved={loadAll}
+        onSaved={() => void loadItems()}
       />
-      <CategoryManager
-        isOpen={managerOpen}
-        onClose={() => setManagerOpen(false)}
-        client={client}
-        categories={categories}
-        items={items}
-        onChanged={loadAll}
-      />
+      <CategoryManager isOpen={managerOpen} onClose={() => setManagerOpen(false)} client={client} categories={categories} items={items} onChanged={loadAll} />
     </DefaultLayout>
   );
 }
@@ -607,10 +517,7 @@ function Stat({ label, value, muted }: { label: string; value: string; muted?: b
 
 function ItemRow({
   item,
-  clothing,
-  consumable,
   ownerLabel,
-  roomLabel: roomName,
   onEdit,
   onAdjust,
   onMarkOwned,
@@ -619,10 +526,7 @@ function ItemRow({
   onDiscard,
 }: {
   item: Item;
-  clothing?: Clothing;
-  consumable?: Consumable;
   ownerLabel: string;
-  roomLabel?: string;
   onEdit: () => void;
   onAdjust: (delta: number) => void;
   onMarkOwned: () => void;
@@ -630,55 +534,43 @@ function ItemRow({
   onDiscard: () => void;
   onAddToList: () => void;
 }) {
-  const low = item.status === "OWNED" && !!consumable && isLowStock(item.quantity, consumable.lowStockThreshold);
+  const consumable = item.detailType === "CONSUMABLE";
   const qty = item.quantity ?? 1;
   const price = item.status === "WISHLIST" ? item.estimatedPrice : item.pricePaid;
 
   const chips: string[] = [];
-  if (clothing?.size) chips.push(clothing.size);
-  if (clothing?.color) chips.push(clothing.color);
-  if (clothing?.type) chips.push(clothing.type);
+  if (item.summary && !consumable) chips.push(item.summary);
   if (item.brand) chips.push(item.brand);
+  if (item.parentName) chips.push(`on ${item.parentName}`);
+  if (item.partCount) chips.push(`${item.partCount} part${item.partCount === 1 ? "" : "s"}`);
   if (item.acquiredVia && item.acquiredVia !== "PURCHASED") {
-    chips.push(item.giftFrom ? `${ACQUIRED_VIA_LABELS[item.acquiredVia]} from ${item.giftFrom}` : ACQUIRED_VIA_LABELS[item.acquiredVia]);
+    const via = ACQUIRED_VIA_LABELS[item.acquiredVia as keyof typeof ACQUIRED_VIA_LABELS] ?? item.acquiredVia;
+    chips.push(item.giftFrom ? `${via} from ${item.giftFrom}` : via);
   }
-  for (const t of item.tags ?? []) if (t) chips.push(`#${t}`);
+  for (const t of item.tags) chips.push(`#${t}`);
 
   return (
     <div className="flex items-center gap-3 px-3 py-2">
-      {item.imageKeys?.[0] ? (
+      {item.imageKeys[0] ? (
         <button type="button" onClick={onEdit} className="shrink-0" aria-label="Open photo">
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={photoUrl(item.imageKeys[0], 96)}
-            alt=""
-            loading="lazy"
-            className="w-10 h-10 rounded object-cover bg-default-100"
-          />
+          <img src={photoUrl(item.imageKeys[0], 96)} alt="" loading="lazy" className="w-10 h-10 rounded object-cover bg-default-100" />
         </button>
       ) : null}
       <button type="button" onClick={onEdit} className="flex-1 min-w-0 text-left">
         <div className="flex flex-wrap items-center gap-2">
           <span className="text-sm font-medium text-foreground truncate">{item.name}</span>
-          {item.status === "WISHLIST" && item.priority === "MUST_HAVE" && (
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-100 text-primary-700">Must have</span>
-          )}
-          {low && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning-100 text-warning-700">Low</span>}
+          {item.private && <FaLock size={10} className="text-default-400" title="Only you can see this" />}
+          {item.status === "WISHLIST" && item.priority === "MUST_HAVE" && <span className="text-[10px] px-1.5 py-0.5 rounded bg-primary-100 text-primary-700">Must have</span>}
+          {item.lowStock && <span className="text-[10px] px-1.5 py-0.5 rounded bg-warning-100 text-warning-700">Low</span>}
           {item.url && (
-            <a
-              href={item.url}
-              target="_blank"
-              rel="noreferrer"
-              onClick={(e) => e.stopPropagation()}
-              className="text-default-400 hover:text-primary"
-              aria-label="Open link"
-            >
+            <a href={item.url} target="_blank" rel="noreferrer" onClick={(e) => e.stopPropagation()} className="text-default-400 hover:text-primary" aria-label="Open link">
               <FaExternalLinkAlt size={10} />
             </a>
           )}
         </div>
         <p className="text-xs text-default-500 truncate">
-          {[ownerLabel, ...chips, [roomName, item.location].filter(Boolean).join(": ")].filter(Boolean).join(" · ")}
+          {[ownerLabel, ...chips, [item.room, item.location].filter(Boolean).join(": ")].filter(Boolean).join(" · ")}
           {item.status === "WISHLIST" && item.neededBy && ` · by ${item.neededBy}`}
         </p>
       </button>
@@ -690,12 +582,12 @@ function ItemRow({
           </Button>
           <span className="text-sm w-12 text-center tabular-nums">
             {qty}
-            {consumable.unit ? <span className="text-[10px] text-default-400 block leading-none">{consumable.unit}</span> : null}
+            {item.details?.unit ? <span className="text-[10px] text-default-400 block leading-none">{String(item.details.unit)}</span> : null}
           </span>
           <Button isIconOnly size="sm" variant="light" aria-label="One more" onPress={() => onAdjust(1)}>
             <FaPlus size={10} />
           </Button>
-          {low && (
+          {item.lowStock && (
             <Button size="sm" variant="flat" color="warning" onPress={onAddToList}>
               Add to list
             </Button>
@@ -737,12 +629,11 @@ function ItemModal({
   isOpen,
   onClose,
   editing,
+  items,
   defaultStatus,
   defaultCategory,
   categoryNodes,
   defaultOwner,
-  clothing,
-  consumable,
   ownerOptions,
   roomOptions,
   defaultRoom,
@@ -752,12 +643,11 @@ function ItemModal({
   isOpen: boolean;
   onClose: () => void;
   editing: Item | null;
+  items: Item[];
   defaultStatus: InventoryStatus;
   defaultCategory: string;
   categoryNodes: CategoryNode<Category>[];
   defaultOwner: string;
-  clothing?: Clothing;
-  consumable?: Consumable;
   ownerOptions: { key: string; label: string }[];
   roomOptions: RoomOption[];
   defaultRoom: string;
@@ -765,13 +655,14 @@ function ItemModal({
   onSaved: () => void;
 }) {
   const [f, setF] = useState<Record<string, string>>({});
+  const [details, setDetails] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
   const [photos, setPhotos] = useState<string[]>([]);
   const [uploading, setUploading] = useState(false);
   const photoInputRef = useRef<HTMLInputElement>(null);
 
   // Presign → PUT straight to S3 (home/inventory/) → keep the key. The
-  // item row gets the keys on Save, so this works for new items too.
+  // item gets the keys on Save, so this works for new items too.
   async function uploadPhotos(files: FileList) {
     setUploading(true);
     try {
@@ -803,17 +694,19 @@ function ItemModal({
     if (!isOpen) return;
     const e = editing;
     const s = (v: unknown) => (v == null ? "" : String(v));
-    setPhotos((e?.imageKeys ?? []).filter((k): k is string => !!k));
+    setPhotos(e?.imageKeys ?? []);
+    setDetails(Object.fromEntries(Object.entries(e?.details ?? {}).map(([k, v]) => [k, s(v)])));
     setF({
       name: s(e?.name),
       categoryId: e ? s(e.categoryId) : defaultCategory,
       status: s(e?.status ?? defaultStatus),
       owner: e ? ownerKeyOf(e) : defaultOwner,
       roomId: e ? s(e.roomId) : defaultRoom,
+      parentItemId: s(e?.parentItemId),
       brand: s(e?.brand),
       quantity: s(e?.quantity ?? 1),
       location: s(e?.location),
-      tags: (e?.tags ?? []).filter(Boolean).join(", "),
+      tags: (e?.tags ?? []).join(", "),
       notes: s(e?.notes),
       url: s(e?.url),
       priority: s(e?.priority),
@@ -825,82 +718,60 @@ function ItemModal({
       acquiredAt: s(e?.acquiredAt),
       pricePaid: s(e?.pricePaid),
       priceSold: s(e?.priceSold),
-      size: s(clothing?.size),
-      color: s(clothing?.color),
-      clothingType: s(clothing?.type),
-      season: s(clothing?.season),
-      unit: s(consumable?.unit),
-      lowStockThreshold: s(consumable?.lowStockThreshold),
-      shoppingListId: s(consumable?.shoppingListId),
-      expiresOn: s(consumable?.expiresOn),
     });
-  }, [isOpen, editing, clothing, consumable, defaultStatus, defaultCategory, defaultOwner, defaultRoom]);
+  }, [isOpen, editing, defaultStatus, defaultCategory, defaultOwner, defaultRoom]);
 
-  const detailType = categoryNodes.find((n) => n.category.id === f.categoryId)?.detailType ?? null;
-  const str = (k: string) => (f[k]?.trim() ? f[k].trim() : null);
+  const detailType = (categoryNodes.find((n) => n.category.id === f.categoryId)?.detailType ?? null) as DetailType | null;
+  const isPrivate = !!detailSpec(detailType)?.private;
   const num = (k: string) => (f[k]?.trim() && !Number.isNaN(Number(f[k])) ? Number(f[k]) : null);
-  const int = (k: string) => (num(k) == null ? null : Math.round(num(k)!));
+  // A part can go on anything else that's still around (not itself or its own parts).
+  const parentOptions = useMemo(
+    () => items.filter((i) => i.id !== editing?.id && i.parentItemId !== editing?.id && i.status !== "SOLD" && i.status !== "GIVEN_AWAY").sort((a, b) => a.name.localeCompare(b.name)),
+    [items, editing],
+  );
 
   async function save() {
     if (!f.name?.trim()) {
       addToast({ title: "Name is required", color: "warning" });
       return;
     }
+    if (!f.categoryId && !editing) {
+      addToast({ title: "Pick a category", color: "warning" });
+      return;
+    }
     setSaving(true);
     try {
-      const status = f.status as InventoryStatus;
-      const base = {
+      const status = f.status as Exclude<InventoryStatus, "DRAFT">;
+      const r = await callOp(client, "manage_inventory_item", {
+        action: editing ? "update" : "create",
+        ...(editing ? { itemId: editing.id } : {}),
         name: f.name.trim(),
-        categoryId: str("categoryId"),
-        status,
-        ...ownerFieldsFromKey(f.owner),
+        categoryId: f.categoryId || null,
+        ...(editing?.status === "DRAFT" && status === ("DRAFT" as string) ? {} : { status }),
+        // Owner-only types always belong to whoever saves them.
+        ...(isPrivate ? {} : { ownerName: f.owner || HOUSEHOLD }),
+        roomId: f.roomId || null,
+        partOf: f.parentItemId || "",
         imageKeys: photos,
-        brand: str("brand"),
-        quantity: int("quantity") ?? 1,
-        roomId: str("roomId"),
-        location: str("location"),
+        brand: f.brand,
+        quantity: Math.max(0, Math.round(num("quantity") ?? 1)),
+        location: f.location,
         tags: f.tags ? f.tags.split(",").map((t) => t.trim()).filter(Boolean) : [],
-        notes: str("notes"),
-        url: str("url"),
-        priority: (str("priority") as "MUST_HAVE" | "NICE_TO_HAVE" | null) ?? null,
-        neededBy: str("neededBy"),
+        notes: f.notes,
+        url: f.url,
+        priority: (f.priority || null) as "MUST_HAVE" | "NICE_TO_HAVE" | null,
+        neededBy: f.neededBy,
         estimatedPrice: num("estimatedPrice"),
-        acquiredVia: (str("acquiredVia") as "PURCHASED" | "GIFT" | "HAND_ME_DOWN" | null) ?? null,
-        giftFrom: str("giftFrom"),
-        vendor: str("vendor"),
-        acquiredAt: str("acquiredAt") ?? (status === "OWNED" && editing?.status !== "OWNED" ? todayYmd() : null),
+        acquiredVia: (f.acquiredVia || null) as "PURCHASED" | "GIFT" | "HAND_ME_DOWN" | null,
+        giftFrom: f.giftFrom,
+        vendor: f.vendor,
+        acquiredAt: f.acquiredAt || (status === "OWNED" && editing?.status !== "OWNED" ? todayYmd() : ""),
         pricePaid: num("pricePaid"),
         priceSold: num("priceSold"),
-        ...((status === "SOLD" || status === "GIVEN_AWAY") && !editing?.disposedAt ? { disposedAt: todayYmd() } : {}),
-      };
-      const res = editing
-        ? await client.models.homeInventoryItem.update({ id: editing.id, ...base })
-        : await client.models.homeInventoryItem.create({ ...base, createdBy: "web" });
-      if (res.errors?.length || !res.data) throw new Error(res.errors?.[0]?.message ?? "save failed");
-      const itemId = res.data.id;
-
-      // Detail row for the (possibly new) category. A detail row from a
-      // previous category is left in place — harmless, and it comes back
-      // if the category is switched back.
-      if (detailType === "CLOTHING") {
-        const detail = { size: str("size"), color: str("color"), type: str("clothingType"), season: (str("season") as "ALL" | "WARM" | "COLD" | null) ?? null };
-        const r = clothing
-          ? await client.models.homeInventoryClothing.update({ id: clothing.id, ...detail })
-          : await client.models.homeInventoryClothing.create({ itemId, ...detail });
-        if (r.errors?.length) throw new Error(r.errors[0].message);
-      } else if (detailType === "CONSUMABLE") {
-        const detail = {
-          unit: str("unit"),
-          lowStockThreshold: int("lowStockThreshold"),
-          shoppingListId: str("shoppingListId"),
-          expiresOn: str("expiresOn"),
-        };
-        const r = consumable
-          ? await client.models.homeInventoryConsumable.update({ id: consumable.id, ...detail })
-          : await client.models.homeInventoryConsumable.create({ itemId, ...detail });
-        if (r.errors?.length) throw new Error(r.errors[0].message);
-      }
-
+        ...(detailType ? { details: Object.fromEntries(DETAIL_SPECS[detailType].fields.map((fl) => [fl.key, details[fl.key] ?? ""])) } : {}),
+      });
+      if ("error" in r) throw new Error(r.error);
+      if (r.result.restock?.addedToList) addToast({ title: `Running low: added to ${r.result.restock.addedToList}`, color: "warning" });
       addToast({ title: editing ? "Saved" : "Item added", color: "success" });
       onSaved();
       onClose();
@@ -915,10 +786,8 @@ function ItemModal({
     if (!editing || !confirm(`Delete "${editing.name}"?`)) return;
     setSaving(true);
     try {
-      if (clothing) await client.models.homeInventoryClothing.delete({ id: clothing.id });
-      if (consumable) await client.models.homeInventoryConsumable.delete({ id: consumable.id });
-      const { errors } = await client.models.homeInventoryItem.delete({ id: editing.id });
-      if (errors?.length) throw new Error(errors[0].message);
+      const r = await callOp(client, "manage_inventory_item", { action: "delete", itemId: editing.id });
+      if ("error" in r) throw new Error(r.error);
       onSaved();
       onClose();
     } catch (err: any) {
@@ -930,6 +799,7 @@ function ItemModal({
 
   const status = f.status as InventoryStatus;
   const isWishlist = status === "WISHLIST";
+  const quantityLabel = detailType === "AMMO" ? `Quantity (${(DETAIL_SPECS.AMMO.fields[1].optionLabels?.[details.unit ?? ""] ?? "units").toLowerCase()})` : detailType === "FILAMENT" ? "Spools" : "Quantity";
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="2xl" scrollBehavior="inside">
@@ -938,95 +808,57 @@ function ItemModal({
         <ModalBody className="gap-3">
           <Input label="Name" value={f.name ?? ""} onValueChange={set("name")} isRequired autoFocus={!editing} />
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <Select
-              label="Category"
-              placeholder="Uncategorized"
-              selectedKeys={f.categoryId ? [f.categoryId] : []}
-              onChange={(e) => set("categoryId")(e.target.value)}
-            >
+            <Select label="Category" placeholder="Pick one" selectedKeys={f.categoryId ? [f.categoryId] : []} onChange={(e) => set("categoryId")(e.target.value)} isRequired={!editing}>
               {categoryNodes.map((n) => (
                 <SelectItem key={n.category.id}>{n.path}</SelectItem>
               ))}
             </Select>
-            <Select
-              label="Status"
-              selectedKeys={f.status ? [f.status] : []}
-              onChange={(e) => e.target.value && set("status")(e.target.value)}
-            >
-              {INVENTORY_STATUSES.map((s) => (
+            <Select label="Status" selectedKeys={f.status ? [f.status] : []} onChange={(e) => e.target.value && set("status")(e.target.value)}>
+              {INVENTORY_STATUSES.filter((s) => s !== "DRAFT" || editing?.status === "DRAFT").map((s) => (
                 <SelectItem key={s}>{INVENTORY_STATUS_LABELS[s]}</SelectItem>
               ))}
             </Select>
-            <Select
-              label="Belongs to"
-              selectedKeys={f.owner ? [f.owner] : []}
-              onChange={(e) => e.target.value && set("owner")(e.target.value)}
-            >
-              {ownerOptions.map((o) => (
-                <SelectItem key={o.key}>{o.label}</SelectItem>
-              ))}
-            </Select>
+            {isPrivate ? (
+              <Input label="Belongs to" value="You" isReadOnly startContent={<FaLock size={11} className="text-default-400" />} description="Only you can see it" />
+            ) : (
+              <Select label="Belongs to" selectedKeys={f.owner ? [f.owner] : []} onChange={(e) => e.target.value && set("owner")(e.target.value)}>
+                {ownerOptions.map((o) => (
+                  <SelectItem key={o.key}>{o.label}</SelectItem>
+                ))}
+              </Select>
+            )}
           </div>
 
-          {/* Category details */}
-          {detailType === "CLOTHING" && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <Input label="Size" value={f.size ?? ""} onValueChange={set("size")} list="inventory-sizes" />
-              <datalist id="inventory-sizes">
-                {[...CLOTHING_SIZE_PRESETS.baby, ...CLOTHING_SIZE_PRESETS.toddler, ...CLOTHING_SIZE_PRESETS.adult].map((s) => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
-              <Input label="Color" value={f.color ?? ""} onValueChange={set("color")} />
-              <Input label="Type" placeholder="Onesie, sleeper…" value={f.clothingType ?? ""} onValueChange={set("clothingType")} />
-              <Select
-                label="Season"
-                selectedKeys={f.season ? [f.season] : []}
-                onChange={(e) => set("season")(e.target.value)}
-              >
-                <SelectItem key="ALL">All year</SelectItem>
-                <SelectItem key="WARM">Warm</SelectItem>
-                <SelectItem key="COLD">Cold</SelectItem>
-              </Select>
-            </div>
-          )}
-          {detailType === "CONSUMABLE" && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <Input label="Unit" placeholder="pack, box…" value={f.unit ?? ""} onValueChange={set("unit")} />
-              <Input
-                label="Low at"
-                type="number"
-                min={0}
-                description="Restock at or below"
-                value={f.lowStockThreshold ?? ""}
-                onValueChange={set("lowStockThreshold")}
-              />
-              <Select
-                label="Restock onto"
-                placeholder="Default list"
-                selectedKeys={f.shoppingListId ? [f.shoppingListId] : []}
-                onChange={(e) => set("shoppingListId")(e.target.value)}
-              >
-                {lists.map((l) => (
-                  <SelectItem key={l.id}>{`${l.emoji ?? ""} ${l.name}`.trim()}</SelectItem>
-                ))}
-              </Select>
-              <DateInput label="Expires" value={f.expiresOn ?? ""} onChange={set("expiresOn")} />
+          {detailType && (
+            <div>
+              <p className="text-xs text-default-500 mb-1">{DETAIL_SPECS[detailType].label} details</p>
+              <DetailFields type={detailType} values={details} onChange={(k, v) => setDetails((prev) => ({ ...prev, [k]: v }))} lists={lists} />
             </div>
           )}
 
           <div className="grid grid-cols-2 gap-2">
             <Input label="Brand" value={f.brand ?? ""} onValueChange={set("brand")} />
-            <Input label="Quantity" type="number" min={0} value={f.quantity ?? ""} onValueChange={set("quantity")} />
+            <Input label={quantityLabel} type="number" min={0} value={f.quantity ?? ""} onValueChange={set("quantity")} />
           </div>
+          {parentOptions.length > 0 && (
+            <Select
+              label="Part of / installed on"
+              placeholder="Nothing (a standalone item)"
+              selectedKeys={f.parentItemId ? [f.parentItemId] : []}
+              onChange={(e) => set("parentItemId")(e.target.value)}
+              description="An optic on a rifle, pickups in a guitar: it shows on that item and adds to its value"
+            >
+              {parentOptions.map((i) => (
+                <SelectItem key={i.id} textValue={i.name}>
+                  {i.name}
+                  {i.category && <span className="text-default-400 text-xs"> · {i.category}</span>}
+                </SelectItem>
+              ))}
+            </Select>
+          )}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
             {roomOptions.length > 0 ? (
-              <Select
-                label="Room"
-                placeholder="Not set"
-                selectedKeys={f.roomId ? [f.roomId] : []}
-                onChange={(e) => set("roomId")(e.target.value)}
-              >
+              <Select label="Room" placeholder="Not set" selectedKeys={f.roomId ? [f.roomId] : []} onChange={(e) => set("roomId")(e.target.value)}>
                 {roomOptions.map((o) => (
                   <SelectItem key={o.key} textValue={o.label}>
                     {o.label}
@@ -1055,11 +887,7 @@ function ItemModal({
                 value={f.estimatedPrice ?? ""}
                 onValueChange={set("estimatedPrice")}
               />
-              <Select
-                label="Priority"
-                selectedKeys={f.priority ? [f.priority] : []}
-                onChange={(e) => set("priority")(e.target.value)}
-              >
+              <Select label="Priority" selectedKeys={f.priority ? [f.priority] : []} onChange={(e) => set("priority")(e.target.value)}>
                 {(Object.keys(PRIORITY_LABELS) as (keyof typeof PRIORITY_LABELS)[]).map((p) => (
                   <SelectItem key={p}>{PRIORITY_LABELS[p]}</SelectItem>
                 ))}
@@ -1068,11 +896,7 @@ function ItemModal({
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <Select
-                label="Got it as"
-                selectedKeys={f.acquiredVia ? [f.acquiredVia] : []}
-                onChange={(e) => set("acquiredVia")(e.target.value)}
-              >
+              <Select label="Got it as" selectedKeys={f.acquiredVia ? [f.acquiredVia] : []} onChange={(e) => set("acquiredVia")(e.target.value)}>
                 {(Object.keys(ACQUIRED_VIA_LABELS) as (keyof typeof ACQUIRED_VIA_LABELS)[]).map((a) => (
                   <SelectItem key={a}>{ACQUIRED_VIA_LABELS[a]}</SelectItem>
                 ))}
@@ -1108,6 +932,22 @@ function ItemModal({
             />
           )}
 
+          {editing && editing.partCount > 0 && (
+            <div className="text-xs text-default-500">
+              <p className="mb-1">Parts installed on it</p>
+              <ul className="space-y-0.5">
+                {items
+                  .filter((i) => i.parentItemId === editing.id)
+                  .map((p) => (
+                    <li key={p.id}>
+                      {p.name}
+                      {p.pricePaid != null && <span className="text-default-400"> · {formatUsd(p.pricePaid)}</span>}
+                    </li>
+                  ))}
+              </ul>
+            </div>
+          )}
+
           <div>
             <div className="flex items-center justify-between mb-1">
               <p className="text-xs text-default-500">Photos</p>
@@ -1122,13 +962,7 @@ function ItemModal({
                   e.target.value = ""; // picking the same file again still fires
                 }}
               />
-              <Button
-                size="sm"
-                variant="flat"
-                startContent={<FaCamera size={11} />}
-                isLoading={uploading}
-                onPress={() => photoInputRef.current?.click()}
-              >
+              <Button size="sm" variant="flat" startContent={<FaCamera size={11} />} isLoading={uploading} onPress={() => photoInputRef.current?.click()}>
                 Add photo
               </Button>
             </div>

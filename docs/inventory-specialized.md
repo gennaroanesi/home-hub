@@ -1,6 +1,6 @@
 # Specialized inventory (moving gennaroanesi.com's inventory here)
 
-Status: 2026-11-19. Steps 1–3 done: owner-only check, schema + `lib/inventory-details.ts`, ops (`lib/ops/inventory-items.ts`, `lib/inventory-store.ts`, `lib/inventory-ammo.ts`).
+Status: 2026-11-19. Steps 1–4 done: owner-only check, schema + `lib/inventory-details.ts`, ops (`lib/ops/inventory-items.ts`, `lib/inventory-store.ts`, `lib/inventory-ammo.ts`), web (`/inventory` reads and saves through the ops; `components/inventory/detail-fields.tsx`, `ammo-panel.tsx`). Not yet: the house map's item counts read `homeInventoryItem` directly, so owner-only items don't show there.
 
 ## Why
 

@@ -4,7 +4,6 @@ import {
   approveDrafts,
   categoryAndDescendants,
   categoryTree,
-  deleteInventoryItems,
   isLowStock,
   matchCategory,
   planCategoryBackfill,
@@ -169,15 +168,6 @@ describe("drafts", () => {
     expect(calls.map((c) => c.arg)).toEqual([
       { id: "a", status: "OWNED", draftStatus: null, acquiredAt: "2026-09-26" },
       { id: "b", status: "WISHLIST", draftStatus: null },
-    ]);
-  });
-
-  it("deletes detail rows with the item", async () => {
-    const { client, calls } = fakeClient();
-    expect(await deleteInventoryItems(client, ["a"])).toBe(1);
-    expect(calls.map((c) => `${c.op} ${c.model} ${c.arg.id}`)).toEqual([
-      "delete homeInventoryClothing c1",
-      "delete homeInventoryItem a",
     ]);
   });
 });

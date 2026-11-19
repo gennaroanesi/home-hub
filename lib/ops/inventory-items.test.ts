@@ -159,6 +159,15 @@ describe("detail fields", () => {
     expect((await run(c, "add_inventory_items", { items: [{ name: "Ammo can", category: "Ammo" }] })).error).toMatch(/can't be drafted/);
   });
 
+  it("deletes an item with its detail row and detaches its parts", async () => {
+    const { ctx, tables } = setup(base());
+    await run(ctx(), "manage_inventory_item", { action: "create", name: "Holosun 507C", category: "Firearms", partOf: "Glock 19", details: { type: "other" } });
+    const out = await run(ctx(), "manage_inventory_item", { action: "delete", query: "Glock 19" });
+    expect(out.result.deleted).toBe("Glock 19");
+    expect(tables.homeInventoryFirearm.some((d) => d.itemId === "g19")).toBe(false);
+    expect(tables.homePrivateInventoryItem.find((i) => i.name === "Holosun 507C").parentItemId).toBeNull();
+  });
+
   it("links parts to what they're installed on", async () => {
     const { ctx } = setup(base());
     await run(ctx(), "manage_inventory_item", { action: "create", name: "Holosun 507C", category: "Firearms", partOf: "Glock 19", details: { type: "other" } });

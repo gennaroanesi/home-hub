@@ -103,6 +103,12 @@ const NO_OWNER: Owner = { ownerPersonId: null, pregnancyId: null, petId: null };
 /** ownerName → a person, the baby ("baby" / forBaby: its profile, else the pregnancy), a pet, or the household. */
 async function resolveOwner(ctx: OpContext, folks: any[], ownerName?: string | null, forBaby?: boolean): Promise<Owner> {
   const name = (ownerName ?? "").toLowerCase().trim();
+  if (name.startsWith("baby:")) {
+    const preg = (await pregnancies(ctx)).find((p) => p.id === ownerName!.trim().slice(5));
+    if (!preg) throw new OpError(`No pregnancy ${ownerName}`);
+    return { ...NO_OWNER, pregnancyId: preg.id };
+  }
+  if (name.startsWith("pet:")) ownerName = ownerName!.trim().slice(4);
   if (forBaby || name === "baby") {
     const active = (await pregnancies(ctx)).filter((p) => p.status === "ACTIVE");
     if (active.length !== 1) throw new OpError(active.length === 0 ? "No active pregnancy to link baby items to" : "Several active pregnancies: say whose");
@@ -110,11 +116,18 @@ async function resolveOwner(ctx: OpContext, folks: any[], ownerName?: string | n
     return profile ? { ...NO_OWNER, ownerPersonId: profile.id } : { ...NO_OWNER, pregnancyId: active[0].id };
   }
   if (!name || ["household", "both", "shared", "us"].includes(name)) return NO_OWNER;
-  const pet = (await pets(ctx)).filter((p) => p.active !== false).find((p) => p.name.toLowerCase() === name || name.startsWith(p.name.toLowerCase()));
+  const petRows = await pets(ctx);
+  const pet = petRows.find((p) => p.id === ownerName?.trim()) ?? petRows.filter((p) => p.active !== false).find((p) => p.name.toLowerCase() === name || name.startsWith(p.name.toLowerCase()));
   if (pet) return { ...NO_OWNER, petId: pet.id };
   const person = personByName(folks, ownerName);
   if (!person) throw new OpError(`No person or pet named "${ownerName}"`);
   return { ...NO_OWNER, ownerPersonId: person.id };
+}
+
+/** Photo keys an app may set: our own inventory prefix only. */
+function photoKeys(keys: string[]): string[] {
+  for (const k of keys) if (!k.startsWith(PHOTO_PREFIX) || k.includes("..")) throw new OpError(`Photo ${k} isn't an inventory upload`);
+  return [...new Set(keys)];
 }
 
 // ── Detail fields ────────────────────────────────────────────────────────────
@@ -457,25 +470,28 @@ export const getInventoryItem = defineOp({
 // ── manage_inventory_item ────────────────────────────────────────────────────
 
 const BaseIn = {
-  brand: z.string().optional(),
+  brand: z.string().nullable().optional(),
   quantity: z.number().int().min(0).optional(),
-  location: z.string().optional().describe("Spot within the room: 'top shelf, gray box'."),
+  location: z.string().nullable().optional().describe("Spot within the room: 'top shelf, gray box'."),
   tags: z.array(z.string()).optional().describe("['nursery'], ['feeding']"),
-  notes: z.string().optional(),
-  url: z.string().optional(),
-  priority: z.enum(["MUST_HAVE", "NICE_TO_HAVE"]).optional(),
-  neededBy: z.string().optional().describe("YYYY-MM-DD"),
-  estimatedPrice: z.number().optional().describe("Per unit, USD."),
-  acquiredVia: z.enum(["PURCHASED", "GIFT", "HAND_ME_DOWN"]).optional(),
-  giftFrom: z.string().optional(),
-  vendor: z.string().optional(),
-  acquiredAt: z.string().optional().describe("YYYY-MM-DD. Defaults to today on create as OWNED and on mark_owned."),
-  pricePaid: z.number().optional().describe("Per unit, USD."),
-  priceSold: z.number().optional(),
-  barcode: z.string().optional(),
+  notes: z.string().nullable().optional(),
+  url: z.string().nullable().optional(),
+  priority: z.enum(["MUST_HAVE", "NICE_TO_HAVE"]).nullable().optional(),
+  neededBy: z.string().nullable().optional().describe("YYYY-MM-DD"),
+  estimatedPrice: z.number().nullable().optional().describe("Per unit, USD."),
+  acquiredVia: z.enum(["PURCHASED", "GIFT", "HAND_ME_DOWN"]).nullable().optional(),
+  giftFrom: z.string().nullable().optional(),
+  vendor: z.string().nullable().optional(),
+  acquiredAt: z.string().nullable().optional().describe("YYYY-MM-DD. Defaults to today on create as OWNED and on mark_owned."),
+  pricePaid: z.number().nullable().optional().describe("Per unit, USD."),
+  priceSold: z.number().nullable().optional(),
+  disposedAt: z.string().nullable().optional().describe("YYYY-MM-DD; set to today when status becomes SOLD / GIVEN_AWAY."),
+  barcode: z.string().nullable().optional(),
 };
 
-const defined = <T extends Record<string, unknown>>(o: T) => Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined)) as Partial<T>;
+/** Leaves out what wasn't given; "" (or whitespace) means clear it. */
+const defined = <T extends Record<string, unknown>>(o: T) =>
+  Object.fromEntries(Object.entries(o).filter(([, v]) => v !== undefined).map(([k, v]) => [k, typeof v === "string" && !v.trim() ? null : v])) as Partial<T>;
 
 export const manageInventoryItem = defineOp({
   name: "manage_inventory_item",
@@ -490,10 +506,13 @@ export const manageInventoryItem = defineOp({
     name: z.string().optional().describe("Required for create."),
     category: z.string().optional().describe("Category name or path (list_inventory_categories). Required for create; '' clears."),
     status: z.enum(["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]).optional().describe("Default OWNED on create."),
-    ownerName: z.string().optional().describe("A person, a pet ('Dolce'), or 'household' / omit for shared."),
+    ownerName: z.string().optional().describe("A person, a pet ('Dolce'), or 'household' / omit for shared. Apps may pass a person id, pet:<id> or baby:<pregnancyId>."),
     forBaby: z.boolean().optional(),
+    categoryId: z.string().nullable().optional().describe("Apps: the category by id instead of category."),
     roomName: z.string().optional().describe("Room from the house map; '' clears."),
+    roomId: z.string().nullable().optional().describe("Apps: the room by id instead of roomName."),
     partOf: z.string().optional().describe("Item it's installed on / part of (id or name); '' detaches."),
+    imageKeys: z.array(z.string()).optional().describe("Apps: the item's photos (S3 keys under home/inventory/), replacing the list. Janet uses add_inventory_photo."),
     details: z.record(z.string(), z.unknown()).optional().describe("Detail fields for the item's category type (see description)."),
     shoppingListName: z.string().optional().describe("Consumables: list to restock onto. Default: the supermarket list."),
     ...BaseIn,
@@ -511,7 +530,8 @@ export const manageInventoryItem = defineOp({
     const [store, roomRows, petRows, lists] = await Promise.all([loadInventoryStore(ctx.client, { viewer: viewer.username }), rooms(ctx), pets(ctx), shoppingLists(ctx)]);
     const out = itemOutFactory(store, roomRows, folks, petRows);
 
-    let categoryId: string | null | undefined;
+    let categoryId: string | null | undefined = input.categoryId === undefined ? undefined : input.categoryId || null;
+    if (categoryId && !store.categories.some((c) => c.id === categoryId)) throw new OpError(`No category ${categoryId}`);
     if (input.category !== undefined) {
       if (!input.category) categoryId = null;
       else {
@@ -520,7 +540,8 @@ export const manageInventoryItem = defineOp({
         categoryId = match.category.id;
       }
     }
-    let roomId: string | null | undefined;
+    let roomId: string | null | undefined = input.roomId === undefined ? undefined : input.roomId || null;
+    if (roomId && !roomRows.some((r) => r.id === roomId)) throw new OpError(`No room ${roomId}`);
     if (input.roomName !== undefined) {
       if (!input.roomName) roomId = null;
       else {
@@ -558,6 +579,8 @@ export const manageInventoryItem = defineOp({
       pricePaid: input.pricePaid,
       priceSold: input.priceSold,
       barcode: input.barcode,
+      disposedAt: input.disposedAt,
+      ...(input.imageKeys ? { imageKeys: photoKeys(input.imageKeys) } : {}),
     });
     const detailInput = { ...(input.details ?? {}), ...(input.shoppingListName !== undefined ? { shoppingListName: input.shoppingListName } : {}) };
 
@@ -639,7 +662,7 @@ export const manageInventoryItem = defineOp({
       ...(roomId !== undefined ? { roomId } : {}),
       ...(parentItemId !== undefined ? { parentItemId: parentItemId === current.id ? null : parentItemId } : {}),
       ...markOwned,
-      ...(input.status === "SOLD" || input.status === "GIVEN_AWAY" ? { disposedAt: today() } : {}),
+      ...((input.status === "SOLD" || input.status === "GIVEN_AWAY") && input.disposedAt === undefined && !item.disposedAt ? { disposedAt: today() } : {}),
     });
     store.items = store.items.filter((i) => i.id !== item.id).concat(updated);
     const existing = current.id === item.id ? store.details.get(item.id) : undefined;
