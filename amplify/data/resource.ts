@@ -32,6 +32,64 @@ const locationCustomType = a.customType({
   airportCode: a.string(),
 });
 
+// Owner-only access: the row's ownerUsername (Cognito username) is the only
+// login that can read or change it. Verified in the sandbox, see
+// docs/inventory-specialized.md section 4.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const ownerOnly = (allow: any) => [allow.ownerDefinedIn("ownerUsername").identityClaim("username")];
+
+// Base fields of an inventory item, shared by homeInventoryItem (the
+// household's) and homePrivateInventoryItem (owner-only types: firearms,
+// ammo). docs/inventory-specialized.md.
+const inventoryItemFields = {
+  name: a.string().required(),
+  categoryId: a.id(), // FK → homeInventoryCategory.id
+  // DRAFT = identified (e.g. by Janet from a photo) but not yet
+  // confirmed; approving moves it to draftStatus (default OWNED).
+  status: a.enum(["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]),
+  draftStatus: a.enum(["OWNED", "WISHLIST"]),
+  // Whose it is (FK → homePerson.id). Null = shared by the household.
+  ownerPersonId: a.id(),
+  // For the baby on the way (FK → homePregnancy.id).
+  pregnancyId: a.id(),
+  // A pet's things — food, meds, toys, crate (FK → homePet.id).
+  petId: a.id(),
+  brand: a.string(),
+  quantity: a.integer().default(1),
+  // Which room it's in (FK → homeRoom.id); `location` is the
+  // free-text detail within it ("top shelf, gray box").
+  roomId: a.id(),
+  location: a.string(),
+  // Free-form grouping across categories: "nursery", "feeding", "bath".
+  tags: a.string().array(),
+  notes: a.string(),
+  url: a.url(), // product / registry link
+  // Wishlist fields.
+  priority: a.enum(["MUST_HAVE", "NICE_TO_HAVE"]),
+  neededBy: a.date(),
+  estimatedPrice: a.float(), // per unit, USD
+  // Acquisition.
+  acquiredVia: a.enum(["PURCHASED", "GIFT", "HAND_ME_DOWN"]),
+  giftFrom: a.string(),
+  vendor: a.string(),
+  acquiredAt: a.date(),
+  pricePaid: a.float(), // per unit, USD
+  // Disposal (SOLD / GIVEN_AWAY).
+  disposedAt: a.date(),
+  priceSold: a.float(),
+  barcode: a.string(),
+  // Photos (S3 keys) — e.g. the WhatsApp photo the item was
+  // identified from. Rendered via lib/image-loader photoUrl().
+  imageKeys: a.string().array(),
+  createdBy: a.string(),
+  // Installed on / belongs to another item (FK → the same table's id): an
+  // optic on a rifle, pickups in a guitar. The parent lists its parts.
+  parentItemId: a.id(),
+  // Set on rows copied from another system, so an import can be re-run:
+  // "gennaroanesi:<inventoryItem id>".
+  importedFrom: a.string(),
+};
+
 const schema = a
   .schema({
     // ── Person ──────────────────────────────────────────────────────────
@@ -511,7 +569,7 @@ const schema = a
       .model({
         name: a.string().required(),
         parentId: a.id(), // FK → homeInventoryCategory.id
-        detailType: a.enum(["CLOTHING", "CONSUMABLE"]),
+        detailType: a.enum(["CLOTHING", "CONSUMABLE", "FIREARM", "AMMO", "FILAMENT", "INSTRUMENT", "PHOTOGRAPHY", "ELECTRONIC"]), // lib/inventory-details.ts
         sortOrder: a.integer().default(0),
       })
       .authorization((allow) => [
@@ -521,8 +579,7 @@ const schema = a
 
     homeInventoryItem: a
       .model({
-        name: a.string().required(),
-        categoryId: a.id(), // FK → homeInventoryCategory.id
+        ...inventoryItemFields,
         // Replaced by categoryId and no longer read or written. Stays until
         // scripts/inventory-categories-backfill.ts has run in prod.
         category: a.enum([
@@ -537,46 +594,8 @@ const schema = a
           "TOOLS",
           "OTHER",
         ]),
-        // DRAFT = identified (e.g. by Janet from a photo) but not yet
-        // confirmed; approving moves it to draftStatus (default OWNED).
-        status: a.enum(["DRAFT", "WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"]),
-        draftStatus: a.enum(["OWNED", "WISHLIST"]),
-        // Whose it is (FK → homePerson.id). Null = shared by the household.
-        ownerPersonId: a.id(),
-        // For the baby on the way (FK → homePregnancy.id).
-        pregnancyId: a.id(),
-        // A pet's things — food, meds, toys, crate (FK → homePet.id).
-        petId: a.id(),
-        brand: a.string(),
-        quantity: a.integer().default(1),
-        // Which room it's in (FK → homeRoom.id); `location` is the
-        // free-text detail within it ("top shelf, gray box").
-        roomId: a.id(),
-        location: a.string(),
-        // Free-form grouping across categories: "nursery", "feeding", "bath".
-        tags: a.string().array(),
-        notes: a.string(),
-        url: a.url(), // product / registry link
-        // Wishlist fields.
-        priority: a.enum(["MUST_HAVE", "NICE_TO_HAVE"]),
-        neededBy: a.date(),
-        estimatedPrice: a.float(), // per unit, USD
-        // Acquisition.
-        acquiredVia: a.enum(["PURCHASED", "GIFT", "HAND_ME_DOWN"]),
-        giftFrom: a.string(),
-        vendor: a.string(),
-        acquiredAt: a.date(),
-        pricePaid: a.float(), // per unit, USD
-        // Disposal (SOLD / GIVEN_AWAY).
-        disposedAt: a.date(),
-        priceSold: a.float(),
-        barcode: a.string(),
-        // Photos (S3 keys) — e.g. the WhatsApp photo the item was
-        // identified from. Rendered via lib/image-loader photoUrl().
-        imageKeys: a.string().array(),
-        createdBy: a.string(),
       })
-      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId"), index("petId"), index("roomId")])
+      .secondaryIndexes((index) => [index("ownerPersonId"), index("pregnancyId"), index("petId"), index("roomId"), index("parentItemId")])
       .authorization((allow) => [
         allow.group("home-users"),
         allow.authenticated("identityPool"),
@@ -613,6 +632,154 @@ const schema = a
         allow.group("home-users"),
         allow.authenticated("identityPool"),
       ]),
+
+    // ── Specialized inventory (docs/inventory-specialized.md) ──────────
+    // Detail models for the types moved from gennaroanesi.com, one per
+    // detailType, 1:1 with an item by itemId; fields mirror
+    // lib/inventory-details.ts. Choice fields are strings validated by the
+    // ops against the spec, so adding an option needs no schema change.
+    homeInventoryFilament: a
+      .model({
+        itemId: a.id().required(), // FK → homeInventoryItem.id (1:1)
+        material: a.string(), // PLA, PETG, PLA_CF…
+        variant: a.string(), // Matte, Silk, HF…
+        color: a.string(),
+        weightG: a.integer(), // per spool; spools = the item's quantity
+        diameter: a.string(), // "1.75" | "2.85"
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeInventoryInstrument: a
+      .model({
+        itemId: a.id().required(),
+        type: a.string(), // GUITAR, BASS, AMPLIFIER, PEDAL, KEYBOARD, OTHER
+        serialNumber: a.string(),
+        color: a.string(),
+        strings: a.integer(),
+        tuning: a.string(),
+        bodyMaterial: a.string(),
+        finish: a.string(),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeInventoryPhotography: a
+      .model({
+        itemId: a.id().required(),
+        type: a.string(), // CAMERA, LENS, DRONE, GIMBAL, TRIPOD, LIGHT, ACCESSORY, OTHER
+        serialNumber: a.string(),
+        mount: a.string(),
+        sensorFormat: a.string(),
+        focalLengthMin: a.float(), // mm
+        focalLengthMax: a.float(), // mm; = min for a prime
+        apertureMax: a.float(), // f-stop
+        stabilized: a.boolean(),
+        weightG: a.integer(),
+        maxFlightTimeMin: a.integer(), // drones
+        subC250g: a.boolean(), // drones: under the FAA registration threshold
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    homeInventoryElectronic: a
+      .model({
+        itemId: a.id().required(),
+        type: a.string(), // RESISTOR, CAPACITOR, IC, MODULE, TOOL…; count = the item's quantity
+        partNumber: a.string(),
+        valueText: a.string(), // "10kΩ", "100µF 25V"
+        packaging: a.string(), // THT, SMD-0805, DIP-8…
+        voltageRating: a.float(),
+        currentRatingA: a.float(),
+        powerRatingW: a.float(),
+        tolerancePct: a.float(),
+        color: a.string(),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
+    // Owner-only (ownerOnly above): items of private detail types (firearms,
+    // ammo) and everything about them. Other household logins can't read
+    // them at all; the ops / agent Lambdas reach them through the
+    // schema-level allow.resource grants and only hand them to their owner.
+    // Deliberately no allow.authenticated("identityPool"): any signed-in
+    // user could use that.
+    homePrivateInventoryItem: a
+      .model({
+        ...inventoryItemFields,
+        ownerUsername: a.string(), // Cognito username = homePerson.cognitoUsername
+      })
+      .secondaryIndexes((index) => [index("ownerPersonId"), index("roomId"), index("parentItemId")])
+      .authorization(ownerOnly),
+
+    homeInventoryFirearm: a
+      .model({
+        itemId: a.id().required(), // FK → homePrivateInventoryItem.id (1:1)
+        type: a.string(), // HANDGUN, RIFLE, SHOTGUN, SBR, SUPPRESSOR, OTHER
+        caliber: a.string(),
+        serialNumber: a.string(),
+        action: a.string(),
+        barrelLength: a.string(),
+        finish: a.string(),
+        ownerUsername: a.string(),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization(ownerOnly),
+
+    // One item per purchase (lot): quantity = units bought (unit), the lot's
+    // rounds on hand drop as use is logged, oldest lots first.
+    homeInventoryAmmo: a
+      .model({
+        itemId: a.id().required(), // FK → homePrivateInventoryItem.id (1:1)
+        caliber: a.string().required(), // totals and minimums go by caliber
+        unit: a.string(), // ROUNDS | BOX | CASE
+        roundsPerUnit: a.integer(),
+        roundsAvailable: a.integer(),
+        grain: a.integer(),
+        bulletType: a.string(),
+        velocityFps: a.integer(),
+        ownerUsername: a.string(),
+      })
+      .secondaryIndexes((index) => [index("itemId")])
+      .authorization(ownerOnly),
+
+    // A logged use ("200 rounds of 9mm at the range"): the lots it drew from,
+    // so it can be undone.
+    homeAmmoUse: a
+      .model({
+        caliber: a.string().required(),
+        rounds: a.integer().required(),
+        date: a.date().required(),
+        note: a.string(),
+        lots: a.json(), // [{ itemId, rounds }]
+        personId: a.id(), // who logged it
+        ownerUsername: a.string(),
+      })
+      .authorization(ownerOnly),
+
+    // Minimum rounds on hand per caliber; below it the owner gets a DM
+    // (once per crossing: notifiedAt is cleared when it's back above).
+    homeAmmoThreshold: a
+      .model({
+        caliber: a.string().required(),
+        minRounds: a.integer().required(),
+        enabled: a.boolean().default(true),
+        notifiedAt: a.datetime(),
+        ownerUsername: a.string(),
+      })
+      .authorization(ownerOnly),
 
     // ── Wardrobe ────────────────────────────────────────────────────────
     // Per-person closets, separate from household inventory: clothing

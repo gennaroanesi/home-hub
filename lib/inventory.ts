@@ -3,18 +3,17 @@
 // totals. Used by the /inventory page, the dashboard, and the agent's
 // inventory tools so they agree on what "low" or "$ left to buy" means.
 
+import { DETAIL_SPECS, DETAIL_TYPES, type DetailType } from "./inventory-details";
+
 // ── Categories ───────────────────────────────────────────────────────────────
 // A tree of homeInventoryCategory rows. detailType says which detail model
-// (homeInventoryClothing / homeInventoryConsumable) items in a category use;
+// (lib/inventory-details.ts: clothing, consumable, firearm, …) items in a category use;
 // a subcategory without its own inherits it from the nearest ancestor.
 
-export const CATEGORY_DETAIL_TYPES = ["CLOTHING", "CONSUMABLE"] as const;
-export type CategoryDetailType = (typeof CATEGORY_DETAIL_TYPES)[number];
+export const CATEGORY_DETAIL_TYPES = DETAIL_TYPES;
+export type CategoryDetailType = DetailType;
 
-export const CATEGORY_DETAIL_TYPE_LABELS: Record<CategoryDetailType, string> = {
-  CLOTHING: "Clothing (size, color, type, season)",
-  CONSUMABLE: "Consumable (unit, low stock, expiry)",
-};
+export const CATEGORY_DETAIL_TYPE_LABELS = Object.fromEntries(DETAIL_TYPES.map((t) => [t, `${DETAIL_SPECS[t].label} (${DETAIL_SPECS[t].blurb})`])) as Record<CategoryDetailType, string>;
 
 export interface CategoryLike {
   id: string;
