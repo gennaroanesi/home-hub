@@ -237,6 +237,8 @@ describe("get_inventory_overview", () => {
     expect(r.statusCounts).toEqual({ WISHLIST: 1, DRAFT: 0, PAST: 1 });
     expect(r.lowStock).toBe(0);
     expect(r.owners.map((o: any) => o.label).sort()).toEqual(["Cris", "Gennaro", "Household"]);
+    expect(r.owners.find((o: any) => o.label === "Cris").key).toBe("cris");
+    expect(names(await run(ctx(), "list_inventory", { ownerName: "cris" }))).toEqual(["Rice"]);
     expect(r.recent[0].name).toBe("Mystery cable");
 
     const group = (await run(ctx({ groupChat: true }), "get_inventory_overview", {})).result;

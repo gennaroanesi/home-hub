@@ -119,7 +119,7 @@ async function resolveOwner(ctx: OpContext, folks: any[], ownerName?: string | n
   const petRows = await pets(ctx);
   const pet = petRows.find((p) => p.id === ownerName?.trim()) ?? petRows.filter((p) => p.active !== false).find((p) => p.name.toLowerCase() === name || name.startsWith(p.name.toLowerCase()));
   if (pet) return { ...NO_OWNER, petId: pet.id };
-  const person = personByName(folks, ownerName);
+  const person = folks.find((p) => p.id === ownerName?.trim()) ?? personByName(folks, ownerName);
   if (!person) throw new OpError(`No person or pet named "${ownerName}"`);
   return { ...NO_OWNER, ownerPersonId: person.id };
 }
@@ -438,7 +438,7 @@ export const listInventory = defineOp({
 // ── get_inventory_overview ──────────────────────────────────────────────────
 
 const Bucket = z.object({
-  key: z.string().describe("categoryId / roomId / owner key ('household', a person's name, 'pet:<id>', 'baby:<id>'); 'none' = not set"),
+  key: z.string().describe("categoryId / roomId / owner key ('household', a person id, 'pet:<id>', 'baby:<id>'; list_inventory's ownerName takes it); 'none' = not set"),
   label: z.string(),
   count: z.number().describe("Owned items in it (subcategories / closets included)"),
   value: z.number().describe("What the owned items cost, quantity included"),
@@ -529,7 +529,7 @@ export const getInventoryOverview = defineOp({
 
     const ownerBuckets = new Map<string, B>();
     for (const { o } of counted) {
-      const key = o.pregnancyId ? `baby:${o.pregnancyId}` : o.petId ? `pet:${o.petId}` : o.ownerPersonId ? o.owner : "household";
+      const key = o.pregnancyId ? `baby:${o.pregnancyId}` : o.petId ? `pet:${o.petId}` : (o.ownerPersonId ?? "household");
       if (!ownerBuckets.has(key)) ownerBuckets.set(key, bucket(key, o.ownerPersonId || o.petId || o.pregnancyId ? o.owner : "Household"));
       add(ownerBuckets.get(key)!, o);
     }

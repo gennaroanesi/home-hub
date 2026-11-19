@@ -26,6 +26,7 @@ import { DateInput } from "@/components/date-input";
 import { CategoryManager } from "@/components/inventory/category-manager";
 import { DetailFields } from "@/components/inventory/detail-fields";
 import { AmmoPanel } from "@/components/inventory/ammo-panel";
+import { InventoryOverview, type Overview, type OverviewPick } from "@/components/inventory/overview";
 import { householdMembers } from "@/lib/household";
 import { babyProfileFor } from "@/lib/pregnancy";
 import { listAllPages } from "@/lib/list-all";
@@ -120,6 +121,8 @@ export default function InventoryPage() {
   const [category, setCategory] = useState("");
   const [owner, setOwner] = useState("");
   const [search, setSearch] = useState("");
+  const [lowOnly, setLowOnly] = useState(false);
+  const [overview, setOverview] = useState<Overview | null>(null);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState<Item | null>(null);
@@ -152,8 +155,9 @@ export default function InventoryPage() {
   }, [router.isReady, router.query.roomId, router.query.new]);
 
   async function loadItems() {
-    const r = await callOp(client, "list_inventory", { status: "ALL", limit: 1000 });
+    const [r, ov] = await Promise.all([callOp(client, "list_inventory", { status: "ALL", limit: 1000 }), callOp(client, "get_inventory_overview", {})]);
     if ("error" in r) throw new Error(r.error);
+    if (!("error" in ov)) setOverview(ov.result);
     setItems(r.result.items);
     setVersion((v) => v + 1);
     return r.result.items;
@@ -228,10 +232,10 @@ export default function InventoryPage() {
       .sort((a, b) => a.level - b.level || a.label.localeCompare(b.label))
       .map(({ key, label, floor }) => ({ key, label, floor }));
   }, [rooms, floors]);
-  const roomFilterIds = useMemo(() => (roomFilter ? roomAndDescendants(roomFilter, rooms) : null), [roomFilter, rooms]);
+  const roomFilterIds = useMemo(() => (roomFilter && roomFilter !== "none" ? roomAndDescendants(roomFilter, rooms) : null), [roomFilter, rooms]);
 
   const categoryNodes = useMemo(() => categoryTree(categories), [categories]);
-  const categoryFilterIds = useMemo(() => (category ? categoryAndDescendants(category, categories) : null), [category, categories]);
+  const categoryFilterIds = useMemo(() => (category && category !== "none" ? categoryAndDescendants(category, categories) : null), [category, categories]);
 
   const tabItems = useMemo(
     () => items.filter((i) => (tab === "PAST" ? i.status === "SOLD" || i.status === "GIVEN_AWAY" : i.status === tab)),
@@ -241,9 +245,10 @@ export default function InventoryPage() {
   const visible = useMemo(() => {
     const q = search.toLowerCase().trim();
     return tabItems
-      .filter((i) => !categoryFilterIds || (!!i.categoryId && categoryFilterIds.has(i.categoryId)))
+      .filter((i) => (category === "none" ? !i.categoryId || !categoryNodes.some((n) => n.category.id === i.categoryId) : !categoryFilterIds || (!!i.categoryId && categoryFilterIds.has(i.categoryId))))
       .filter((i) => !owner || ownerKeyOf(i) === owner)
-      .filter((i) => !roomFilterIds || (!!i.roomId && roomFilterIds.has(i.roomId)))
+      .filter((i) => (roomFilter === "none" ? !i.roomId : !roomFilterIds || (!!i.roomId && roomFilterIds.has(i.roomId))))
+      .filter((i) => !lowOnly || !!i.lowStock)
       .filter((i) => {
         if (!q) return true;
         return [i.name, i.brand, i.notes, i.room, i.location, ...i.tags, i.summary, i.parentName, ...Object.values(i.details ?? {}).filter((v) => typeof v === "string")]
@@ -252,7 +257,7 @@ export default function InventoryPage() {
           .toLowerCase()
           .includes(q);
       });
-  }, [tabItems, categoryFilterIds, owner, roomFilterIds, search]);
+  }, [tabItems, category, categoryNodes, categoryFilterIds, owner, roomFilter, roomFilterIds, lowOnly, search]);
 
   const grouped = useMemo(() => {
     const groups = new Map<string, Item[]>();
@@ -280,7 +285,40 @@ export default function InventoryPage() {
   const wish = useMemo(() => wishlistSummary(visible), [visible]);
   const spent = useMemo(() => spentTotal(visible), [visible]);
   const lowCount = useMemo(() => items.filter((i) => i.lowStock).length, [items]);
-  const hasAmmo = useMemo(() => items.some((i) => i.detailType === "AMMO"), [items]);
+  const hasAmmo = useMemo(() => visible.some((i) => i.detailType === "AMMO"), [visible]);
+  // Nothing picked yet: the overview instead of every item.
+  const browsing = tab === "OWNED" && !category && !owner && !roomFilter && !lowOnly && !search.trim() && !!overview;
+  const filtered = tab === "OWNED" && !browsing;
+  const subcategories = useMemo(() => {
+    if (!category || category === "none") return [];
+    return categoryNodes
+      .filter((n) => n.category.parentId === category)
+      .map((n) => {
+        const ids = categoryAndDescendants(n.category.id, categories);
+        return { id: n.category.id, name: n.category.name, n: tabItems.filter((i) => !!i.categoryId && ids.has(i.categoryId)).length };
+      })
+      .filter((c) => c.n > 0);
+  }, [category, categoryNodes, categories, tabItems]);
+  const parentCategory = category && category !== "none" ? categoryNodes.find((n) => n.category.id === category)?.category.parentId : null;
+
+  function clearFilters() {
+    setCategory("");
+    setOwner("");
+    setRoomFilter("");
+    setLowOnly(false);
+    setSearch("");
+  }
+
+  function pick(p: OverviewPick) {
+    clearFilters();
+    if (p.kind === "category") setCategory(p.key);
+    else if (p.kind === "room") setRoomFilter(p.key);
+    else if (p.kind === "owner") setOwner(p.key);
+    else if (p.key === "LOW") {
+      setTab("OWNED");
+      setLowOnly(true);
+    } else setTab(p.key as Tab);
+  }
 
   function upsertLocal(item: Item) {
     setItems((prev) => (prev.some((i) => i.id === item.id) ? prev.map((i) => (i.id === item.id ? item : i)) : [...prev, item]));
@@ -371,7 +409,18 @@ export default function InventoryPage() {
               </button>
             );
           })}
-          {lowCount > 0 && <span className="px-3 py-1 rounded-full text-sm bg-warning-100 text-warning-700">{lowCount} running low</span>}
+          {lowCount > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setTab("OWNED");
+                setLowOnly(!lowOnly);
+              }}
+              className={`px-3 py-1 rounded-full text-sm ${lowOnly ? "bg-warning text-warning-foreground" : "bg-warning-100 text-warning-700"}`}
+            >
+              {lowCount} running low
+            </button>
+          )}
         </div>
 
         {/* Filters */}
@@ -393,9 +442,10 @@ export default function InventoryPage() {
             onChange={(e) => setCategory(e.target.value)}
             className="sm:max-w-[180px]"
           >
-            {categoryNodes.map((n) => (
-              <SelectItem key={n.category.id}>{n.path}</SelectItem>
-            ))}
+            {[
+              ...categoryNodes.map((n) => <SelectItem key={n.category.id}>{n.path}</SelectItem>),
+              <SelectItem key="none">Uncategorized</SelectItem>,
+            ]}
           </Select>
           <Select size="sm" aria-label="Owner" placeholder="Everyone" selectedKeys={owner ? [owner] : []} onChange={(e) => setOwner(e.target.value)} className="sm:max-w-[200px]">
             {ownerOptions.map((o) => (
@@ -404,15 +454,36 @@ export default function InventoryPage() {
           </Select>
           {roomOptions.length > 0 && (
             <Select size="sm" aria-label="Room" placeholder="Any room" selectedKeys={roomFilter ? [roomFilter] : []} onChange={(e) => setRoomFilter(e.target.value)} className="sm:max-w-[220px]">
-              {roomOptions.map((o) => (
-                <SelectItem key={o.key} textValue={o.label}>
-                  {o.label}
-                  <span className="text-default-400 text-xs"> · {o.floor}</span>
-                </SelectItem>
-              ))}
+              {[
+                ...roomOptions.map((o) => (
+                  <SelectItem key={o.key} textValue={o.label}>
+                    {o.label}
+                    <span className="text-default-400 text-xs"> · {o.floor}</span>
+                  </SelectItem>
+                )),
+                <SelectItem key="none">No room</SelectItem>,
+              ]}
             </Select>
           )}
         </div>
+
+        {filtered && (
+          <div className="mb-6 flex flex-wrap items-center gap-2">
+            <button type="button" onClick={clearFilters} className="text-sm text-primary hover:underline">
+              ← Overview
+            </button>
+            {parentCategory && (
+              <button type="button" onClick={() => setCategory(parentCategory)} className="text-sm text-primary hover:underline">
+                ← {categoryNodes.find((n) => n.category.id === parentCategory)?.category.name}
+              </button>
+            )}
+            {subcategories.map((c) => (
+              <button key={c.id} type="button" onClick={() => setCategory(c.id)} className="px-3 py-1 rounded-full text-sm bg-default-100 text-default-600 hover:bg-default-200">
+                {c.name} <span className="opacity-70">{c.n}</span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Totals */}
         {!loading && tab === "DRAFT" && visible.length > 0 && (
@@ -436,8 +507,8 @@ export default function InventoryPage() {
             <Stat label="No price yet" value={String(wish.unpriced)} muted={wish.unpriced === 0} />
           </div>
         )}
-        {!loading && tab === "OWNED" && hasAmmo && <AmmoPanel client={client} version={version} onChanged={() => void loadItems()} />}
-        {!loading && tab === "OWNED" && spent > 0 && (
+        {!loading && filtered && hasAmmo && <AmmoPanel client={client} version={version} onChanged={() => void loadItems()} />}
+        {!loading && filtered && spent > 0 && (
           <p className="mb-6 text-sm text-default-500">
             Spent on what&apos;s shown: <span className="font-semibold text-foreground">{formatUsd(spent)}</span>{" "}
             <span className="text-default-400">(gifts and hand-me-downs excluded)</span>
@@ -448,6 +519,17 @@ export default function InventoryPage() {
           <div className="flex justify-center py-12">
             <Spinner label="Loading inventory..." />
           </div>
+        ) : browsing ? (
+          <InventoryOverview
+            overview={overview!}
+            onPick={pick}
+            onOpenItem={(id) => {
+              const it = items.find((i) => i.id === id);
+              if (!it) return;
+              setEditing(it);
+              setModalOpen(true);
+            }}
+          />
         ) : grouped.length === 0 ? (
           <div className="text-center py-12 text-default-400">
             <p>{tabItems.length === 0 ? `Nothing here yet.` : "No items match these filters."}</p>

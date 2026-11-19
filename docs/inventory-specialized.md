@@ -115,7 +115,9 @@ Cognito username, i.e. `homePerson.cognitoUsername`.
   through subcategories), top-level room and owner, plus status counts and
   the recently added; tiles open `list.tsx` for that slice
   (`list_inventory` by `categoryId` / `roomId` / owner, `'none'` = unset),
-  and search goes to the server across everything.
+  and search goes to the server across everything. The web `/inventory`
+  opens on the same overview (`components/inventory/overview.tsx`); a tile
+  sets the page's filter and "← Overview" clears it.
 
 ### 6. Migration and retiring the old inventory
 
