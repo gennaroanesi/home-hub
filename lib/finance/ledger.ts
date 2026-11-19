@@ -38,6 +38,19 @@ export function accountLedger(a: AccountLike | null | undefined): string {
   return owners.length === 1 ? owners[0] : HOUSEHOLD;
 }
 
+/**
+ * Whether something funded by these accounts (a savings goal) belongs to
+ * the ledger: a person's when one of its accounts is theirs, the
+ * household's when one is joint or when it's tracked by hand (no accounts);
+ * everything for "all".
+ */
+export function fundedInLedger(accountIds: string[], accounts: AccountLike[], ledger: string): boolean {
+  if (ledger === ALL_LEDGERS) return true;
+  if (accountIds.length === 0) return ledger === HOUSEHOLD;
+  const byId = new Map(accounts.map((a) => [a.id, a]));
+  return accountIds.some((id) => accountLedger(byId.get(id)) === ledger);
+}
+
 export function ledgerOf(tx: { ledger?: string | null }, accountLedgerKey: string): string {
   return tx.ledger?.trim() || accountLedgerKey;
 }

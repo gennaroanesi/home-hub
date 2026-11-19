@@ -89,6 +89,41 @@ describe("get_finance_summary", () => {
     expect(s.lowPoint).toMatchObject({ balance: 500, belowBuffer: true });
     expect(s.uncategorizedCount).toBe(1);
   });
+
+  it("narrows to one person's accounts, budget and goals with ledger", async () => {
+    const { ctx } = setup({
+      homePerson: people.map((p) => ({ ...p, cognitoUsername: p.id })),
+      homeFinanceAccount: [joint, { id: "gchk", name: "Gennaro checking", type: "CHECKING", currentBalance: 800, ownerPersonIds: ["gen"], active: true }],
+      homeFinanceBudget: [
+        { id: "b1", seriesId: "food", name: "Food", kind: "EXPENSE", categories: ["Groceries"], amount: 900, period: "MONTHLY", effectiveFrom: "2026-01-01" },
+        { id: "b2", seriesId: "fun", name: "Fun", kind: "EXPENSE", categories: ["Entertainment"], amount: 200, period: "MONTHLY", effectiveFrom: "2026-01-01", ledger: "gen" },
+      ],
+      homeFinanceTransaction: [
+        { id: "t1", accountId: "gchk", amount: -50, category: "Entertainment", date: thisMonth, status: "POSTED" },
+        { id: "t2", accountId: "joint", amount: -15, description: "zzz mystery", date: thisMonth, status: "POSTED" },
+      ],
+      homeFinanceSavingsGoal: [
+        { id: "g1", name: "Emergency", targetAmount: 10000, fundingAccountIds: ["joint"], active: true },
+        { id: "g2", name: "Gennaro's trip", targetAmount: 2000, fundingAccountIds: ["gchk"], active: true },
+        { id: "g3", name: "By hand", targetAmount: 500, currentAmount: 100, active: true },
+      ],
+    });
+    const gen = ((await runOp(ctx, "get_finance_summary", { ledger: "Gennaro" })) as any).result;
+    expect(gen).toMatchObject({ ledger: "gen", ledgerName: "Gennaro" });
+    expect(gen.accounts.map((a: any) => a.name)).toEqual(["Gennaro checking"]);
+    expect(gen.budget.lines.map((l: any) => [l.name, l.spent])).toEqual([["Fun", 50]]);
+    expect(gen.goals.map((g: any) => g.name)).toEqual(["Gennaro's trip"]);
+    expect(gen.uncategorizedCount).toBe(0);
+
+    const home = ((await runOp(ctx, "get_finance_summary", {})) as any).result;
+    expect(home.accounts.map((a: any) => [a.name, a.ledger])).toEqual([["Joint checking", "household"]]);
+    expect(home.goals.map((g: any) => g.name)).toEqual(["Emergency", "By hand"]);
+    expect(home.ledgers.map((l: any) => l.key)).toEqual(["household", "gen", "cris", "all"]);
+
+    const all = ((await runOp(ctx, "get_finance_summary", { ledger: "all" })) as any).result;
+    expect(all.accounts).toHaveLength(2);
+    expect(all.goals).toHaveLength(3);
+  });
 });
 
 describe("update_finance_transaction", () => {

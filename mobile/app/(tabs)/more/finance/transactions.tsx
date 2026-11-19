@@ -28,7 +28,7 @@ type Result = OpResultOf<"list_finance_transactions">;
 const LIMIT = 300;
 
 export default function FinanceTransactions() {
-  const params = useLocalSearchParams<{ uncategorized?: string; categories?: string; accountId?: string; month?: string; title?: string }>();
+  const params = useLocalSearchParams<{ uncategorized?: string; categories?: string; accountId?: string; month?: string; title?: string; ledger?: string }>();
   const accounts = useFinanceAccounts();
   const [month, setMonth] = useState(() => (params.month && /^\d{4}-\d{2}$/.test(params.month) ? params.month : todayIso().slice(0, 7)));
   const [typed, setTyped] = useState("");
@@ -39,6 +39,7 @@ export default function FinanceTransactions() {
     accountIds: params.accountId ? [params.accountId] : [],
     categories: params.categories ? params.categories.split(",").filter(Boolean) : [],
     uncategorized: params.uncategorized === "1",
+    ...(params.ledger ? { ledger: params.ledger } : {}),
   }));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [data, setData] = useState<Result | null>(null);

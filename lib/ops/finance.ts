@@ -27,7 +27,7 @@ import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
-import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople } from "../finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, txsForLedger } from "../finance/ledger";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -115,17 +115,22 @@ export const getFinanceSummary = defineOp({
   domain: "finance",
   access: "read",
   description:
-    "The household's money at a glance for one month (default: this month): joint account balances, the budget (what each person planned to contribute vs what came in, and each budget line's spending vs its amount), the scheduled debits coming up in the next 14 days with the projected low balance, savings goals, and how many transactions still need a category. Answers 'how are we doing this month?', 'how much have we spent on groceries?', 'did Cristine's contribution come in?', 'will we have enough for the mortgage?', 'how close are we to the emergency fund goal?'.",
+    "Money at a glance for one month (default: this month), for the household (default), one person (ledger: their own accounts and budget) or everything: account balances, the budget (what each person planned to contribute vs what came in, and each budget line's spending vs its amount), the scheduled debits coming up in the next 14 days with the projected low balance, savings goals, and how many transactions still need a category. Answers 'how are we doing this month?', 'how much have we spent on groceries?', 'did Cristine's contribution come in?', 'will we have enough for the mortgage?', 'how close are we to the emergency fund goal?'.",
   input: z.object({
     month: MONTH.optional().describe("YYYY-MM; default this month."),
+    ledger: LEDGER_PARAM.optional(),
   }),
   output: z.object({
     month: z.string(),
+    ledger: z.string().describe("household, all, or the person's id"),
+    ledgerName: z.string(),
+    ledgers: z.array(z.object({ key: z.string(), name: z.string() })).describe("Every view there is: household, each person, all"),
     accounts: z.array(
       z.object({
         id: z.string(),
         name: z.string(),
         type: z.string().nullable(),
+        ledger: z.string().describe("household or the single owner's person id"),
         balance: z.number().describe("Invested accounts: total value, positions included"),
         updatedAt: z.string().nullable(),
         institution: z.string().nullable(),
@@ -185,9 +190,14 @@ export const getFinanceSummary = defineOp({
       listGoalMilestones(ctx.client),
       latestSync(ctx),
     ]);
-    const active = accounts.filter((a) => a.active !== false);
+    const ledger = (await ledgerRef(ctx, input.ledger, { allowAll: true })) ?? HOUSEHOLD;
+    const mine = (a: (typeof accounts)[number]) => ledger === ALL_LEDGERS || accountLedger(a) === ledger;
+    const active = accounts.filter((a) => a.active !== false && mine(a));
     const txs = await listTransactions(ctx.client, { ...window, accountIds: householdAccounts(accounts).map((a) => a.id) });
-    const view = ledgerBudget(HOUSEHOLD, lines, txs, schedules, accounts, window, today);
+    const view =
+      ledger === ALL_LEDGERS
+        ? allLedgersBudget(ledgerPeople(folks as any[]).map((p) => p.id), lines, txs, schedules, accounts, window, today)
+        : ledgerBudget(ledger, lines, txs, schedules, accounts, window, today);
 
     // Next 14 days of scheduled money movement on cash accounts.
     const horizon = addDays(today, 14);
@@ -207,10 +217,14 @@ export const getFinanceSummary = defineOp({
 
     return {
       month: window.label,
+      ledger,
+      ledgerName: ledgerLabel(ledger, folks),
+      ledgers: [HOUSEHOLD, ...ledgerPeople(folks as any[]).map((p) => p.id), ALL_LEDGERS].map((key) => ({ key, name: ledgerLabel(key, folks) })),
       accounts: active.map((a) => ({
         id: a.id,
         name: a.name,
         type: a.type ?? null,
+        ledger: accountLedger(a),
         balance: r2(a.currentBalance ?? 0),
         updatedAt: a.balanceUpdatedAt ?? null,
         institution: a.institution ?? null,
@@ -247,7 +261,7 @@ export const getFinanceSummary = defineOp({
       upcoming,
       lowPoint,
       goals: goalProgress(goals, accounts, today)
-        .filter((g) => g.goal.active !== false)
+        .filter((g) => g.goal.active !== false && fundedInLedger(goalAccountIds(g.goal), accounts, ledger))
         .map((g) => ({
           id: g.goal.id,
           name: g.goal.name,
@@ -259,7 +273,7 @@ export const getFinanceSummary = defineOp({
           fundedBy: g.funded === "account" ? goalAccountIds(g.goal).map((id) => accounts.find((a) => a.id === id)?.name ?? id) : [],
           milestones: milestoneOut(milestones.filter((m) => m.goalId === g.goal.id), g.current, today),
         })),
-      uncategorizedCount: txs.filter((t) => effectiveCategory(t) === UNCATEGORIZED).length,
+      uncategorizedCount: (ledger === ALL_LEDGERS ? txs : txsForLedger(txs, accounts, ledger)).filter((t) => effectiveCategory(t) === UNCATEGORIZED).length,
       lastSync,
     };
   },

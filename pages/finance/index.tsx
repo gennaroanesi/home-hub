@@ -1,9 +1,11 @@
 "use client";
 
 // /finance — money at a glance for the household, one person, or everything
-// (?ledger=, like Budget): net worth, account balances grouped by type, this
-// month's budget headline, scheduled debits in the next 14 days with a
-// projected balance, goals, uncategorized count and the last SimpleFIN sync.
+// (?ledger=, like Budget): net worth, account balances in one sideways row
+// per type with its total, scheduled debits in the next 14 days with a
+// projected balance, this month's budget headline, goals (those funded by
+// the ledger's accounts), uncategorized count and the last SimpleFIN sync.
+// Same order as the phone's overview.
 // An account is the household's unless it has a single owner
 // (lib/finance/ledger.ts accountLedger); property is the household's.
 
@@ -21,12 +23,12 @@ import { BudgetBar, EmptyState, Money, PersonChip, ago } from "@/components/fina
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { groupAccountsByType, householdAccounts } from "@/lib/finance/accounts";
 import { type HouseholdBudgetView } from "@/lib/finance/budget";
-import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, ledgerBudget, txsForLedger } from "@/lib/finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, txsForLedger } from "@/lib/finance/ledger";
 import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtCurrency, fmtDate, monthRange, todayIso } from "@/lib/finance/dates";
 import { listAssets, listBudgetLines, listGoals, listSchedules, listTransactions } from "@/lib/finance/data";
-import { goalProgress, type GoalProgress } from "@/lib/finance/goals";
+import { goalAccountIds, goalProgress, type GoalProgress } from "@/lib/finance/goals";
 import { netWorthNow } from "@/lib/finance/net-worth";
 import { lowestPoint, projectBalance, upcomingEvents, type ProjectedEvent, type ProjectionPoint } from "@/lib/finance/recurring";
 import { listAllPages } from "@/lib/list-all";
@@ -100,6 +102,7 @@ export default function FinanceOverviewPage() {
       ? allLedgersBudget(ledgerIds, data.lines, data.txs, schedules, refs.accounts, month, today)
       : ledgerBudget(ledger, data.lines, data.txs, schedules, refs.accounts, month, today);
   }, [data, ledger, ledgerIds, schedules, refs.accounts, month, today]);
+  const ledgerGoals = useMemo(() => goals.filter((g) => fundedInLedger(goalAccountIds(g.goal), refs.accounts, ledger)), [goals, refs.accounts, ledger]);
   const uncategorized = useMemo(() => {
     if (!data) return 0;
     const txs = ledger === ALL_LEDGERS ? data.txs : txsForLedger(data.txs, refs.accounts, ledger);
@@ -199,23 +202,25 @@ export default function FinanceOverviewPage() {
         {accountGroups.map((g) => (
           <section key={g.type}>
             <div className="flex items-baseline justify-between mb-2 px-1">
-              <h3 className="text-xs uppercase tracking-wide text-default-500 font-semibold">{g.label}</h3>
-              <Money value={g.total} cents={false} className="text-sm font-semibold" />
+              <h3 className="flex items-baseline gap-2">
+                <span className="text-xs uppercase tracking-wide text-default-500 font-semibold">{g.label}</span>
+                <Money value={g.total} cents={false} className="text-sm font-semibold" />
+              </h3>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+            <div className="flex gap-3 overflow-x-auto snap-x pb-2 -mx-1 px-1">
               {g.accounts.map((a) => {
                 const o = outlooks.find((x) => x.account.id === a.id);
                 const belowNow = a.minBalance != null && (a.currentBalance ?? 0) < a.minBalance;
                 const owner = ledger !== HOUSEHOLD && !ledgerState.personal ? accountLedger(a) : null;
                 return (
-                  <NextLink key={a.id} href={`/finance/accounts/${a.id}`}>
-                    <Card isPressable className="w-full" shadow="sm">
+                  <NextLink key={a.id} href={`/finance/accounts/${a.id}`} className="snap-start shrink-0 w-60">
+                    <Card isPressable className="w-full h-full" shadow="sm">
                       <CardBody className="gap-1">
                         <div className="flex items-center justify-between gap-2">
                           <span className="font-medium truncate">{a.name}</span>
                           {owner && owner !== HOUSEHOLD ? <PersonChip personId={owner} people={refs.people} /> : owner === HOUSEHOLD ? <Chip size="sm" variant="flat">household</Chip> : null}
                         </div>
-                        <Money value={a.currentBalance ?? 0} className="text-2xl font-semibold" />
+                        <Money value={a.currentBalance ?? 0} className="text-xl font-semibold" />
                         <div className="text-xs text-default-500 flex items-center gap-2 flex-wrap">
                           <span>updated {ago(a.balanceUpdatedAt)}</span>
                           {a.institution && <span>· {a.institution}</span>}
@@ -244,10 +249,43 @@ export default function FinanceOverviewPage() {
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          {/* Upcoming */}
+          <Card shadow="sm">
+            <CardHeader className="flex justify-between">
+              <span className="font-semibold">Next 14 days</span>
+              <NextLink href="/finance/scheduled" className="text-xs text-primary">
+                Scheduled →
+              </NextLink>
+            </CardHeader>
+            <CardBody className="gap-3 pt-0">
+              {outlooks
+                .filter((o) => o.points.length > 0)
+                .map((o) => (
+                  <ProjectionChart key={o.account.id} outlook={o} today={today} />
+                ))}
+              {upcoming.length === 0 ? (
+                <div className="text-sm text-default-500">Nothing scheduled in the next two weeks.</div>
+              ) : (
+                <ul className="text-sm flex flex-col divide-y divide-default-100">
+                  {upcoming.map((e, i) => (
+                    <li key={`${e.recurringId}-${e.date}-${i}`} className="flex items-center justify-between py-1.5 gap-2">
+                      <span className="text-default-500 w-14 shrink-0">{fmtDate(e.date)}</span>
+                      <span className="flex-1 truncate">
+                        {e.description}
+                        {outlooks.length > 1 && <span className="text-default-400"> · {e.accountName}</span>}
+                      </span>
+                      <Money value={e.amount} sign />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </CardBody>
+          </Card>
+
           {/* Budget headline */}
           <Card shadow="sm">
             <CardHeader className="flex justify-between">
-              <span className="font-semibold">{month.label}</span>
+              <span className="font-semibold">Budget · {month.label}</span>
               <NextLink href={ledger === HOUSEHOLD ? "/finance/budget" : `/finance/budget?ledger=${ledger}`} className="text-xs text-primary">
                 Budget →
               </NextLink>
@@ -324,41 +362,8 @@ export default function FinanceOverviewPage() {
             </CardBody>
           </Card>
 
-          {/* Upcoming */}
-          <Card shadow="sm">
-            <CardHeader className="flex justify-between">
-              <span className="font-semibold">Next 14 days</span>
-              <NextLink href="/finance/scheduled" className="text-xs text-primary">
-                Scheduled →
-              </NextLink>
-            </CardHeader>
-            <CardBody className="gap-3 pt-0">
-              {outlooks
-                .filter((o) => o.points.length > 0)
-                .map((o) => (
-                  <ProjectionChart key={o.account.id} outlook={o} today={today} />
-                ))}
-              {upcoming.length === 0 ? (
-                <div className="text-sm text-default-500">Nothing scheduled in the next two weeks.</div>
-              ) : (
-                <ul className="text-sm flex flex-col divide-y divide-default-100">
-                  {upcoming.map((e, i) => (
-                    <li key={`${e.recurringId}-${e.date}-${i}`} className="flex items-center justify-between py-1.5 gap-2">
-                      <span className="text-default-500 w-14 shrink-0">{fmtDate(e.date)}</span>
-                      <span className="flex-1 truncate">
-                        {e.description}
-                        {outlooks.length > 1 && <span className="text-default-400"> · {e.accountName}</span>}
-                      </span>
-                      <Money value={e.amount} sign />
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </CardBody>
-          </Card>
-
           {/* Goals */}
-          {goals.length > 0 && (
+          {ledgerGoals.length > 0 && (
             <Card shadow="sm" className="lg:col-span-2">
               <CardHeader className="flex justify-between">
                 <span className="font-semibold">Goals</span>
@@ -368,7 +373,7 @@ export default function FinanceOverviewPage() {
               </CardHeader>
               <CardBody className="pt-0">
                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                  {goals.map((g) => (
+                  {ledgerGoals.map((g) => (
                     <div key={g.goal.id} className="flex flex-col gap-1">
                       <div className="flex justify-between text-sm">
                         <span className="font-medium truncate">{g.goal.name}</span>
