@@ -23,11 +23,13 @@ interface RunOpArgs {
   via?: string | null;
 }
 
-export const handler = async (event: { arguments: RunOpArgs }): Promise<unknown> => {
+export const handler = async (event: { arguments: RunOpArgs; identity?: { username?: string } | null }): Promise<unknown> => {
   const { name, input, via } = event.arguments;
+  // AppSync verified the Cognito login; owner-only data goes to this user only.
+  const username = event.identity?.username ?? null;
   const parsed = parseOpInput(input);
   if ("error" in parsed) return parsed;
   // Return the object: AppSync encodes a.json() itself, so a string here
   // would reach the client encoded twice.
-  return runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web" } }, name, parsed.input);
+  return runOp({ client, storage, actor: { via: via === "mobile" ? ("mobile" as OpVia) : "web", username } }, name, parsed.input);
 };

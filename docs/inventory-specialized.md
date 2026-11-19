@@ -1,6 +1,6 @@
 # Specialized inventory (moving gennaroanesi.com's inventory here)
 
-Status: 2026-11-19. Steps 1 (owner-only check) and 2 (schema, `lib/inventory-details.ts`) done.
+Status: 2026-11-19. Steps 1–3 done: owner-only check, schema + `lib/inventory-details.ts`, ops (`lib/ops/inventory-items.ts`, `lib/inventory-store.ts`, `lib/inventory-ammo.ts`).
 
 ## Why
 

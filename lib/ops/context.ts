@@ -9,6 +9,8 @@ export interface OpImageStorage {
   storeFromUrl(url: string, prefix: string): Promise<string>;
   /** Copies an image an API client uploaded via POST /uploads (home/inventory/…). */
   copyUpload(uploadKey: string, prefix: string): Promise<string>;
+  /** Stores image bytes already in hand (a small base64 image from the API). */
+  storeBytes?(img: { data: Buffer; contentType: string }, prefix: string): Promise<string>;
 }
 
 export interface OpContext {
@@ -18,5 +20,16 @@ export interface OpContext {
   actor: {
     via: OpVia;
     personName?: string | null; // default person for ops that take one
+    /**
+     * The caller's Cognito username when the surface knows it for sure
+     * (web / mobile through the ops Lambda: AppSync's verified identity).
+     * Owner-only data (lib/inventory-details.ts private types) goes only to
+     * its owner: this login, else the person named by personName.
+     */
+    username?: string | null;
+    /** A WhatsApp group chat: owner-only data is never shown here. */
+    groupChat?: boolean;
   };
+  /** S3 keys of photos sent with the message that triggered the op (Janet). */
+  messageImageKeys?: string[];
 }

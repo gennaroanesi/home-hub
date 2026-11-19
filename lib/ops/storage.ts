@@ -60,6 +60,12 @@ export function createS3ImageStorage(s3: S3Client, bucket: string | undefined, f
       await s3.send(new PutObjectCommand({ Bucket: b, Key: key, Body: img.data, ContentType: img.contentType }));
       return key;
     },
+    async storeBytes(img, prefix) {
+      const b = need();
+      const key = `${prefix}${randomUUID()}.${extensionForImage(img.contentType)}`;
+      await s3.send(new PutObjectCommand({ Bucket: b, Key: key, Body: img.data, ContentType: img.contentType }));
+      return key;
+    },
     async copyUpload(uploadKey, prefix) {
       const b = need();
       const src = await verifyUploadedImage(s3, b, uploadKey);
