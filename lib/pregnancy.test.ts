@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  babyProfileFor,
   addDaysYmd,
   buildCareTimeline,
   careUrgency,
@@ -138,5 +139,24 @@ describe("planCareShift", () => {
 
   it("is a no-op for the same due date", () => {
     expect(planCareShift(seeded, due)).toEqual([]);
+  });
+});
+
+describe("babyProfileFor", () => {
+  const preg = { dueDate: "2027-05-21" };
+  const cris = { id: "cris", groups: ["home-users"], cognitoUsername: "c", birthday: "1990-05-20" };
+  const baby = { id: "baby", groups: ["home-users"], birthday: "2027-05-21" };
+  it("finds the household kid without a login born around the due date", () => {
+    expect(babyProfileFor(preg, [cris, baby])?.id).toBe("baby");
+    expect(babyProfileFor(preg, [cris, { ...baby, birthday: "2027-06-10" }])?.id).toBe("baby");
+  });
+  it("is null before the profile exists, far from the due date, outside the household, or ambiguous", () => {
+    expect(babyProfileFor(preg, [cris])).toBeNull();
+    expect(babyProfileFor(preg, [{ ...baby, birthday: "2025-01-01" }])).toBeNull();
+    expect(babyProfileFor(preg, [{ ...baby, groups: [] }])).toBeNull();
+    expect(babyProfileFor(preg, [baby, { ...baby, id: "twin" }])).toBeNull();
+  });
+  it("reads the agent's person shape too", () => {
+    expect(babyProfileFor(preg, [{ id: "baby", household: true, login: false, birthday: "2027-05-21" }])?.id).toBe("baby");
   });
 });

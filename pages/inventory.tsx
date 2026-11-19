@@ -32,6 +32,7 @@ import DefaultLayout from "@/layouts/default";
 import { DateInput } from "@/components/date-input";
 import { CategoryManager } from "@/components/inventory/category-manager";
 import { householdMembers } from "@/lib/household";
+import { babyProfileFor } from "@/lib/pregnancy";
 import { listAllPages } from "@/lib/list-all";
 import {
   ACQUIRED_VIA_LABELS,
@@ -208,8 +209,11 @@ export default function InventoryPage() {
   // then anyone else who already owns something (e.g. a kid).
   const ownerOptions = useMemo(() => {
     const opts: { key: string; label: string }[] = [{ key: HOUSEHOLD, label: "Household (shared)" }];
+    // The baby on the way, until the baby has its own profile (then the
+    // baby is a household member below, lib/pregnancy.ts babyProfileFor);
+    // still listed while items sit on the pregnancy.
     for (const p of pregnancies.filter((p) => p.status === "ACTIVE")) {
-      opts.push({ key: babyKey(p.id), label: "👶 Baby on the way" });
+      if (!babyProfileFor(p, people) || items.some((i) => i.pregnancyId === p.id)) opts.push({ key: babyKey(p.id), label: "👶 Baby on the way" });
     }
     const members = householdMembers(people);
     const ownerIds = new Set(items.map((i) => i.ownerPersonId).filter(Boolean));

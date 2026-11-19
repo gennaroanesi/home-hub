@@ -40,6 +40,7 @@ import {
   seedCareTimeline,
   shiftCareTimeline,
   ymdInTimezone,
+  babyProfileFor,
 } from "../../../lib/pregnancy.js";
 import {
   completeCareItem,
@@ -290,6 +291,7 @@ interface PersonLite {
   household: boolean;
   // Has an app login. A kid can be in the household without one.
   login: boolean;
+  birthday: string | null;
 }
 
 let _peopleCache: PersonLite[] | null = null;
@@ -303,6 +305,7 @@ async function getPeople(): Promise<PersonLite[]> {
     name: p.name,
     household: isHouseholdMember(p),
     login: !!p.cognitoUsername,
+    birthday: p.birthday ?? null,
   }));
   return _peopleCache;
 }
@@ -1821,7 +1824,7 @@ const legacyTools: Anthropic.Tool[] = [
         },
         ownerName: {
           type: "string",
-          description: "Person's name, a pet's name (e.g. 'Dolce'), 'household' for shared items, or 'baby' for items for the baby on the way.",
+          description: "Person's name, a pet's name (e.g. 'Dolce'), 'household' for shared items, or 'baby' for items for the baby (its profile, or the pregnancy before it has one).",
         },
         query: { type: "string", description: "Fuzzy match on name, brand, notes, tags, clothing type/color, room and location." },
         roomName: {
@@ -1836,7 +1839,7 @@ const legacyTools: Anthropic.Tool[] = [
   {
     name: "manage_inventory_item",
     description:
-      "Create, update or delete an inventory item. Use status=WISHLIST for things to get (with estimatedPrice, priority, neededBy, url) and OWNED for things we have. action=mark_owned moves a wishlist item to OWNED (bought or received as a gift). Clothing takes size/color/clothingType/season; consumables take unit/lowStockThreshold/shoppingListName/expiresOn. Set forBaby=true for items for the baby on the way. Identify an existing item by itemId or query.",
+      "Create, update or delete an inventory item. Use status=WISHLIST for things to get (with estimatedPrice, priority, neededBy, url) and OWNED for things we have. action=mark_owned moves a wishlist item to OWNED (bought or received as a gift). Clothing takes size/color/clothingType/season; consumables take unit/lowStockThreshold/shoppingListName/expiresOn. Set forBaby=true for items for the baby. Identify an existing item by itemId or query.",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -1850,7 +1853,7 @@ const legacyTools: Anthropic.Tool[] = [
         },
         status: { type: "string", enum: ["WISHLIST", "OWNED", "SOLD", "GIVEN_AWAY"], description: "Default OWNED on create." },
         ownerName: { type: "string", description: "Whose item: a person, a pet (e.g. 'Dolce'), or omit / 'household' for shared." },
-        forBaby: { type: "boolean", description: "Item is for the baby on the way (links it to the active pregnancy)." },
+        forBaby: { type: "boolean", description: "Item is for the baby (files it under the baby's profile, or the active pregnancy if the baby has none yet)." },
         brand: { type: "string" },
         quantity: { type: "integer" },
         roomName: {
@@ -1892,7 +1895,7 @@ const legacyTools: Anthropic.Tool[] = [
         roomName: { type: "string", description: "Room from the house map ('garage', 'primary closet'). Applies to every item." },
         location: { type: "string", description: "Spot within the room ('top shelf', 'gray bin by the door'). Applies to every item unless an item sets its own." },
         ownerName: { type: "string", description: "Whose they are: a person, a pet (e.g. 'Dolce'), or omit for the household." },
-        forBaby: { type: "boolean", description: "Items for the baby on the way." },
+        forBaby: { type: "boolean", description: "Items for the baby (its profile, or the pregnancy before there is one)." },
         status: {
           type: "string",
           enum: ["OWNED", "WISHLIST"],
@@ -2116,7 +2119,8 @@ function matchInventoryItem<T extends { id: string; name: string; status?: strin
 }
 
 // ownerName → { ownerPersonId, pregnancyId }. "household"/empty = shared,
-// "baby" (or forBaby) = the active pregnancy.
+// "baby" (or forBaby) = the baby's profile once it exists
+// (babyProfileFor), else the active pregnancy.
 type InventoryOwner = { ownerPersonId: string | null; pregnancyId: string | null; petId: string | null };
 
 async function listPets() {
@@ -2125,8 +2129,8 @@ async function listPets() {
   return (data ?? []).filter((p) => p.active !== false);
 }
 
-// ownerName → who an item belongs to: a person, the baby on the way
-// ("baby" / forBaby), a pet (by name, e.g. "Dolce"), or the household
+// ownerName → who an item belongs to: a person, the baby ("baby" /
+// forBaby: its profile, or the pregnancy before there is one), a pet (by name, e.g. "Dolce"), or the household
 // (empty / "household"). Exactly one of the ids is set, or none.
 async function resolveInventoryOwner(
   ownerName?: string | null,
@@ -2139,7 +2143,9 @@ async function resolveInventoryOwner(
     if (active.length !== 1) {
       return { error: active.length === 0 ? "No active pregnancy to link baby items to" : "Multiple active pregnancies — say whose" };
     }
-    return { ...none, pregnancyId: active[0].id };
+    // Once the baby has a profile (Baby1), items go to that person.
+    const profile = babyProfileFor(active[0], await getPeople());
+    return profile ? { ...none, ownerPersonId: profile.id } : { ...none, pregnancyId: active[0].id };
   }
   if (!name || ["household", "both", "shared", "us"].includes(name)) return none;
   const pet = (await listPets()).find((p) => p.name.toLowerCase() === name || name.startsWith(p.name.toLowerCase()));
@@ -6182,7 +6188,7 @@ unit + a low-stock threshold; subcategories inherit that.
 - "Where is X?" → list_inventory with query X and answer with its room +
   location. "Put the stroller in the garage" → manage_inventory_item update
   with roomName (location is the detail within the room, e.g. "top shelf").
-- Items for the baby on the way use forBaby / ownerName "baby"; shared
+- Items for the baby use forBaby / ownerName "baby" (filed under the baby's profile once it exists); shared
   household items have no owner.
 
 Latency-sensitive: begin your visible answer immediately. When a request needs tools, start with one short line saying what you're doing (on WhatsApp it's sent right away while you work). Put a blank line between paragraphs — long replies are delivered paragraph by paragraph. Formatting is WhatsApp-style plain text: *single asterisks* for bold (sparingly) and "• " for bullets — no Markdown headings, tables, or **double asterisks**.

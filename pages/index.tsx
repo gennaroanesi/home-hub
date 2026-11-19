@@ -65,7 +65,7 @@ import {
 } from "@/lib/dashboard";
 import { householdMembers } from "@/lib/household";
 import { formatUsd, wishlistSummary, type WishlistSummary } from "@/lib/inventory";
-import { careUrgency, gestationalAge } from "@/lib/pregnancy";
+import { babyProfileFor, careUrgency, gestationalAge } from "@/lib/pregnancy";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -280,7 +280,9 @@ export default function HomeDashboard() {
             .filter((v) => v.personId === pregnancy.personId && v.visitAt >= nowIso)
             .sort((a, b) => a.visitAt.localeCompare(b.visitAt))[0] ?? null,
         registry: (() => {
-          const summary = wishlistSummary(wishlist.filter((w) => w.pregnancyId === pregnancy.id));
+          // The baby's wishlist: on the pregnancy, or on the baby's profile once it exists.
+          const baby = babyProfileFor(pregnancy, allPeople);
+          const summary = wishlistSummary(wishlist.filter((w) => w.pregnancyId === pregnancy.id || (!!baby && w.ownerPersonId === baby.id)));
           return summary.count > 0 ? summary : null;
         })(),
       }));

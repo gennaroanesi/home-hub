@@ -704,3 +704,29 @@ export const DUE_DATE_SOURCE_LABELS: Record<string, string> = {
   IVF: "from IVF transfer",
   OTHER: "set manually",
 };
+
+// ── The baby's own profile ────────────────────────────────────────────────────
+
+/** How far a profile's birthday may sit from the due date and still be this pregnancy's baby. */
+const BABY_PROFILE_WINDOW_DAYS = 60;
+
+/**
+ * The baby's homePerson once it has been added (a kid joins the household
+ * with no login, its birthday set to the due date), or null. Things filed
+ * "for the baby" (inventory) go to this person when there is one, and to
+ * the pregnancy (`pregnancyId`) only before. One match only: twins or an
+ * ambiguous match fall back to the pregnancy.
+ */
+export function babyProfileFor<P extends { id: string; birthday?: string | null; cognitoUsername?: string | null; login?: boolean; household?: boolean; groups?: (string | null)[] | null; active?: boolean | null }>(
+  pregnancy: { dueDate?: string | null },
+  people: P[],
+): P | null {
+  if (!pregnancy.dueDate) return null;
+  const due = pregnancy.dueDate;
+  const matches = people.filter((p) => {
+    const inHousehold = p.household ?? (p.active !== false && (p.groups ?? []).includes("home-users"));
+    const hasLogin = p.login ?? !!p.cognitoUsername;
+    return inHousehold && !hasLogin && !!p.birthday && Math.abs(daysBetween(p.birthday, due)) <= BABY_PROFILE_WINDOW_DAYS;
+  });
+  return matches.length === 1 ? matches[0] : null;
+}
