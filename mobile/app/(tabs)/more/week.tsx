@@ -6,7 +6,7 @@
 // opens a text box with its own Save (set_week_notes), separate from the
 // review mark, which can be undone.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -71,10 +71,14 @@ export default function WeekPlanner() {
   const [eventDate, setEventDate] = useState<string | null>(null);
   const [taskOpen, setTaskOpen] = useState(false);
 
+  // Bumped by every save: a reload that started before a later save would
+  // bring back the old value over the one just picked, so it's dropped.
+  const saves = useRef(0);
   const load = useCallback(async () => {
+    const at = saves.current;
     const r = await callOp("get_week_plan", weekStart ? { weekStart } : {});
     if ("error" in r) setError(r.error);
-    else {
+    else if (at === saves.current) {
       setError(null);
       setPlan(r.result);
     }
@@ -111,23 +115,44 @@ export default function WeekPlanner() {
   }
 
   async function write<N extends OpName>(name: N, input: Parameters<typeof callOp<N>>[1]) {
+    const mine = ++saves.current;
     const r = await callOp(name, input);
-    if ("error" in r) Alert.alert("Couldn't save", r.error);
-    await load();
+    if ("error" in r) {
+      Alert.alert("Couldn't save", r.error);
+      return load(); // put back what's really saved
+    }
+    // Only the last of several quick saves reloads; the screen already shows them.
+    if (mine === saves.current) await load();
   }
+
+  // Show a status as soon as it's picked; the reload confirms.
+  function showPerson(personId: string, date: string, status: string | null) {
+    setPlan((p) => p && { ...p, people: p.people.map((x) => (x.id !== personId ? x : { ...x, days: x.days.map((d) => (d.date === date ? { ...d, status: status as any, source: status ? ("set" as const) : null } : d)) })) }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+  function showPet(petId: string, date: string, status: string | null) {
+    setPlan((p) => p && { ...p, pets: p.pets.map((x) => (x.id !== petId ? x : { ...x, days: x.days.map((d) => (d.date === date ? { ...d, status: status as any } : d)) })) }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  }
+  const setPersonDay = (personId: string, date: string, status: string | null) => {
+    showPerson(personId, date, status);
+    void write("set_day_status", { personId, dates: [date], status: status as any }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
+  const setPetDay = (petId: string, date: string, status: string | null) => {
+    showPet(petId, date, status);
+    void write("set_pet_day", { petId, dates: [date], status: status as any }); // eslint-disable-line @typescript-eslint/no-explicit-any
+  };
 
   function pickStatus(personId: string, name: string, date: string) {
     Alert.alert(`${name} · ${fmt(date, { weekday: "long" })}`, undefined, [
-      ...Object.entries(STATUS_LABELS).map(([k, label]) => ({ text: label, onPress: () => write("set_day_status", { personId, dates: [date], status: k as any }) })),
-      { text: "Clear", style: "destructive" as const, onPress: () => write("set_day_status", { personId, dates: [date], status: null }) },
+      ...Object.entries(STATUS_LABELS).map(([k, label]) => ({ text: label, onPress: () => setPersonDay(personId, date, k) })),
+      { text: "Clear", style: "destructive" as const, onPress: () => setPersonDay(personId, date, null) },
       { text: "Cancel", style: "cancel" as const },
     ]);
   }
 
   function pickPet(petId: string, name: string, date: string) {
     Alert.alert(`${name} · ${fmt(date, { weekday: "long" })}`, undefined, [
-      ...Object.entries(PET_LABELS).map(([k, label]) => ({ text: label, onPress: () => write("set_pet_day", { petId, dates: [date], status: k as any }) })),
-      { text: "Clear", style: "destructive" as const, onPress: () => write("set_pet_day", { petId, dates: [date], status: null }) },
+      ...Object.entries(PET_LABELS).map(([k, label]) => ({ text: label, onPress: () => setPetDay(petId, date, k) })),
+      { text: "Clear", style: "destructive" as const, onPress: () => setPetDay(petId, date, null) },
       { text: "Cancel", style: "cancel" as const },
     ]);
   }
