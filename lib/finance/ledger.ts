@@ -55,6 +55,11 @@ export function ledgerOf(tx: { ledger?: string | null }, accountLedgerKey: strin
   return tx.ledger?.trim() || accountLedgerKey;
 }
 
+/** A schedule's budget: its own ledger (a household bill on a personal card), else its account's. */
+export function scheduleLedger(rule: { ledger?: string | null; accountId?: string | null }, accountLedgerOf: (accountId: string) => string | undefined): string {
+  return rule.ledger?.trim() || accountLedgerOf(rule.accountId ?? "") || HOUSEHOLD;
+}
+
 /** The adults who get a personal ledger: household members with a login (guests have logins too). */
 export function ledgerPeople<P extends PersonLike>(people: P[]): P[] {
   return people.filter((p) => !!p.cognitoUsername && isHouseholdMember(p));
@@ -179,7 +184,7 @@ export function ledgerBudget(
   todayIso: string,
 ): LedgerBudgetView {
   const byId = new Map(accounts.map((a) => [a.id, accountLedger(a)]));
-  const myRules = rules.filter((r) => (byId.get(r.accountId ?? "") ?? HOUSEHOLD) === ledger);
+  const myRules = rules.filter((r) => scheduleLedger(r, (id) => byId.get(id)) === ledger);
   const inKind = inKindContributions(txs, accounts, window);
   const view = householdBudget(linesForLedger(lines, ledger), txsForLedger(txs, accounts, ledger), myRules, window, todayIso, ledger === HOUSEHOLD ? inKind : undefined);
   if (ledger === HOUSEHOLD) return { ...view, ledger, paidDirectly: inKind, toHousehold: null };

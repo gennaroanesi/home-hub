@@ -459,6 +459,8 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       importHash: d.importHash,
       sfTransactionId: d.sfTransactionId,
       recurringId: rule?.id ?? null,
+      // A household bill on a personal card counts in the household budget.
+      ...(rule?.ledger?.trim() ? { ledger: rule.ledger.trim() } : {}),
     });
     if (e?.length && isAlreadyStored(e[0])) {
       // The row id is taken: this transaction is already stored.

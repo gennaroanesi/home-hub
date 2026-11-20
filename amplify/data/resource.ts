@@ -1224,6 +1224,10 @@ const schema = a
         // Substring or /regex/flags matched against bank descriptions to
         // link posted transactions ("ROCKET MORTGAGE", "/TOYOTA.*PMT/i").
         matchPattern: a.string(),
+        // Whose budget it counts in when not its account's: "household" or
+        // a person id (lib/finance/ledger.ts scheduleLedger). A household
+        // bill paid from a personal card. Linked transactions get it too.
+        ledger: a.string(),
         url: a.url(),
         notes: a.string(),
       })

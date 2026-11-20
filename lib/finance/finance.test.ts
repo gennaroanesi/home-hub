@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { categoryParts, classify, effectiveCategory, parseLineItems, rulesFromDbRows, suggestPattern, CATEGORY_RULES } from "./categories";
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
 import { budgetTransactions, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
-import { findScheduleMatches, lowestPoint, nextDateAfter, nextDueAfterPaid, projectBalance, upcomingEvents } from "./recurring";
+import { findScheduleMatches, planScheduleLinks, lowestPoint, nextDateAfter, nextDueAfterPaid, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress, milestoneViews } from "./goals";
 import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
 import type { SfAccount } from "./simplefin";
@@ -422,5 +422,20 @@ describe("phone/web shared helpers", () => {
     expect(nextDueAfterPaid({ cadence: "MONTHLY", nextDate: "2026-01-31", startDate: "2025-12-31" })).toBe("2026-02-28");
     expect(nextDueAfterPaid({ cadence: "BIWEEKLY", nextDate: "2026-11-06", startDate: "2026-01-02" })).toBe("2026-11-20");
     expect(nextDueAfterPaid({ cadence: "ONCE", nextDate: "2026-11-06" })).toBeNull();
+  });
+});
+
+describe("planScheduleLinks", () => {
+  const att = (id: string, amount: number, nextDate: string) => ({ id, accountId: "chk", amount, description: id, cadence: "MONTHLY", startDate: nextDate, nextDate, matchPattern: "ATT PAYMENT" });
+  it("gives each row its best schedule, moving a schedule on after each occurrence", () => {
+    const rules = [att("Internet", -120, "2026-11-04"), att("Mobile", -200, "2026-11-07")];
+    const tx = (id: string, date: string, amount: number, extra: object = {}) => ({ id, accountId: "chk", date, amount, description: "ATT PAYMENT PPD ID", ...extra });
+    const links = planScheduleLinks([tx("b", "2026-11-09", -240.55), tx("a", "2026-11-06", -115.89), tx("c", "2026-12-05", -118), tx("p", "2026-11-05", -119, { status: "PENDING" }), tx("l", "2026-11-05", -119, { recurringId: "x" })], rules);
+    expect(links.map((l) => [l.tx.id, l.rule.id, l.nextDate])).toEqual([
+      ["a", "Internet", "2026-12-04"],
+      ["b", "Mobile", "2026-12-07"],
+      ["c", "Internet", "2027-01-04"],
+    ]);
+    expect(rules[0].nextDate).toBe("2026-11-04"); // the caller's rules aren't touched
   });
 });

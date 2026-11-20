@@ -117,7 +117,7 @@ export function ago(iso: string | null | undefined): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-export type FinanceAccount = { id: string; name: string; type: string | null; invested: boolean; active: boolean };
+export type FinanceAccount = { id: string; name: string; type: string | null; invested: boolean; active: boolean; ownerPersonIds: string[] };
 
 let accountsCache: FinanceAccount[] | null = null;
 
@@ -134,7 +134,7 @@ export function useFinanceAccounts(): FinanceAccount[] {
     let live = true;
     listAccounts(getClient())
       .then((rows) => {
-        accountsCache = rows.map((a) => ({ id: a.id, name: a.name, type: a.type ?? null, invested: isInvested(a.type), active: a.active !== false }));
+        accountsCache = rows.map((a) => ({ id: a.id, name: a.name, type: a.type ?? null, invested: isInvested(a.type), active: a.active !== false, ownerPersonIds: (a.ownerPersonIds ?? []).filter((x: string | null): x is string => !!x) }));
         if (live) setAccounts(accountsCache);
       })
       .catch(() => undefined);

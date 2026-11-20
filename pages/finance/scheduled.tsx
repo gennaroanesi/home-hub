@@ -30,8 +30,10 @@ import NextLink from "next/link";
 import { listLoans, listSchedules, listTransactions, txIndexQuery } from "@/lib/finance/data";
 import { addDays, CADENCE_LABELS, CADENCE_MONTHLY_FACTOR, CADENCES, fmtDate, todayIso, type Cadence } from "@/lib/finance/dates";
 import { findScheduleMatches, isScheduleLive, nextDateAfter, nextDueAfterPaid } from "@/lib/finance/recurring";
+import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerPeople } from "@/lib/finance/ledger";
 
 type Schedule = any;
+const ACCOUNT_LEDGER = "__account";
 type Tx = any;
 
 const TYPES = [
@@ -53,6 +55,8 @@ type Form = {
   category: string;
   personId: string;
   matchPattern: string;
+  /** "" = its account's budget. */
+  ledger: string;
   autopay: boolean;
   active: boolean;
   url: string;
@@ -74,6 +78,7 @@ function emptyForm(accountId: string): Form {
     category: "",
     personId: "",
     matchPattern: "",
+    ledger: "",
     autopay: true,
     active: true,
     url: "",
@@ -96,6 +101,7 @@ function formFrom(s: Schedule): Form {
     category: s.category ?? "",
     personId: s.personId ?? "",
     matchPattern: s.matchPattern ?? "",
+    ledger: s.ledger ?? "",
     autopay: s.autopay !== false,
     active: s.active !== false,
     url: s.url ?? "",
@@ -205,6 +211,7 @@ export default function ScheduledPage() {
       toAccountId: form.type === "TRANSFER" ? form.toAccountId || null : null,
       personId: form.type === "INCOME" ? form.personId || null : null,
       matchPattern: form.matchPattern.trim() || null,
+      ledger: form.ledger || null,
       autopay: form.autopay,
       active: form.active,
       url: form.url.trim() || null,
@@ -419,6 +426,20 @@ export default function ScheduledPage() {
                   )}
                   <FreeCombobox label="Category" value={form.category} onValueChange={(v) => setForm({ ...form, category: v })} options={refs.categories} />
                   {form.type !== "EXPENSE" && <Input label="Ends on (optional)" type="date" value={form.endDate} onValueChange={(v) => setForm({ ...form, endDate: v })} />}
+                  {form.type !== "TRANSFER" && (
+                    <Select
+                      label="Counts in"
+                      selectedKeys={[form.ledger || ACCOUNT_LEDGER]}
+                      onChange={(e) => setForm({ ...form, ledger: e.target.value === ACCOUNT_LEDGER ? "" : e.target.value })}
+                      description="Whose budget it comes out of: a household bill on a personal card counts in the household's."
+                    >
+                      {[
+                        <SelectItem key={ACCOUNT_LEDGER}>{`Its account's (${ledgerLabel(accountLedger(refs.accounts.find((a) => a.id === form.accountId)), refs.people)})`}</SelectItem>,
+                        <SelectItem key={HOUSEHOLD_LEDGER}>Household</SelectItem>,
+                        ...ledgerPeople(refs.people as any[]).map((p) => <SelectItem key={p.id}>{p.name}</SelectItem>), // eslint-disable-line @typescript-eslint/no-explicit-any
+                      ]}
+                    </Select>
+                  )}
                   <Input
                     label="Match pattern"
                     placeholder="ROCKET MORTGAGE  or  /TOYOTA.*PMT/i"
@@ -495,7 +516,9 @@ function MatchModal({ schedule, onClose, onLinked }: { schedule: Schedule | null
     setLinking(tx.id);
     // Linking by hand also hands the row the schedule's category, unless it was categorized by hand.
     const cat = schedule.category?.trim() && tx.categorySource !== "MANUAL" ? { category: schedule.category.trim(), categorySource: "RULE" as const } : {};
-    const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id, ...cat });
+    // …and its budget, when it has its own (a household bill on a personal card).
+    const ledger = schedule.ledger?.trim() && !tx.ledger ? { ledger: schedule.ledger.trim() } : {};
+    const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id, ...cat, ...ledger });
     if (r.errors?.length) {
       setLinking(null);
       addToast({ title: "Couldn't link", description: r.errors[0].message, color: "danger" });

@@ -306,6 +306,33 @@ describe("save_finance_schedule", () => {
   });
 });
 
+describe("link_finance_schedules", () => {
+  it("links stored rows to a household bill on a personal card, carrying its category and budget", async () => {
+    const card = { ...joint, id: "amex", name: "AMEX", type: "CREDIT", ownerPersonIds: ["gen"] };
+    const { ctx, tables } = setup({
+      homePerson: people,
+      homeFinanceAccount: [joint, card],
+      homeFinanceRecurring: [],
+      homeFinanceTransaction: [
+        { id: "t1", accountId: "amex", date: "2026-11-11", amount: -19.65, description: "HBO Max NEW YORK NY", category: "Entertainment", categorySource: "LLM", status: "POSTED" },
+        { id: "t2", accountId: "amex", date: "2026-11-12", amount: -75.76, description: "ADOBE", category: "Subscriptions", status: "POSTED" },
+      ],
+    });
+    const made: any = await runOp(ctx, "save_finance_schedule", { description: "HBO Max", amount: 19.65, nextDate: "2026-11-10", accountId: "amex", category: "Streaming", matchPattern: "HBO Max", ledger: "household" });
+    expect(made.result.schedule).toMatchObject({ ledger: "household", ledgerName: "Household" });
+
+    const dry: any = await runOp(ctx, "link_finance_schedules", { from: "2026-11-01", to: "2026-11-20", dryRun: true });
+    expect(dry.result.linked.map((l: any) => [l.transactionId, l.schedule, l.nextDate])).toEqual([["t1", "HBO Max", "2026-12-10"]]);
+    expect(tables.homeFinanceTransaction[0].recurringId).toBeUndefined();
+
+    await runOp(ctx, "link_finance_schedules", { from: "2026-11-01", to: "2026-11-20" });
+    expect(tables.homeFinanceTransaction[0]).toMatchObject({ recurringId: made.result.schedule.id, category: "Streaming", categorySource: "RULE", ledger: "household" });
+    expect(tables.homeFinanceRecurring[0].nextDate).toBe("2026-12-10");
+    // Already linked: nothing more to do.
+    expect((await runOp(ctx, "link_finance_schedules", { from: "2026-11-01", to: "2026-11-20" }) as any).result.linked).toEqual([]);
+  });
+});
+
 describe("save_finance_goal", () => {
   it("creates an account-funded goal and reports its progress", async () => {
     const { ctx } = setup({ homeFinanceAccount: [{ id: "sav", name: "Savings", type: "SAVINGS", currentBalance: 4000 }] });

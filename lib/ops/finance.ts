@@ -25,9 +25,9 @@ import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthS
 import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
-import { isScheduleLive, lowestPoint, nextDueAfterPaid, projectBalance, upcomingEvents } from "../finance/recurring";
+import { isScheduleLive, lowestPoint, nextDueAfterPaid, planScheduleLinks, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
-import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, txsForLedger } from "../finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, txsForLedger } from "../finance/ledger";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -876,6 +876,8 @@ const ScheduleOut = z.object({
   endDate: z.string().nullable(),
   lastDayOfMonth: z.boolean().describe("Due on the last day of each month"),
   matchPattern: z.string().nullable(),
+  ledger: z.string().describe("Whose budget it counts in: household or a person id (its own, else its account's)"),
+  ledgerName: z.string(),
   url: z.string().nullable(),
   notes: z.string().nullable(),
 });
@@ -900,6 +902,17 @@ function scheduleOut(r: any, accounts: any[], folks: Person[]): z.input<typeof S
     endDate: r.endDate ?? null,
     lastDayOfMonth: !!r.lastDayOfMonth,
     matchPattern: r.matchPattern ?? null,
+    ledger: scheduleLedger(r, (id) => {
+      const a = accounts.find((x) => x.id === id);
+      return a ? accountLedger(a) : undefined;
+    }),
+    ledgerName: ledgerLabel(
+      scheduleLedger(r, (id) => {
+        const a = accounts.find((x) => x.id === id);
+        return a ? accountLedger(a) : undefined;
+      }),
+      folks,
+    ),
     url: r.url ?? null,
     notes: r.notes ?? null,
   };
@@ -926,6 +939,7 @@ export const saveFinanceSchedule = defineOp({
     personId: z.string().nullable().optional().describe("INCOME: the contributor."),
     personName: z.string().nullable().optional(),
     matchPattern: z.string().nullable().optional(),
+    ledger: z.string().nullable().optional().describe('Whose budget it counts in when not its account\'s: "household" (a household bill on a personal card) or a person. null = the account\'s. Transactions the sync links to it get the same.'),
     autopay: z.boolean().optional(),
     active: z.boolean().optional(),
     url: z.string().nullable().optional(),
@@ -946,6 +960,7 @@ export const saveFinanceSchedule = defineOp({
       return { action: "updated" as const, schedule: out(r.data) };
     }
     const personId = await personRef(ctx, input);
+    const ledger = await ledgerRef(ctx, input.ledger);
     if (input.accountId && !accounts.some((a) => a.id === input.accountId)) throw new OpError(`No account ${input.accountId}`);
     const pick = (keys: Array<keyof typeof input>) => Object.fromEntries(keys.filter((k) => input[k] !== undefined).map((k) => [k, input[k]]));
 
@@ -957,6 +972,7 @@ export const saveFinanceSchedule = defineOp({
       if (input.type) patch.type = type;
       if (input.amount !== undefined || input.type) patch.amount = normalizeAmountSign(input.amount ?? existing.amount, type);
       if (personId !== undefined) patch.personId = personId;
+      if (ledger !== undefined) patch.ledger = ledger;
       // Last-day schedules keep their due date on a month's end.
       if (input.lastDayOfMonth ?? existing.lastDayOfMonth) {
         const due = (patch.nextDate as string | undefined) ?? existing.nextDate ?? existing.startDate;
@@ -989,11 +1005,95 @@ export const saveFinanceSchedule = defineOp({
       nextDate,
       lastDayOfMonth: input.lastDayOfMonth ?? false,
       personId: personId ?? null,
+      ledger: ledger ?? null,
       autopay: input.autopay ?? true,
       active: input.active ?? true,
     });
     if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
     return { action: "created" as const, schedule: out(r.data) };
+  },
+});
+
+// ── link_finance_schedules ────────────────────────────────────────────────────
+
+export const linkFinanceSchedules = defineOp({
+  name: "link_finance_schedules",
+  domain: "finance",
+  access: "write",
+  description:
+    "Link transactions already stored to their scheduled transactions, the way the sync does for new ones: for a schedule added after its payments came in, or after a backfill. Each posted, unlinked row in the dates takes its best-matching schedule (pattern, amount, due date); a linked row takes the schedule's category (unless set by hand) and, when the schedule has one, its budget; the schedule moves on to its next due date. dryRun shows what would be linked without saving. Answers 'did the bills this month come in?' together with list_finance_schedules.",
+  input: z.object({
+    from: DATE.describe("First transaction date to look at."),
+    to: DATE.optional().describe("Default today."),
+    recurringIds: z.array(z.string()).optional().describe("Only these schedules (default every active one)."),
+    dryRun: z.boolean().optional(),
+  }),
+  output: z.object({
+    linked: z.array(
+      z.object({
+        transactionId: z.string(),
+        date: z.string(),
+        description: z.string().nullable(),
+        amount: z.number(),
+        account: z.string().nullable(),
+        recurringId: z.string(),
+        schedule: z.string(),
+        score: z.number(),
+        reasons: z.array(z.string()),
+        nextDate: z.string().nullable().describe("The schedule's next due date after this"),
+      }),
+    ),
+    dryRun: z.boolean(),
+  }),
+  async run(ctx, input) {
+    const toIso = input.to ?? todayIso();
+    const [accounts, schedules] = await Promise.all([listAccounts(ctx.client), listSchedules(ctx.client)]);
+    const rules = schedules.filter((r: any) => r.active !== false && (!input.recurringIds || input.recurringIds.includes(r.id)));
+    const ids = [...new Set(rules.map((r: any) => r.accountId as string))];
+    // Invested accounts' rows aren't household cash flow; the sync never links them either.
+    const txs = ids.length ? await listTransactions(ctx.client, { fromIso: input.from, toIso, accountIds: ids }) : [];
+    const plan = planScheduleLinks(
+      txs.filter((t: any) => !isInvested(accounts.find((a) => a.id === t.accountId)?.type)),
+      rules,
+    );
+    if (!input.dryRun) {
+      for (const l of plan) {
+        const tx = l.tx as any;
+        const category = l.rule.category?.trim();
+        const r = await ctx.client.models.homeFinanceTransaction.update({
+          id: tx.id,
+          recurringId: l.rule.id,
+          ...(category && tx.categorySource !== "MANUAL" ? { category, categorySource: "RULE" } : {}),
+          ...(l.rule.ledger?.trim() && !tx.ledger ? { ledger: l.rule.ledger.trim() } : {}),
+        });
+        if (r.errors?.length) throw new Error(`${tx.date} ${tx.description}: ${r.errors[0].message}`);
+      }
+      // Each schedule ends at the due date after its last linked row.
+      const last = new Map<string, (typeof plan)[number]>();
+      for (const l of plan) last.set(l.rule.id, l);
+      for (const l of last.values()) {
+        const current = l.rule.nextDate ?? "";
+        const patch = l.rule.cadence === "ONCE" ? { active: false } : l.nextDate && l.nextDate > current ? { nextDate: l.nextDate } : null;
+        if (!patch) continue;
+        const r = await ctx.client.models.homeFinanceRecurring.update({ id: l.rule.id, ...patch });
+        if (r.errors?.length) throw new Error(`${l.rule.description}: ${r.errors[0].message}`);
+      }
+    }
+    return {
+      dryRun: !!input.dryRun,
+      linked: plan.map((l) => ({
+        transactionId: l.tx.id,
+        date: l.tx.date ?? "",
+        description: l.tx.description ?? null,
+        amount: l.tx.amount ?? 0,
+        account: accounts.find((a) => a.id === l.tx.accountId)?.name ?? null,
+        recurringId: l.rule.id,
+        schedule: l.rule.description ?? "",
+        score: l.score,
+        reasons: l.reasons,
+        nextDate: l.nextDate,
+      })),
+    };
   },
 });
 
@@ -1313,6 +1413,7 @@ export const financeOps = [
   saveFinanceBudget,
   listFinanceSchedules,
   saveFinanceSchedule,
+  linkFinanceSchedules,
   saveFinanceGoal,
   listFinanceCategories,
 ] as const;

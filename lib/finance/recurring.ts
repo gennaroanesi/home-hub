@@ -167,3 +167,29 @@ export function projectBalance(startBalance: number, events: ProjectedEvent[]): 
 export function lowestPoint(points: ProjectionPoint[]): ProjectionPoint | null {
   return points.reduce<ProjectionPoint | null>((lo, p) => (!lo || p.balance < lo.balance ? p : lo), null);
 }
+
+export type PlannedLink<R extends RecurringLike> = { tx: TxLike; rule: R; score: number; reasons: string[]; nextDate: string | null };
+
+/**
+ * Link stored transactions to their schedules after the fact (a schedule
+ * added after its payments synced, or a backfill). Oldest first, each
+ * posted unlinked row takes its best schedule at the auto threshold, and
+ * that schedule moves on to its next due date before the next row, so a
+ * schedule can take one row per occurrence (October's and November's).
+ * Pure; the caller writes.
+ */
+export function planScheduleLinks<R extends RecurringLike>(txs: Array<TxLike & { recurringId?: string | null; status?: string | null }>, rules: R[], minScore = MATCH_AUTO_THRESHOLD): PlannedLink<R>[] {
+  const live = rules.map((r) => ({ ...r }));
+  const original = new Map(live.map((r, i) => [r, rules[i]]));
+  const out: PlannedLink<R>[] = [];
+  const rows = txs.filter((t) => !t.recurringId && t.status !== "PENDING").sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""));
+  for (const tx of rows) {
+    const best = findScheduleMatches(tx, live, minScore)[0];
+    if (!best) continue;
+    const next = nextDateAfter(best.rule, tx.date ?? "");
+    out.push({ tx, rule: original.get(best.rule)!, score: best.score, reasons: best.reasons, nextDate: next });
+    if (best.rule.cadence === "ONCE") best.rule.active = false;
+    else if (next) best.rule.nextDate = next;
+  }
+  return out;
+}

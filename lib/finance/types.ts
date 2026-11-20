@@ -49,6 +49,7 @@ export type RecurringLike = {
   matchPattern?: string | null;
   personId?: string | null;
   lastDayOfMonth?: boolean | null; // monthly-ish: due on each month's last day
+  ledger?: string | null; // whose budget, when not the account's (ledger.ts scheduleLedger)
 };
 
 export type GoalLike = {

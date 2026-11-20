@@ -7,11 +7,12 @@ import { Alert, Switch, Text, View } from "react-native";
 import { callOp } from "../../lib/ops";
 import { usePeople } from "../../lib/use-people";
 import { CADENCE_LABELS, CADENCES, todayIso, type Cadence } from "../../../lib/finance/dates";
+import { HOUSEHOLD, accountLedger, ledgerLabel, ledgerPeople } from "../../../lib/finance/ledger";
 import { CategoryField, DateField, Field, FormSheet, Input, PersonChips, cleanAmount, ff } from "./form";
 import { Chip, fs, type OpResultOf } from "./ui";
 
 export type FinanceSchedule = OpResultOf<"list_finance_schedules">["schedules"][number];
-export type AccountRef = { id: string; name: string; type: string | null };
+export type AccountRef = { id: string; name: string; type: string | null; ownerPersonIds?: string[] };
 
 const TYPES = [
   { key: "EXPENSE", label: "Money out" },
@@ -45,6 +46,8 @@ export function ScheduleFormModal({
   const [category, setCategory] = useState("");
   const [personId, setPersonId] = useState("");
   const [matchPattern, setMatchPattern] = useState("");
+  // "" = its account's budget.
+  const [ledger, setLedger] = useState("");
   const [autopay, setAutopay] = useState(true);
   const [active, setActive] = useState(true);
   const [url, setUrl] = useState("");
@@ -66,6 +69,8 @@ export function ScheduleFormModal({
     setCategory(s?.category ?? "");
     setPersonId(s?.personId ?? "");
     setMatchPattern(s?.matchPattern ?? "");
+    // The op reports the effective budget; keep "" when that's just the account's.
+    setLedger(s && s.ledger !== accountLedger(accounts.find((a) => a.id === s.accountId)) ? s.ledger : "");
     setAutopay(s ? s.autopay : true);
     setActive(s ? s.active : true);
     setUrl(s?.url ?? "");
@@ -91,6 +96,7 @@ export function ScheduleFormModal({
       toAccountId: type === "TRANSFER" ? toAccountId || null : null,
       personId: type === "INCOME" ? personId || null : null,
       matchPattern: matchPattern.trim() || null,
+      ledger: ledger || null,
       autopay,
       active,
       url: url.trim() || null,
@@ -157,6 +163,17 @@ export function ScheduleFormModal({
       <Field label="Category">
         <CategoryField value={category} onChange={setCategory} placeholder="None" />
       </Field>
+      {type !== "TRANSFER" && (
+        <Field label="Counts in" hint="Whose budget it comes out of: a household bill on a personal card counts in the household's.">
+          <View style={fs.chipRow}>
+            <Chip label={`Its account's (${ledgerLabel(accountLedger(accounts.find((a) => a.id === accountId)), people as any[])})`} on={!ledger} onPress={() => setLedger("")} /* eslint-disable-line @typescript-eslint/no-explicit-any */ />
+            <Chip label="Household" on={ledger === HOUSEHOLD} onPress={() => setLedger(HOUSEHOLD)} />
+            {ledgerPeople(people as any[]).map((p) => ( // eslint-disable-line @typescript-eslint/no-explicit-any
+              <Chip key={p.id} label={p.name} on={ledger === p.id} onPress={() => setLedger(p.id)} />
+            ))}
+          </View>
+        </Field>
+      )}
       <Field label="Match pattern" hint="A word from the bank description (e.g. ROCKET MORTGAGE), so the sync links the posted transaction and rolls the date on.">
         <Input value={matchPattern} onChangeText={setMatchPattern} autoCapitalize="characters" autoCorrect={false} />
       </Field>
