@@ -7,7 +7,7 @@
 // someone out of home-users moves them to Contacts. Admins can also
 // merge the member into another row (MergePersonButton → mergePeople).
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -24,7 +24,7 @@ import {
 
 import { getClient } from "../lib/amplify";
 import { BirthdayField } from "./BirthdayField";
-import { RelationshipsSection } from "./RelationshipsSection";
+import { RelationshipsSection, type PendingRelationshipFlush } from "./RelationshipsSection";
 import { MergePersonButton } from "./MergePersonButton";
 import { formStyles as styles } from "./person-form-styles";
 import { HOUSEHOLD_GROUP } from "../../lib/household";
@@ -57,8 +57,10 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
   const [notifyWhatsApp, setNotifyWhatsApp] = useState(true);
   const [notifyPush, setNotifyPush] = useState(true);
   const [active, setActive] = useState(true);
+  const [showInFinance, setShowInFinance] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const relFlush = useRef<PendingRelationshipFlush | null>(null);
 
   useEffect(() => {
     if (!visible || !person) return;
@@ -71,11 +73,14 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
     setNotifyWhatsApp(person.notifyWhatsApp !== false);
     setNotifyPush(person.notifyPush !== false);
     setActive(person.active !== false);
+    setShowInFinance(person.showInFinance === true);
     setGroups(personGroups(person));
   }, [visible, person]);
 
   async function save() {
     if (!person || !name.trim()) return;
+    // A relationship filled in but not "Add"ed is saved too (or blocks).
+    if (relFlush.current && !(await relFlush.current())) return;
     setBusy(true);
     try {
       const client = getClient();
@@ -90,6 +95,8 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
         notifyWhatsApp,
         notifyPush,
         active,
+        // Only meaningful without a login (members with one always show in finances).
+        ...(person.cognitoUsername ? {} : { showInFinance }),
       });
       if (errors?.length || !saved) {
         Alert.alert("Couldn't save", errors?.[0]?.message ?? "No response");
@@ -254,6 +261,15 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
               <Text style={styles.switchLabel}>Active</Text>
               <Switch value={active} onValueChange={setActive} disabled={busy} />
             </View>
+            {!person.cognitoUsername && (
+              <>
+                <View style={styles.switchRow}>
+                  <Text style={styles.switchLabel}>Show in finances</Text>
+                  <Switch value={showInFinance} onValueChange={setShowInFinance} disabled={busy} />
+                </View>
+                <Text style={styles.hint}>Show in finances (accounts, paychecks) even without a login</Text>
+              </>
+            )}
 
             <Text style={styles.label}>Groups{isAdmin ? "" : " (read-only)"}</Text>
             <View style={styles.chipRow}>
@@ -277,7 +293,7 @@ export function HouseholdMemberFormModal({ visible, person, people, rels, isAdmi
                 : `No login, so ${HOUSEHOLD_GROUP} is the only group. Without it they move to Contacts.`}
             </Text>
 
-            <RelationshipsSection person={person} people={people} rels={rels} onChanged={onChanged} disabled={busy} />
+            <RelationshipsSection person={person} people={people} rels={rels} onChanged={onChanged} disabled={busy} flushRef={relFlush} />
 
             {isAdmin && (
               <MergePersonButton

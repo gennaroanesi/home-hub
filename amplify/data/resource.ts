@@ -140,6 +140,11 @@ const schema = a
         // means push notifications skip you even on group sends.
         notifyWhatsApp: a.boolean().default(true),
         notifyPush: a.boolean().default(true),
+        // Show this person in finance pickers and lists (paycheck person,
+        // account owners, contributors) even without a login, e.g. a kid
+        // with a 529 / custodial account. Household members with a login
+        // always show. See financePeople in lib/finance/ledger.ts.
+        showInFinance: a.boolean(),
         // Per-kind push opt-outs. `notifyPush` is the master kill switch;
         // this array carries exceptions for individual notification kinds
         // ("daily_summary", "reminder", …). Empty = receive everything

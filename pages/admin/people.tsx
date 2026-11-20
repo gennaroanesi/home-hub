@@ -14,7 +14,7 @@
 // A kid can't accept an invite, so "No login" adds someone to the
 // household without one: setPersonGroups only writes homePerson.groups.
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { fetchAuthSession, getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -52,6 +52,7 @@ import {
   MergeModal,
   PersonAvatar,
   RelationshipsEditor,
+  type PendingRelationshipFlush,
   relationsLine,
   type Person,
 } from "@/components/people";
@@ -132,6 +133,7 @@ export default function HouseholdPage() {
   const router = useRouter();
   const [people, setPeople] = useState<Person[]>([]);
   const [rels, setRels] = useState<RelationshipRow[]>([]);
+  const relFlush = useRef<PendingRelationshipFlush | null>(null);
   const [editing, setEditing] = useState<Person | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const editModal = useDisclosure();
@@ -148,6 +150,7 @@ export default function HouseholdPage() {
   const [notifyWhatsApp, setNotifyWhatsApp] = useState(true);
   const [notifyPush, setNotifyPush] = useState(true);
   const [active, setActive] = useState(true);
+  const [showInFinance, setShowInFinance] = useState(false);
   const [groups, setGroups] = useState<string[]>([]);
 
   const [invite, setInvite] = useState({
@@ -200,12 +203,15 @@ export default function HouseholdPage() {
     setNotifyWhatsApp(p.notifyWhatsApp !== false);
     setNotifyPush(p.notifyPush !== false);
     setActive(p.active !== false);
+    setShowInFinance(p.showInFinance === true);
     setGroups(personGroups(p));
     editModal.onOpen();
   }
 
   async function save(onClose: () => void) {
     if (!editing || !name.trim()) return;
+    // A relationship filled in but not "Add"ed is saved too (or blocks).
+    if (relFlush.current && !(await relFlush.current())) return;
     const { data: saved, errors } = await client.models.homePerson.update({
       id: editing.id,
       name: name.trim(),
@@ -217,6 +223,8 @@ export default function HouseholdPage() {
       notifyWhatsApp,
       notifyPush,
       active,
+      // Only meaningful without a login (members with one always show in finances).
+      ...(editing.cognitoUsername ? {} : { showInFinance }),
     });
     if (errors?.length || !saved) {
       addToast({
@@ -473,6 +481,18 @@ export default function HouseholdPage() {
                     >
                       <span className="text-sm">Active</span>
                     </Switch>
+                    {editing && !editing.cognitoUsername && (
+                      <Switch
+                        size="sm"
+                        isSelected={showInFinance}
+                        onValueChange={setShowInFinance}
+                      >
+                        <span className="text-sm">Show in finances</span>
+                        <span className="block text-xs text-default-400">
+                          Show in finances (accounts, paychecks) even without a login
+                        </span>
+                      </Switch>
+                    )}
                   </div>
 
                   {editing && (
@@ -518,6 +538,7 @@ export default function HouseholdPage() {
                       people={people}
                       rels={rels}
                       onChanged={loadPeople}
+                      flushRef={relFlush}
                     />
                   )}
                 </ModalBody>

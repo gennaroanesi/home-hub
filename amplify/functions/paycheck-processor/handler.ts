@@ -19,7 +19,7 @@ import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtim
 import { env } from "$amplify/env/paycheck-processor";
 import type { Schema } from "../../data/resource";
 import { listAllPages } from "../../../lib/list-all.js";
-import { householdMembers } from "../../../lib/household.js";
+import { financePeople } from "../../../lib/finance/ledger.js";
 import { collectPdfs, gateMail, parseAllowedSenders, parseMail } from "../../../lib/finance/inbound-mail.js";
 import { extractPaycheckFields, matchPerson } from "../../../lib/finance/paycheck-extract.js";
 import { extractLoanSchedule } from "../../../lib/finance/loan-schedule-extract.js";
@@ -87,7 +87,7 @@ async function parseUploaded(s3Key: string) {
   const { draft, error } = await extractPaycheckFields(pdf);
   if (error || !draft) return { ok: false, error: error ?? "No data extracted", s3Key };
   const client = await getClient();
-  const people = householdMembers(await listAllPages<any>(client.models.homePerson));
+  const people = financePeople(await listAllPages<any>(client.models.homePerson));
   const person = matchPerson(people, draft.employeeName);
   const duplicate = person ? await findSaved(client, person.id, draft) : null;
   return { ok: true, draft, personId: person?.id ?? null, s3Key, duplicateOf: duplicate };
@@ -142,7 +142,7 @@ async function processEmail(bucket: string, key: string) {
     if (r.errors?.length) throw new Error(r.errors[0].message);
     return;
   }
-  const people = householdMembers(await listAllPages<any>(client.models.homePerson));
+  const people = financePeople(await listAllPages<any>(client.models.homePerson));
   for (const pdf of pdfs) {
     try {
       await processPdf(client, people, pdf, meta);

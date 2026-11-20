@@ -17,7 +17,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { callOp } from "../../../../lib/ops";
 import { NO_FILTERS, SORT_LABELS, TransactionFiltersSheet, activeFilterCount, type TxFilters } from "../../../../components/finance/TransactionFiltersSheet";
 import { usePeople } from "../../../../lib/use-people";
-import { ledgerPeople } from "../../../../../lib/finance/ledger";
+import { financePeople, ledgerPeople } from "../../../../../lib/finance/ledger";
 import { TransactionEditModal, type FinanceTx } from "../../../../components/finance/TransactionEditModal";
 import { ACCENT, Chip, FinanceHeader, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../../components/finance/ui";
 import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "../../../../../lib/finance/dates";
@@ -211,7 +211,7 @@ export default function FinanceTransactions() {
         visible={filtersOpen}
         value={filters}
         accounts={shownAccounts}
-        people={people.map((p) => ({ id: p.id, name: p.name }))}
+        people={financePeople(people, filters.personIds).map((p) => ({ id: p.id, name: p.name }))}
         ledgers={owners.length ? ledgers : []}
         defaultRange={{ from: monthWindow.fromIso, to: monthWindow.toIso > todayIso() ? todayIso() : monthWindow.toIso }}
         onClose={() => setFiltersOpen(false)}

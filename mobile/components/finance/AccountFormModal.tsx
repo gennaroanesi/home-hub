@@ -31,6 +31,7 @@ import {
   type SfPickerFilter,
 } from "../../../lib/finance/account-form";
 import { SIMPLEFIN_CONNECTIONS } from "../../../lib/finance/simplefin-connections";
+import { financePeople } from "../../../lib/finance/ledger";
 import { Field, FormSheet, Input, ff } from "./form";
 import { ACCENT, Chip, fs } from "./ui";
 
@@ -190,7 +191,7 @@ export function AccountFormModal({
       )}
 
       <Field label="Owners" hint="None selected = joint (household) account.">
-        <PeoplePicker people={people} selectedIds={form.ownerPersonIds} onChange={(ids) => set("ownerPersonIds", ids)} placeholder="Joint" title="Owners" disabled={busy} />
+        <PeoplePicker people={financePeople(people, [...form.ownerPersonIds, ...accounts.flatMap((a) => a.ownerPersonIds ?? [])])} selectedIds={form.ownerPersonIds} onChange={(ids) => set("ownerPersonIds", ids)} placeholder="Joint" title="Owners" disabled={busy} />
       </Field>
 
       <View style={ff.box}>

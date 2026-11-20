@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HOUSEHOLD, accountLedger, allLedgersBudget, inKindContributions, ledgerBudget, ledgerParts, sliceForLedger, txsForLedger } from "./ledger";
+import { HOUSEHOLD, accountLedger, allLedgersBudget, financePeople, ledgerPeople, inKindContributions, ledgerBudget, ledgerParts, sliceForLedger, txsForLedger } from "./ledger";
 import type { BudgetLine } from "./budget";
 import { CARD_PAYMENT_CATEGORY, TRANSFER_CATEGORY } from "./categories";
 
@@ -160,5 +160,35 @@ describe("transfers between personal and household accounts", () => {
     ];
     expect(ledgerBudget(HOUSEHOLD, lines, txs, [], accounts, window, TODAY).incomeViews[0].spent).toBe(2000);
     expect(ledgerBudget(G, lines, txs, [], accounts, window, TODAY).toHousehold).toEqual({ planned: 2500, sent: 2000 });
+  });
+});
+
+describe("financePeople", () => {
+  const H = ["home-users"];
+  const folks = [
+    { id: G, name: "Gennaro", cognitoUsername: "g-sub", groups: H },
+    { id: C, name: "Cristine", cognitoUsername: "c-sub", groups: H },
+    { id: "baby", name: "Baby1", groups: H },
+    { id: "kid", name: "Kid", groups: H, showInFinance: true },
+    { id: "guest", name: "Guest", cognitoUsername: "x-sub", groups: [] },
+    { id: "friend", name: "Friend", showInFinance: true },
+    { id: "gone", name: "Gone", cognitoUsername: "o-sub", groups: H, active: false },
+  ];
+  const ids = (ps: { id: string }[]) => ps.map((p) => p.id);
+
+  it("shows members with a login and members opted in, not a baby, guests or contacts", () => {
+    expect(ids(financePeople(folks))).toEqual([G, C, "kid"]);
+  });
+
+  it("keeps a household member already referenced by saved data", () => {
+    expect(ids(financePeople(folks, ["baby", null, undefined, ""]))).toEqual([G, C, "baby", "kid"]);
+  });
+
+  it("never brings back someone outside the household", () => {
+    expect(ids(financePeople(folks, ["guest", "friend", "gone"]))).toEqual([G, C, "kid"]);
+  });
+
+  it("doesn't give an opted-in kid a personal ledger", () => {
+    expect(ids(ledgerPeople(folks))).toEqual([G, C]);
   });
 });

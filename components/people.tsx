@@ -1,7 +1,7 @@
 // Pieces shared by the Household (/admin/people) and Contacts (/contacts)
 // pages.
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
@@ -167,10 +167,20 @@ export function MergeModal({
 export { relationsLine } from "@/lib/relationships";
 
 /**
+ * Set by RelationshipsEditor so the dialog's Save can keep a relationship
+ * the user filled in but didn't "Add". Resolves true when there's nothing
+ * pending or it was added; false (after a toast) when it's half filled or
+ * couldn't be saved, so the dialog should stay open.
+ */
+export type PendingRelationshipFlush = () => Promise<boolean>;
+
+/**
  * The relationships section of a person's edit dialog: who's related to
  * them and how, plus a row to add one ("Eva is Priscilla's child,
  * daughter"). Saves immediately through save_relationship, the op Janet
  * uses; one link per pair, so linking an already-linked pair replaces it.
+ * Pass `flushRef` and call it from the dialog's Save so a filled-in row
+ * is added without pressing "Add relationship".
  */
 export function RelationshipsEditor({
   client,
@@ -178,6 +188,7 @@ export function RelationshipsEditor({
   people,
   rels,
   onChanged,
+  flushRef,
 }: {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   client: any;
@@ -185,6 +196,7 @@ export function RelationshipsEditor({
   people: Person[];
   rels: RelationshipRow[];
   onChanged: () => void;
+  flushRef?: React.MutableRefObject<PendingRelationshipFlush | null>;
 }) {
   const [otherId, setOtherId] = useState("");
   const [kind, setKind] = useState<RelationKind | "">("");
@@ -211,8 +223,8 @@ export function RelationshipsEditor({
     return true;
   }
 
-  async function add() {
-    if (!otherId || !kind) return;
+  async function add(): Promise<boolean> {
+    if (!otherId || !kind) return false;
     // "<other> is <person>'s <kind>", with the word for the other side.
     const ok = await run({
       personId: otherId,
@@ -225,7 +237,33 @@ export function RelationshipsEditor({
       setKind("");
       setWord("");
     }
+    return ok;
   }
+
+  // For the dialog's Save: add a fully filled row the same way the button
+  // does, and refuse to drop a half-filled one.
+  async function flushPending(): Promise<boolean> {
+    if (!otherId && !kind && !word.trim()) return true;
+    if (!otherId || !kind) {
+      addToast({
+        title: "Finish the relationship",
+        description: !otherId
+          ? `Pick who the relationship is with, or clear it, before saving.`
+          : `Pick how they're related to ${person.name}, or clear it, before saving.`,
+        color: "warning",
+      });
+      return false;
+    }
+    return add();
+  }
+  if (flushRef) flushRef.current = flushPending;
+  // Unmounted (dialog closed, or a new person with no editor): nothing pending.
+  useEffect(() => {
+    if (!flushRef) return;
+    return () => {
+      flushRef.current = null;
+    };
+  }, [flushRef]);
 
   return (
     <div className="flex flex-col gap-2 pt-2 border-t border-default-100">

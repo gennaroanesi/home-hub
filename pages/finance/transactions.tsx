@@ -10,7 +10,7 @@
 // similar" → a category rule), bulk edit, and manual rows for accounts
 // that don't sync from SimpleFIN.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NextLink from "next/link";
 import { useRouter } from "next/router";
 import { Button } from "@heroui/button";
@@ -23,6 +23,7 @@ import { addToast, Spinner } from "@heroui/react";
 import { FaFilter, FaPlus, FaRedo, FaSearch, FaTrash } from "react-icons/fa";
 import { NO_WEB_TX_FILTERS, TransactionFiltersPane, webTxFilterCount, type WebTxFilters } from "@/components/finance/transaction-filters-pane";
 
+import { CategoryQuickEdit } from "@/components/finance/category-quick-edit";
 import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
@@ -55,6 +56,43 @@ function sourceLabel(src: string | null | undefined): string | null {
 function qs(v: string | string[] | undefined): string {
   return Array.isArray(v) ? v[0] ?? "" : v ?? "";
 }
+
+const r2 = (n: number) => Math.round(n * 100) / 100;
+
+/**
+ * The stored fields an update_finance_transaction input changes, as the op
+ * writes them (lib/ops/finance.ts), so a save can update the row in place:
+ * the op returns only { transactionId, category, personId, ruleCreated }.
+ */
+function txPatchFromInput(input: Record<string, any>): Record<string, unknown> {
+  const p: Record<string, unknown> = {};
+  if ("category" in input) {
+    const cat = (input.category as string | null)?.trim() || null;
+    p.category = cat;
+    p.categorySource = cat ? "MANUAL" : null;
+  }
+  if ("personId" in input) {
+    p.personId = input.personId || null;
+    p.personSource = input.personId ? "MANUAL" : null;
+  }
+  if ("spendGroupId" in input) p.spendGroupId = input.spendGroupId ?? null;
+  if ("notes" in input) p.notes = input.notes ?? null;
+  if ("ledger" in input) p.ledger = input.ledger || null;
+  if ("lineItems" in input) {
+    const items = ((input.lineItems ?? []) as Array<Record<string, any>>).map((i) => ({
+      name: i.name?.trim() || null,
+      amount: r2(i.amount),
+      category: String(i.category).trim(),
+      ...(i.ledger ? { ledger: i.ledger } : {}),
+    }));
+    p.lineItems = items.length ? JSON.stringify(items) : null;
+  }
+  return p;
+}
+
+const byNewest = (a: any, b: any) => (b.date ?? "").localeCompare(a.date ?? "") || (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
+
+type EditResult = { deleted?: boolean; patch?: Record<string, unknown>; ruleCreated?: boolean };
 
 export default function TransactionsPage() {
   const router = useRouter();
@@ -120,17 +158,71 @@ export default function TransactionsPage() {
     [period, today, customFrom, customTo],
   );
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  // quiet: refresh in the background (after a sync or a new rule), the
+  // list stays up. Only the latest call's result lands.
+  const loadSeq = useRef(0);
+  // Rows saved while a load is in flight: its answer was read before them,
+  // so they're laid back over it instead of flashing the old values.
+  const editsDuringLoad = useRef<Map<string, Record<string, unknown>> | null>(null);
+  const load = useCallback(
+    async (opts: { quiet?: boolean } = {}) => {
+      const seq = ++loadSeq.current;
+      editsDuringLoad.current = new Map();
+      if (!opts.quiet) setLoading(true);
+      try {
+        // Invested accounts' rows only when one of them is picked in the filter.
+        const next = await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, ...(accounts.length ? { accountIds: accounts } : {}) });
+        if (seq === loadSeq.current) {
+          const edits = editsDuringLoad.current ?? new Map();
+          editsDuringLoad.current = null;
+          setTxs(edits.size ? next.map((t: any) => (edits.has(t.id) ? { ...t, ...edits.get(t.id) } : t)) : next);
+        }
+      } catch (e) {
+        if (seq === loadSeq.current) addToast({ title: "Couldn't load transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
+      } finally {
+        if (seq === loadSeq.current) setLoading(false);
+      }
+    },
+    [range.fromIso, range.toIso, accounts],
+  );
+  const quietReload = useCallback(() => load({ quiet: true }), [load]);
+
+  /** Saves update just their rows (the rows useMemo derives _cat etc. from txs). */
+  const patchTxs = useCallback((ids: string[], patch: Record<string, unknown>) => {
+    if (!ids.length || !Object.keys(patch).length) return;
+    const set = new Set(ids);
+    const during = editsDuringLoad.current;
+    if (during) for (const id of ids) during.set(id, { ...during.get(id), ...patch });
+    setTxs((ts) => ts.map((t) => (set.has(t.id) ? { ...t, ...patch } : t)));
+  }, []);
+
+  // Category edited in place from the row (CategoryQuickEdit).
+  const [savingCat, setSavingCat] = useState<Set<string>>(new Set());
+  async function quickCategory(t: any, picked: string | null) {
+    const shown = t._cat === UNCATEGORIZED ? null : t._cat;
+    // Same as shown: nothing to do, unless it's a guess (saving confirms it).
+    if (picked === shown && !(t.categorySource === "LLM" && picked)) return;
+    const before = { category: t.category ?? null, categorySource: t.categorySource ?? null };
+    const input = { transactionId: t.id, category: picked };
+    patchTxs([t.id], txPatchFromInput(input));
+    setSavingCat((s) => new Set(s).add(t.id));
+    let error: string | null = null;
     try {
-      // Invested accounts' rows only when one of them is picked in the filter.
-      setTxs(await listTransactions(financeClient, { fromIso: range.fromIso, toIso: range.toIso, ...(accounts.length ? { accountIds: accounts } : {}) }));
+      const r = await callOp(financeClient, "update_finance_transaction", input);
+      if ("error" in r) error = r.error;
     } catch (e) {
-      addToast({ title: "Couldn't load transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
-    } finally {
-      setLoading(false);
+      error = e instanceof Error ? e.message : String(e);
     }
-  }, [range.fromIso, range.toIso, accounts]);
+    setSavingCat((s) => {
+      const n = new Set(s);
+      n.delete(t.id);
+      return n;
+    });
+    if (error) {
+      patchTxs([t.id], before);
+      addToast({ title: "Couldn't change the category", description: error, color: "danger" });
+    }
+  }
 
   useEffect(() => {
     if (filtersReady) load();
@@ -241,7 +333,7 @@ export default function TransactionsPage() {
     <FinanceShell
       title="Transactions"
       subtitle={range.label}
-      onSynced={load}
+      onSynced={quietReload}
       actions={
         <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setAddOpen(true)} isDisabled={refs.loading}>
           Add
@@ -372,10 +464,12 @@ export default function TransactionsPage() {
                         Itemized · {t._cats.length} categories
                       </Chip>
                     ) : (
-                      <Chip size="sm" variant="flat" color={t._cat === UNCATEGORIZED ? "warning" : "default"}>
-                        {t._cat}
-                        {src && !parseLineItems(t) && <span className="opacity-60"> · {src}</span>}
-                      </Chip>
+                      <CategoryQuickEdit value={t._cat} options={categoryOptions} saving={savingCat.has(t.id)} onPick={(c) => quickCategory(t, c)}>
+                        <Chip size="sm" variant="flat" color={t._cat === UNCATEGORIZED ? "warning" : "default"} className="cursor-pointer">
+                          {t._cat}
+                          {src && !parseLineItems(t) && <span className="opacity-60"> · {src}</span>}
+                        </Chip>
+                      </CategoryQuickEdit>
                     )}
                     {t.personId && (t.amount ?? 0) > 0 && (
                       <span className="flex items-center gap-1">
@@ -410,10 +504,16 @@ export default function TransactionsPage() {
           accountLedgerKey={accLedger.get(editing.accountId) ?? HOUSEHOLD_LEDGER}
           owners={owners}
           onClose={() => setEditing(null)}
-          onSaved={() => {
+          onSaved={(r) => {
+            const id = editing.id;
             setEditing(null);
-            refs.reload();
-            load();
+            if (r.deleted) setTxs((ts) => ts.filter((x) => x.id !== id));
+            else if (r.patch) patchTxs([id], r.patch);
+            // A new rule can recategorize other rows: pick it up in the background.
+            if (r.ruleCreated) {
+              refs.reload();
+              quietReload();
+            }
           }}
         />
       )}
@@ -423,10 +523,10 @@ export default function TransactionsPage() {
           refs={refs}
           owners={owners}
           onClose={() => setBulkOpen(false)}
-          onSaved={() => {
+          onSaved={(ids, patch) => {
             setBulkOpen(false);
             setSelected(new Set());
-            load();
+            patchTxs(ids, patch);
           }}
         />
       )}
@@ -435,9 +535,9 @@ export default function TransactionsPage() {
           accounts={manualAccounts}
           refs={refs}
           onClose={() => setAddOpen(false)}
-          onSaved={() => {
+          onSaved={(row) => {
             setAddOpen(false);
-            load();
+            if (row?.id && row.date >= range.fromIso && row.date <= range.toIso) setTxs((ts) => [row, ...ts.filter((x) => x.id !== row.id)].sort(byNewest));
           }}
         />
       )}
@@ -496,7 +596,7 @@ function EditModal({
   accountLedgerKey: string;
   owners: { id: string }[];
   onClose: () => void;
-  onSaved: () => void;
+  onSaved: (r: EditResult) => void;
 }) {
   const [ledger, setLedger] = useState<string>(tx.ledger ?? "");
   const [category, setCategory] = useState<string>(tx.category ?? "");
@@ -536,7 +636,7 @@ function EditModal({
     setSaving(false);
     if ("error" in r) return addToast({ title: "Couldn't save", description: r.error, color: "danger" });
     addToast({ title: r.result.ruleCreated ? "Saved, and a rule was added" : "Saved", color: "success" });
-    onSaved();
+    onSaved({ patch: txPatchFromInput(input), ruleCreated: r.result.ruleCreated });
   }
 
   async function remove() {
@@ -545,7 +645,7 @@ function EditModal({
     const r = await financeClient.models.homeFinanceTransaction.delete({ id: tx.id });
     setSaving(false);
     if (r.errors?.length) return addToast({ title: "Couldn't delete", description: r.errors[0].message, color: "danger" });
-    onSaved();
+    onSaved({ deleted: true });
   }
 
   return (
@@ -698,7 +798,20 @@ function ItemsEditor({
 
 const KEEP = "__keep";
 
-function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; refs: Refs; owners: { id: string }[]; onClose: () => void; onSaved: () => void }) {
+function BulkModal({
+  ids,
+  refs,
+  owners,
+  onClose,
+  onSaved,
+}: {
+  ids: string[];
+  refs: Refs;
+  owners: { id: string }[];
+  onClose: () => void;
+  /** The ids that saved, and the fields they got. */
+  onSaved: (savedIds: string[], patch: Record<string, unknown>) => void;
+}) {
   const [category, setCategory] = useState("");
   const [ledger, setLedger] = useState(KEEP);
   const [group, setGroup] = useState(KEEP);
@@ -713,15 +826,17 @@ function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; ref
     if (!Object.keys(base).length) return onClose();
     setSaving(true);
     const failures: string[] = [];
+    const saved: string[] = [];
     for (const id of ids) {
       const r = await callOp(financeClient, "update_finance_transaction", { transactionId: id, ...base } as any);
       if ("error" in r) failures.push(r.error);
+      else saved.push(id);
       setDone((d) => d + 1);
     }
     setSaving(false);
     if (failures.length) addToast({ title: `${failures.length} of ${ids.length} failed`, description: failures[0], color: "danger" });
     else addToast({ title: `Updated ${ids.length} transactions`, color: "success" });
-    onSaved();
+    onSaved(saved, txPatchFromInput(base));
   }
 
   return (
@@ -760,7 +875,7 @@ function BulkModal({ ids, refs, owners, onClose, onSaved }: { ids: string[]; ref
 
 // ── Add (manual accounts) ────────────────────────────────────────────────────
 
-function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs: Refs; onClose: () => void; onSaved: () => void }) {
+function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs: Refs; onClose: () => void; onSaved: (row: any) => void }) {
   const [accountId, setAccountId] = useState<string>(accounts[0]?.id ?? "");
   const [type, setType] = useState<"EXPENSE" | "INCOME">("EXPENSE");
   const [amount, setAmount] = useState("");
@@ -792,7 +907,7 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
     });
     setSaving(false);
     if (r.errors?.length) return addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
-    onSaved();
+    onSaved(r.data);
   }
 
   return (

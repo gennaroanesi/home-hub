@@ -27,6 +27,7 @@ import { PaycheckForm, parseJsonLayers, type PaycheckFormInit } from "@/componen
 import { listAllPages } from "@/lib/list-all";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { listPaychecks, listTransactions } from "@/lib/finance/data";
+import { financePeople } from "@/lib/finance/ledger";
 import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
 import { periodContaining } from "@/lib/finance/periods";
 import { contributionShare, latestByPerson } from "@/lib/finance/paychecks";
@@ -79,7 +80,12 @@ export default function PaychecksPage() {
     [paychecks, year, personFilter],
   );
   const latest = useMemo(() => latestByPerson(paychecks, year), [paychecks, year]);
-  const peopleById = useMemo(() => new Map(refs.people.map((p) => [p.id, p])), [refs.people]);
+  // Finance people, plus anyone a saved paycheck already points at.
+  const people = useMemo(
+    () => financePeople(refs.household, [...refs.people.map((p) => p.id), ...paychecks.map((p) => p.personId)]),
+    [refs.household, refs.people, paychecks],
+  );
+  const peopleById = useMemo(() => new Map(people.map((p) => [p.id, p])), [people]);
 
   // ── Contributions vs pay ──────────────────────────────────────────────────
   const { period, range, setPeriod } = usePeriod(() => periodContaining("year", today));
@@ -98,7 +104,7 @@ export default function PaychecksPage() {
       cancelled = true;
     };
   }, [refs.loading, range.fromIso, range.toIso, accountIds]);
-  const shares = useMemo(() => contributionShare(paychecks, txs, range, refs.people.map((p) => p.id)), [paychecks, txs, range, refs.people]);
+  const shares = useMemo(() => contributionShare(paychecks, txs, range, people.map((p) => p.id)), [paychecks, txs, range, people]);
   const maxNet = Math.max(1, ...shares.map((s) => Math.max(s.net, s.contributed)));
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -211,7 +217,7 @@ export default function PaychecksPage() {
                     <div key={row.id} className="flex flex-wrap items-center justify-between gap-2 text-sm border-b border-default-100 last:border-0 pb-2 last:pb-0">
                       <div className="min-w-0">
                         <div className="flex items-center gap-2 flex-wrap">
-                          {row.personId ? <PersonChip personId={row.personId} people={refs.people} /> : <Chip size="sm" color="warning" variant="flat">person?</Chip>}
+                          {row.personId ? <PersonChip personId={row.personId} people={people} /> : <Chip size="sm" color="warning" variant="flat">person?</Chip>}
                           <span className="font-medium">{draft.payDate ? fmtDate(draft.payDate, { month: "short", day: "numeric", year: "numeric" }) : "—"}</span>
                           {typeof draft.net === "number" && <span className="text-default-500">net {fmtCurrency(draft.net)}</span>}
                           {row.status === "ERROR" && <Chip size="sm" color="danger" variant="flat">couldn&apos;t read</Chip>}
@@ -256,7 +262,7 @@ export default function PaychecksPage() {
                   return (
                     <div key={s.personId} className="text-sm">
                       <div className="flex flex-wrap justify-between gap-2 items-center">
-                        <PersonChip personId={s.personId} people={refs.people} />
+                        <PersonChip personId={s.personId} people={people} />
                         <span className="flex gap-4 tabular-nums text-xs sm:text-sm">
                           <span>
                             took home <Money value={s.net} cents={false} />
@@ -298,7 +304,7 @@ export default function PaychecksPage() {
               const v = String(Array.from(k as Set<string>)[0] ?? "all");
               setPersonFilter(v === "all" ? "" : v);
             }}>
-              {[{ id: "all", name: "Both of us" }, ...refs.people].map((p) => (
+              {[{ id: "all", name: "Both of us" }, ...people].map((p) => (
                 <SelectItem key={p.id}>{p.name}</SelectItem>
               ))}
             </Select>
@@ -306,7 +312,7 @@ export default function PaychecksPage() {
 
           {/* YTD per person, from the latest stub */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {refs.people
+            {people
               .filter((p) => !personFilter || p.id === personFilter)
               .map((p) => {
                 const l = latest.get(p.id);
@@ -314,7 +320,7 @@ export default function PaychecksPage() {
                   <Card key={p.id}>
                     <CardBody className="gap-2">
                       <div className="flex justify-between items-center">
-                        <PersonChip personId={p.id} people={refs.people} />
+                        <PersonChip personId={p.id} people={people} />
                         <span className="text-xs text-default-500">{l ? `YTD as of ${fmtDate(l.payDate, { month: "short", day: "numeric" })}${l.employer ? ` · ${l.employer}` : ""}` : `No stubs in ${year}`}</span>
                       </div>
                       {l && (
@@ -386,7 +392,7 @@ export default function PaychecksPage() {
                               )}
                             </td>
                             <td className="py-1.5 pr-2">
-                              <PersonChip personId={p.personId} people={refs.people} />
+                              <PersonChip personId={p.personId} people={people} />
                             </td>
                             <td className="py-1.5 pr-2 hidden md:table-cell text-default-500 truncate max-w-40">{p.employer ?? "—"}</td>
                             <td className="py-1.5 pr-2 text-right">
@@ -431,7 +437,7 @@ export default function PaychecksPage() {
       {form && (
         <PaycheckForm
           init={form}
-          people={refs.people}
+          people={people}
           onClose={() => setForm(null)}
           onSaved={() => {
             setForm(null);

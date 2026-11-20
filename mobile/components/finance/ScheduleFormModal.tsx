@@ -7,7 +7,7 @@ import { Alert, Switch, Text, View } from "react-native";
 import { callOp } from "../../lib/ops";
 import { usePeople } from "../../lib/use-people";
 import { CADENCE_LABELS, CADENCES, todayIso, type Cadence } from "../../../lib/finance/dates";
-import { HOUSEHOLD, accountLedger, ledgerLabel, ledgerPeople } from "../../../lib/finance/ledger";
+import { HOUSEHOLD, accountLedger, financePeople, ledgerLabel, ledgerPeople } from "../../../lib/finance/ledger";
 import { CategoryField, DateField, Field, FormSheet, Input, PersonChips, cleanAmount, ff } from "./form";
 import { Chip, fs, type OpResultOf } from "./ui";
 
@@ -157,7 +157,7 @@ export function ScheduleFormModal({
       )}
       {type === "INCOME" && (
         <Field label="Contributor">
-          <PersonChips people={people} value={personId} onChange={setPersonId} noneLabel="None" />
+          <PersonChips people={financePeople(people, [personId])} value={personId} onChange={setPersonId} noneLabel="None" />
         </Field>
       )}
       <Field label="Category">

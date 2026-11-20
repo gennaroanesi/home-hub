@@ -13,7 +13,7 @@ import { callOp } from "../../lib/ops";
 import { usePeople } from "../../lib/use-people";
 import { UNCATEGORIZED, suggestPattern } from "../../../lib/finance/categories";
 import { fmtCurrency, fmtDate } from "../../../lib/finance/dates";
-import { HOUSEHOLD, ledgerPeople } from "../../../lib/finance/ledger";
+import { HOUSEHOLD, financePeople, ledgerPeople } from "../../../lib/finance/ledger";
 import { CategoryField, Field, FormSheet, Input, PersonChips, cleanAmount, ff } from "./form";
 import { ACCENT, Chip, Money, WARN, fs, type OpResultOf } from "./ui";
 
@@ -126,7 +126,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
 
       {(tx.amount ?? 0) > 0 && (
         <Field label="Contributor" hint="Who put this money in.">
-          <PersonChips people={people} value={person} onChange={setPerson} noneLabel="No one" />
+          <PersonChips people={financePeople(people, [person])} value={person} onChange={setPerson} noneLabel="No one" />
         </Field>
       )}
 

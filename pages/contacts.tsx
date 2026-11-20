@@ -66,6 +66,7 @@ import {
   MergeModal,
   PersonAvatar,
   RelationshipsEditor,
+  type PendingRelationshipFlush,
   relationsLine,
   type Person,
 } from "@/components/people";
@@ -102,6 +103,7 @@ export default function ContactsPage() {
   const [form, setForm] = useState(EMPTY_FORM);
   const [uploading, setUploading] = useState(false);
   const photoInput = useRef<HTMLInputElement>(null);
+  const relFlush = useRef<PendingRelationshipFlush | null>(null);
   const editModal = useDisclosure();
   const mergeModal = useDisclosure();
   const [mergeSource, setMergeSource] = useState<Person | null>(null);
@@ -191,6 +193,8 @@ export default function ContactsPage() {
 
   async function save(onClose: () => void) {
     if (!form.name.trim()) return;
+    // A relationship filled in but not "Add"ed is saved too (or blocks).
+    if (relFlush.current && !(await relFlush.current())) return;
     const payload = {
       name: form.name.trim(),
       circle: form.circle || null,
@@ -601,6 +605,7 @@ export default function ContactsPage() {
                       people={people}
                       rels={rels}
                       onChanged={load}
+                      flushRef={relFlush}
                     />
                   )}
                 </ModalBody>

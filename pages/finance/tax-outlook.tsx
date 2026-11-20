@@ -198,7 +198,7 @@ export default function TaxOutlookPage() {
     : null;
   const nextDue = isCurrentYear || year === thisYear - 1 ? nextEstimatedDueDate(year, today) : null;
   const defaultSlider = byPerson.length ? byPerson.reduce((s, p) => s + p.currentPct, 0) / byPerson.length : 0;
-  const nameOf = (id: string) => refs.people.find((x) => x.id === id)?.name ?? "Someone";
+  const nameOf = (id: string) => refs.household.find((x) => x.id === id)?.name ?? "Someone";
 
   return (
     <FinanceShell
@@ -279,7 +279,7 @@ export default function TaxOutlookPage() {
               <div key={p.personId} className="flex flex-col gap-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex items-center gap-2">
-                    <PersonChip personId={p.personId} people={refs.people} size="md" />
+                    <PersonChip personId={p.personId} people={refs.household} size="md" />
                     <span className="text-xs text-default-500">
                       latest stub {fmtDate(p.latest.payDate, { month: "short", day: "numeric", year: "numeric" })}
                       {p.latest.employer ? ` · ${p.latest.employer}` : ""}

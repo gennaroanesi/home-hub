@@ -30,7 +30,7 @@ export const HOUSEHOLD = "household";
 export const ALL_LEDGERS = "all";
 
 type AccountLike = { id: string; ownerPersonIds?: (string | null)[] | null };
-type PersonLike = { id: string; name: string; cognitoUsername?: string | null; groups?: (string | null)[] | null; active?: boolean | null };
+type PersonLike = { id: string; name: string; cognitoUsername?: string | null; groups?: (string | null)[] | null; active?: boolean | null; showInFinance?: boolean | null };
 
 /** "household", or the single owner's person id. */
 export function accountLedger(a: AccountLike | null | undefined): string {
@@ -61,6 +61,21 @@ export function scheduleLedger(rule: { ledger?: string | null; accountId?: strin
 }
 
 /** The adults who get a personal ledger: household members with a login (guests have logins too). */
+/**
+ * Who finance pickers and lists show (paycheck person, account owners,
+ * contributors, filters): household members with a login, plus those
+ * opted in with `showInFinance` (a kid with a 529 / custodial account).
+ * Other household members (a baby) stay out. `keepIds` are people already
+ * referenced by saved data (an account's owners, a paycheck's person, a
+ * picker's current value): they're kept so nothing saved becomes
+ * unselectable or nameless. Personal budgets are `ledgerPeople`, not this.
+ */
+export function financePeople<P extends Omit<PersonLike, "name">>(people: P[], keepIds: Iterable<string | null | undefined> = []): P[] {
+  const keep = new Set<string>();
+  for (const id of keepIds) if (id) keep.add(id);
+  return people.filter((p) => isHouseholdMember(p) && (!!p.cognitoUsername || p.showInFinance === true || keep.has(p.id)));
+}
+
 export function ledgerPeople<P extends PersonLike>(people: P[]): P[] {
   return people.filter((p) => !!p.cognitoUsername && isHouseholdMember(p));
 }

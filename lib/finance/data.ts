@@ -187,8 +187,10 @@ export async function setFinanceSetting(client: Client, key: string, value: unkn
   if (r.errors?.length) throw new Error(r.errors[0].message);
 }
 
-/** Members of the household (home-users), for contributor pickers. */
-export async function listHouseholdPeople(client: Client): Promise<Array<{ id: string; name: string; color?: string | null; emoji?: string | null }>> {
+export type HouseholdPerson = { id: string; name: string; color?: string | null; emoji?: string | null; cognitoUsername?: string | null; showInFinance?: boolean | null; groups?: (string | null)[] | null; active?: boolean | null };
+
+/** Members of the household (home-users). Finance pickers narrow this with financePeople (lib/finance/ledger.ts). */
+export async function listHouseholdPeople(client: Client): Promise<HouseholdPerson[]> {
   const rows = await listAllPages<any>(client.models.homePerson);
   return householdMembers(rows).sort((a, b) => (a.name ?? "").localeCompare(b.name ?? ""));
 }

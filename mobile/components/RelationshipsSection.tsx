@@ -6,7 +6,7 @@
 // linking an already-linked pair replaces it. The inverse is derived
 // (lib/relationships.ts), never stored.
 
-import { useState } from "react";
+import { useEffect, useState, type MutableRefObject } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -31,6 +31,14 @@ import {
 
 const ACCENT = "#735f55";
 
+/**
+ * Set by RelationshipsSection so a form's Save can keep a relationship the
+ * user filled in but didn't "Add". Resolves true when there's nothing
+ * pending or it was added; false (after an alert) when it's half filled or
+ * couldn't be saved, so the form should stay open.
+ */
+export type PendingRelationshipFlush = () => Promise<boolean>;
+
 interface Props {
   person: { id: string; name: string };
   /** Everyone (household and contacts), to name the other side and to pick from. */
@@ -38,9 +46,11 @@ interface Props {
   rels: RelationshipRow[];
   onChanged: () => void | Promise<void>;
   disabled?: boolean;
+  /** Call from the form's Save so a filled-in row is added without pressing "Add relationship". */
+  flushRef?: MutableRefObject<PendingRelationshipFlush | null>;
 }
 
-export function RelationshipsSection({ person, people, rels, onChanged, disabled = false }: Props) {
+export function RelationshipsSection({ person, people, rels, onChanged, disabled = false, flushRef }: Props) {
   const [otherId, setOtherId] = useState("");
   const [kind, setKind] = useState<RelationKind | "">("");
   const [word, setWord] = useState("");
@@ -61,8 +71,8 @@ export function RelationshipsSection({ person, people, rels, onChanged, disabled
     return true;
   }
 
-  async function add() {
-    if (!otherId || !kind) return;
+  async function add(): Promise<boolean> {
+    if (!otherId || !kind) return false;
     // "<other> is <person>'s <kind>", with the word for the other side.
     const ok = await run({
       personId: otherId,
@@ -75,7 +85,32 @@ export function RelationshipsSection({ person, people, rels, onChanged, disabled
       setKind("");
       setWord("");
     }
+    return ok;
   }
+
+  // For the form's Save: add a fully filled row the same way the button
+  // does, and refuse to drop a half-filled one.
+  async function flushPending(): Promise<boolean> {
+    if (!otherId && !kind && !word.trim()) return true;
+    if (!otherId || !kind) {
+      Alert.alert(
+        "Finish the relationship",
+        !otherId
+          ? "Pick who the relationship is with, or clear it, before saving."
+          : `Pick how they're related to ${person.name}, or clear it, before saving.`
+      );
+      return false;
+    }
+    return add();
+  }
+  if (flushRef) flushRef.current = flushPending;
+  // Unmounted: nothing pending.
+  useEffect(() => {
+    if (!flushRef) return;
+    return () => {
+      flushRef.current = null;
+    };
+  }, [flushRef]);
 
   function unlink(otherPersonId: string, otherName: string) {
     Alert.alert(`Unlink ${otherName}?`, undefined, [
