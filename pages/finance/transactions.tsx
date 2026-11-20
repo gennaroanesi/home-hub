@@ -1,7 +1,9 @@
 "use client";
 
 // /finance/transactions — the household ledger across accounts. Month,
-// last-90-days or custom dates, filters (initial values from the query
+// last-90-days or custom dates, search, and a Filters pane like the phone's
+// sheet (components/finance/transaction-filters-pane.tsx; what's on shows
+// as removable chips; initial values from the query
 // string: ?account=a,b&category=c,d&uncategorized=1&person=&group=&dir=in|out
 // &q=&from=&to=; account, category and contributor take several), row
 // edit through the update_finance_transaction op (with "remember for
@@ -18,7 +20,8 @@ import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { addToast, Spinner } from "@heroui/react";
-import { FaPlus, FaRedo, FaSearch, FaTrash } from "react-icons/fa";
+import { FaFilter, FaPlus, FaRedo, FaSearch, FaTrash } from "react-icons/fa";
+import { NO_WEB_TX_FILTERS, TransactionFiltersPane, webTxFilterCount, type WebTxFilters } from "@/components/finance/transaction-filters-pane";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
@@ -26,7 +29,7 @@ import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { FreeCombobox } from "@/components/free-combobox";
 import { callOp } from "@/lib/ops-client";
-import { NO_SPEND_GROUP, TX_SORTS, TX_SORT_LABELS, filterTransactions, sortTransactions, type TxSort } from "@/lib/finance/tx-filter";
+import { NO_SPEND_GROUP, TX_SORT_LABELS, filterTransactions, sortTransactions, type TxSort } from "@/lib/finance/tx-filter";
 import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
@@ -194,7 +197,33 @@ export default function TransactionsPage() {
     return [...set].sort((a, b) => a.localeCompare(b));
   }, [refs.categories, refs.rules, txs]);
 
-  const filtersActive = !!(accounts.length || cats.length || persons.length || group || direction || query || ledgerFilter);
+  // The pane (components/finance/transaction-filters-pane.tsx) edits these.
+  const [paneOpen, setPaneOpen] = useState(false);
+  const paneValue: WebTxFilters = { sort, direction: direction as WebTxFilters["direction"], cats, ledger: ledgerFilter, group, accounts, persons };
+  const filterCount = webTxFilterCount(paneValue);
+  function setFilters(p: Partial<WebTxFilters>) {
+    if (p.sort !== undefined) setSort(p.sort);
+    if (p.direction !== undefined) setDirection(p.direction);
+    if (p.cats !== undefined) setCats(p.cats);
+    if (p.ledger !== undefined) setLedgerFilter(p.ledger);
+    if (p.group !== undefined) setGroup(p.group);
+    if (p.accounts !== undefined) setAccounts(p.accounts);
+    if (p.persons !== undefined) setPersons(p.persons);
+  }
+  function clearFilters() {
+    setFilters(NO_WEB_TX_FILTERS);
+    setQuery("");
+  }
+  const activeChips: Array<{ key: string; label: string; warn?: boolean; remove: () => void }> = [
+    ...(cats.includes(UNCATEGORIZED) ? [{ key: "uncat", label: "Needs category", warn: true, remove: () => setCats(cats.filter((c) => c !== UNCATEGORIZED)) }] : []),
+    ...(direction ? [{ key: "dir", label: direction === "in" ? "Money in" : "Money out", remove: () => setDirection("") }] : []),
+    ...(ledgerFilter ? [{ key: "ledger", label: `Counts in ${ledgerLabel(ledgerFilter, refs.people)}`, remove: () => setLedgerFilter("") }] : []),
+    ...(group ? [{ key: "group", label: group === NONE ? "No group" : (groupName.get(group) ?? "Group"), remove: () => setGroup("") }] : []),
+    ...accounts.map((id) => ({ key: `a-${id}`, label: accName.get(id) ?? "Account", remove: () => setAccounts(accounts.filter((x) => x !== id)) })),
+    ...cats.filter((c) => c !== UNCATEGORIZED).map((c) => ({ key: `c-${c}`, label: c, remove: () => setCats(cats.filter((x) => x !== c)) })),
+    ...persons.map((id) => ({ key: `p-${id}`, label: `from ${refs.people.find((p) => p.id === id)?.name ?? "?"}`, remove: () => setPersons(persons.filter((x) => x !== id)) })),
+    ...(query ? [{ key: "q", label: `“${query}”`, remove: () => setQuery("") }] : []),
+  ];
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
 
   function toggle(id: string) {
@@ -219,6 +248,18 @@ export default function TransactionsPage() {
         </Button>
       }
     >
+      <TransactionFiltersPane
+        isOpen={paneOpen}
+        onClose={() => setPaneOpen(false)}
+        value={paneValue}
+        onChange={setFilters}
+        accounts={refs.accounts.filter((a) => a.active !== false || accounts.includes(a.id)).map((a) => ({ id: a.id, name: a.name }))}
+        categories={categoryOptions}
+        people={refs.people.map((p) => ({ id: p.id, name: p.name }))}
+        ledgers={owners.length ? [HOUSEHOLD_LEDGER, ...owners.map((p) => p.id)].map((k) => ({ key: k, name: ledgerLabel(k, refs.people) })) : []}
+        groups={[{ id: NONE, name: "No group" }, ...refs.groups]}
+        matching={rows.length}
+      />
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
         <Select {...FILTER_SELECT} size="sm" label="Period" selectedKeys={[period]} onChange={(e) => e.target.value && setPeriod(e.target.value)}>
           {periodOptions.map((o) => (
@@ -231,32 +272,25 @@ export default function TransactionsPage() {
             <Input size="sm" type="date" label="To" placeholder=" " value={customTo} onValueChange={(v) => v && setCustomTo(v)} />
           </>
         )}
-        <MultiFilter label="Account" noun="accounts" values={accounts} onChange={setAccounts} options={refs.accounts.map((a) => ({ key: a.id, label: a.name }))} />
-        <MultiFilter label="Category" noun="categories" values={cats} onChange={setCats} options={categoryOptions.map((c) => ({ key: c, label: c }))} />
-        <MultiFilter label="Contributor" noun="people" values={persons} onChange={setPersons} options={refs.people.map((p) => ({ key: p.id, label: p.name }))} />
-        <Select {...FILTER_SELECT} size="sm" label="Group" selectedKeys={group ? [group] : []} onChange={(e) => setGroup(e.target.value)}>
-          {[{ id: NONE, name: "No group" }, ...refs.groups].map((g) => (
-            <SelectItem key={g.id}>{g.name}</SelectItem>
-          ))}
-        </Select>
-        {owners.length > 0 && (
-          <Select {...FILTER_SELECT} size="sm" label="Budget" selectedKeys={ledgerFilter ? [ledgerFilter] : []} onChange={(e) => setLedgerFilter(e.target.value)}>
-            {[HOUSEHOLD_LEDGER, ...owners.map((p) => p.id)].map((k) => (
-              <SelectItem key={k}>{ledgerLabel(k, refs.people)}</SelectItem>
-            ))}
-          </Select>
-        )}
-        <Select {...FILTER_SELECT} size="sm" label="Direction" selectedKeys={direction ? [direction] : []} onChange={(e) => setDirection(e.target.value)}>
-          <SelectItem key="in">Money in</SelectItem>
-          <SelectItem key="out">Money out</SelectItem>
-        </Select>
-        <Select {...FILTER_SELECT} size="sm" label="Sort" selectedKeys={[sort]} onChange={(e) => e.target.value && setSort(e.target.value as TxSort)}>
-          {TX_SORTS.map((k) => (
-            <SelectItem key={k}>{TX_SORT_LABELS[k]}</SelectItem>
-          ))}
-        </Select>
-        <Input size="sm" label="Search" value={query} onValueChange={setQuery} startContent={<FaSearch className="text-default-400" />} isClearable onClear={() => setQuery("")} />
+        <Input size="sm" label="Search" value={query} onValueChange={setQuery} startContent={<FaSearch className="text-default-400" />} isClearable onClear={() => setQuery("")} className="lg:col-span-2" />
+        <Button size="lg" variant="flat" className="h-12" startContent={<FaFilter />} onPress={() => setPaneOpen(true)}>
+          Filters{filterCount ? ` · ${filterCount}` : ""}
+          {sort !== "newest" ? ` · ↕ ${TX_SORT_LABELS[sort]}` : ""}
+        </Button>
       </div>
+
+      {activeChips.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 mb-3">
+          {activeChips.map((c) => (
+            <Chip key={c.key} size="sm" variant="flat" color={c.warn ? "warning" : "primary"} onClose={c.remove}>
+              {c.label}
+            </Chip>
+          ))}
+          <Button size="sm" variant="light" startContent={<FaRedo />} onPress={clearFilters}>
+            Clear all
+          </Button>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-3 text-sm">
         <div className="flex items-center gap-4">
@@ -272,24 +306,6 @@ export default function TransactionsPage() {
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {filtersActive && (
-            <Button
-              size="sm"
-              variant="light"
-              startContent={<FaRedo />}
-              onPress={() => {
-                setAccounts([]);
-                setCats([]);
-                setPersons([]);
-                setGroup("");
-                setDirection("");
-                setQuery("");
-                setLedgerFilter("");
-              }}
-            >
-              Clear filters
-            </Button>
-          )}
           {selected.size > 0 && (
             <>
               <Button size="sm" variant="flat" onPress={() => setSelected(new Set())}>
@@ -821,43 +837,5 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
         </ModalFooter>
       </ModalContent>
     </Modal>
-  );
-}
-
-/** A filter that takes several values: shows the one picked, or how many; ✕ clears. */
-function MultiFilter({
-  label,
-  noun,
-  values,
-  onChange,
-  options,
-}: {
-  label: string;
-  noun: string;
-  values: string[];
-  onChange: (v: string[]) => void;
-  options: Array<{ key: string; label: string }>;
-}) {
-  const byKey = new Map(options.map((o) => [o.key, o.label]));
-  // Keep a value from the URL visible even if it isn't an option (yet).
-  const all = [...options, ...values.filter((v) => !byKey.has(v)).map((v) => ({ key: v, label: v }))];
-  return (
-    <Select
-      {...FILTER_SELECT}
-      size="sm"
-      label={label}
-      selectionMode="multiple"
-      isClearable
-      onClear={() => onChange([])}
-      selectedKeys={new Set(values)}
-      onSelectionChange={(k) => onChange(Array.from(k as Set<string>))}
-      renderValue={(items) => (items.length === 1 ? items[0].textValue : `${items.length} ${noun}`)}
-    >
-      {all.map((o) => (
-        <SelectItem key={o.key} textValue={o.label}>
-          {o.label}
-        </SelectItem>
-      ))}
-    </Select>
   );
 }
