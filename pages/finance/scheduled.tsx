@@ -30,7 +30,7 @@ import NextLink from "next/link";
 import { listLoans, listSchedules, listTransactions, txIndexQuery } from "@/lib/finance/data";
 import { addDays, CADENCE_LABELS, CADENCE_MONTHLY_FACTOR, CADENCES, fmtDate, todayIso, type Cadence } from "@/lib/finance/dates";
 import { findScheduleMatches, isScheduleLive, nextDateAfter, nextDueAfterPaid } from "@/lib/finance/recurring";
-import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerPeople } from "@/lib/finance/ledger";
+import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, canTakeScheduleLedger, ledgerLabel, ledgerPeople } from "@/lib/finance/ledger";
 
 type Schedule = any;
 const ACCOUNT_LEDGER = "__account";
@@ -471,7 +471,7 @@ export default function ScheduledPage() {
         </ModalContent>
       </Modal>
 
-      <MatchModal
+      <MatchModal accounts={refs.accounts}
         schedule={matchFor}
         onClose={() => setMatchFor(null)}
         onLinked={() => {
@@ -484,7 +484,7 @@ export default function ScheduledPage() {
 }
 
 /** Unlinked transactions from the last 90 days that look like an occurrence of this schedule. */
-function MatchModal({ schedule, onClose, onLinked }: { schedule: Schedule | null; onClose: () => void; onLinked: () => void }) {
+function MatchModal({ schedule, accounts, onClose, onLinked }: { schedule: Schedule | null; accounts: Array<{ id: string; ownerPersonIds?: (string | null)[] | null }>; onClose: () => void; onLinked: () => void }) {
   const [candidates, setCandidates] = useState<Array<{ tx: Tx; score: number; reasons: string[] }> | null>(null);
   const [linking, setLinking] = useState<string | null>(null);
 
@@ -517,7 +517,7 @@ function MatchModal({ schedule, onClose, onLinked }: { schedule: Schedule | null
     // Linking by hand also hands the row the schedule's category, unless it was categorized by hand.
     const cat = schedule.category?.trim() && tx.categorySource !== "MANUAL" ? { category: schedule.category.trim(), categorySource: "RULE" as const } : {};
     // …and its budget, when it has its own (a household bill on a personal card).
-    const ledger = schedule.ledger?.trim() && !tx.ledger ? { ledger: schedule.ledger.trim() } : {};
+    const ledger = schedule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: schedule.ledger.trim() } : {};
     const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id, ...cat, ...ledger });
     if (r.errors?.length) {
       setLinking(null);

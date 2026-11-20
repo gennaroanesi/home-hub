@@ -69,6 +69,8 @@ export function scoreMatch(tx: TxLike, rule: RecurringLike): { score: number; re
   else return none;
 
   const due = rule.nextDate ?? rule.startDate;
+  // Well before the next due date: an occurrence that's already been paid.
+  if (tx.date && due && tx.date < due && absDays(tx.date, due) > halfPeriodDays(rule.cadence)) return none;
   if (tx.date && due) {
     const d = absDays(tx.date, due);
     if (d === 0) (score += 25), reasons.push("on the due date");
@@ -97,11 +99,22 @@ export function findScheduleMatches<R extends RecurringLike>(tx: TxLike, rules: 
     .sort((a, b) => b.score - a.score);
 }
 
-/** The schedule's next due date after a posted occurrence on `txDate` (never rewinds). */
+/** Half of a cadence's period in days: how far apart two occurrences of one schedule must be. */
+export function halfPeriodDays(cadence: string | null | undefined): number {
+  const days: Record<string, number> = { WEEKLY: 3, BIWEEKLY: 7, MONTHLY: 15, QUARTERLY: 45, SEMIANNUALLY: 91, ANNUALLY: 182 };
+  return days[cadence ?? "MONTHLY"] ?? 15;
+}
+
+/**
+ * The schedule's next due date after a posted occurrence on `txDate` (never
+ * rewinds). A payment a little early (within half a period before the due
+ * date) counts for that due date, so the schedule still moves on.
+ */
 export function nextDateAfter(rule: RecurringLike, txDate: string): string | null {
   const cadence = (rule.cadence ?? "MONTHLY") as Cadence;
   const seed = rule.nextDate ?? rule.startDate ?? txDate;
-  if (cadence === "ONCE" || txDate < seed) return null;
+  if (cadence === "ONCE") return null;
+  if (txDate < seed) return absDays(txDate, seed) <= halfPeriodDays(cadence) ? advanceByCadence(seed, cadence, monthlyAnchor(rule)) : null;
   let next = seed;
   const anchor = monthlyAnchor(rule);
   for (let guard = 0; next <= txDate && guard < 500; guard++) {
@@ -182,10 +195,22 @@ export function planScheduleLinks<R extends RecurringLike>(txs: Array<TxLike & {
   const live = rules.map((r) => ({ ...r }));
   const original = new Map(live.map((r, i) => [r, rules[i]]));
   const out: PlannedLink<R>[] = [];
+  // One row per occurrence: after taking a row, a schedule waits half a period.
+  const lastTaken = new Map<RecurringLike, string>();
+  // Rows already linked count as taken.
+  for (const t of txs) {
+    const r = live.find((x) => x.id === t.recurringId);
+    if (r && t.date && (!lastTaken.has(r) || t.date > lastTaken.get(r)!)) lastTaken.set(r, t.date);
+  }
+  const free = (r: RecurringLike, date: string) => {
+    const last = lastTaken.get(r);
+    return !last || absDays(last, date) > halfPeriodDays(r.cadence);
+  };
   const rows = txs.filter((t) => !t.recurringId && t.status !== "PENDING").sort((a, b) => (a.date ?? "").localeCompare(b.date ?? ""));
   for (const tx of rows) {
-    const best = findScheduleMatches(tx, live, minScore)[0];
+    const best = findScheduleMatches(tx, live, minScore).find((m) => free(m.rule, tx.date ?? ""));
     if (!best) continue;
+    lastTaken.set(best.rule, tx.date ?? "");
     const next = nextDateAfter(best.rule, tx.date ?? "");
     out.push({ tx, rule: original.get(best.rule)!, score: best.score, reasons: best.reasons, nextDate: next });
     if (best.rule.cadence === "ONCE") best.rule.active = false;

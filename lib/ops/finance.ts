@@ -27,7 +27,7 @@ import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, planScheduleLinks, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
-import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, txsForLedger } from "../finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -1064,7 +1064,7 @@ export const linkFinanceSchedules = defineOp({
           id: tx.id,
           recurringId: l.rule.id,
           ...(category && tx.categorySource !== "MANUAL" ? { category, categorySource: "RULE" } : {}),
-          ...(l.rule.ledger?.trim() && !tx.ledger ? { ledger: l.rule.ledger.trim() } : {}),
+          ...(l.rule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: l.rule.ledger.trim() } : {}),
         });
         if (r.errors?.length) throw new Error(`${tx.date} ${tx.description}: ${r.errors[0].message}`);
       }

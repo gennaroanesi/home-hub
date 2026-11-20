@@ -55,12 +55,20 @@ export function ledgerOf(tx: { ledger?: string | null }, accountLedgerKey: strin
   return tx.ledger?.trim() || accountLedgerKey;
 }
 
+/**
+ * Whether linking a row to a schedule with its own ledger may set the row's:
+ * when the row has none, or only repeats its account's (not a choice).
+ */
+export function canTakeScheduleLedger(tx: { ledger?: string | null }, accountLedgerKey: string): boolean {
+  const own = tx.ledger?.trim();
+  return !own || own === accountLedgerKey;
+}
+
 /** A schedule's budget: its own ledger (a household bill on a personal card), else its account's. */
 export function scheduleLedger(rule: { ledger?: string | null; accountId?: string | null }, accountLedgerOf: (accountId: string) => string | undefined): string {
   return rule.ledger?.trim() || accountLedgerOf(rule.accountId ?? "") || HOUSEHOLD;
 }
 
-/** The adults who get a personal ledger: household members with a login (guests have logins too). */
 /**
  * Who finance pickers and lists show (paycheck person, account owners,
  * contributors, filters): household members with a login, plus those
@@ -76,6 +84,7 @@ export function financePeople<P extends Omit<PersonLike, "name">>(people: P[], k
   return people.filter((p) => isHouseholdMember(p) && (!!p.cognitoUsername || p.showInFinance === true || keep.has(p.id)));
 }
 
+/** The adults who get a personal ledger: household members with a login (guests have logins too). */
 export function ledgerPeople<P extends PersonLike>(people: P[]): P[] {
   return people.filter((p) => !!p.cognitoUsername && isHouseholdMember(p));
 }

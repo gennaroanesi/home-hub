@@ -438,4 +438,15 @@ describe("planScheduleLinks", () => {
     ]);
     expect(rules[0].nextDate).toBe("2026-11-04"); // the caller's rules aren't touched
   });
+
+  it("counts an early payment for its due date, and takes one row per occurrence", () => {
+    const apple = { id: "one", accountId: "card", amount: -37.95, description: "Apple One", cadence: "MONTHLY", startDate: "2026-11-19", nextDate: "2026-11-19", matchPattern: "APPLE.COM/BILL", category: "Subscriptions" };
+    const tx = (id: string, date: string, amount: number) => ({ id, accountId: "card", date, amount, description: "APPLE.COM/BILL INTERNET CHARGE", category: "Subscriptions" });
+    const links = planScheduleLinks([tx("a", "2026-11-12", -38.5), tx("b", "2026-11-17", -18.92)], [apple]);
+    expect(links.map((l) => [l.tx.id, l.nextDate])).toEqual([["a", "2026-12-19"]]);
+    expect(nextDateAfter(apple, "2026-10-01")).toBeNull(); // way before: not this occurrence
+    // Already linked earlier, schedule moved on: a later stray charge isn't this month's again.
+    const moved = { ...apple, nextDate: "2026-12-19" };
+    expect(planScheduleLinks([{ ...tx("a", "2026-11-12", -38.5), recurringId: "one" }, tx("b", "2026-11-17", -36)], [moved])).toEqual([]);
+  });
 });
