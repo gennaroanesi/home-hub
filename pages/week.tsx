@@ -7,7 +7,7 @@
 // and every change goes through the week ops, the same ones Janet and the
 // mobile app use.
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
@@ -97,7 +97,11 @@ export default function WeekPage() {
       .catch(() => router.push("/login"));
   }, [router]);
 
+  // Bumped by every save: a reload that started before a later save would
+  // bring back the old value over the one just picked, so it's dropped.
+  const saves = useRef(0);
   const load = useCallback(async () => {
+    const at = saves.current;
     setLoading(true);
     const [r, folks, tripRows] = await Promise.all([
       callOp(client, "get_week_plan", weekParam ? { weekStart: weekParam } : {}),
@@ -106,6 +110,7 @@ export default function WeekPage() {
     ]);
     setLoading(false);
     if ("error" in r) return addToast({ title: "Couldn't load the week", description: r.error, color: "danger" });
+    if (at !== saves.current) return;
     setPlan(r.result);
     setNotes(r.result.review?.notes ?? "");
     setPersonRows(folks);
@@ -142,13 +147,16 @@ export default function WeekPage() {
   const go = (weekStart: string) => router.replace({ pathname: "/week", query: { week: weekStart } }, undefined, { shallow: true, scroll: false });
 
   async function run<N extends Parameters<typeof callOp>[1]>(name: N, input: Parameters<typeof callOp<N>>[2], ok?: string) {
+    const mine = ++saves.current;
     const r = await callOp(client, name, input);
     if ("error" in r) {
       addToast({ title: "Couldn't save", description: r.error, color: "danger" });
+      await load(); // put back what's really saved
       return false;
     }
     if (ok) addToast({ title: ok, color: "success" });
-    await load();
+    // Only the last of several quick saves reloads; the screen already shows them.
+    if (mine === saves.current) await load();
     return true;
   }
 
@@ -162,7 +170,11 @@ export default function WeekPage() {
     );
     return run("set_day_status", { personId, dates: [date], status });
   };
-  const setPet = (petId: string, date: string, status: PetDayStatus | null) => run("set_pet_day", { petId, dates: [date], status });
+  const setPet = (petId: string, date: string, status: PetDayStatus | null) => {
+    // Show it right away; the reload confirms.
+    setPlan((p) => p && { ...p, pets: p.pets.map((x) => (x.id !== petId ? x : { ...x, days: x.days.map((d) => (d.date === date ? { ...d, status } : d)) })) });
+    return run("set_pet_day", { petId, dates: [date], status });
+  };
   const assign = async (e: WeekEvent, personIds: string[]) => {
     setAssigning(null);
     await run("assign_event_people", { eventId: e.id, personIds });

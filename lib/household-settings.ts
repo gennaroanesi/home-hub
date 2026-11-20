@@ -16,7 +16,19 @@ import { DEFAULT_HOUSEHOLD_TZ } from "./reminder-schedule";
  * reduce to a common narrower interface without variance conflicts.
  */
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
+// Settings hardly change; a warm Lambda (or tab) reuses the answer for a
+// few minutes instead of paying a round trip before every computed read.
+let tzCache: { tz: string; at: number } | null = null;
+const TZ_TTL_MS = 5 * 60 * 1000;
+
 export async function getHouseholdTimezone(client: any): Promise<string> {
+  if (tzCache && Date.now() - tzCache.at < TZ_TTL_MS) return tzCache.tz;
+  const tz = await readHouseholdTimezone(client);
+  if (tz) tzCache = { tz, at: Date.now() };
+  return tz ?? DEFAULT_HOUSEHOLD_TZ;
+}
+
+async function readHouseholdTimezone(client: any): Promise<string | null> {
   try {
     // No limit:1 — that's the DDB scan-page size, and if the table
     // ever has >1 row we'd return whichever one happened to be at
@@ -25,7 +37,7 @@ export async function getHouseholdTimezone(client: any): Promise<string> {
     const tz = data?.[0]?.householdTimezone as string | null | undefined;
     return tz ?? DEFAULT_HOUSEHOLD_TZ;
   } catch {
-    return DEFAULT_HOUSEHOLD_TZ;
+    return null;
   }
 }
 

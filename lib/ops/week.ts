@@ -103,51 +103,52 @@ export async function loadWeekPlan(client: any, weekStartInput?: string): Promis
   // filtering happens in the builders).
   const wide = { between: [`${addDays(dates[0], -1)}T00:00:00.000Z`, `${addDays(weekEnd, 2)}T00:00:00.000Z`] };
   const errors: string[] = [];
-  const [allPeople, pets, events, days, petDays, trips, review] = await Promise.all([
-    listAllPages<Person & { birthday?: string | null }>(client.models.homePerson),
-    listAllPages<Pet>(client.models.homePet).then((p) => p.filter((x) => x.active !== false)),
-    Promise.all([listAllPages<EventRow>(client.models.homeCalendarEvent), listAllPages<FeedSettings>(client.models.homeCalendarFeed)]).then(([rows, feeds]) =>
-      eventsFor(rows, feeds, "WEEK"),
-    ),
-    listAllPages<DayRow>(client.models.homeCalendarDay, { filter: { date: between } }),
-    listAllPages<PetDayRow>(client.models.homePetDay, { filter: { date: between } }),
-    listAllPages<TripRow>(client.models.homeTrip),
-    client.models.homeWeekReview.get({ weekStart }).then((r: any) => r?.data ?? null),
-  ]);
-  const weekTrips = trips.filter((t) => t.endDate >= dates[0] && t.startDate <= weekEnd);
-  const people = householdMembers(allPeople);
-
-  const [schedules, transactions, paychecks, tasks, occurrences, reminders, legs, reservations, checklists, vaccines, medications, visits, pregnancies, shoppingLists, shoppingItems] =
-    await Promise.all([
+  // One round of reads, all at once: each extra round costs the slowest
+  // read in it again. Checklist and care items are read whole and matched
+  // here (one scan) rather than one filtered scan per checklist.
+  const [
+    [allPeople, pets, events, days, petDays, trips, review],
+    [schedules, transactions, paychecks, tasks, occurrences, reminders, legs, reservations, checklists, vaccines, medications, visits, pregnancies, shoppingLists, shoppingItems, allChecklistItems, allCareItems],
+  ] = await Promise.all([
+    Promise.all([
+      listAllPages<Person & { birthday?: string | null }>(client.models.homePerson),
+      listAllPages<Pet>(client.models.homePet).then((p) => p.filter((x) => x.active !== false)),
+      Promise.all([listAllPages<EventRow>(client.models.homeCalendarEvent), listAllPages<FeedSettings>(client.models.homeCalendarFeed)]).then(([rows, feeds]) =>
+        eventsFor(rows, feeds, "WEEK"),
+      ),
+      listAllPages<DayRow>(client.models.homeCalendarDay, { filter: { date: between } }),
+      listAllPages<PetDayRow>(client.models.homePetDay, { filter: { date: between } }),
+      listAllPages<TripRow>(client.models.homeTrip),
+      client.models.homeWeekReview.get({ weekStart }).then((r: any) => r?.data ?? null),
+    ] as const),
+    Promise.all([
       soft("scheduled transactions", listSchedules(client), errors),
       soft("transactions", listTransactions(client, { fromIso: dates[0], toIso: weekEnd }), errors),
       soft("paychecks", listPaychecks(client), errors),
       soft("tasks", listAllPages<any>(client.models.homeTask), errors),
       soft("task occurrences", listAllPages<any>(client.models.homeTaskOccurrence, { filter: { scheduledFor: { le: wide.between[1] } } }), errors),
       soft("reminders", listAllPages<any>(client.models.homeReminder, { filter: { status: { eq: "PENDING" } } }), errors),
-      soft("trip legs", weekTrips.length ? listAllPages<any>(client.models.homeTripLeg) : Promise.resolve([]), errors),
-      soft("reservations", weekTrips.length ? listAllPages<any>(client.models.homeTripReservation) : Promise.resolve([]), errors),
-      soft("checklists", listAllPages<any>(client.models.homeChecklist, { filter: { entityType: { eq: "TRIP" } } }).then(async (trip) => [
-        ...trip,
-        ...(await listAllPages<any>(client.models.homeChecklist, { filter: { entityType: { eq: "EVENT" } } })),
-      ]), errors),
+      soft("trip legs", listAllPages<any>(client.models.homeTripLeg), errors),
+      soft("reservations", listAllPages<any>(client.models.homeTripReservation), errors),
+      soft("checklists", listAllPages<any>(client.models.homeChecklist, { filter: { or: [{ entityType: { eq: "TRIP" } }, { entityType: { eq: "EVENT" } }] } }), errors),
       soft("pet vaccines", listAllPages<any>(client.models.homePetVaccine), errors),
       soft("pet medications", listAllPages<any>(client.models.homePetMedication), errors),
       soft("medical visits", listAllPages<any>(client.models.homeMedicalVisit, { filter: { visitAt: wide } }), errors),
       soft("pregnancies", listAllPages<any>(client.models.homePregnancy, { filter: { status: { eq: "ACTIVE" } } }), errors),
       soft("shopping lists", listAllPages<any>(client.models.homeShoppingList), errors),
       soft("shopping items", listAllPages<any>(client.models.homeShoppingItem, { filter: { isChecked: { ne: true } } }), errors),
-    ]);
+      soft("checklist items", listAllPages<any>(client.models.homeChecklistItem), errors),
+      soft("care items", client.models.homeCareItem ? listAllPages<any>(client.models.homeCareItem) : Promise.resolve([]), errors),
+    ] as const),
+  ]);
+  const weekTrips = trips.filter((t) => t.endDate >= dates[0] && t.startDate <= weekEnd);
+  const people = householdMembers(allPeople);
   const tripIds = new Set(weekTrips.map((t) => t.id));
   const relevantChecklists = checklists.filter((c) => !c.isArchived && (c.entityType === "EVENT" || tripIds.has(c.entityId)));
-  const [checklistItems, careItems] = await Promise.all([
-    soft(
-      "checklist items",
-      Promise.all(relevantChecklists.map((c) => listAllPages<any>(client.models.homeChecklistItem, { filter: { checklistId: { eq: c.id } } }))).then((x) => x.flat()),
-      errors,
-    ),
-    soft("care items", Promise.all(pregnancies.map((p) => listAllPages<any>(client.models.homeCareItem, { filter: { pregnancyId: { eq: p.id } } }))).then((x) => x.flat()), errors),
-  ]);
+  const checklistIds = new Set(relevantChecklists.map((c) => c.id));
+  const checklistItems = allChecklistItems.filter((i) => checklistIds.has(i.checklistId));
+  const pregnancyIds = new Set(pregnancies.map((p) => p.id));
+  const careItems = allCareItems.filter((i) => pregnancyIds.has(i.pregnancyId));
 
   const plan = buildWeekPlan({
     weekStart,

@@ -14,6 +14,12 @@
 // site with the row type (`Promise<Photo[]>` etc.), which keeps the
 // checker happy without sacrificing downstream type safety.
 
+// Pages of 1000 (still capped at 1 MB each): Amplify's default is 100, and
+// a filtered list is a DynamoDB scan whose page limit counts rows *read*,
+// not matched, so at 100 a filter over a 2,000-row table took 20 round
+// trips one after another to find a handful of rows.
+export const LIST_PAGE_SIZE = 1000;
+
 export async function listAllPages<T = unknown>(
   model: any,
   options?: { filter?: any; limit?: number | null }
@@ -23,6 +29,7 @@ export async function listAllPages<T = unknown>(
   do {
     const res = await model.list({
       ...(options ?? {}),
+      limit: options?.limit === undefined ? LIST_PAGE_SIZE : options.limit,
       nextToken: token,
     });
     if (res?.data) collected.push(...(res.data as T[]));
