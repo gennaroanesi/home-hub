@@ -26,6 +26,7 @@ import { DateInput } from "@/components/date-input";
 import { CategoryManager } from "@/components/inventory/category-manager";
 import { DetailFields } from "@/components/inventory/detail-fields";
 import { AmmoPanel } from "@/components/inventory/ammo-panel";
+import { CategoryPicker } from "@/components/inventory/category-picker";
 import { InventoryOverview, type Overview, type OverviewPick } from "@/components/inventory/overview";
 import { householdMembers } from "@/lib/household";
 import { babyProfileFor } from "@/lib/pregnancy";
@@ -434,19 +435,15 @@ export default function InventoryPage() {
             isClearable
             onClear={() => setSearch("")}
           />
-          <Select
+          <CategoryPicker
             size="sm"
-            aria-label="Category"
             placeholder="All categories"
-            selectedKeys={category ? [category] : []}
-            onChange={(e) => setCategory(e.target.value)}
-            className="sm:max-w-[180px]"
-          >
-            {[
-              ...categoryNodes.map((n) => <SelectItem key={n.category.id}>{n.path}</SelectItem>),
-              <SelectItem key="none">Uncategorized</SelectItem>,
-            ]}
-          </Select>
+            categories={categories}
+            value={category}
+            onChange={setCategory}
+            extra={[{ key: "none", label: "Uncategorized" }]}
+            className="sm:max-w-[220px]"
+          />
           <Select size="sm" aria-label="Owner" placeholder="Everyone" selectedKeys={owner ? [owner] : []} onChange={(e) => setOwner(e.target.value)} className="sm:max-w-[200px]">
             {ownerOptions.map((o) => (
               <SelectItem key={o.key}>{o.label}</SelectItem>
@@ -572,8 +569,9 @@ export default function InventoryPage() {
         editing={editing}
         items={items}
         defaultStatus={tab === "WISHLIST" ? "WISHLIST" : "OWNED"}
-        defaultCategory={category}
+        defaultCategory={category === "none" ? "" : category}
         categoryNodes={categoryNodes}
+        onCategoryCreated={(c) => setCategories((prev) => [...prev, c as Category])}
         defaultOwner={owner || HOUSEHOLD}
         ownerOptions={ownerOptions}
         roomOptions={roomOptions}
@@ -721,6 +719,7 @@ function ItemModal({
   defaultRoom,
   lists,
   onSaved,
+  onCategoryCreated,
 }: {
   isOpen: boolean;
   onClose: () => void;
@@ -735,6 +734,7 @@ function ItemModal({
   defaultRoom: string;
   lists: ShoppingList[];
   onSaved: () => void;
+  onCategoryCreated: (c: { id: string; name: string; parentId: string | null; detailType: string | null; sortOrder: number }) => void;
 }) {
   const [f, setF] = useState<Record<string, string>>({});
   const [details, setDetails] = useState<Record<string, string>>({});
@@ -890,11 +890,16 @@ function ItemModal({
         <ModalBody className="gap-3">
           <Input label="Name" value={f.name ?? ""} onValueChange={set("name")} isRequired autoFocus={!editing} />
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-            <Select label="Category" placeholder="Pick one" selectedKeys={f.categoryId ? [f.categoryId] : []} onChange={(e) => set("categoryId")(e.target.value)} isRequired={!editing}>
-              {categoryNodes.map((n) => (
-                <SelectItem key={n.category.id}>{n.path}</SelectItem>
-              ))}
-            </Select>
+            <CategoryPicker
+              label="Category"
+              placeholder="Search or create…"
+              categories={categoryNodes.map((n) => n.category)}
+              value={f.categoryId ?? ""}
+              onChange={set("categoryId")}
+              client={client}
+              onCreated={onCategoryCreated}
+              isRequired={!editing}
+            />
             <Select label="Status" selectedKeys={f.status ? [f.status] : []} onChange={(e) => e.target.value && set("status")(e.target.value)}>
               {INVENTORY_STATUSES.filter((s) => s !== "DRAFT" || editing?.status === "DRAFT").map((s) => (
                 <SelectItem key={s}>{INVENTORY_STATUS_LABELS[s]}</SelectItem>

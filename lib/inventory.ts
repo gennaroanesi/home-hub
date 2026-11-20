@@ -95,6 +95,47 @@ export function matchCategory<T extends CategoryLike>(categories: T[], text: str
   return partial.length === 1 ? partial[0].node : undefined;
 }
 
+/** Categories for a picker: alphabetical by path, so subcategories sit right under their parent. */
+export function categoriesAlphabetical<T extends CategoryLike>(categories: T[]): CategoryNode<T>[] {
+  const key = (n: CategoryNode<T>) => n.path.split(" › ");
+  return categoryTree(categories).sort((a, b) => {
+    const x = key(a);
+    const y = key(b);
+    for (let i = 0; i < Math.min(x.length, y.length); i++) {
+      const c = x[i].localeCompare(y[i], undefined, { sensitivity: "base", numeric: true });
+      if (c) return c;
+    }
+    return x.length - y.length;
+  });
+}
+
+/** Does a picker's search text match this category (any word of its path, in order)? */
+export function categoryMatches(path: string, text: string): boolean {
+  const q = text.toLowerCase().replace(/[›>]/g, " ").split(/\s+/).filter(Boolean);
+  const hay = path.toLowerCase();
+  return q.every((w) => hay.includes(w));
+}
+
+/**
+ * What typing "Name" or "Parent > Name" in a picker would create: a
+ * top-level category, or one under an existing parent. Null when it's
+ * empty, already exists, or names a parent that doesn't exist.
+ */
+export function newCategoryFromText<T extends CategoryLike>(categories: T[], text: string): { name: string; parentId: string | null; path: string } | null {
+  const parts = text.split(/[›>]/).map((p) => p.trim());
+  const name = parts.pop() ?? "";
+  if (!name || parts.some((p) => !p)) return null;
+  let parent: CategoryNode<T> | undefined;
+  if (parts.length) {
+    parent = categoryTree(categories).find((n) => n.path.toLowerCase() === parts.join(" › ").toLowerCase()) ?? matchCategory(categories, parts.join(" > "));
+    if (!parent) return null;
+  }
+  const parentId = parent?.category.id ?? null;
+  const taken = categories.some((c) => (c.parentId ?? null) === parentId && c.name.toLowerCase() === name.toLowerCase());
+  if (taken) return null;
+  return { name, parentId, path: parent ? `${parent.path} › ${name}` : name };
+}
+
 // What homeInventoryItem.category (the old fixed enum) becomes. Used by
 // scripts/inventory-categories-backfill.ts, which creates these rows.
 export const LEGACY_CATEGORIES = [

@@ -16,6 +16,8 @@ import { DateField, Field, FormSheet, Input, cleanAmount } from "../finance/form
 import { ACCENT, DANGER, fs, type OpResultOf } from "../finance/ui";
 import { OptionSheet, choosePhotoSource } from "../wardrobe/shared";
 import { ChipRow, DetailInputs } from "./DetailInputs";
+import { CategorySheet } from "./CategorySheet";
+import { forgetInventoryRefs } from "./refs";
 
 export type InventoryItem = OpResultOf<"list_inventory">["items"][number];
 export type InventoryCategory = OpResultOf<"list_inventory_categories">["categories"][number];
@@ -90,7 +92,10 @@ export function ItemFormModal({
     });
   }, [visible, item, defaultStatus, defaultCategoryId]);
 
-  const category = categories.find((c) => c.id === f.categoryId);
+  // Categories made from the picker, until the refs reload.
+  const [created, setCreated] = useState<InventoryCategory[]>([]);
+  const allCategories = useMemo(() => [...categories, ...created.filter((c) => !categories.some((x) => x.id === c.id))], [categories, created]);
+  const category = allCategories.find((c) => c.id === f.categoryId);
   const type = (category?.detailType ?? null) as DetailType | null;
   const isPrivate = !!detailSpec(type)?.private;
   const room = rooms.find((r) => r.id === f.roomId);
@@ -292,12 +297,15 @@ export function ItemFormModal({
         </Pressable>
       )}
 
-      <OptionSheet
+      <CategorySheet
         visible={picker === "category"}
-        title="Category"
-        options={categories.map((c) => ({ value: c.id, label: `${"   ".repeat(c.depth)}${c.name}${c.detailType && detailSpec(c.detailType)?.private ? " 🔒" : ""}` }))}
+        categories={allCategories}
         selected={f.categoryId}
         onPick={set("categoryId")}
+        onCreated={(c) => {
+          setCreated((prev) => [...prev, c]);
+          forgetInventoryRefs();
+        }}
         onClose={() => setPicker(null)}
       />
       <OptionSheet visible={picker === "room"} title="Room" options={rooms.map((r) => ({ value: r.id, label: r.label }))} selected={f.roomId} onPick={set("roomId")} onClose={() => setPicker(null)} />

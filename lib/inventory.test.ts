@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  categoriesAlphabetical,
+  categoryMatches,
+  newCategoryFromText,
   approveDrafts,
   categoryAndDescendants,
   categoryTree,
@@ -169,5 +172,31 @@ describe("drafts", () => {
       { id: "a", status: "OWNED", draftStatus: null, acquiredAt: "2026-09-26" },
       { id: "b", status: "WISHLIST", draftStatus: null },
     ]);
+  });
+});
+
+describe("category picker", () => {
+  const cats = [
+    { id: "p", name: "3D printing" },
+    { id: "f", name: "Filament", parentId: "p" },
+    { id: "a", name: "Ammo", sortOrder: 9 },
+    { id: "z", name: "Zebra stuff", sortOrder: 0 },
+    { id: "c", name: "clothing" },
+    { id: "b", name: "Baby", parentId: "c" },
+  ];
+  it("sorts alphabetically by path, children under their parent", () => {
+    expect(categoriesAlphabetical(cats).map((n) => n.path)).toEqual(["3D printing", "3D printing › Filament", "Ammo", "clothing", "clothing › Baby", "Zebra stuff"]);
+  });
+  it("matches words of the path", () => {
+    expect(categoryMatches("3D printing › Filament", "print fil")).toBe(true);
+    expect(categoryMatches("3D printing › Filament", "ammo")).toBe(false);
+  });
+  it("plans a new category, under a parent when given", () => {
+    expect(newCategoryFromText(cats, " Tools ")).toEqual({ name: "Tools", parentId: null, path: "Tools" });
+    expect(newCategoryFromText(cats, "3D printing > Resin")).toEqual({ name: "Resin", parentId: "p", path: "3D printing › Resin" });
+    expect(newCategoryFromText(cats, "Clothing › Socks")).toMatchObject({ parentId: "c" });
+    expect(newCategoryFromText(cats, "ammo")).toBeNull();
+    expect(newCategoryFromText(cats, "Nope > Thing")).toBeNull();
+    expect(newCategoryFromText(cats, "  ")).toBeNull();
   });
 });
