@@ -19,6 +19,7 @@ import { fetchAuthSession, getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import NextLink from "next/link";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Card, CardBody } from "@heroui/card";
@@ -396,11 +397,7 @@ export default function ContactsPage() {
                             {relationsLine(p.id, rels, byId)}
                           </p>
                         )}
-                        {p.notes && (
-                          <p className="text-xs text-default-500 truncate">
-                            {p.notes}
-                          </p>
-                        )}
+                        {p.notes && <Markdown content={p.notes} className="text-xs text-default-500 line-clamp-3 [&_p]:my-0 [&_ul]:my-0" />}
                       </div>
                       <div className="flex gap-1">
                         <Button
@@ -584,7 +581,14 @@ export default function ContactsPage() {
                     value={form.notes}
                     onValueChange={(v) => setForm({ ...form, notes: v })}
                     minRows={2}
+                    description="Markdown: **bold**, - lists, [links](https://…)"
                   />
+                  {form.notes.trim() && (
+                    <div className="rounded-md border border-default-200 px-3 py-2">
+                      <p className="text-[10px] uppercase tracking-wider text-default-400 mb-1">Preview</p>
+                      <Markdown content={form.notes} />
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <Input
                       label="Color"

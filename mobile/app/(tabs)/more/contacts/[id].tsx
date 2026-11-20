@@ -26,6 +26,7 @@ import { resizedImageUrl } from "../../../../lib/image";
 import { ContactFormModal } from "../../../../components/ContactFormModal";
 import { RelationshipsSection } from "../../../../components/RelationshipsSection";
 import { MergePersonButton } from "../../../../components/MergePersonButton";
+import { Markdown } from "../../../../components/Markdown";
 import { useIsAdmin } from "../../../../lib/use-is-admin";
 import { listAllPages } from "../../../../../lib/list-all";
 import { todayIso } from "../../../../../lib/finance/dates";
@@ -174,7 +175,17 @@ export default function ContactDetail() {
               value={person.email}
               onPress={person.email ? () => Linking.openURL(`mailto:${person.email}`) : undefined}
             />
-            <InfoRow icon="document-text-outline" label="Notes" value={person.notes} multiline last />
+            {person.notes ? (
+              <View style={styles.infoRow}>
+                <Ionicons name="document-text-outline" size={18} color="#999" style={styles.infoIcon} />
+                <Text style={styles.infoLabel}>Notes</Text>
+                <View style={{ flex: 1 }}>
+                  <Markdown content={person.notes} />
+                </View>
+              </View>
+            ) : (
+              <InfoRow icon="document-text-outline" label="Notes" value={null} last />
+            )}
           </View>
 
           <RelationshipsSection

@@ -263,7 +263,7 @@ export function ContactFormModal({ visible, contact, onClose, onSaved }: Props) 
             editable={!busy}
           />
 
-          <Text style={styles.label}>Notes</Text>
+          <Text style={styles.label}>Notes · Markdown: **bold**, - list, [link](https://…)</Text>
           <TextInput
             style={[styles.input, styles.multiline]}
             value={notes}
