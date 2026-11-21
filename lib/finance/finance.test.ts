@@ -379,6 +379,17 @@ describe("sync engine", () => {
     expect(sfTxToDraft(sf({ posted: null }), "joint")).toBeNull();
   });
 
+  it("keeps a payment to a tracked loan as spending, not a transfer", () => {
+    const pay = sfTxToDraft(sf({ id: "TRN-p", amount: -3619.4, description: "Online Payment XXXXXXX7034 To HMG 8553 11/20" }), "joint")!;
+    const loan = sfTxToDraft(sf({ id: "TRN-l", amount: 3619.4, description: "PAYMENT" }), "mortgage")!;
+    const car = sfTxToDraft(sf({ id: "TRN-c", amount: -900, description: "ONLINE TRANSFER TO LOAN 4411" }), "joint")!;
+    const carLoan = sfTxToDraft(sf({ id: "TRN-cl", amount: 900, description: "PAYMENT RECEIVED" }), "car")!;
+    expect(markSelfTransfers([pay, loan, car, carLoan], (id) => id === "mortgage" || id === "car")).toBe(2);
+    expect([pay.type, pay.category, pay.toAccountId]).toEqual(["EXPENSE", "Mortgage Payment", "mortgage"]);
+    expect([loan.type, loan.category]).toEqual(["TRANSFER", "Transfers"]);
+    expect([car.type, car.category]).toEqual(["EXPENSE", "Loan Payment"]);
+  });
+
   it("updates a settling pending row in place and never overwrites a manual category", () => {
     const draft = sfTxToDraft(sf({ description: "H-E-B #12 AUSTIN TX" }), "joint") as TxDraft;
     const idx = buildDedupIndex([{ id: "row", sfTransactionId: "TRN-1", date: "2026-11-04", amount: -42, description: "HEB", status: "PENDING", category: "Baby", categorySource: "MANUAL" }]);

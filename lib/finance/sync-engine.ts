@@ -73,8 +73,16 @@ export function sfTxToDraft(sfTx: SfTransaction, accountId: string, rules?: Cate
  * (same date, opposite amounts) and mark both TRANSFER. A contribution
  * from a member's personal account isn't paired (that account isn't
  * synced here), so it stays a Contribution.
+ *
+ * A pair with a loan account (`isLoan`) is a loan payment, not a transfer:
+ * the mortgage leaving checking is budgeted spending. The paying side stays
+ * an EXPENSE under its rule's category (Mortgage Payment…, else Loan
+ * Payment) and just points at the loan; the loan's own row is outside cash
+ * flow anyway, so it's marked TRANSFER.
  */
-export function markSelfTransfers(drafts: TxDraft[]): number {
+export const LOAN_PAYMENT_CATEGORY = "Loan Payment";
+
+export function markSelfTransfers(drafts: TxDraft[], isLoan: (accountId: string) => boolean = () => false): number {
   const used = new Set<number>();
   let paired = 0;
   for (let i = 0; i < drafts.length; i++) {
@@ -85,6 +93,16 @@ export function markSelfTransfers(drafts: TxDraft[]): number {
       const b = drafts[j];
       if (a.date !== b.date || a.accountId === b.accountId || Math.abs(a.amount + b.amount) > 0.005) continue;
       for (const [x, y] of [[a, b], [b, a]] as const) {
+        if (isLoan(y.accountId) && !isLoan(x.accountId)) {
+          x.type = "EXPENSE";
+          x.toAccountId = y.accountId;
+          if (!x.category || x.category === TRANSFER_CATEGORY) {
+            x.category = LOAN_PAYMENT_CATEGORY;
+            x.categorySource = "RULE";
+          }
+          x.personId = null;
+          continue;
+        }
         x.type = "TRANSFER";
         x.toAccountId = y.accountId;
         x.category = TRANSFER_CATEGORY;

@@ -340,7 +340,8 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       if (d) drafts.push(d);
     }
   }
-  markSelfTransfers(drafts);
+  const loanIds = new Set(mapped.filter((a) => a.type === "LOAN").map((a) => a.id));
+  markSelfTransfers(drafts, (id) => loanIds.has(id));
 
   // Reconcile against stored rows (widened window, see above).
   const reconcileFrom = addDays(windowFrom, -RECONCILE_LOOKBACK_DAYS);
