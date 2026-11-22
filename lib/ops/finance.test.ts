@@ -718,6 +718,12 @@ describe("import_finance_transactions", () => {
     const again: any = await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: HEB + '\n"2026/11/10, 08:00:00",3.50,PURCHASE,H-E-B #9,Groceries,Card' });
     expect(again.result).toMatchObject({ duplicates: 5, created: 1 });
     expect(tables.homeFinanceTransaction).toHaveLength(6);
+    // The balance is the running total of every row.
+    expect(again.result.balance).toEqual({ before: 417.92, after: 414.42 });
+    expect(tables.homeFinanceAccount.find((x: any) => x.id === "heb").currentBalance).toBe(414.42);
+    // Kept as set by hand when asked.
+    await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: 'Date,Amount,Type,Merchant,Category,Method\n"2026/11/11, 08:00:00",1.00,PURCHASE,H-E-B #9,Groceries,Card', setBalance: false });
+    expect(tables.homeFinanceAccount.find((x: any) => x.id === "heb").currentBalance).toBe(414.42);
 
     const synced: any = await runOp(ctx, "import_finance_transactions", { accountId: "joint", csv: HEB });
     expect(synced.error).toMatch(/SimpleFIN/);

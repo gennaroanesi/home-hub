@@ -1424,6 +1424,10 @@ export const importFinanceTransactions = defineOp({
     csv: z.string().min(1).max(3_000_000).describe("The export file's text."),
     format: z.string().optional().describe("Force a format by name; default detected from the header row."),
     dryRun: z.boolean().optional(),
+    setBalance: z
+      .boolean()
+      .optional()
+      .describe("Default true: the account's balance becomes the sum of all its rows (a running total from zero), right when the exports go back to when the account was opened. false keeps the balance as it is."),
   }),
   output: z.object({
     account: z.string(),
@@ -1436,6 +1440,7 @@ export const importFinanceTransactions = defineOp({
     to: z.string().nullable(),
     rows: z.array(z.object({ date: z.string(), description: z.string(), amount: z.number(), category: z.string().nullable() })).describe("The new rows, oldest first (first 200)"),
     linked: z.array(z.object({ date: z.string(), description: z.string().nullable(), amount: z.number(), schedule: z.string() })),
+    balance: z.object({ before: z.number(), after: z.number() }).nullable().describe("The balance from the running total (would be, on a dry run); null when setBalance is false"),
     dryRun: z.boolean(),
   }),
   async run(ctx, input) {
@@ -1448,7 +1453,9 @@ export const importFinanceTransactions = defineOp({
     if (format === "Unknown") throw new OpError(`Couldn't read this file: the first line needs column names with a date and an amount. Known formats: ${CSV_FORMATS.join(", ")}`);
     const from = rows[0]?.date ?? null;
     const to = rows[rows.length - 1]?.date ?? null;
-    const stored = from && to ? await listAccountTransactions(ctx.client, account.id, { fromIso: from, toIso: to }) : [];
+    // Every row (manual accounts are small): the range for duplicates, all of it for the running balance.
+    const all = await listAccountTransactions(ctx.client, account.id);
+    const stored = from && to ? all.filter((t: any) => t.date >= from && t.date <= to) : [];
     const { fresh, duplicates } = newCsvRows(rows, stored.map((t: any) => t.importHash ?? importHash(t.date, t.amount, t.description ?? "")));
     const rules = rulesFromDbRows(await listCategoryRules(ctx.client));
     const drafts = fresh.map((r) => {
@@ -1458,10 +1465,12 @@ export const importFinanceTransactions = defineOp({
     });
 
     let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
+    const storedSum = all.reduce((n: number, t: any) => n + (t.amount ?? 0), 0);
+    const created: any[] = [];
+    let balance = input.setBalance === false ? null : { before: r2(account.currentBalance ?? 0), after: r2(storedSum + drafts.reduce((n, d) => n + d.amount, 0)) };
     if (!input.dryRun && drafts.length) {
       // In parallel, a batch at a time: one by one, a year of card activity
       // outlasts the 30 s AppSync limit.
-      const created: any[] = [];
       const save = async (d: (typeof drafts)[number]) => {
         const row = {
           // Stable per file row: the same export imported twice can't double up.
@@ -1491,6 +1500,13 @@ export const importFinanceTransactions = defineOp({
         linked = plan.map((l) => ({ date: l.tx.date ?? "", description: l.tx.description ?? null, amount: l.tx.amount ?? 0, schedule: l.rule.description ?? "" }));
       }
     }
+    if (!input.dryRun && balance) {
+      balance = { ...balance, after: r2(storedSum + created.reduce((n, t) => n + t.amount, 0)) };
+      if (Math.abs(balance.after - balance.before) >= 0.005) {
+        const r = await ctx.client.models.homeFinanceAccount.update({ id: account.id, currentBalance: balance.after, balanceUpdatedAt: new Date().toISOString() });
+        if (r.errors?.length) throw new OpError(`Rows saved, but setting the balance failed: ${r.errors[0].message}`);
+      }
+    }
     return {
       account: account.name ?? "",
       format,
@@ -1502,6 +1518,7 @@ export const importFinanceTransactions = defineOp({
       to,
       rows: drafts.slice(0, 200).map((d) => ({ date: d.date, description: d.description, amount: d.amount, category: d.category ?? null })),
       linked,
+      balance,
       dryRun: !!input.dryRun,
     };
   },

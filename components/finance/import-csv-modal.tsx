@@ -3,6 +3,7 @@
 
 import React, { useEffect, useState } from "react";
 import { Button } from "@heroui/button";
+import { Checkbox } from "@heroui/checkbox";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { Select, SelectItem } from "@heroui/select";
 import { addToast } from "@heroui/react";
@@ -38,6 +39,7 @@ export function ImportCsvModal({
   const [preview, setPreview] = useState<Preview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [setBalance, setSetBalance] = useState(true);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -46,6 +48,7 @@ export function ImportCsvModal({
     setFile(null);
     setPreview(null);
     setError(null);
+    setSetBalance(true);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
 
@@ -53,7 +56,7 @@ export function ImportCsvModal({
     if (!text || !acct) return;
     setBusy(true);
     setError(null);
-    const r = await callOp(financeClient, "import_finance_transactions", { accountId: acct, csv: text, dryRun, ...(fmt !== AUTO ? { format: fmt } : {}) });
+    const r = await callOp(financeClient, "import_finance_transactions", { accountId: acct, csv: text, dryRun, setBalance: dryRun || setBalance, ...(fmt !== AUTO ? { format: fmt } : {}) });
     setBusy(false);
     if ("error" in r) {
       setError(r.error);
@@ -66,8 +69,8 @@ export function ImportCsvModal({
     }
     const linked = r.result.linked.length;
     addToast({
-      title: `Imported ${r.result.created} into ${r.result.account}`,
-      description: [r.result.duplicates ? `${r.result.duplicates} already there` : "", linked ? `${linked} linked to scheduled bills` : ""].filter(Boolean).join(" · ") || undefined,
+      title: r.result.created ? `Imported ${r.result.created} into ${r.result.account}` : `${r.result.account} balance updated`,
+      description: [r.result.duplicates ? `${r.result.duplicates} already there` : "", linked ? `${linked} linked to scheduled bills` : "", r.result.balance ? `balance ${r.result.balance.after.toFixed(2)}` : ""].filter(Boolean).join(" · ") || undefined,
       color: "success",
     });
     onImported?.();
@@ -81,6 +84,7 @@ export function ImportCsvModal({
     void run(true, text);
   }
 
+  const balanceChanges = setBalance && !!preview?.balance && Math.abs(preview.balance.after - preview.balance.before) >= 0.005;
   const uncategorized = preview?.rows.filter((r) => !r.category).length ?? 0;
 
   return (
@@ -139,6 +143,19 @@ export function ImportCsvModal({
                 {preview.skipped ? ` · ${preview.skipped} unreadable lines skipped` : ""}
                 {uncategorized ? ` · ${uncategorized} without a category (they'll be in Review)` : ""}
               </p>
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+                <Checkbox size="sm" isSelected={setBalance} onValueChange={setSetBalance}>
+                  Set the balance from the transactions
+                </Checkbox>
+                {setBalance && preview.balance && (
+                  <span className="text-default-500">
+                    <Money value={preview.balance.before} /> → <Money value={preview.balance.after} />
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-default-400 -mt-1">
+                A running total of every row in the account. Right when your exports go back to when the account was opened (or its balance was zero); otherwise uncheck it and set the balance by hand.
+              </p>
               {preview.rows.length > 0 && (
                 <div className="max-h-80 overflow-y-auto border border-default-200 rounded-medium">
                   <table className="w-full text-sm">
@@ -173,8 +190,8 @@ export function ImportCsvModal({
           <Button variant="light" onPress={onClose}>
             Cancel
           </Button>
-          <Button color="primary" isLoading={busy && !!preview} isDisabled={!preview || preview.created === 0 || busy} onPress={() => void run(false)}>
-            {preview ? `Import ${preview.created}` : "Import"}
+          <Button color="primary" isLoading={busy && !!preview} isDisabled={!preview || (preview.created === 0 && !balanceChanges) || busy} onPress={() => void run(false)}>
+            {!preview ? "Import" : preview.created === 0 && balanceChanges ? "Set balance" : `Import ${preview.created}`}
           </Button>
         </ModalFooter>
       </ModalContent>
