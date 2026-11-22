@@ -12,9 +12,10 @@ import { Input, Textarea } from "@heroui/input";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { Select, SelectItem } from "@heroui/select";
 import { Checkbox, Spinner, Switch, addToast } from "@heroui/react";
-import { FaLink, FaPen, FaPlus, FaTrash, FaUnlink } from "react-icons/fa";
+import { FaFileImport, FaLink, FaPen, FaPlus, FaTrash, FaUnlink } from "react-icons/fa";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
+import { ImportCsvModal } from "@/components/finance/import-csv-modal";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
@@ -44,6 +45,7 @@ import { DEFAULT_SIMPLEFIN_CONNECTION, SIMPLEFIN_CONNECTIONS, simplefinConnectio
 export default function FinanceAccountsPage() {
   const refs = useFinanceRefs();
   const [form, setForm] = useState<Form | null>(null);
+  const [importFor, setImportFor] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [sfOpen, setSfOpen] = useState(false);
   const [sfLoading, setSfLoading] = useState(false);
@@ -175,6 +177,11 @@ export default function FinanceAccountsPage() {
                   </div>
                 </div>
                 <Money value={a.currentBalance ?? 0} className="font-semibold" />
+                {!a.simplefinAccountId && a.active !== false && (
+                  <Button size="sm" isIconOnly variant="light" aria-label="Import CSV" title="Import a CSV export" onPress={() => setImportFor(a.id)}>
+                    <FaFileImport />
+                  </Button>
+                )}
                 <Button size="sm" isIconOnly variant="light" aria-label="Edit" onPress={() => edit(a)}>
                   <FaPen />
                 </Button>
@@ -423,6 +430,7 @@ export default function FinanceAccountsPage() {
           </ModalFooter>
         </ModalContent>
       </Modal>
+      <ImportCsvModal isOpen={importFor != null} onClose={() => setImportFor(null)} accounts={refs.accounts} accountId={importFor} onImported={refs.reload} />
     </FinanceShell>
   );
 }

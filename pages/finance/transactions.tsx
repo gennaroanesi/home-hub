@@ -20,11 +20,12 @@ import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { addToast, Spinner } from "@heroui/react";
-import { FaFilter, FaPlus, FaRedo, FaSearch, FaTrash } from "react-icons/fa";
+import { FaFileImport, FaFilter, FaPlus, FaRedo, FaSearch, FaTrash } from "react-icons/fa";
 import { NO_WEB_TX_FILTERS, TransactionFiltersPane, webTxFilterCount, type WebTxFilters } from "@/components/finance/transaction-filters-pane";
 
 import { CategoryQuickEdit } from "@/components/finance/category-quick-edit";
 import { FinanceShell } from "@/components/finance/finance-shell";
+import { ImportCsvModal } from "@/components/finance/import-csv-modal";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
@@ -119,6 +120,7 @@ export default function TransactionsPage() {
   const [editing, setEditing] = useState<any | null>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
 
   // Initial filters from the query string, once the router is ready.
   useEffect(() => {
@@ -335,9 +337,14 @@ export default function TransactionsPage() {
       subtitle={range.label}
       onSynced={quietReload}
       actions={
-        <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setAddOpen(true)} isDisabled={refs.loading}>
-          Add
-        </Button>
+        <div className="flex gap-2">
+          <Button size="sm" variant="flat" startContent={<FaFileImport />} onPress={() => setImportOpen(true)} isDisabled={refs.loading}>
+            Import
+          </Button>
+          <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setAddOpen(true)} isDisabled={refs.loading}>
+            Add
+          </Button>
+        </div>
       }
     >
       <TransactionFiltersPane
@@ -541,6 +548,7 @@ export default function TransactionsPage() {
           }}
         />
       )}
+      <ImportCsvModal isOpen={importOpen} onClose={() => setImportOpen(false)} accounts={refs.accounts} onImported={() => void load()} />
     </FinanceShell>
   );
 }

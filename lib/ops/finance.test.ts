@@ -686,3 +686,40 @@ describe("a transaction's person is only a contributor", () => {
     expect(out.error).toMatch(/only set on money in.*ledger/s);
   });
 });
+
+describe("import_finance_transactions", () => {
+  const HEB = [
+    "Date,Amount,Type,Merchant,Category,Method",
+    '"2026/11/02, 10:11:12",84.10,PURCHASE,H-E-B #123,Groceries,Card',
+    '"2026/11/02, 18:01:00",4.99,PURCHASE,H-E-B #123,Groceries,Card',
+    '"2026/11/02, 18:02:00",4.99,PURCHASE,H-E-B #123,Groceries,Card',
+    '"2026/11/05, 09:00:00",-500.00,PAYMENT,,,ACH',
+    '"2026/11/09, 12:00:00",-12.00,RETURN,H-E-B #123,Groceries,Card',
+  ].join("\n");
+  const heb = { id: "heb", name: "H-E-B Card", type: "CREDIT", active: true };
+
+  it("previews, imports with categories, and skips what's already there on a re-import", async () => {
+    const { ctx, tables } = setup({ homeFinanceAccount: [heb, { ...joint, simplefinAccountId: "sf1" }] });
+    const dry: any = await runOp(ctx, "import_finance_transactions", { accountName: "H-E-B Card", csv: HEB, dryRun: true });
+    expect(dry.error).toBeUndefined();
+    expect(dry.result).toMatchObject({ format: "H-E-B Card", parsed: 5, duplicates: 0, created: 5, from: "2026-11-02", to: "2026-11-09" });
+    expect(tables.homeFinanceTransaction).toHaveLength(0);
+    expect(dry.result.rows.map((r: any) => [r.amount, r.category])).toEqual([
+      [-84.1, "Groceries"],
+      [-4.99, "Groceries"],
+      [-4.99, "Groceries"],
+      [500, "Credit Card Payment"],
+      [12, "Refund"],
+    ]);
+
+    await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: HEB });
+    expect(tables.homeFinanceTransaction).toHaveLength(5);
+    // The same file again plus one new row: only the new row goes in.
+    const again: any = await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: HEB + '\n"2026/11/10, 08:00:00",3.50,PURCHASE,H-E-B #9,Groceries,Card' });
+    expect(again.result).toMatchObject({ duplicates: 5, created: 1 });
+    expect(tables.homeFinanceTransaction).toHaveLength(6);
+
+    const synced: any = await runOp(ctx, "import_finance_transactions", { accountId: "joint", csv: HEB });
+    expect(synced.error).toMatch(/SimpleFIN/);
+  });
+});

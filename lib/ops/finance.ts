@@ -20,14 +20,16 @@ import {
   type SeriesWrite,
 } from "../finance/budget";
 import { filterTransactions, sortTransactions, TX_SORTS } from "../finance/tx-filter";
-import { allCategories, CATEGORY_RULES, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
+import { allCategories, CATEGORY_RULES, classify, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
-import { listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
+import { listAccountTransactions, listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, planScheduleLinks, projectBalance, upcomingEvents } from "../finance/recurring";
 import { defaultCadences, periodContaining, periodFromParam, periodRange, periodToParam } from "../finance/periods";
 import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
+import { CSV_FORMATS, newCsvRows, parseBankCsv } from "../finance/csv-import";
+import { importHash } from "../finance/sync-engine";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -1016,6 +1018,35 @@ export const saveFinanceSchedule = defineOp({
 
 // ── link_finance_schedules ────────────────────────────────────────────────────
 
+/**
+ * Saves planned schedule links: each row takes its schedule (and the
+ * schedule's category unless set by hand, and its budget when the row can
+ * take it), then each schedule moves on to the due date after its last
+ * linked row. Shared by link_finance_schedules and the CSV import.
+ */
+async function applyScheduleLinks(ctx: OpContext, plan: ReturnType<typeof planScheduleLinks>, accounts: any[]): Promise<void> {
+  for (const l of plan) {
+    const tx = l.tx as any;
+    const category = l.rule.category?.trim();
+    const r = await ctx.client.models.homeFinanceTransaction.update({
+      id: tx.id,
+      recurringId: l.rule.id,
+      ...(category && tx.categorySource !== "MANUAL" ? { category, categorySource: "RULE" } : {}),
+      ...(l.rule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: l.rule.ledger.trim() } : {}),
+    });
+    if (r.errors?.length) throw new Error(`${tx.date} ${tx.description}: ${r.errors[0].message}`);
+  }
+  const last = new Map<string, (typeof plan)[number]>();
+  for (const l of plan) last.set(l.rule.id, l);
+  for (const l of last.values()) {
+    const current = l.rule.nextDate ?? "";
+    const patch = l.rule.cadence === "ONCE" ? { active: false } : l.nextDate && l.nextDate > current ? { nextDate: l.nextDate } : null;
+    if (!patch) continue;
+    const r = await ctx.client.models.homeFinanceRecurring.update({ id: l.rule.id, ...patch });
+    if (r.errors?.length) throw new Error(`${l.rule.description}: ${r.errors[0].message}`);
+  }
+}
+
 export const linkFinanceSchedules = defineOp({
   name: "link_finance_schedules",
   domain: "finance",
@@ -1056,29 +1087,7 @@ export const linkFinanceSchedules = defineOp({
       txs.filter((t: any) => !isInvested(accounts.find((a) => a.id === t.accountId)?.type)),
       rules,
     );
-    if (!input.dryRun) {
-      for (const l of plan) {
-        const tx = l.tx as any;
-        const category = l.rule.category?.trim();
-        const r = await ctx.client.models.homeFinanceTransaction.update({
-          id: tx.id,
-          recurringId: l.rule.id,
-          ...(category && tx.categorySource !== "MANUAL" ? { category, categorySource: "RULE" } : {}),
-          ...(l.rule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: l.rule.ledger.trim() } : {}),
-        });
-        if (r.errors?.length) throw new Error(`${tx.date} ${tx.description}: ${r.errors[0].message}`);
-      }
-      // Each schedule ends at the due date after its last linked row.
-      const last = new Map<string, (typeof plan)[number]>();
-      for (const l of plan) last.set(l.rule.id, l);
-      for (const l of last.values()) {
-        const current = l.rule.nextDate ?? "";
-        const patch = l.rule.cadence === "ONCE" ? { active: false } : l.nextDate && l.nextDate > current ? { nextDate: l.nextDate } : null;
-        if (!patch) continue;
-        const r = await ctx.client.models.homeFinanceRecurring.update({ id: l.rule.id, ...patch });
-        if (r.errors?.length) throw new Error(`${l.rule.description}: ${r.errors[0].message}`);
-      }
-    }
+    if (!input.dryRun) await applyScheduleLinks(ctx, plan, accounts);
     return {
       dryRun: !!input.dryRun,
       linked: plan.map((l) => ({
@@ -1403,6 +1412,98 @@ export const listFinanceHoldings = defineOp({
   },
 });
 
+export const importFinanceTransactions = defineOp({
+  name: "import_finance_transactions",
+  domain: "finance",
+  access: "write",
+  description:
+    "Import a bank or card CSV export into an account SimpleFIN doesn't sync (the H-E-B card's Activity export; Chase, Bank of America, American Express and generic date/amount CSVs are read too). Rows already in the account are skipped, so overlapping exports can be imported again safely. New rows are categorized by the category rules (a card payment or reward by the export's own type) and linked to their scheduled transactions like synced ones. dryRun previews the format, what's new and what's a duplicate without saving.",
+  input: z.object({
+    accountId: z.string().optional(),
+    accountName: z.string().optional().describe("Instead of accountId."),
+    csv: z.string().min(1).max(3_000_000).describe("The export file's text."),
+    format: z.string().optional().describe("Force a format by name; default detected from the header row."),
+    dryRun: z.boolean().optional(),
+  }),
+  output: z.object({
+    account: z.string(),
+    format: z.string(),
+    parsed: z.number(),
+    skipped: z.number().describe("Lines with no readable date or amount"),
+    duplicates: z.number(),
+    created: z.number().describe("New rows (would be created, on a dry run)"),
+    from: z.string().nullable(),
+    to: z.string().nullable(),
+    rows: z.array(z.object({ date: z.string(), description: z.string(), amount: z.number(), category: z.string().nullable() })).describe("The new rows, oldest first (first 200)"),
+    linked: z.array(z.object({ date: z.string(), description: z.string().nullable(), amount: z.number(), schedule: z.string() })),
+    dryRun: z.boolean(),
+  }),
+  async run(ctx, input) {
+    const accounts = await listAccounts(ctx.client);
+    const want = input.accountName?.trim().toLowerCase();
+    const account = accounts.find((a) => (input.accountId ? a.id === input.accountId : want && a.name?.toLowerCase() === want));
+    if (!account) throw new OpError(input.accountId || input.accountName ? "No such account" : "Pass accountId or accountName", { accounts: accounts.map((a) => ({ id: a.id, name: a.name })) });
+    if (account.simplefinAccountId) throw new OpError(`${account.name} syncs from SimpleFIN; importing a CSV too would duplicate its rows`);
+    const { format, rows, skipped } = parseBankCsv(input.csv, input.format);
+    if (format === "Unknown") throw new OpError(`Couldn't read this file: the first line needs column names with a date and an amount. Known formats: ${CSV_FORMATS.join(", ")}`);
+    const from = rows[0]?.date ?? null;
+    const to = rows[rows.length - 1]?.date ?? null;
+    const stored = from && to ? await listAccountTransactions(ctx.client, account.id, { fromIso: from, toIso: to }) : [];
+    const { fresh, duplicates } = newCsvRows(rows, stored.map((t: any) => t.importHash ?? importHash(t.date, t.amount, t.description ?? "")));
+    const rules = rulesFromDbRows(await listCategoryRules(ctx.client));
+    const drafts = fresh.map((r) => {
+      const type = r.amount >= 0 ? "INCOME" : "EXPENSE";
+      const category = r.category ?? classify({ type, description: r.description, amount: r.amount }, rules).category;
+      return { ...r, type, category };
+    });
+
+    let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
+    if (!input.dryRun && drafts.length) {
+      const created: any[] = [];
+      for (const d of drafts) {
+        const row = {
+          // Stable per file row: the same export imported twice can't double up.
+          id: `csv-${account.id}-${d.hash}-${d.occurrence}`,
+          accountId: account.id,
+          amount: d.amount,
+          type: d.type,
+          category: d.category,
+          categorySource: d.category ? "RULE" : null,
+          description: d.description,
+          date: d.date,
+          status: "POSTED",
+          importHash: d.hash,
+        };
+        const r = await ctx.client.models.homeFinanceTransaction.create(row);
+        if (r.errors?.length) {
+          if (/conditional/i.test(`${r.errors[0].errorType ?? ""} ${r.errors[0].message ?? ""}`)) continue; // already imported
+          throw new OpError(`Saving ${d.date} ${d.description}: ${r.errors[0].message}`);
+        }
+        created.push(row);
+      }
+      const schedules = (await listSchedules(ctx.client)).filter((s: any) => s.active !== false && s.accountId === account.id);
+      if (schedules.length && created.length) {
+        const plan = planScheduleLinks(created, schedules);
+        await applyScheduleLinks(ctx, plan, accounts);
+        linked = plan.map((l) => ({ date: l.tx.date ?? "", description: l.tx.description ?? null, amount: l.tx.amount ?? 0, schedule: l.rule.description ?? "" }));
+      }
+    }
+    return {
+      account: account.name ?? "",
+      format,
+      parsed: rows.length,
+      skipped,
+      duplicates,
+      created: drafts.length,
+      from,
+      to,
+      rows: drafts.slice(0, 200).map((d) => ({ date: d.date, description: d.description, amount: d.amount, category: d.category ?? null })),
+      linked,
+      dryRun: !!input.dryRun,
+    };
+  },
+});
+
 export const financeOps = [
   getFinanceSummary,
   getFinanceBudget,
@@ -1414,6 +1515,7 @@ export const financeOps = [
   listFinanceSchedules,
   saveFinanceSchedule,
   linkFinanceSchedules,
+  importFinanceTransactions,
   saveFinanceGoal,
   listFinanceCategories,
 ] as const;
