@@ -1687,6 +1687,27 @@ const schema = a
         allow.authenticated("identityPool"),
       ]),
 
+    // ── Usage ─────────────────────────────────────────────────────────────
+    // One row per page / screen opened, web and phone (lib/usage-log.ts),
+    // read back by get_usage_report (/admin/usage). `screen` is the route
+    // pattern (/trips/[id]), never a concrete id. Partitioned by month for
+    // the index; DynamoDB deletes a row once `expiresAt` (epoch seconds,
+    // TTL set in backend.ts) passes, a year after it was logged.
+    homeUsageEvent: a
+      .model({
+        username: a.string().required(), // Cognito username = homePerson.cognitoUsername
+        platform: a.enum(["WEB", "IOS", "ANDROID"]),
+        screen: a.string().required(),
+        at: a.datetime().required(),
+        month: a.string().required(), // "2026-11" (UTC), the index partition
+        expiresAt: a.integer(),
+      })
+      .secondaryIndexes((index) => [index("month").sortKeys(["at"])])
+      .authorization((allow) => [
+        allow.group("home-users"),
+        allow.authenticated("identityPool"),
+      ]),
+
     // ── Calendar Feeds ────────────────────────────────────────────────────
     // External ICS subscription sources (e.g. a shared iCloud calendar
     // published as webcal). Synced every 15 minutes by the ics-sync

@@ -6,6 +6,7 @@ import { configureAmplify } from "../lib/amplify";
 import { AppLockProvider } from "../lib/app-lock";
 import { configureNotificationHandler } from "../lib/push";
 import { ShareHandler } from "../components/ShareHandler";
+import { UsageTracker } from "../components/UsageTracker";
 
 export default function RootLayout() {
   // Amplify configure must run before any auth call, and the
@@ -28,6 +29,7 @@ export default function RootLayout() {
       <AppLockProvider>
         <Stack screenOptions={{ headerShown: false }} />
         <ShareHandler />
+        <UsageTracker />
       </AppLockProvider>
     </ShareIntentProvider>
   );

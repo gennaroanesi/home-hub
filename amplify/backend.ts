@@ -596,6 +596,12 @@ new scheduler.CfnSchedule(recurringStack, "icsSyncSchedule", {
 
 const userPool = backend.auth.resources.userPool;
 
+// Usage events expire a year after they're logged (homeUsageEvent.expiresAt).
+backend.data.resources.cfnResources.amplifyDynamoDbTables["homeUsageEvent"].timeToLiveAttribute = {
+  attributeName: "expiresAt",
+  enabled: true,
+};
+
 // Disable Cognito self-signup. Accounts are created admin-only via
 // scripts/create-user.mjs (which calls AdminCreateUser). Without this,
 // anyone on the internet could sign up against the public hosted UI;

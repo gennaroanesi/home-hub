@@ -24,6 +24,7 @@ import {
   FaFileAlt,
   FaUsers,
   FaAddressBook,
+  FaChartBar,
   FaCog,
   FaLock,
   FaBoxOpen,
@@ -142,6 +143,7 @@ export const ACCOUNT_LINKS: NavLink[] = [
   { name: "Settings", href: "/admin/settings", icon: FaCog },
   { name: "Calendar feeds", href: "/admin/calendar-feeds", icon: FaCalendarAlt },
   { name: "Security", href: "/security", icon: FaLock },
+  { name: "Usage", href: "/admin/usage", icon: FaChartBar },
 ];
 
 // Active when on the page itself or one of its children (/trips/[id]).
