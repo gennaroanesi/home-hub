@@ -1459,8 +1459,10 @@ export const importFinanceTransactions = defineOp({
 
     let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
     if (!input.dryRun && drafts.length) {
+      // In parallel, a batch at a time: one by one, a year of card activity
+      // outlasts the 30 s AppSync limit.
       const created: any[] = [];
-      for (const d of drafts) {
+      const save = async (d: (typeof drafts)[number]) => {
         const row = {
           // Stable per file row: the same export imported twice can't double up.
           id: `csv-${account.id}-${d.hash}-${d.occurrence}`,
@@ -1476,14 +1478,15 @@ export const importFinanceTransactions = defineOp({
         };
         const r = await ctx.client.models.homeFinanceTransaction.create(row);
         if (r.errors?.length) {
-          if (/conditional/i.test(`${r.errors[0].errorType ?? ""} ${r.errors[0].message ?? ""}`)) continue; // already imported
+          if (/conditional/i.test(`${r.errors[0].errorType ?? ""} ${r.errors[0].message ?? ""}`)) return; // already imported
           throw new OpError(`Saving ${d.date} ${d.description}: ${r.errors[0].message}`);
         }
         created.push(row);
-      }
+      };
+      for (let i = 0; i < drafts.length; i += 25) await Promise.all(drafts.slice(i, i + 25).map(save));
       const schedules = (await listSchedules(ctx.client)).filter((s: any) => s.active !== false && s.accountId === account.id);
       if (schedules.length && created.length) {
-        const plan = planScheduleLinks(created, schedules);
+        const plan = planScheduleLinks(created.sort((a, b) => a.date.localeCompare(b.date)), schedules);
         await applyScheduleLinks(ctx, plan, accounts);
         linked = plan.map((l) => ({ date: l.tx.date ?? "", description: l.tx.description ?? null, amount: l.tx.amount ?? 0, schedule: l.rule.description ?? "" }));
       }
