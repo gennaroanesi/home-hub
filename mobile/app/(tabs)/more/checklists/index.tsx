@@ -1,23 +1,17 @@
-// Checklists list — mirrors pages/checklists.tsx on web: tabs Active,
+// Checklists — mirrors pages/checklists.tsx on web. Tabs Active,
 // Archived (past trips' lists archive themselves, lib/trip-prep.ts) and
-// Templates, where a template is opened to edit it (?tab=templates).
-//
-//   • Active / Archived: every non-template checklist grouped by its
-//     entityType (Trips / Events / Tasks / Documents / Other).
-//   • "+" header button opens the create modal: pick entity type →
-//     pick a specific entity → enter name → land in the detail
-//     screen so you can start adding items.
-//
-// Section editing is intentionally web-only on this surface (per the
-// scope decision when this screen shipped). Sections render in the
-// detail view but mobile can't add/rename/reorder them; head to web
-// for that.
+// Templates. Lists are grouped under what they belong to (a trip's name
+// and dates, an event…), each a card that opens in place (chevron) to its
+// items (ChecklistBody: sections swipe sideways) with a "⋯" menu
+// (openChecklistMenu). "+" creates a list or template and opens it.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
   FlatList,
+  KeyboardAvoidingView,
+  Platform,
   Modal,
   Pressable,
   RefreshControl,
@@ -32,14 +26,20 @@ import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
+import { listAllPages } from "../../../../../lib/list-all";
+import { ChecklistBody, openChecklistMenu } from "../../../../components/checklists/ChecklistBody";
 import {
   AUTO_ATTACH_LABEL,
+  checklistNameFromTemplate,
+  copyChecklist,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
   ENTITY_TYPE_SINGULAR,
   TEMPLATE_ENTITY_ID,
   matchesArchiveFilter,
+  progress,
   type Checklist,
+  type ChecklistItem,
   type EntityType,
 } from "../../../../lib/checklist";
 
@@ -68,10 +68,7 @@ const ENTITY_LOOKUP: Record<
   PREGNANCY: { model: "homePregnancy", field: "dueDate" },
 };
 
-interface ChecklistRow extends Checklist {
-  itemCount: number;
-  doneCount: number;
-}
+type ChecklistRow = Checklist;
 
 interface EntityOption {
   id: string;
@@ -91,6 +88,16 @@ export default function ChecklistsList() {
   const [refreshing, setRefreshing] = useState(false);
   const [checklists, setChecklists] = useState<ChecklistRow[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
+  const [itemsByList, setItemsByList] = useState<Record<string, ChecklistItem[]>>({});
+  const [tripDates, setTripDates] = useState<Record<string, { start: string; end: string }>>({});
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggleOpen = (id: string, force?: boolean) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (force ?? !next.has(id)) next.add(id);
+      else next.delete(id);
+      return next;
+    });
   const [tab, setTab] = useState<Tab>(() => (params.tab?.toUpperCase() === "TEMPLATES" ? "TEMPLATES" : params.tab?.toUpperCase() === "ARCHIVED" ? "ARCHIVED" : "ACTIVE"));
   const archiveFilter = tab === "ARCHIVED" ? "ARCHIVED" : "ACTIVE";
 
@@ -104,24 +111,19 @@ export default function ChecklistsList() {
   const [loadingEntities, setLoadingEntities] = useState(false);
   const [entityPickerOpen, setEntityPickerOpen] = useState(false);
   const [creating, setCreating] = useState(false);
+  // "Start from" a template (not for a new template): its items are copied in.
+  const [createFrom, setCreateFrom] = useState<string>("");
 
   const load = useCallback(async () => {
     const client = getClient();
-    const [{ data: cls }, { data: items }] = await Promise.all([
-      client.models.homeChecklist.list({ limit: 500 }),
-      client.models.homeChecklistItem.list({ limit: 1000 }),
+    const [cls, items] = await Promise.all([
+      listAllPages<Checklist>(client.models.homeChecklist),
+      listAllPages<ChecklistItem>(client.models.homeChecklistItem, { limit: 1000 }),
     ]);
-    const itemsByChecklist = new Map<string, { total: number; done: number }>();
-    for (const item of items ?? []) {
-      const acc = itemsByChecklist.get(item.checklistId) ?? { total: 0, done: 0 };
-      acc.total += 1;
-      if (item.isDone) acc.done += 1;
-      itemsByChecklist.set(item.checklistId, acc);
-    }
-    const rows: ChecklistRow[] = (cls ?? []).map((c) => {
-      const counts = itemsByChecklist.get(c.id) ?? { total: 0, done: 0 };
-      return { ...c, itemCount: counts.total, doneCount: counts.done };
-    });
+    const byList: Record<string, ChecklistItem[]> = {};
+    for (const item of items) (byList[item.checklistId] ??= []).push(item);
+    setItemsByList(byList);
+    const rows: ChecklistRow[] = cls;
     setChecklists(rows);
 
     // Resolve entity names — same per-type batched .get() approach
@@ -156,6 +158,15 @@ export default function ChecklistsList() {
       })
     );
     setEntityNames(names);
+    // Trip dates: trips are listed by date and show when they are.
+    const dates: Record<string, { start: string; end: string }> = {};
+    await Promise.all(
+      Array.from(idsByType.TRIP ?? []).map(async (id) => {
+        const { data } = await client.models.homeTrip.get({ id });
+        if (data?.startDate) dates[id] = { start: data.startDate, end: data.endDate ?? data.startDate };
+      })
+    );
+    setTripDates(dates);
     setLoading(false);
   }, []);
 
@@ -192,6 +203,7 @@ export default function ChecklistsList() {
     if (type !== "TEMPLATE") void loadEntities(type);
     setCreateEntityName("");
     setCreateName("");
+    setCreateFrom("");
     setEntityOptions([]);
     setCreateOpen(true);
   }
@@ -231,22 +243,27 @@ export default function ChecklistsList() {
   }
 
   async function submitCreate() {
-    const name = createName.trim();
+    const template = createType !== "TEMPLATE" ? templates.find((t) => t.id === createFrom) : undefined;
+    const name = createName.trim() || (template ? checklistNameFromTemplate(template.name) : "");
     if (!name || !createEntityId) return;
     setCreating(true);
     try {
       const client = getClient();
-      const { data: created, errors } = await client.models.homeChecklist.create({
-        entityType: createType,
-        entityId: createEntityId,
-        name,
-        sortOrder: 0,
-      });
-      if (errors?.length) throw new Error(errors[0].message);
+      let created: { id: string } | null = null;
+      if (template) {
+        // Same copy as the web's "From template" (lib/checklist.ts).
+        created = await copyChecklist(client, template, { entityType: createType, entityId: createEntityId, name });
+      } else {
+        const res = await client.models.homeChecklist.create({ entityType: createType, entityId: createEntityId, name, sortOrder: 0 });
+        if (res.errors?.length) throw new Error(res.errors[0].message);
+        created = res.data;
+      }
       setCreateOpen(false);
       await load();
+      // Opens in place, on the tab it belongs to.
       if (created?.id) {
-        router.push(`/more/checklists/${created.id}` as any);
+        setTab(createType === "TEMPLATE" ? "TEMPLATES" : "ACTIVE");
+        toggleOpen(created.id, true);
       }
     } catch (err: any) {
       Alert.alert("Create failed", err?.message ?? String(err));
@@ -270,20 +287,62 @@ export default function ChecklistsList() {
     [checklists]
   );
 
+  // Type → entity (a trip, an event…) → its lists. Trips by date, the
+  // next one first (archived: the latest first); others by name.
   const grouped = useMemo(() => {
-    return ENTITY_TYPE_ORDER.map((type) => ({
-      type,
-      label: ENTITY_TYPE_LABELS[type],
-      items: filtered
-        .filter((c) => (c.entityType ?? "OTHER") === type)
-        .sort((a, b) => {
-          const ae = entityNames[a.entityId] ?? a.entityId;
-          const be = entityNames[b.entityId] ?? b.entityId;
-          if (ae !== be) return ae.localeCompare(be);
-          return a.name.localeCompare(b.name);
-        }),
-    })).filter((g) => g.items.length > 0);
-  }, [filtered, entityNames]);
+    return ENTITY_TYPE_ORDER.map((type) => {
+      const lists = filtered.filter((c) => (c.entityType ?? "OTHER") === type);
+      const byEntity = new Map<string, ChecklistRow[]>();
+      for (const l of lists) byEntity.set(l.entityId, [...(byEntity.get(l.entityId) ?? []), l]);
+      const entities = Array.from(byEntity.entries()).map(([entityId, ls]) => ({
+        entityId,
+        name: entityNames[entityId] ?? (type === "OTHER" ? "Other" : "…"),
+        dates: tripDates[entityId] ?? null,
+        lists: ls.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)),
+      }));
+      entities.sort((a, b) => {
+        if (type === "TRIP") {
+          const da = a.dates?.start ?? "9999";
+          const db = b.dates?.start ?? "9999";
+          return archiveFilter === "ARCHIVED" ? db.localeCompare(da) : da.localeCompare(db);
+        }
+        return a.name.localeCompare(b.name);
+      });
+      return { type, label: ENTITY_TYPE_LABELS[type], entities };
+    }).filter((g) => g.entities.length > 0);
+  }, [filtered, entityNames, tripDates, archiveFilter]);
+
+  const setListItems = (id: string) => (update: (prev: ChecklistItem[]) => ChecklistItem[]) =>
+    setItemsByList((prev) => ({ ...prev, [id]: update(prev[id] ?? []) }));
+
+  async function reloadList(id: string) {
+    const { data } = await getClient().models.homeChecklistItem.list({ filter: { checklistId: { eq: id } }, limit: 1000 });
+    setItemsByList((prev) => ({ ...prev, [id]: data ?? [] }));
+  }
+
+  const renderCard = (cl: ChecklistRow) => (
+    <ListCard
+      key={cl.id}
+      checklist={cl}
+      items={itemsByList[cl.id] ?? []}
+      open={open.has(cl.id)}
+      onToggle={() => toggleOpen(cl.id)}
+      onMenu={() =>
+        openChecklistMenu(cl, (itemsByList[cl.id] ?? []).length, {
+          onChanged: (patch) => setChecklists((prev) => prev.map((c) => (c.id === cl.id ? { ...c, ...patch } : c))),
+          onDeleted: () => setChecklists((prev) => prev.filter((c) => c.id !== cl.id)),
+          onOpenTemplate: (tid) => {
+            setTab("TEMPLATES");
+            toggleOpen(tid, true);
+          },
+        })
+      }
+      setItems={setListItems(cl.id)}
+      reload={() => reloadList(cl.id)}
+    />
+  );
+
+  const fmtDay = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 
   return (
     <SafeAreaView style={styles.screen} edges={["top"]}>
@@ -323,23 +382,21 @@ export default function ChecklistsList() {
           <ActivityIndicator />
         </View>
       ) : (
-        <FlatList
-          data={tab === "TEMPLATES" ? [] : grouped}
-          keyExtractor={(g) => g.type}
-          contentContainerStyle={styles.listBody}
-          refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
-          }
-          ListHeaderComponent={
-            tab === "TEMPLATES" ? (
-              <TemplatesSection
-                templates={templates}
-                onOpen={(id) => router.push(`/more/checklists/${id}` as any)}
-              />
-            ) : null
-          }
-          ListEmptyComponent={
-            tab === "TEMPLATES" ? null : (
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+          <ScrollView
+            contentContainerStyle={styles.listBody}
+            keyboardShouldPersistTaps="handled"
+            refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
+          >
+            {tab === "TEMPLATES" ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionEmpty}>
+                  Reusable lists. One {AUTO_ATTACH_LABEL.toLowerCase()} is copied onto each new and upcoming trip; copies drop the word &quot;template&quot; from the name.
+                </Text>
+                <View style={{ height: 12 }} />
+                {templates.length === 0 ? <Text style={styles.sectionEmpty}>No templates yet. Tap + to make one.</Text> : templates.map(renderCard)}
+              </View>
+            ) : grouped.length === 0 ? (
               <Text style={styles.empty}>
                 {archiveFilter === "ARCHIVED"
                   ? "No archived checklists."
@@ -347,22 +404,32 @@ export default function ChecklistsList() {
                     ? "Nothing active. Past trips' checklists are under Archived."
                     : "No checklists yet. Tap + to create one."}
               </Text>
-            )
-          }
-          renderItem={({ item: group }) => (
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>{group.label}</Text>
-              {group.items.map((cl) => (
-                <ChecklistCard
-                  key={cl.id}
-                  checklist={cl}
-                  subtitle={entityNames[cl.entityId] ?? cl.entityId}
-                  onPress={() => router.push(`/more/checklists/${cl.id}` as any)}
-                />
-              ))}
-            </View>
-          )}
-        />
+            ) : (
+              grouped.map((group) => (
+                <View key={group.type} style={styles.section}>
+                  <Text style={styles.sectionTitle}>{group.label}</Text>
+                  {group.entities.map((e) => (
+                    <View key={e.entityId} style={styles.entityBlock}>
+                      {group.type !== "OTHER" && (
+                        <View style={styles.entityHeader}>
+                          <Text style={styles.entityTitle} numberOfLines={1}>
+                            {e.name}
+                          </Text>
+                          {e.dates && (
+                            <Text style={styles.entityDates}>
+                              {e.dates.start === e.dates.end ? fmtDay(e.dates.start) : `${fmtDay(e.dates.start)} – ${fmtDay(e.dates.end)}`}
+                            </Text>
+                          )}
+                        </View>
+                      )}
+                      {e.lists.map(renderCard)}
+                    </View>
+                  ))}
+                </View>
+              ))
+            )}
+          </ScrollView>
+        </KeyboardAvoidingView>
       )}
 
       {/* ── Create modal ───────────────────────────────────────── */}
@@ -382,13 +449,13 @@ export default function ChecklistsList() {
               onPress={submitCreate}
               hitSlop={12}
               disabled={
-                creating || !createName.trim() || !createEntityId
+                creating || !(createName.trim() || (createType !== "TEMPLATE" && createFrom)) || !createEntityId
               }
             >
               <Text
                 style={[
                   styles.modalSave,
-                  (creating || !createName.trim() || !createEntityId) &&
+                  (creating || !(createName.trim() || (createType !== "TEMPLATE" && createFrom)) || !createEntityId) &&
                     styles.modalSaveDisabled,
                 ]}
               >
@@ -441,12 +508,28 @@ export default function ChecklistsList() {
               </>
             )}
 
+            {createType !== "TEMPLATE" && templates.length > 0 && (
+              <>
+                <Text style={styles.fieldLabel}>Start from</Text>
+                <View style={styles.typePillRow}>
+                  {[{ id: "", name: "Blank" }, ...templates].map((t) => {
+                    const on = createFrom === t.id;
+                    return (
+                      <Pressable key={t.id || "blank"} onPress={() => setCreateFrom(t.id)} style={[styles.pill, on && styles.pillOn]}>
+                        <Text style={[styles.pillText, on && styles.pillTextOn]}>{t.name}</Text>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              </>
+            )}
+
             <Text style={styles.fieldLabel}>Name</Text>
             <TextInput
               style={styles.input}
               value={createName}
               onChangeText={setCreateName}
-              placeholder="Packing list, weekly groceries, …"
+              placeholder={createFrom && createType !== "TEMPLATE" ? checklistNameFromTemplate(templates.find((t) => t.id === createFrom)?.name ?? "") : "Packing list, weekly groceries, …"}
               placeholderTextColor="#aaa"
               autoCapitalize="sentences"
               returnKeyType="done"
@@ -514,89 +597,65 @@ export default function ChecklistsList() {
   );
 }
 
-// ── Templates section ──────────────────────────────────────────────
-
-function TemplatesSection({
-  templates,
-  onOpen,
-}: {
-  templates: ChecklistRow[];
-  onOpen: (id: string) => void;
-}) {
-  return (
-    <View style={styles.section}>
-      <Text style={styles.sectionEmpty}>
-        Reusable lists. Open one to edit it. One {AUTO_ATTACH_LABEL.toLowerCase()} is copied onto each new and upcoming trip; copies drop the word "template" from the name.
-      </Text>
-      <View style={{ height: 12 }} />
-      {templates.length === 0 ? (
-        <Text style={styles.sectionEmpty}>No templates yet. Tap + to make one.</Text>
-      ) : (
-        templates.map((t) => (
-          <ChecklistCard
-            key={t.id}
-            checklist={t}
-            subtitle={t.autoAttachTrips === true ? AUTO_ATTACH_LABEL : null}
-            onPress={() => onOpen(t.id)}
-          />
-        ))
-      )}
-    </View>
-  );
-}
-
 // ── Card ────────────────────────────────────────────────────────────
+// Header: chevron, name, progress, "⋯". Opens in place to its items.
 
-function ChecklistCard({
+function ListCard({
   checklist,
-  subtitle,
-  onPress,
+  items,
+  open,
+  onToggle,
+  onMenu,
+  setItems,
+  reload,
 }: {
   checklist: ChecklistRow;
-  subtitle: string | null;
-  onPress: () => void;
+  items: ChecklistItem[];
+  open: boolean;
+  onToggle: () => void;
+  onMenu: () => void;
+  setItems: (update: (prev: ChecklistItem[]) => ChecklistItem[]) => void;
+  reload: () => Promise<void>;
 }) {
-  const pct =
-    checklist.itemCount === 0
-      ? 0
-      : Math.round((checklist.doneCount / checklist.itemCount) * 100);
+  const p = progress(items);
   const archived = checklist.isArchived === true;
   return (
-    <Pressable
-      onPress={onPress}
-      style={({ pressed }) => [
-        styles.card,
-        archived && styles.cardArchived,
-        pressed && styles.cardPressed,
-      ]}
-    >
-      <View style={styles.cardBody}>
-        <View style={styles.cardTitleRow}>
-          <Text style={styles.cardTitle} numberOfLines={1}>
-            {checklist.name}
-          </Text>
-          {archived && (
-            <View style={styles.archivedBadge}>
-              <Text style={styles.archivedBadgeText}>Archived</Text>
+    <View style={[styles.card, archived && styles.cardArchived]}>
+      <View style={styles.cardHeader}>
+        <Pressable onPress={onToggle} style={({ pressed }) => [styles.cardHeaderMain, pressed && styles.cardPressed]} accessibilityState={{ expanded: open }}>
+          <Ionicons name={open ? "chevron-down" : "chevron-forward"} size={16} color="#999" />
+          <View style={styles.cardBody}>
+            <View style={styles.cardTitleRow}>
+              <Text style={styles.cardTitle} numberOfLines={1}>
+                {checklist.name}
+              </Text>
+              {archived && (
+                <View style={styles.archivedBadge}>
+                  <Text style={styles.archivedBadgeText}>Archived</Text>
+                </View>
+              )}
             </View>
-          )}
-        </View>
-        {subtitle && (
-          <Text style={styles.cardSubtitle} numberOfLines={1}>
-            {subtitle}
-          </Text>
-        )}
-        <View style={styles.cardProgressRow}>
-          <View style={styles.cardProgressTrack}>
-            <View style={[styles.cardProgressFill, { width: `${pct}%` }]} />
+            {checklist.entityType === "TEMPLATE" && checklist.autoAttachTrips === true && <Text style={styles.cardSubtitle}>{AUTO_ATTACH_LABEL}</Text>}
+            <View style={styles.cardProgressRow}>
+              <View style={styles.cardProgressTrack}>
+                <View style={[styles.cardProgressFill, { width: `${p.pct}%` }]} />
+              </View>
+              <Text style={styles.cardProgressLabel}>
+                {p.done}/{p.total}
+              </Text>
+            </View>
           </View>
-          <Text style={styles.cardProgressLabel}>
-            {checklist.doneCount}/{checklist.itemCount}
-          </Text>
-        </View>
+        </Pressable>
+        <Pressable onPress={onMenu} hitSlop={10} style={styles.cardMenuBtn} accessibilityLabel={`${checklist.name} actions`}>
+          <Ionicons name="ellipsis-horizontal" size={20} color="#735f55" />
+        </Pressable>
       </View>
-      <Ionicons name="chevron-forward" size={18} color="#bbb" />
-    </Pressable>
+      {open && (
+        <View style={styles.cardOpen}>
+          <ChecklistBody checklistId={checklist.id} items={items} setItems={setItems} reload={reload} inset={10} />
+        </View>
+      )}
+    </View>
   );
 }
 
@@ -628,16 +687,21 @@ const styles = StyleSheet.create({
   sectionEmpty: { color: "#aaa", fontSize: 14 },
 
   card: {
-    flexDirection: "row",
-    alignItems: "center",
     backgroundColor: "#fff",
     borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
     marginBottom: 8,
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "#e5e5e5",
+    overflow: "hidden",
   },
+  cardHeader: { flexDirection: "row", alignItems: "center" },
+  cardHeaderMain: { flex: 1, flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 12, paddingVertical: 12 },
+  cardMenuBtn: { paddingHorizontal: 14, paddingVertical: 12 },
+  cardOpen: { backgroundColor: "#f7f5f3", paddingHorizontal: 10, paddingTop: 10, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: "#eee" },
+  entityBlock: { marginBottom: 14 },
+  entityHeader: { flexDirection: "row", alignItems: "baseline", gap: 8, marginBottom: 6 },
+  entityTitle: { flexShrink: 1, fontSize: 17, fontWeight: "600", color: "#3d3a37" },
+  entityDates: { fontSize: 13, color: "#888" },
   cardPressed: { backgroundColor: "#f0ece8" },
   cardArchived: { opacity: 0.6 },
   cardBody: { flex: 1, gap: 4 },
