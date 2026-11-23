@@ -49,6 +49,8 @@ export default function PaychecksPage() {
   const [year, setYear] = useState(thisYear);
   const [personFilter, setPersonFilter] = useState("");
   const [form, setForm] = useState<PaycheckFormInit | null>(null);
+  // The other stubs out of an uploaded batch PDF, reviewed one after another.
+  const [queue, setQueue] = useState<PaycheckFormInit[]>([]);
   const [parsing, setParsing] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -133,22 +135,37 @@ export default function PaychecksPage() {
         setForm({ source: "UPLOAD", s3KeyPdf: presign.s3Key, warning: `Extraction failed: ${res.error ?? "unknown error"}. Enter the numbers from the PDF.` });
         return;
       }
-      const draft = (parseJsonLayers(res.draft) ?? {}) as Record<string, unknown>;
-      const dupe = res.duplicateOf ? "A paycheck for this person, pay date and net already exists. Saving will add a second one." : null;
-      const noPerson = res.personId ? null : `Couldn't tell whose stub this is${draft.employeeName ? ` (“${draft.employeeName}”)` : ""}; pick the person.`;
-      setForm({
-        source: "UPLOAD",
-        s3KeyPdf: res.s3Key ?? presign.s3Key,
-        personId: res.personId ?? null,
-        values: draftToPaycheck(draft),
-        warning: [dupe, noPerson].filter(Boolean).join(" ") || null,
+      // One form per stub in the PDF (a Workday export can batch several); older
+      // responses carry a single draft at the top level.
+      const stubs: any[] = Array.isArray(res.drafts) && res.drafts.length ? res.drafts : [res];
+      const inits = stubs.map((s, i): PaycheckFormInit => {
+        const draft = (parseJsonLayers(s.draft) ?? {}) as Record<string, unknown>;
+        const dupe = s.duplicateOf ? "A paycheck for this person, pay date and net already exists. Saving will add a second one." : null;
+        const noPerson = s.personId ? null : `Couldn't tell whose stub this is${draft.employeeName ? ` (“${draft.employeeName}”)` : ""}; pick the person.`;
+        const which = stubs.length > 1 ? `Stub ${i + 1} of ${stubs.length} in this PDF${Array.isArray(s.pages) && s.pages.length ? ` (page ${s.pages.join(", ")})` : ""}.` : null;
+        return {
+          source: "UPLOAD",
+          s3KeyPdf: s.s3Key ?? res.s3Key ?? presign.s3Key,
+          personId: s.personId ?? null,
+          values: draftToPaycheck(draft),
+          warning: [which, dupe, noPerson].filter(Boolean).join(" ") || null,
+        };
       });
+      if (inits.length > 1) addToast({ title: `${inits.length} stubs in this PDF`, description: "Review them one at a time; closing one opens the next.", color: "primary" });
+      setForm(inits[0]);
+      setQueue(inits.slice(1));
     } catch (e) {
       addToast({ title: "Upload failed", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
       setParsing(false);
       if (fileRef.current) fileRef.current.value = "";
     }
+  }
+
+  /** Close the form, or move on to the next stub of an uploaded batch. */
+  function closeForm() {
+    setForm(queue[0] ?? null);
+    setQueue((q) => q.slice(1));
   }
 
   function review(row: any) {
@@ -438,9 +455,9 @@ export default function PaychecksPage() {
         <PaycheckForm
           init={form}
           people={people}
-          onClose={() => setForm(null)}
+          onClose={closeForm}
           onSaved={() => {
-            setForm(null);
+            closeForm();
             load();
           }}
         />

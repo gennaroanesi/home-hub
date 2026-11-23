@@ -371,9 +371,21 @@ copy until its pages are pointed here or retired).
 | `homePaycheckInbox` | Emailed stubs waiting for review; Claude output never lands in `homePaycheck` unreviewed |
 | `homeInvoice` / `homeInvoiceLink` | Household invoices and the transactions that paid them |
 | `homeFinanceSetting` | JSON settings by key (`tax-outlook:<year>`) |
-| `amplify/functions/paycheck-processor` | Email (S3 trigger) → inbox rows; `parsePaycheckPdf` mutation for uploads |
+| `amplify/functions/paycheck-processor` | Email (S3 trigger) → inbox rows; `parsePaycheckPdf` mutation for uploads. A PDF can hold several stubs (Workday's "Payslip to Print" batches them, one per page): the extraction returns every stub with the pages it spans, each becomes its own inbox row / upload draft with its own cut of the PDF (`lib/finance/pdf-pages.ts`, pdf-lib), deduped by file hash + pages and by person + pay date + net. A re-sent batch only adds what was missed |
 | `amplify/functions/invoice-processor` | Email (S3 trigger) or `ingestInvoicePdf` upload → `homeInvoice`, auto-links the one matching transaction; renders bodies without a PDF with Chromium (public layer) |
 | `lib/finance/` | `inbound-mail.ts` (gate + MIME), `paycheck-extract.ts` / `invoice-extract.ts` (Claude, server-only), `paycheck-fields.ts` / `invoice-fields.ts` (browser-safe), `paychecks.ts` (contributions vs pay), `tax.ts` (projection, 401k caps, safe harbor), `finance-files.ts` (S3 layout) |
+
+**Supplemental withholding.** Workday stubs print one federal line, so
+`supplementalFedWh` / `ytdSupplementalFedWh` never come off a PDF; the
+values on the imported rows were a running sum backfilled once in
+gennaroanesi.com (federal withheld on each RSU- or bonus-only stub).
+`tax.ts` (`ytdSupplementalFedWhOf`) derives the figure at read time: the
+latest stub that records it, plus the withholding of any supplemental-only
+stubs after it; with none recorded, those stubs' withholding; the IRS flat
+22% only when nothing is known. Emailed stubs carry null and need no
+backfill. The projection counts vests by stubs with `rsuGross`, so a vest
+needs its own stub: a regular stub whose YTD columns already include a
+vest nobody entered makes the page project one more.
 | `pages/api/finance/` | `upload-url` (PDF presign to `home/finance/staging/…`), `file` (authenticated 5-minute links; `/api/d` is unauthenticated, so not used for these) |
 | Pages | `/finance/paychecks` (stubs, review inbox, upload, contributions vs pay), `/finance/tax-outlook`, `/finance/invoices` |
 

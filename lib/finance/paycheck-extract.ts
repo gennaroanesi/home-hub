@@ -2,20 +2,28 @@
 // path (paycheck-processor S3 trigger) and the upload path (parsePaycheckPdf
 // mutation). Ported from gennaroanesi.com's parsePaycheckPdf/extract.ts;
 // the employee is returned by name and matched to a household member here
-// instead of the ME/SPOUSE enum. Server-only.
+// instead of the ME/SPOUSE enum. A PDF can hold several stubs (Workday
+// batches them, one per page): every stub comes back, with the pages it
+// spans, so the callers can store each as its own cut. Server-only.
 
 import Anthropic from "@anthropic-ai/sdk";
 import { extractJson } from "./inbound-mail";
+import { payslipPages, pdfPageCount } from "./pdf-pages";
 
 export { matchPerson, draftToPaycheck, PAYCHECK_FIELDS } from "./paycheck-fields";
 
 export const PAYCHECK_MODEL = "claude-sonnet-5-5";
 
-const PROMPT = `You are extracting structured data from a US pay stub PDF. Read the document carefully and return ONLY a JSON object — no commentary, no markdown fences.
+const PROMPT = `You are extracting structured data from a PDF of US pay stubs. Read every page carefully and return ONLY a JSON object — no commentary, no markdown fences.
 
-Schema (all monetary fields are USD dollars, no symbols, no commas; null when not present on the stub):
+The file usually holds one stub, but payroll exports (Workday "Payslip to Print") batch several into one PDF: one stub per page, or a long stub across two pages. Return every distinct stub (its own check date / pay period) in page order, including $0 adjustment stubs:
+
+{ "paychecks": [ <one stub object per pay stub> ] }
+
+Stub object (all monetary fields are USD dollars, no symbols, no commas; null when not present on the stub):
 
 {
+  "pages":                [int],   // the 1-based page numbers this stub spans
   "employeeName":         string | null,
   "employer":             string | null,
   "payDate":              "YYYY-MM-DD",
@@ -73,20 +81,43 @@ Field guidance:
 - W-4 fields come from the W-4 elections box (Federal column): Marital Status → SINGLE / MFJ / MFS / HOH; "Additional Withholding" → w4ExtraWithholding; "Total Dependent Amount" → w4Dependents. 0 when the stub shows 0; null when absent. They're elections, not deductions.
 - lineItems: every deduction or earning row not covered above (parking, ESPP, supplemental life, dependent-care FSA, commuter, employer match as EMPLOYER_PAID, adjustments), typed by tax treatment.
 
-If you can't read the document or it isn't a paystub, return {"error": "<short reason>"} and nothing else.`;
+If you can't read the document or it holds no paystub, return {"error": "<short reason>"} and nothing else.`;
 
 export type PaycheckDraft = Record<string, unknown> & { employeeName?: string | null; payDate?: string; net?: number };
+/** One stub out of a PDF; `pages` is [] when the stub is the whole file. */
+export type ExtractedPayslip = { draft: PaycheckDraft; pages: number[] };
+
+/**
+ * Claude's JSON → the stubs in it. Accepts the batch shape
+ * ({ paychecks: [...] }), a bare array, or the older single-stub object;
+ * each stub's `pages` is cleaned against `pageCount` (see payslipPages).
+ */
+export function normalizeExtraction(parsed: unknown, pageCount: number): { drafts: ExtractedPayslip[]; error: string | null } {
+  if (!parsed || typeof parsed !== "object") return { drafts: [], error: "Claude returned something other than an object" };
+  if (!Array.isArray(parsed) && "error" in parsed) return { drafts: [], error: String((parsed as { error: unknown }).error) };
+  const batch = (parsed as { paychecks?: unknown }).paychecks;
+  const list: unknown[] = Array.isArray(parsed) ? parsed : Array.isArray(batch) ? batch : [parsed];
+  const drafts: ExtractedPayslip[] = [];
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    const { pages, ...draft } = item as Record<string, unknown>;
+    drafts.push({ draft: draft as PaycheckDraft, pages: payslipPages(pages, pageCount) });
+  }
+  return drafts.length ? { drafts, error: null } : { drafts, error: "No pay stub found in the PDF" };
+}
 
 let anthropic: Anthropic | null = null;
 
-/** Never throws: { draft } or { error }. */
-export async function extractPaycheckFields(pdf: Buffer): Promise<{ draft: PaycheckDraft | null; error: string | null }> {
+/** Every stub in the PDF. Never throws: { drafts } or { error }. */
+export async function extractPaycheckDrafts(pdf: Buffer): Promise<{ drafts: ExtractedPayslip[]; error: string | null }> {
   anthropic ??= new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const pageCount = await pdfPageCount(pdf).catch(() => 1);
   let text: string;
   try {
     const resp = await anthropic.messages.create({
       model: PAYCHECK_MODEL,
-      max_tokens: 4096,
+      // A batch of three stubs with their line items runs well past 4k.
+      max_tokens: 16384,
       messages: [
         {
           role: "user",
@@ -102,15 +133,13 @@ export async function extractPaycheckFields(pdf: Buffer): Promise<{ draft: Paych
       .map((b) => b.text)
       .join("");
   } catch (err) {
-    return { draft: null, error: `Claude call failed: ${err instanceof Error ? err.message : String(err)}` };
+    return { drafts: [], error: `Claude call failed: ${err instanceof Error ? err.message : String(err)}` };
   }
   let parsed: unknown;
   try {
     parsed = extractJson(text);
   } catch (err) {
-    return { draft: null, error: `Couldn't read Claude's JSON: ${err instanceof Error ? err.message : String(err)}` };
+    return { drafts: [], error: `Couldn't read Claude's JSON: ${err instanceof Error ? err.message : String(err)}` };
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { draft: null, error: "Claude returned something other than an object" };
-  if ("error" in parsed) return { draft: null, error: String((parsed as { error: unknown }).error) };
-  return { draft: parsed as PaycheckDraft, error: null };
+  return normalizeExtraction(parsed, pageCount);
 }

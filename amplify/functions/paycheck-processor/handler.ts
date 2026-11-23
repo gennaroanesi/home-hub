@@ -2,12 +2,15 @@
 // and the parsePaycheckPdf mutation for uploads. See resource.ts.
 //
 // Per email: gate (SES verdicts, allowed sender with DKIM/SPF pass) → every
-// PDF (incl. forwarded-as-attachment) → skip a PDF already in the inbox
-// (sha256) → Claude extraction → match the employee to a household member →
-// skip a stub already saved (same person + pay date + net) → store the PDF
-// under home/finance/paychecks/ → NEEDS_REVIEW (or ERROR) inbox row.
-// One bad PDF never fails the batch: a throw would make S3 retry the whole
-// email.
+// PDF (incl. forwarded-as-attachment) → Claude extraction, which returns
+// every stub in the PDF (Workday batches several, one per page) → per stub:
+// skip one already in the inbox (sha256 of the file, or of file + pages for
+// a cut) or already saved (same person + pay date + net) → match the
+// employee to a household member → store that stub's pages as its own PDF
+// under home/finance/paychecks/ → NEEDS_REVIEW (or ERROR) inbox row. A
+// single-page PDF seen before skips the Claude call; a batch goes through
+// again so a re-sent one still yields what was missed. One bad PDF never
+// fails the batch: a throw would make S3 retry the whole email.
 
 import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { createHash, randomUUID } from "node:crypto";
@@ -21,9 +24,10 @@ import type { Schema } from "../../data/resource";
 import { listAllPages } from "../../../lib/list-all.js";
 import { financePeople } from "../../../lib/finance/ledger.js";
 import { collectPdfs, gateMail, parseAllowedSenders, parseMail } from "../../../lib/finance/inbound-mail.js";
-import { extractPaycheckFields, matchPerson } from "../../../lib/finance/paycheck-extract.js";
+import { extractPaycheckDrafts, matchPerson, type ExtractedPayslip } from "../../../lib/finance/paycheck-extract.js";
+import { pdfPageCount, pdfPages } from "../../../lib/finance/pdf-pages.js";
 import { extractLoanSchedule } from "../../../lib/finance/loan-schedule-extract.js";
-import { INBOUND_PREFIX, isStagingKey, looksLikePdf, MAX_FINANCE_PDF_BYTES, paycheckPdfKey } from "../../../lib/finance/finance-files.js";
+import { INBOUND_PREFIX, isStagingKey, looksLikePdf, MAX_FINANCE_PDF_BYTES, paycheckPdfKey, stagingKey } from "../../../lib/finance/finance-files.js";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -84,13 +88,25 @@ async function parseUploaded(s3Key: string) {
   }
   if (!looksLikePdf(pdf)) return { ok: false, error: "That file isn't a PDF" };
   if (pdf.byteLength > MAX_FINANCE_PDF_BYTES) return { ok: false, error: "PDF is larger than 20 MB" };
-  const { draft, error } = await extractPaycheckFields(pdf);
-  if (error || !draft) return { ok: false, error: error ?? "No data extracted", s3Key };
+  const { drafts, error } = await extractPaycheckDrafts(pdf);
+  if (error || !drafts.length) return { ok: false, error: error ?? "No data extracted", s3Key };
   const client = await getClient();
   const people = financePeople(await listAllPages<any>(client.models.homePerson));
-  const person = matchPerson(people, draft.employeeName);
-  const duplicate = person ? await findSaved(client, person.id, draft) : null;
-  return { ok: true, draft, personId: person?.id ?? null, s3Key, duplicateOf: duplicate };
+  // One entry per stub in the file. A stub that is only some of the pages
+  // gets its own staging PDF, so the saved row points at that stub alone.
+  const out = [];
+  for (const { draft, pages } of drafts) {
+    let key = s3Key;
+    if (pages.length) {
+      key = stagingKey("paycheck", randomUUID());
+      await s3.send(new PutObjectCommand({ Bucket: HOME_BUCKET, Key: key, Body: await pdfPages(pdf, pages), ContentType: "application/pdf" }));
+    }
+    const person = matchPerson(people, draft.employeeName);
+    const duplicateOf = person ? await findSaved(client, person.id, draft) : null;
+    out.push({ draft, pages, personId: person?.id ?? null, s3Key: key, duplicateOf });
+  }
+  // draft / personId / duplicateOf are the first stub, for callers that expect one.
+  return { ok: true, drafts: out, s3Key, draft: out[0].draft, personId: out[0].personId, duplicateOf: out[0].duplicateOf };
 }
 
 /** An already-saved paycheck with the same person + pay date + net. */
@@ -152,35 +168,84 @@ async function processEmail(bucket: string, key: string) {
   }
 }
 
+/** The inbox row already holding this content, if any. */
+async function inInbox(client: DataClient, contentHash: string): Promise<string | null> {
+  const rows = await listAllPages<any>(client.models.homePaycheckInbox, { filter: { contentHash: { eq: contentHash } } });
+  return rows[0]?.id ?? null;
+}
+
 async function processPdf(client: DataClient, people: Array<{ id: string; name: string }>, pdf: Attachment, meta: { emailFrom: string; emailSubject: string | null; receivedAt: string }) {
   const bytes = pdf.content;
-  const contentHash = sha256(bytes);
-  const dupes = await listAllPages<any>(client.models.homePaycheckInbox, { filter: { contentHash: { eq: contentHash } } });
-  if (dupes.length) {
-    console.log(`[paycheck-processor] already in the inbox (${dupes[0].id}); skipping`);
+  const fileHash = sha256(bytes);
+  const pageCount = await pdfPageCount(bytes).catch(() => 1);
+  if (pageCount <= 1) {
+    const seen = await inInbox(client, fileHash);
+    if (seen) {
+      console.log(`[paycheck-processor] already in the inbox (${seen}); skipping`);
+      return;
+    }
+  }
+  const { drafts, error } = await extractPaycheckDrafts(bytes);
+  if (error || !drafts.length) {
+    if (await inInbox(client, fileHash)) return;
+    await storeInbox(client, { bytes, contentHash: fileHash, filename: pdf.filename || "paystub.pdf", meta, draft: null, person: null, error: error ?? "No pay stub found in the PDF" });
     return;
   }
-  const { draft, error } = await extractPaycheckFields(bytes);
-  const person = draft ? matchPerson(people, draft.employeeName) : null;
-  if (person && draft && (await findSaved(client, person.id, draft))) {
-    console.log(`[paycheck-processor] ${person.name} ${draft.payDate} already saved; skipping`);
-    return;
+  for (const { draft, pages } of drafts) {
+    // A stub that is only some of the pages is stored as its own cut; its
+    // hash is of the file plus the pages, since a cut's bytes aren't stable.
+    const contentHash = pages.length ? sha256(Buffer.from(`${fileHash}#${pages.join(",")}`)) : fileHash;
+    const seen = await inInbox(client, contentHash);
+    if (seen) {
+      console.log(`[paycheck-processor] ${draft.payDate ?? "?"} (pages ${pages.join(",") || "all"}) already in the inbox (${seen}); skipping`);
+      continue;
+    }
+    const person = matchPerson(people, draft.employeeName);
+    if (person && (await findSaved(client, person.id, draft))) {
+      console.log(`[paycheck-processor] ${person.name} ${draft.payDate} already saved; skipping`);
+      continue;
+    }
+    let stub = bytes;
+    try {
+      if (pages.length) stub = await pdfPages(bytes, pages);
+    } catch (err) {
+      console.warn(`[paycheck-processor] couldn't cut pages ${pages.join(",")}; storing the whole file:`, err);
+    }
+    const base = (pdf.filename || "paystub.pdf").replace(/\.pdf$/i, "");
+    const filename = pages.length ? `${base} (p${pages.join("-")}).pdf` : `${base}.pdf`;
+    await storeInbox(client, { bytes: stub, contentHash, filename, meta, draft, person, error: null, pages });
   }
+}
+
+async function storeInbox(
+  client: DataClient,
+  args: {
+    bytes: Buffer;
+    contentHash: string;
+    filename: string;
+    meta: { emailFrom: string; emailSubject: string | null; receivedAt: string };
+    draft: ExtractedPayslip["draft"] | null;
+    person: { id: string; name: string } | null;
+    error: string | null;
+    pages?: number[];
+  },
+) {
+  const { bytes, draft, person, error } = args;
   const id = randomUUID();
   const s3KeyPdf = paycheckPdfKey(id);
   await s3.send(new PutObjectCommand({ Bucket: HOME_BUCKET, Key: s3KeyPdf, Body: bytes, ContentType: "application/pdf" }));
   const r = await client.models.homePaycheckInbox.create({
     id,
-    ...meta,
+    ...args.meta,
     draft: draft ? JSON.stringify(draft) : null,
     personId: person?.id ?? null,
     s3KeyPdf,
-    filename: pdf.filename || "paystub.pdf",
+    filename: args.filename,
     sizeBytes: bytes.byteLength,
-    contentHash,
+    contentHash: args.contentHash,
     status: error ? "ERROR" : "NEEDS_REVIEW",
     parseError: error ?? (person ? null : `Couldn't tell whose stub this is (${draft?.employeeName ?? "no name found"}); pick the person when reviewing.`),
   });
   if (r.errors?.length) throw new Error(r.errors[0].message);
-  console.log(`[paycheck-processor] inbox ${id} ${error ? "ERROR" : "NEEDS_REVIEW"} ${person?.name ?? "?"} ${draft?.payDate ?? "?"}`);
+  console.log(`[paycheck-processor] inbox ${id} ${error ? "ERROR" : "NEEDS_REVIEW"} ${person?.name ?? "?"} ${draft?.payDate ?? "?"}${args.pages?.length ? ` pages ${args.pages.join(",")}` : ""}`);
 }
