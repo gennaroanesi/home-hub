@@ -31,6 +31,7 @@ import { NotesSection } from "@/components/notes-section";
 import { buildReminderDefaultsForEvent } from "@/lib/reminder-defaults";
 import { cascadeDeleteRemindersFor } from "@/lib/reminder-parent";
 import { cascadeDeleteNotesFor } from "@/lib/note-parent";
+import { eventEditable, isTwoWayFeed, newEventsFeed } from "@/lib/calendar-feeds";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -215,16 +216,20 @@ export function EventModal({
     <Modal isOpen={isOpen} onOpenChange={onOpenChange} size="lg">
       <ModalContent>
         {(onClose) => {
-          // Imported (feed-sourced) events render read-only: edits
-          // would just be overwritten on the next ICS sync, so we
-          // disable inputs and hide Save/Delete entirely. Reminders
-          // panel stays available since reminders are a local-only
-          // concern and can legitimately be attached to an imported
-          // event ("remind me 1h before the shared Zoom call").
-          const isImported = !!eventForm.feedId;
-          const importedFeed = isImported
+          // Events from a read-only feed (an ICS subscription) can't be
+          // edited: the next sync would undo it, so inputs are disabled and
+          // Save/Delete hidden. Reminders stay available (they're local).
+          // A two-way feed's events (the iCloud family calendar) edit like
+          // native ones and the change is written back to the calendar.
+          const importedFeed = eventForm.feedId
             ? feeds.find((f) => f.id === eventForm.feedId)
             : null;
+          const readOnly = !eventEditable({ feedId: eventForm.feedId || null }, feeds);
+          const sharedFeed = importedFeed && isTwoWayFeed(importedFeed)
+            ? importedFeed
+            : !eventForm.feedId && !eventForm.id
+              ? newEventsFeed(feeds)
+              : null;
           return (
           <>
             <ModalHeader className="flex items-center gap-2">
@@ -245,7 +250,7 @@ export function EventModal({
               )}
             </ModalHeader>
             <ModalBody>
-              {isImported && (
+              {readOnly && (
                 <div className="text-xs text-default-500 bg-default-50 border border-default-200 rounded-md px-3 py-2">
                   This event comes from an external calendar feed.
                   Edits made here would be overwritten on the next
@@ -253,26 +258,33 @@ export function EventModal({
                   attach reminders below.
                 </div>
               )}
+              {sharedFeed && (
+                <div className="text-xs text-default-500">
+                  {eventForm.feedId
+                    ? `Changes are saved to ${sharedFeed.name} too.`
+                    : `Also added to ${sharedFeed.name}.`}
+                </div>
+              )}
               <Input
                 label="Title"
                 value={eventForm.title}
                 onValueChange={(v) => setEventForm((f) => ({ ...f, title: v }))}
                 isRequired
-                isReadOnly={isImported}
+                isReadOnly={readOnly}
               />
               <Textarea
                 label="Description"
                 value={eventForm.description}
                 onValueChange={(v) => setEventForm((f) => ({ ...f, description: v }))}
                 minRows={2}
-                isReadOnly={isImported}
+                isReadOnly={readOnly}
               />
               <div className="flex gap-2">
                 <Input
                   label="Start"
                   type={eventForm.isAllDay ? "date" : "datetime-local"}
                   value={eventForm.isAllDay ? eventForm.startAt.slice(0, 10) : eventForm.startAt}
-                  isReadOnly={isImported}
+                  isReadOnly={readOnly}
                   onValueChange={(v) =>
                     setEventForm((f) => {
                       if (!v) return { ...f, startAt: v };
@@ -304,17 +316,17 @@ export function EventModal({
                   type={eventForm.isAllDay ? "date" : "datetime-local"}
                   value={eventForm.isAllDay ? eventForm.endAt.slice(0, 10) : eventForm.endAt}
                   onValueChange={(v) => setEventForm((f) => ({ ...f, endAt: v }))}
-                  isReadOnly={isImported}
+                  isReadOnly={readOnly}
                 />
               </div>
               <Checkbox
                 isSelected={eventForm.isAllDay}
                 onValueChange={(v) => setEventForm((f) => ({ ...f, isAllDay: v }))}
-                isDisabled={isImported}
+                isDisabled={readOnly}
               >
                 All day
               </Checkbox>
-              {isImported ? (
+              {readOnly ? (
                 <Input
                   label="Location"
                   value={eventForm.location}
@@ -342,13 +354,13 @@ export function EventModal({
                 onChange={(ids) => setEventForm((f) => ({ ...f, assignedPersonIds: ids }))}
                 placeholder="Household"
                 description="Leave empty for household"
-                isDisabled={isImported}
+                isDisabled={readOnly}
               />
               <Select
                 label="Linked trip (optional)"
                 selectedKeys={eventForm.tripId ? [eventForm.tripId] : []}
                 onChange={(e) => setEventForm((f) => ({ ...f, tripId: e.target.value }))}
-                isDisabled={isImported}
+                isDisabled={readOnly}
               >
                 <>
                   <SelectItem key="" textValue="None">None</SelectItem>
@@ -393,7 +405,7 @@ export function EventModal({
               </div>
             </ModalBody>
             <ModalFooter>
-              {eventForm.id && !isImported && (
+              {eventForm.id && !readOnly && (
                 <Button
                   color="danger"
                   variant="light"
@@ -404,9 +416,9 @@ export function EventModal({
                 </Button>
               )}
               <Button variant="light" onPress={onClose}>
-                {isImported ? "Close" : "Cancel"}
+                {readOnly ? "Close" : "Cancel"}
               </Button>
-              {!isImported && (
+              {!readOnly && (
                 <Button color="primary" onPress={() => saveEvent(onClose)}>
                   {eventForm.id ? "Save" : "Create"}
                 </Button>

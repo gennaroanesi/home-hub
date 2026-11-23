@@ -30,6 +30,35 @@ export interface FeedEvent {
   assignedPersonIds?: (string | null)[] | null;
 }
 
+/**
+ * Two-way feeds (a CalDAV calendar, `caldavUrl`) take edits: the
+ * calendar-push Lambda writes event changes back to the calendar, and
+ * `writeNewEvents` sends events made in the app there too. Other feeds are
+ * read-only, since the next sync would undo an edit.
+ */
+export interface TwoWayFeed {
+  id: string;
+  name?: string | null;
+  caldavUrl?: string | null;
+  writeNewEvents?: boolean | null;
+  active?: boolean | null;
+}
+
+export function isTwoWayFeed(feed: Pick<TwoWayFeed, "caldavUrl"> | null | undefined): boolean {
+  return !!feed?.caldavUrl?.trim();
+}
+
+/** Can the app edit (and delete) this event? Native events and two-way feeds' events, not other feeds'. */
+export function eventEditable(event: { feedId?: string | null }, feeds: Array<Pick<TwoWayFeed, "id" | "caldavUrl">>): boolean {
+  if (!event.feedId) return true;
+  return isTwoWayFeed(feeds.find((f) => f.id === event.feedId));
+}
+
+/** The calendar new app events go to, if any: the active two-way feed marked `writeNewEvents`. */
+export function newEventsFeed<F extends TwoWayFeed>(feeds: F[]): F | null {
+  return feeds.find((f) => f.active !== false && isTwoWayFeed(f) && f.writeNewEvents === true) ?? null;
+}
+
 /** A feed with no `uses` saved predates the setting and is used everywhere. */
 export function feedUsedFor(feed: FeedSettings, use: FeedUse): boolean {
   const uses = (feed.uses ?? []).filter(Boolean);

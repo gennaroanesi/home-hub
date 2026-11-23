@@ -52,7 +52,7 @@ import {
 import { isHouseholdMember } from "../../../lib/household.js";
 import { loadSuggestContext, suggestOutfits } from "../../../lib/wardrobe-suggest.js";
 import { listAllPages } from "../../../lib/list-all.js";
-import { eventsFor, type FeedSettings } from "../../../lib/calendar-feeds.js";
+import { eventEditable, eventsFor, type FeedSettings } from "../../../lib/calendar-feeds.js";
 import { ReplyChunker } from "../../../lib/reply-chunker.js";
 import { OPS, findOp, opJsonSchemas, runOp, toolDefinition } from "../../../lib/ops/registry.js";
 import { createS3ImageStorage } from "../../../lib/ops/storage.js";
@@ -313,6 +313,16 @@ async function getHouseholdMembers(): Promise<PersonLite[]> {
   // groups not synced yet → fall back to everyone (the old behavior)
   // rather than "both" resolving to nobody.
   return household.length > 0 ? household : people;
+}
+
+/** The feed name when an event comes from a read-only (non-CalDAV) feed; null when the app can edit it. */
+async function readOnlyFeedName(eventId: string): Promise<string | null> {
+  const client = await getDataClient();
+  const { data: ev } = await client.models.homeCalendarEvent.get({ id: eventId });
+  if (!ev?.feedId) return null;
+  const { data: feed } = await client.models.homeCalendarFeed.get({ id: ev.feedId });
+  if (!feed || eventEditable(ev, [feed])) return null;
+  return feed.name;
 }
 
 async function resolvePersonIds(names?: string[] | null): Promise<string[]> {
@@ -2187,6 +2197,14 @@ async function executeTool(
       if (input.url !== undefined) updates.url = input.url || null;
       if (input.reminderMinutes !== undefined) updates.reminderMinutes = input.reminderMinutes;
       if (input.tripId !== undefined) updates.tripId = input.tripId || null;
+      // A read-only feed's event (an ICS subscription) keeps its synced
+      // fields: the next sync would undo the change. Who it's for, its
+      // reminder and trip are the app's own and can change.
+      const synced = ["title", "description", "startAt", "endAt", "isAllDay", "recurrence", "location", "url"];
+      if (synced.some((k) => k in updates)) {
+        const locked = await readOnlyFeedName(input.eventId);
+        if (locked) return JSON.stringify({ error: `This event comes from the read-only calendar "${locked}"; change it there.` });
+      }
       const { data, errors } = await client.models.homeCalendarEvent.update(updates);
       if (errors) return JSON.stringify({ error: errors[0].message });
       return JSON.stringify({ success: true, eventId: data?.id, title: data?.title });
@@ -2259,6 +2277,8 @@ async function executeTool(
     }
 
     case "delete_event": {
+      const locked = await readOnlyFeedName(input.eventId);
+      if (locked) return JSON.stringify({ error: `This event comes from the read-only calendar "${locked}"; delete it there.` });
       await cascadeDeleteRemindersFor(client, input.eventId);
       await cascadeDeleteNotesFor(client, input.eventId);
       const { errors } = await client.models.homeCalendarEvent.delete({ id: input.eventId });

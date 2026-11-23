@@ -31,6 +31,8 @@ import { Ionicons } from "@expo/vector-icons";
 import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { getClient } from "../lib/amplify";
+import { eventEditable, isTwoWayFeed, newEventsFeed } from "../../lib/calendar-feeds";
+import { listAllPages } from "../../lib/list-all";
 import { RECURRENCE_PRESETS } from "../lib/recurrence";
 import { type Person, useAllPeople } from "../lib/use-people";
 import { PeoplePicker } from "./PeoplePicker";
@@ -38,6 +40,7 @@ import type { Schema } from "../../amplify/data/resource";
 import { AttachmentSection } from "./AttachmentSection";
 
 type Event = Schema["homeCalendarEvent"]["type"];
+type Feed = Schema["homeCalendarFeed"]["type"];
 
 interface Props {
   visible: boolean;
@@ -114,7 +117,19 @@ export function EventFormModal({
   const [showStartPicker, setShowStartPicker] = useState(false);
   const [showEndPicker, setShowEndPicker] = useState(false);
 
-  const isImported = !!event?.feedId;
+  // Events from a read-only feed (an ICS subscription) can't be edited:
+  // the next sync would undo it. A two-way feed's (the iCloud family
+  // calendar) edit like native ones and go back to the calendar.
+  const [feeds, setFeeds] = useState<Feed[]>([]);
+  useEffect(() => {
+    if (!visible) return;
+    listAllPages<Feed>(getClient().models.homeCalendarFeed)
+      .then(setFeeds)
+      .catch(() => setFeeds([]));
+  }, [visible]);
+  const isImported = !!event?.feedId && !eventEditable(event, feeds);
+  const eventFeed = event?.feedId ? feeds.find((f) => f.id === event.feedId) : null;
+  const sharedFeed = eventFeed && isTwoWayFeed(eventFeed) ? eventFeed : !event ? newEventsFeed(feeds) : null;
 
   useEffect(() => {
     if (!visible) return;
@@ -263,6 +278,11 @@ export function EventFormModal({
                 read-only here. Edit it in the source calendar.
               </Text>
             </View>
+          )}
+          {sharedFeed && (
+            <Text style={styles.sharedHint}>
+              {event ? `Changes are saved to ${sharedFeed.name} too.` : `Also added to ${sharedFeed.name}.`}
+            </Text>
           )}
 
           <Text style={styles.label}>Title</Text>
@@ -442,6 +462,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     marginBottom: 8,
   },
+  sharedHint: { fontSize: 12, color: "#888", marginBottom: 8 },
   importedText: { fontSize: 13, color: "#664400" },
 
   label: {

@@ -7,6 +7,7 @@ import { retroactiveFaceMatch } from "../functions/retroactive-face-match/resour
 import { hassSync } from "../functions/hass-sync/resource";
 import { reminderSweep } from "../functions/reminder-sweep/resource";
 import { icsSync } from "../functions/ics-sync/resource";
+import { calendarPush } from "../functions/calendar-push/resource";
 import { postConfirmUser } from "../auth/post-confirmation/resource";
 import { setPersonGroups } from "../functions/set-person-groups/resource";
 import { mergePeople } from "../functions/merge-people/resource";
@@ -1650,14 +1651,21 @@ const schema = a
         url: a.url(),
         reminderMinutes: a.integer(),
         tripId: a.id(),
-        // Non-null = imported from an external ICS feed (see
-        // homeCalendarFeed); null = native event created in this app.
-        // Imported events are read-only in the UI — any edits would
-        // be overwritten on the next sync.
+        // Non-null = from a calendar feed (see homeCalendarFeed); null =
+        // native event created in this app. Events from a read-only (ICS)
+        // feed can't be edited here, since the next sync would undo it;
+        // a two-way feed's (caldavUrl) can (lib/calendar-feeds.ts).
         feedId: a.id(),
         // ICS UID, used as the dedupe key within a feed so re-syncs
         // update rather than duplicate.
         externalUid: a.string(),
+        // Two-way feeds only: the CalDAV object's URL and etag, and
+        // syncHashOf (lib/calendar-ics.ts) of the fields as last synced.
+        // A row whose fields no longer match syncHash has a change the
+        // calendar-push Lambda hasn't sent yet.
+        externalHref: a.string(),
+        externalEtag: a.string(),
+        syncHash: a.string(),
       })
       .secondaryIndexes((index) => [index("feedId")])
       .authorization((allow) => [
@@ -1738,6 +1746,12 @@ const schema = a
         // Which features read this feed (FEED_USES: CALENDAR, WEEK,
         // SUMMARY, AGENT). Empty = all of them.
         uses: a.string().array(),
+        // Two-way: the CalDAV calendar collection behind this feed (set by
+        // scripts/setup-icloud-caldav.ts). ics-sync reads it over CalDAV
+        // instead of `url`, and calendar-push writes app edits back.
+        caldavUrl: a.string(),
+        // Events created in the app go to this calendar (one feed at most).
+        writeNewEvents: a.boolean(),
       })
       .authorization((allow) => [
         allow.group("home-users"),
@@ -2715,6 +2729,7 @@ const schema = a
     allow.resource(hassSync),
     allow.resource(reminderSweep),
     allow.resource(icsSync),
+    allow.resource(calendarPush),
     allow.resource(postConfirmUser),
     allow.resource(setPersonGroups),
     allow.resource(mergePeople),

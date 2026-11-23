@@ -50,6 +50,7 @@ import { retroactiveFaceMatch } from "./functions/retroactive-face-match/resourc
 import { hassSync } from "./functions/hass-sync/resource";
 import { reminderSweep } from "./functions/reminder-sweep/resource";
 import { icsSync } from "./functions/ics-sync/resource";
+import { calendarPush } from "./functions/calendar-push/resource";
 import { setPersonGroups } from "./functions/set-person-groups/resource";
 import { mergePeople } from "./functions/merge-people/resource";
 import { taskOccurrenceAction } from "./functions/task-occurrence-action/resource";
@@ -74,6 +75,7 @@ const backend = defineBackend({
   hassSync,
   reminderSweep,
   icsSync,
+  calendarPush,
   setPersonGroups,
   mergePeople,
   taskOccurrenceAction,
@@ -98,7 +100,8 @@ const lambdaDescriptions: Record<string, string> = {
   retroactiveFaceMatch: "Home Hub — Bulk-assign existing unmatched faces after new enrollment (AppSync mutation)",
   hassSync: "Home Hub — Home Assistant device state sync (scheduled + on-demand)",
   reminderSweep: "Home Hub — Every-5-minute reminder sweep (Haiku-composed messages)",
-  icsSync: "Home Hub — Every-15-minute ICS feed sync (external calendar subscriptions)",
+  icsSync: "Home Hub — Every-15-minute calendar feed sync (ICS subscriptions, two-way CalDAV pull)",
+  calendarPush: "Home Hub — Calendar event changes → two-way CalDAV calendars (DDB stream)",
   setPersonGroups: "Home Hub — Admin mutation: sync homePerson.groups + Cognito groups",
   mergePeople: "Home Hub — Admin mutation: rewrite personId references and delete source",
   taskOccurrenceAction: "Home Hub — Recurring task occurrence: complete/skip/uncomplete (AppSync mutation)",
@@ -586,6 +589,33 @@ new scheduler.CfnSchedule(recurringStack, "icsSyncSchedule", {
     roleArn: icsSyncScheduleRole.roleArn,
   },
 });
+
+// ── Two-way calendars (CalDAV) ─────────────────────────────────────────────
+// A feed with caldavUrl (the iCloud family calendar) is read over CalDAV by
+// ics-sync, and every homeCalendarEvent change goes back to it through
+// calendar-push on the table's stream (lib/calendar-sync.ts). Both sign in
+// with the Apple ID + app-specific password in home-hub/icloud-caldav
+// (scripts/setup-icloud-caldav.ts); until it exists, only read-only feeds
+// sync and the push does nothing.
+
+const calendarPushLambda = backend.calendarPush.resources.lambda as LambdaFunction;
+for (const fn of [icsSyncLambda, calendarPushLambda]) {
+  fn.addToRolePolicy(
+    new PolicyStatement({
+      effect: Effect.ALLOW,
+      actions: ["secretsmanager:GetSecretValue"],
+      resources: ["arn:aws:secretsmanager:us-east-1:*:secret:home-hub/icloud-caldav-*"],
+    })
+  );
+}
+calendarPushLambda.addEventSource(
+  new DynamoEventSource(backend.data.resources.tables["homeCalendarEvent"], {
+    startingPosition: StartingPosition.LATEST,
+    batchSize: 10,
+    maxBatchingWindow: Duration.seconds(1),
+    retryAttempts: 2,
+  })
+);
 
 // ── setPersonGroups — admin mutation, Cognito IDP access ──────────────────
 // Receives { personId, groups: string[] } from /admin/people, diffs

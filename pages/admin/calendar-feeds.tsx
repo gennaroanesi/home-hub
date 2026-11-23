@@ -25,7 +25,7 @@ import { FaArrowLeft, FaPlus, FaTrash, FaPen, FaSyncAlt, FaCalendarAlt } from "r
 import DefaultLayout from "@/layouts/default";
 import { listAllPages } from "@/lib/list-all";
 import { householdMembers } from "@/lib/household";
-import { FEED_USES, FEED_USE_LABELS, feedOwnerMode, type FeedUse } from "@/lib/calendar-feeds";
+import { FEED_USES, FEED_USE_LABELS, feedOwnerMode, isTwoWayFeed, type FeedUse } from "@/lib/calendar-feeds";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
@@ -168,6 +168,18 @@ export default function CalendarFeedsPage() {
     await loadFeeds();
   }
 
+  /** One two-way feed at most takes the events made in the app. */
+  async function toggleWriteNew(feed: Feed) {
+    const next = feed.writeNewEvents !== true;
+    if (next) {
+      for (const f of feeds) {
+        if (f.id !== feed.id && f.writeNewEvents) await client.models.homeCalendarFeed.update({ id: f.id, writeNewEvents: false });
+      }
+    }
+    await client.models.homeCalendarFeed.update({ id: feed.id, writeNewEvents: next });
+    await loadFeeds();
+  }
+
   const [syncing, setSyncing] = useState(false);
 
   async function handleSyncNow() {
@@ -244,7 +256,9 @@ export default function CalendarFeedsPage() {
                 Calendar feeds
               </h1>
               <p className="text-xs text-default-500">
-                External ICS / webcal subscriptions. Synced every 15 minutes, one-way.
+                External calendars, synced every 15 minutes. ICS / webcal subscriptions are
+                read-only; a two-way calendar (iCloud, linked with
+                scripts/setup-icloud-caldav.ts) also gets the app&apos;s edits.
               </p>
             </div>
           </div>
@@ -309,6 +323,11 @@ export default function CalendarFeedsPage() {
                           Error
                         </Chip>
                       )}
+                      {isTwoWayFeed(feed) && (
+                        <Chip size="sm" variant="flat" color="success">
+                          Two-way
+                        </Chip>
+                      )}
                       {typeof feed.eventCount === "number" && !hasError && (
                         <Chip size="sm" variant="flat">
                           {feed.eventCount} event{feed.eventCount === 1 ? "" : "s"}
@@ -325,6 +344,14 @@ export default function CalendarFeedsPage() {
                       Whose: {ownerLabel(feed, people)} · Used in:{" "}
                       {usesOf(feed).map((u) => FEED_USE_LABELS[u]).join(", ")}
                     </p>
+                    {isTwoWayFeed(feed) && (
+                      <p className="text-xs text-default-500 mt-0.5 flex items-center gap-2">
+                        {feed.writeNewEvents ? "Events made in the app are added here." : "Events made in the app stay in the app."}
+                        <button type="button" className="text-primary underline" onClick={() => toggleWriteNew(feed)}>
+                          {feed.writeNewEvents ? "Stop" : "Add them here"}
+                        </button>
+                      </p>
+                    )}
                     <p className="text-xs text-default-400 mt-0.5 truncate font-mono">
                       {feed.url}
                     </p>
