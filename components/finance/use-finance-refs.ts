@@ -1,14 +1,16 @@
 "use client";
 
 // Reference data most finance pages need: accounts, household members,
-// spend groups, and the category vocabulary + active rules.
+// spend groups, and the category vocabulary (lib/finance/category-list.ts)
+// + active rules.
 
 import { useCallback, useEffect, useState } from "react";
 
 import { financeClient } from "@/components/finance/client";
-import { allCategories, rulesFromDbRows, type CategoryRule } from "@/lib/finance/categories";
-import { bucketCategories } from "@/lib/finance/budget";
-import { listAccounts, listBudgetLines, listCategoryRules, listHouseholdPeople, listSpendGroups, type HouseholdPerson } from "@/lib/finance/data";
+import { type CategoryRule } from "@/lib/finance/categories";
+import { loadCategoryVocabulary } from "@/lib/finance/category-list";
+import { listAccounts, listHouseholdPeople, listSpendGroups, type HouseholdPerson } from "@/lib/finance/data";
+import { sortSpendGroups } from "@/lib/finance/spend-groups";
 import { financePeople } from "@/lib/finance/ledger";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -29,18 +31,14 @@ export function useFinanceRefs(): FinanceRefs {
   const [state, setState] = useState<Omit<FinanceRefs, "reload">>({ accounts: [], people: [], household: [], groups: [], rules: [], categories: [], loading: true });
 
   const reload = useCallback(async () => {
-    const [accounts, household, groups, ruleRows, lines] = await Promise.all([
+    const [accounts, household, groups, vocab] = await Promise.all([
       listAccounts(financeClient),
       listHouseholdPeople(financeClient),
       listSpendGroups(financeClient),
-      listCategoryRules(financeClient),
-      listBudgetLines(financeClient),
+      loadCategoryVocabulary(financeClient),
     ]);
     const people = financePeople(household, accounts.flatMap((a) => a.ownerPersonIds ?? []));
-    const rules = rulesFromDbRows(ruleRows);
-    const cats = new Set(allCategories(rules));
-    for (const l of lines) for (const c of bucketCategories(l)) cats.add(c);
-    setState({ accounts, people, household, groups, rules, categories: [...cats].sort((a, b) => a.localeCompare(b)), loading: false });
+    setState({ accounts, people, household, groups: sortSpendGroups(groups), rules: vocab.rules, categories: vocab.categories, loading: false });
   }, []);
 
   useEffect(() => {

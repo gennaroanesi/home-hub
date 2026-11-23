@@ -1,5 +1,6 @@
-// Edit one transaction: category, which budget it counts in, the contributor (money in only)
-// (lib/finance/ledger.ts), notes, "remember for similar" (a rule,
+// Edit one transaction: category (a new name creates it), which budget it
+// counts in, the contributor (money in only) (lib/finance/ledger.ts), the
+// spend group (or a new one, SpendGroupField), notes, "remember for similar" (a rule,
 // rememberPattern) and itemizing a charge across categories and budgets.
 // Same op and rules as the web's transaction window
 // (update_finance_transaction): only changed fields are sent, and saving a
@@ -14,7 +15,8 @@ import { usePeople } from "../../lib/use-people";
 import { UNCATEGORIZED, suggestPattern } from "../../../lib/finance/categories";
 import { fmtCurrency, fmtDate } from "../../../lib/finance/dates";
 import { HOUSEHOLD, financePeople, ledgerPeople } from "../../../lib/finance/ledger";
-import { CategoryField, Field, FormSheet, Input, PersonChips, cleanAmount, ff } from "./form";
+import { CategoryField, Field, FormSheet, Input, PersonChips, cleanAmount, ff, forgetFinanceCategories } from "./form";
+import { SpendGroupField } from "./SpendGroupField";
 import { ACCENT, Chip, Money, WARN, fs, type OpResultOf } from "./ui";
 
 export type FinanceTx = OpResultOf<"list_finance_transactions">["transactions"][number];
@@ -42,6 +44,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
   const [category, setCategory] = useState("");
   const [person, setPerson] = useState("");
   const [notes, setNotes] = useState("");
+  const [group, setGroup] = useState("");
   const [remember, setRemember] = useState(false);
   const [pattern, setPattern] = useState("");
   const [items, setItems] = useState<ItemDraft[]>([]);
@@ -55,6 +58,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
     setPerson(tx.personId ?? "");
     setLedger(tx.ledgerSet ? tx.ledger : "");
     setNotes(tx.notes ?? "");
+    setGroup(tx.spendGroupId ?? "");
     setRemember(false);
     setPattern(suggestPattern(tx.description));
     setItems(storedItems.map((i) => ({ name: i.name ?? "", amount: String(i.amount), category: i.category, ledger: (i as { ledger?: string }).ledger ?? "" })));
@@ -72,6 +76,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
     if (person !== (tx.personId ?? "")) input.personId = person || null;
     if (ledger !== (tx.ledgerSet ? tx.ledger : "")) input.ledger = ledger || null;
     if (notes !== (tx.notes ?? "")) input.notes = notes.trim() || null;
+    if (group !== (tx.spendGroupId ?? "")) input.spendGroupId = group || null;
     const rows = items.filter((i) => i.name.trim() || i.amount.trim() || i.category.trim());
     if (rows.some((i) => !(Number(i.amount) > 0) || !i.category.trim())) return Alert.alert("Each item needs an amount and a category");
     const next = rows.map((i) => ({ name: i.name.trim() || null, amount: Number(i.amount), category: i.category.trim(), ...(i.ledger ? { ledger: i.ledger } : {}) }));
@@ -82,6 +87,7 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
     const r = await callOp("update_finance_transaction", input as any);
     setBusy(false);
     if ("error" in r) return Alert.alert("Couldn't save", r.error);
+    if (r.result.newCategories.length) forgetFinanceCategories();
     if (r.result.ruleCreated) Alert.alert("Saved", "A rule was added for similar transactions.");
     onSaved();
   }
@@ -129,6 +135,10 @@ export function TransactionEditModal({ tx, onClose, onSaved }: { tx: FinanceTx |
           <PersonChips people={financePeople(people, [person])} value={person} onChange={setPerson} noneLabel="No one" />
         </Field>
       )}
+
+      <Field label="Spend group" hint={group ? "Counts in this group instead of the monthly budget." : undefined}>
+        <SpendGroupField value={group} onChange={setGroup} />
+      </Field>
 
       <Field label="Notes">
         <Input value={notes} onChangeText={setNotes} placeholder="Notes" multiline />

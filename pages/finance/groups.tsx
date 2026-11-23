@@ -27,10 +27,11 @@ import { listAllPages } from "@/lib/list-all";
 import { effectiveCategory, isExcludedFromBudget } from "@/lib/finance/categories";
 import { listSpendGroups, listTransactions, txIndexQuery } from "@/lib/finance/data";
 import { fmtDate } from "@/lib/finance/dates";
+import { SPEND_GROUP_KINDS, SPEND_GROUP_KIND_LABELS, type SpendGroupKind } from "@/lib/finance/spend-groups";
 
-const KINDS = ["TRIP", "PROJECT", "EVENT", "OTHER"] as const;
-type Kind = (typeof KINDS)[number];
-const KIND_LABELS: Record<Kind, string> = { TRIP: "Trip", PROJECT: "Project", EVENT: "Event", OTHER: "Other" };
+const KINDS = SPEND_GROUP_KINDS;
+type Kind = SpendGroupKind;
+const KIND_LABELS = SPEND_GROUP_KIND_LABELS;
 const NO_TRIP = "__none";
 
 type Form = { id?: string; name: string; kind: Kind; budget: string; startDate: string; endDate: string; tripId: string; notes: string };

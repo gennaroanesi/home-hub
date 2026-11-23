@@ -15,7 +15,8 @@ function setup(seed: Record<string, any[]> = {}) {
     const rows = tables[name];
     return {
       list: async () => ({ data: rows, nextToken: null }),
-      get: async ({ id }: any) => ({ data: rows.find((r) => r.id === id) ?? null }),
+      // homeFinanceSetting is keyed by `key`, not id.
+      get: async ({ id, key }: any) => ({ data: rows.find((r) => (key !== undefined ? r.key === key : r.id === id)) ?? null }),
       delete: async ({ id }: any) => {
         const i = rows.findIndex((r) => r.id === id);
         if (i >= 0) rows.splice(i, 1);
@@ -27,7 +28,7 @@ function setup(seed: Record<string, any[]> = {}) {
         return { data: saved };
       },
       update: async ({ id, ...patch }: any) => {
-        const row = rows.find((r) => r.id === id);
+        const row = rows.find((r) => (id !== undefined ? r.id === id : r.key === patch.key));
         if (!row) return { data: null, errors: [{ message: "not found" }] };
         Object.assign(row, patch);
         return { data: row };
@@ -44,7 +45,7 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog", "homeFinanceSetting"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
@@ -146,6 +147,48 @@ describe("update_finance_transaction", () => {
     const { ctx } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -30, description: "COSTCO", date: today }] });
     const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Groceries", rememberPattern: "HEB" });
     expect(out.error).toMatch(/doesn't match/);
+  });
+});
+
+describe("creating categories and spend groups while editing", () => {
+  it("remembers a new category (and its parent) so list_finance_categories offers it", async () => {
+    const { ctx, tables } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -80, description: "TARGET", date: today }] });
+    const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Nursery:  Paint" });
+    expect(out.result.newCategories).toEqual(["Nursery", "Nursery: Paint"]);
+    expect(JSON.parse(tables.homeFinanceSetting[0].value)).toEqual(["Nursery", "Nursery: Paint"]);
+    const cats: any = await runOp(ctx, "list_finance_categories", {});
+    expect(cats.result.categories).toEqual(expect.arrayContaining(["Nursery", "Nursery: Paint", "Groceries"]));
+    // Known already (any case): nothing new.
+    const again: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "groceries" });
+    expect(again.result.newCategories).toEqual([]);
+  });
+
+  it("remembers itemized categories too", async () => {
+    const { ctx } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -100, description: "AMAZON", date: today }] });
+    const out: any = await runOp(ctx, "update_finance_transaction", {
+      transactionId: "t",
+      lineItems: [
+        { name: "Crib sheets", amount: 40, category: "Groceries" },
+        { name: "Patio cover", amount: 60, category: "Backyard" },
+      ],
+    });
+    expect(out.result.newCategories).toEqual(["Backyard"]);
+  });
+
+  it("creates a spend group, refuses a duplicate name, and tags with it", async () => {
+    const { ctx, tables } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -300, description: "AIRBNB", date: today }] });
+    const made: any = await runOp(ctx, "save_finance_spend_group", { name: " Lake  Travis ", kind: "TRIP", budget: 900 });
+    expect(made.result).toMatchObject({ created: true, group: { name: "Lake Travis", kind: "TRIP", budget: 900 } });
+    const dup: any = await runOp(ctx, "save_finance_spend_group", { name: "lake travis" });
+    expect(dup.error).toMatch(/already a spend group/);
+    const bad: any = await runOp(ctx, "save_finance_spend_group", { name: "Trip", startDate: "2026-05-02", endDate: "2026-05-01" });
+    expect(bad.error).toMatch(/end is before/);
+    const listed: any = await runOp(ctx, "list_finance_spend_groups", {});
+    expect(listed.result.groups.map((g: any) => g.name)).toEqual(["Lake Travis"]);
+    await runOp(ctx, "update_finance_transaction", { transactionId: "t", spendGroupId: made.result.group.id });
+    expect(tables.homeFinanceTransaction[0].spendGroupId).toBe(made.result.group.id);
+    const missing: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", spendGroupId: "nope" });
+    expect(missing.error).toMatch(/No spend group/);
   });
 });
 

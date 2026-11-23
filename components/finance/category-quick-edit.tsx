@@ -1,8 +1,8 @@
 "use client";
 
 // Edit a transaction's category in place: the row's category label opens
-// a small popover with a searchable list (and "use what I typed" for a new
-// category). Picking calls onPick and closes; the caller saves and updates
+// a small popover with a searchable list (and "Create …" for a new category,
+// which the save remembers: lib/finance/category-list.ts). Picking calls onPick and closes; the caller saves and updates
 // the row. Clicks inside never reach the row (its own onClick opens the
 // full edit modal), including from the portaled popover content, since
 // React events bubble through the component tree.
@@ -55,7 +55,7 @@ export function CategoryQuickEdit({
       return ap - bp || a.localeCompare(b);
     });
     const out: Array<{ key: string; label: string; value: string | null; isNew?: boolean }> = hits.map((o) => ({ key: o, label: o, value: o }));
-    if (q && !base.some((o) => o.toLowerCase() === q)) out.push({ key: "__new", label: `Use “${query.trim()}”`, value: query.trim(), isNew: true });
+    if (q && !base.some((o) => o.toLowerCase() === q)) out.push({ key: "__new", label: `Create “${query.trim()}”`, value: query.trim(), isNew: true });
     if (!q || UNCATEGORIZED.toLowerCase().includes(q)) out.push({ key: "__none", label: UNCATEGORIZED, value: null });
     return out;
   }, [options, query]);

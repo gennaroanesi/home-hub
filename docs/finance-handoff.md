@@ -81,7 +81,7 @@ Household differences from gennaroanesi.com:
 | `amplify/data/resource.ts` | `homeFinanceAccount`, `…Transaction` (index accountId+date, recurringId, spendGroupId), `…Recurring`, `…Budget` (versioned, SCD2), `…SavingsGoal`, `…GoalMilestone`, `…SpendGroup`, `…CategoryRule`, `…SyncLog`, `…AccountSnapshot` (identifier accountId+date), `…Holding` (identifier accountId+holdingKey), `…Asset`, `…AssetValuation`, `…Loan`, `…LoanPayment`; `syncFinance` and `listSimplefinAccounts` mutations |
 | `lib/finance/` | Pure logic shared by pages, ops and the Lambda: `categories.ts` + `category-rules.json`, `budget.ts`, `recurring.ts` (matching, projection), `goals.ts`, `accounts.ts` (types, `isInvested`), `dates.ts`, `loans.ts`, `net-worth.ts`, `sync-engine.ts` (incl. the holdings diff), `simplefin.ts`, `simplefin-connections.ts` (one connection per person), `data.ts` (loading through the indexes) |
 | `amplify/functions/finance-sync/` | SimpleFIN sync: 3×/day (04:30, 12:30, 19:30 America/Chicago), plus the two mutations. Rules first, Haiku fallback for the rest, pending → posted in place (amount included), auto-links posted rows to schedules and rolls `nextDate`, upserts today's balance snapshot per account, syncs positions for invested accounts, writes a sync log |
-| `lib/ops/finance.ts` | `get_finance_summary` (+ per-account buffer / projected low, last sync), `get_finance_budget` (month / quarter / year / last3, cadence filter), `list_finance_transactions` (`categories` = any of), `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule` (`markPaid`), `list_finance_goals`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` — Janet, the API, `hh`, the pages' writes and the phone |
+| `lib/ops/finance.ts` | `get_finance_summary` (+ per-account buffer / projected low, last sync), `get_finance_budget` (month / quarter / year / last3, cadence filter), `list_finance_transactions` (`categories` = any of), `update_finance_transaction` (with `rememberPattern` → rule), `save_finance_budget`, `list_finance_schedules`, `save_finance_schedule` (`markPaid`), `list_finance_goals`, `save_finance_goal` (`fundingAccountIds`, `milestones`), `list_finance_holdings`, `list_finance_categories` (rules + budget lines + created ones), `list_finance_spend_groups`, `save_finance_spend_group` — Janet, the API, `hh`, the pages' writes and the phone |
 | `lib/ops/net-worth.ts` | `get_net_worth`, `list_finance_loans`, `simulate_loan_payoff`, `save_finance_asset`, `save_finance_loan`, `record_loan_payment` (see Net worth below) |
 | `mobile/app/(tabs)/more/finance/` | Phone: overview (+ Sync now), transactions (search, month, account, category, uncategorized; edit / itemize / remember), budget (period + cadence chips; change amount or end a line), scheduled (add / edit / mark paid), goals (edit + milestones), accounts (balances, holdings, SimpleFIN connection + last sync; add / edit / link / delete via `AccountFormModal`, writing `homeFinanceAccount` directly through `lib/finance/account-form.ts`, the same code as the web form). Everything else through the ops; sheets in `mobile/components/finance/` |
 | `pages/finance/` | Overview, Net worth, Loans (detail), Transactions, Budget, Review, Scheduled, Goals, Groups, Accounts (+ detail), Rules. Frame and shared bits in `components/finance/` |
@@ -158,6 +158,30 @@ monthly pacing.
   twice among the period's lines. The transaction filters (web and
   `list_finance_transactions`) match sub-categories under a parent. A new
   sub-category exists as soon as a budget line or a transaction uses it.
+
+## Creating categories and spend groups from the transaction editors (2026-11-23)
+
+Every place a transaction is edited (web: the row's category popover, the
+edit window, its item rows, bulk edit, Add; phone: the transaction sheet)
+can make a new category or spend group without leaving it.
+
+- **Categories** are still plain names on the rows. Typing one the list
+  doesn't have offers "Create “…”" ("Parent: Child" makes a sub-category,
+  and the parent comes along). `update_finance_transaction` remembers any
+  category it hasn't seen (charge or items, case-insensitive) in the
+  finance setting `categories` and returns them as `newCategories`, so it
+  stays in every picker after the row scrolls away: the vocabulary is
+  rules + budget lines + that list (`lib/finance/category-list.ts`, read by
+  `useFinanceRefs` and `list_finance_categories`). The web Add writes the
+  model directly, so it calls `rememberCategories` itself.
+- **Spend groups:** the group picker ends in "New group…" (web
+  `components/finance/spend-group-picker.tsx`; phone "New group" chip in
+  `mobile/components/finance/SpendGroupField.tsx`): name, kind, optional
+  dates (web) and budget, saved through `save_finance_spend_group` (refuses
+  a duplicate name; checks in `lib/finance/spend-groups.ts`, also used by
+  /finance/groups) and picked. The phone sheet gained the spend group field
+  it lacked, and its rows show the group, like the web.
+  `update_finance_transaction` now refuses a spendGroupId that doesn't exist.
 
 ## Net worth: assets and loans (2026-11-16)
 

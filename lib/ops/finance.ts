@@ -22,7 +22,7 @@ import {
 import { filterTransactions, sortTransactions, TX_SORTS } from "../finance/tx-filter";
 import { allCategories, CATEGORY_RULES, classify, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
-import { listAccountTransactions, listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listTransactions } from "../finance/data";
+import { listAccountTransactions, listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listSpendGroups, listTransactions } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, planScheduleLinks, projectBalance, upcomingEvents } from "../finance/recurring";
@@ -30,6 +30,8 @@ import { defaultCadences, periodContaining, periodFromParam, periodRange, period
 import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
 import { CSV_FORMATS, newCsvRows, parseBankCsv } from "../finance/csv-import";
 import { importHash } from "../finance/sync-engine";
+import { loadCategoryVocabulary, rememberCategories } from "../finance/category-list";
+import { SPEND_GROUP_KINDS, sortSpendGroups, spendGroupFields } from "../finance/spend-groups";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -609,7 +611,13 @@ export const updateFinanceTransaction = defineOp({
       .describe('Whose budget the whole charge counts in: "household" or a person\'s name or id; null = the account\'s default (joint accounts → household, a personal account → its owner). For a mixed purchase, itemize and set ledger per item instead.'),
     rememberPattern: z.string().optional().describe("Substring or /regex/flags; creates a rule at the top of the rule list."),
   }),
-  output: z.object({ transactionId: z.string(), category: z.string(), personId: z.string().nullable(), ruleCreated: z.boolean() }),
+  output: z.object({
+    transactionId: z.string(),
+    category: z.string(),
+    personId: z.string().nullable(),
+    ruleCreated: z.boolean(),
+    newCategories: z.array(z.string()).describe("Categories this save created (now offered by list_finance_categories)"),
+  }),
   async run(ctx, input) {
     const { data: tx } = await ctx.client.models.homeFinanceTransaction.get({ id: input.transactionId });
     if (!tx) throw new OpError(`No transaction ${input.transactionId}. Use list_finance_transactions to find the id.`);
@@ -625,6 +633,10 @@ export const updateFinanceTransaction = defineOp({
     if (personId !== undefined) {
       patch.personId = personId;
       patch.personSource = personId ? "MANUAL" : null;
+    }
+    if (input.spendGroupId) {
+      const { data: group } = await ctx.client.models.homeFinanceSpendGroup.get({ id: input.spendGroupId });
+      if (!group) throw new OpError(`No spend group ${input.spendGroupId}. Use list_finance_spend_groups, or save_finance_spend_group to create one.`);
     }
     if (input.spendGroupId !== undefined) patch.spendGroupId = input.spendGroupId;
     if (input.goalId !== undefined) patch.goalId = input.goalId;
@@ -664,7 +676,18 @@ export const updateFinanceTransaction = defineOp({
       if (r.errors?.length) throw new Error(r.errors[0].message);
       ruleCreated = true;
     }
-    return { transactionId: saved.id, category: effectiveCategory(saved), personId: saved.personId ?? null, ruleCreated };
+    // A category typed in for the first time joins the pickers' list
+    // (lib/finance/category-list.ts). Best effort: the row is already saved.
+    let newCategories: string[] = [];
+    const used = [patch.category as string | null | undefined, ...(input.lineItems ?? []).map((i) => i.category)];
+    if (used.some(Boolean)) {
+      try {
+        newCategories = await rememberCategories(ctx.client, used);
+      } catch (e) {
+        console.error("[finance] remembering new categories failed", e);
+      }
+    }
+    return { transactionId: saved.id, category: effectiveCategory(saved), personId: saved.personId ?? null, ruleCreated, newCategories };
   },
 });
 
@@ -1328,14 +1351,82 @@ export const listFinanceCategories = defineOp({
   name: "list_finance_categories",
   domain: "finance",
   access: "read",
-  description: "The category names in use (from the rules and existing budgets), for picking a category in update_finance_transaction or save_finance_budget.",
+  description:
+    "The category names in use (from the rules, existing budgets and categories created by hand), for picking a category in update_finance_transaction or save_finance_budget. A new name given to update_finance_transaction is created and joins this list. Sub-categories are \"Parent: Child\".",
   input: z.object({}),
   output: z.object({ categories: z.array(z.string()) }),
   async run(ctx) {
-    const [ruleRows, lines] = await Promise.all([listCategoryRules(ctx.client), listBudgetLines(ctx.client)]);
-    const set = new Set(allCategories(rulesFromDbRows(ruleRows)));
-    for (const l of lines) for (const c of bucketCategories(l)) set.add(c);
-    return { categories: [...set].sort((a, b) => a.localeCompare(b)) };
+    return { categories: (await loadCategoryVocabulary(ctx.client)).categories };
+  },
+});
+
+// ── list_finance_spend_groups / save_finance_spend_group ──────────────────────
+
+const SpendGroupOut = z.object({
+  id: z.string(),
+  name: z.string(),
+  kind: z.string().nullable(),
+  budget: z.number().nullable(),
+  startDate: z.string().nullable(),
+  endDate: z.string().nullable(),
+});
+
+function spendGroupOut(g: any): z.infer<typeof SpendGroupOut> {
+  return { id: g.id, name: g.name, kind: g.kind ?? null, budget: g.budget ?? null, startDate: g.startDate ?? null, endDate: g.endDate ?? null };
+}
+
+export const listFinanceSpendGroups = defineOp({
+  name: "list_finance_spend_groups",
+  domain: "finance",
+  access: "read",
+  description: "Spend groups (a trip, the nursery, a remodel), newest first. Transactions tagged with one (update_finance_transaction spendGroupId) count there instead of against the monthly budget.",
+  input: z.object({}),
+  output: z.object({ groups: z.array(SpendGroupOut) }),
+  async run(ctx) {
+    return { groups: sortSpendGroups(await listSpendGroups(ctx.client)).map(spendGroupOut) };
+  },
+});
+
+export const saveFinanceSpendGroup = defineOp({
+  name: "save_finance_spend_group",
+  domain: "finance",
+  access: "write",
+  description:
+    "Create a spend group (a trip, a project like the nursery, an event), or change one when id is given. Tag transactions with it through update_finance_transaction spendGroupId; they then count against the group's own budget instead of the monthly one.",
+  input: z.object({
+    id: z.string().optional(),
+    name: z.string(),
+    kind: z.enum(SPEND_GROUP_KINDS).optional().describe("Default PROJECT"),
+    budget: z.number().nullable().optional().describe("What the whole group may cost"),
+    startDate: DATE.nullable().optional(),
+    endDate: DATE.nullable().optional(),
+  }),
+  output: z.object({ group: SpendGroupOut, created: z.boolean() }),
+  async run(ctx, input) {
+    const checked = spendGroupFields({
+      name: input.name,
+      kind: input.kind ?? "PROJECT",
+      budget: input.budget == null ? "" : String(input.budget),
+      startDate: input.startDate ?? "",
+      endDate: input.endDate ?? "",
+    });
+    if ("error" in checked) throw new OpError(checked.error);
+    const { fields } = checked;
+    if (input.id) {
+      const patch: Record<string, unknown> = { name: fields.name };
+      if (input.kind !== undefined) patch.kind = fields.kind;
+      if (input.budget !== undefined) patch.budget = fields.budget;
+      if (input.startDate !== undefined) patch.startDate = fields.startDate;
+      if (input.endDate !== undefined) patch.endDate = fields.endDate;
+      const r = await ctx.client.models.homeFinanceSpendGroup.update({ id: input.id, ...patch });
+      if (r.errors?.length || !r.data) throw new OpError(r.errors?.[0]?.message ?? `No spend group ${input.id}`);
+      return { group: spendGroupOut(r.data), created: false };
+    }
+    const existing = (await listSpendGroups(ctx.client)).find((g) => g.name.toLowerCase() === fields.name.toLowerCase());
+    if (existing) throw new OpError(`There's already a spend group named "${existing.name}" (id ${existing.id})`);
+    const r = await ctx.client.models.homeFinanceSpendGroup.create(fields);
+    if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+    return { group: spendGroupOut(r.data), created: true };
   },
 });
 
@@ -1538,4 +1629,6 @@ export const financeOps = [
   importFinanceTransactions,
   saveFinanceGoal,
   listFinanceCategories,
+  listFinanceSpendGroups,
+  saveFinanceSpendGroup,
 ] as const;

@@ -127,12 +127,12 @@ export function DateField({ value, onChange, placeholder = "Pick a date", cleara
 
 let categoriesCache: string[] | null = null;
 
-/** Drop the cached names (a new category was just saved on a budget line). */
+/** Drop the cached names (a new category was just saved on a budget line or a transaction). */
 export function forgetFinanceCategories() {
   categoriesCache = null;
 }
 
-/** Category names in use (rules + budgets), cached for the session. */
+/** Category names in use (rules, budgets, created ones: lib/finance/category-list.ts), cached for the session. */
 export function useFinanceCategories(): string[] {
   const [cats, setCats] = useState<string[]>(categoriesCache ?? []);
   useEffect(() => {
@@ -213,7 +213,7 @@ export function CategorySheet({ visible, value, onPick, onClose, allowClear = tr
             typed && !exact ? (
               <Pressable onPress={() => onPick(typed)} style={ff.option}>
                 <Ionicons name="add" size={18} color={ACCENT} />
-                <Text style={[ff.optionText, { color: ACCENT }]}>Use “{typed}”</Text>
+                <Text style={[ff.optionText, { color: ACCENT }]}>Create “{typed}”</Text>
               </Pressable>
             ) : null
           }

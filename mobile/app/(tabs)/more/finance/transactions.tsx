@@ -3,7 +3,7 @@
 // button opens TransactionFiltersSheet (accounts, categories, contributors,
 // budget, direction, needs-a-category, sort); what's on shows as chips
 // under the search, each removable. Pull to refresh, tap one to edit its category, person,
-// notes, itemization or add a rule (TransactionEditModal). Opened from the
+// spend group, notes, itemization or add a rule (TransactionEditModal). Opened from the
 // overview (?uncategorized=1), a budget line (?categories=A,B&month=…&title=…)
 // or an account (?accountId=…). Invested accounts' rows only show when that
 // account is picked, like the web.
@@ -19,6 +19,7 @@ import { NO_FILTERS, SORT_LABELS, TransactionFiltersSheet, activeFilterCount, ty
 import { usePeople } from "../../../../lib/use-people";
 import { financePeople, ledgerPeople } from "../../../../../lib/finance/ledger";
 import { TransactionEditModal, type FinanceTx } from "../../../../components/finance/TransactionEditModal";
+import { useSpendGroups } from "../../../../components/finance/SpendGroupField";
 import { ACCENT, Chip, FinanceHeader, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../../components/finance/ui";
 import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "../../../../../lib/finance/dates";
 import { UNCATEGORIZED } from "../../../../../lib/finance/categories";
@@ -47,6 +48,8 @@ export default function FinanceTransactions() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<FinanceTx | null>(null);
+  const [groups] = useSpendGroups();
+  const groupName = useMemo(() => new Map(groups.map((g) => [g.id, g.name])), [groups]);
 
   // Search as you type, a beat after the last keystroke.
   useEffect(() => {
@@ -203,7 +206,7 @@ export default function FinanceTransactions() {
             ) : null
           }
           ListEmptyComponent={<Text style={fs.empty}>No transactions match.</Text>}
-          renderItem={({ item }) => <TxRow tx={item} onPress={() => setEditing(item)} />}
+          renderItem={({ item }) => <TxRow tx={item} group={item.spendGroupId ? groupName.get(item.spendGroupId) : undefined} onPress={() => setEditing(item)} />}
         />
       )}
 
@@ -232,7 +235,7 @@ export default function FinanceTransactions() {
   );
 }
 
-function TxRow({ tx, onPress }: { tx: FinanceTx; onPress: () => void }) {
+function TxRow({ tx, group, onPress }: { tx: FinanceTx; group?: string; onPress: () => void }) {
   const uncat = tx.category === UNCATEGORIZED;
   const meta = [
     fmtDate(tx.date),
@@ -241,6 +244,7 @@ function TxRow({ tx, onPress }: { tx: FinanceTx; onPress: () => void }) {
     tx.person && (tx.amount ?? 0) > 0 ? `from ${tx.person}` : null,
     // Whose budget, when not the household's (an itemized charge may split).
     tx.items?.some((i) => i.ledger && i.ledger !== tx.ledger) ? "split budget" : tx.ledger !== "household" ? `${tx.ledgerName}'s` : null,
+    tx.spendGroupId ? (group ?? "group") : null,
     tx.status === "PENDING" ? "pending" : null,
   ].filter(Boolean);
   return (

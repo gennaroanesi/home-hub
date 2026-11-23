@@ -8,7 +8,8 @@
 // &q=&from=&to=; account, category and contributor take several), row
 // edit through the update_finance_transaction op (with "remember for
 // similar" → a category rule), bulk edit, and manual rows for accounts
-// that don't sync from SimpleFIN.
+// that don't sync from SimpleFIN. Every editor can create a category (type
+// a new name) or a spend group ("New group…") without leaving the page.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import NextLink from "next/link";
@@ -29,12 +30,14 @@ import { ImportCsvModal } from "@/components/finance/import-csv-modal";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
-import { FreeCombobox } from "@/components/free-combobox";
+import { CategoryInput } from "@/components/finance/category-input";
+import { SpendGroupPicker } from "@/components/finance/spend-group-picker";
 import { callOp } from "@/lib/ops-client";
 import { NO_SPEND_GROUP, TX_SORT_LABELS, filterTransactions, sortTransactions, type TxSort } from "@/lib/finance/tx-filter";
 import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
+import { rememberCategories } from "@/lib/finance/category-list";
 import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts, ledgerPeople } from "@/lib/finance/ledger";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -93,7 +96,7 @@ function txPatchFromInput(input: Record<string, any>): Record<string, unknown> {
 
 const byNewest = (a: any, b: any) => (b.date ?? "").localeCompare(a.date ?? "") || (b.createdAt ?? "").localeCompare(a.createdAt ?? "");
 
-type EditResult = { deleted?: boolean; patch?: Record<string, unknown>; ruleCreated?: boolean };
+type EditResult = { deleted?: boolean; patch?: Record<string, unknown>; ruleCreated?: boolean; newCategories?: string[] };
 
 export default function TransactionsPage() {
   const router = useRouter();
@@ -212,6 +215,7 @@ export default function TransactionsPage() {
     try {
       const r = await callOp(financeClient, "update_finance_transaction", input);
       if ("error" in r) error = r.error;
+      else if (r.result.newCategories.length) void refs.reload();
     } catch (e) {
       error = e instanceof Error ? e.message : String(e);
     }
@@ -520,7 +524,7 @@ export default function TransactionsPage() {
             if (r.ruleCreated) {
               refs.reload();
               quietReload();
-            }
+            } else if (r.newCategories?.length) refs.reload();
           }}
         />
       )}
@@ -530,10 +534,11 @@ export default function TransactionsPage() {
           refs={refs}
           owners={owners}
           onClose={() => setBulkOpen(false)}
-          onSaved={(ids, patch) => {
+          onSaved={(ids, patch, newCategories) => {
             setBulkOpen(false);
             setSelected(new Set());
             patchTxs(ids, patch);
+            if (newCategories) refs.reload();
           }}
         />
       )}
@@ -567,13 +572,16 @@ function PersonSelect({ value, onChange, people, label = "Person" }: { value: st
   );
 }
 
-function GroupSelect({ value, onChange, groups }: { value: string; onChange: (v: string) => void; groups: any[] }) {
+/** "" = no group. "New group…" creates one and picks it. */
+function GroupSelect({ value, onChange, refs }: { value: string; onChange: (v: string) => void; refs: Refs }) {
   return (
-    <Select label="Spend group" selectedKeys={[value || NONE]} onChange={(e) => onChange(e.target.value === NONE ? "" : e.target.value)}>
-      {[{ id: NONE, name: "None (counts against the budget)" }, ...groups].map((g) => (
-        <SelectItem key={g.id}>{g.name}</SelectItem>
-      ))}
-    </Select>
+    <SpendGroupPicker
+      value={value || NONE}
+      onChange={(v) => onChange(v === NONE ? "" : v)}
+      groups={refs.groups}
+      leading={[{ id: NONE, name: "None (counts against the budget)" }]}
+      onCreated={() => void refs.reload()}
+    />
   );
 }
 
@@ -644,7 +652,7 @@ function EditModal({
     setSaving(false);
     if ("error" in r) return addToast({ title: "Couldn't save", description: r.error, color: "danger" });
     addToast({ title: r.result.ruleCreated ? "Saved, and a rule was added" : "Saved", color: "success" });
-    onSaved({ patch: txPatchFromInput(input), ruleCreated: r.result.ruleCreated });
+    onSaved({ patch: txPatchFromInput(input), ruleCreated: r.result.ruleCreated, newCategories: r.result.newCategories });
   }
 
   async function remove() {
@@ -667,7 +675,7 @@ function EditModal({
           </span>
         </ModalHeader>
         <ModalBody className="gap-3">
-          <FreeCombobox label="Category" placeholder="Uncategorized" value={category} onValueChange={setCategory} options={refs.categories} />
+          <CategoryInput placeholder="Uncategorized" value={category} onValueChange={setCategory} options={refs.categories} />
           {items.length > 0 && <p className="text-xs text-default-500 -mt-2">Itemized: spending counts under the items&apos; categories below, not this one.</p>}
           {tx.categorySource === "LLM" && category === (tx.category ?? "") && (
             <p className="text-xs text-default-500 -mt-2">Guessed by the classifier. Saving confirms it, so the sync won&apos;t change it.</p>
@@ -682,7 +690,7 @@ function EditModal({
               {items.length > 0 && <p className="text-xs text-default-500 -mt-2">Items can count in a different budget each (below).</p>}
             </>
           )}
-          <GroupSelect value={group} onChange={setGroup} groups={refs.groups} />
+          <GroupSelect value={group} onChange={setGroup} refs={refs} />
           <Input label="Notes" value={notes} onValueChange={setNotes} />
           {(tx.amount ?? 0) < 0 && (
             <ItemsEditor
@@ -778,7 +786,7 @@ function ItemsEditor({
         <div key={i} className="grid grid-cols-[1fr_auto] sm:grid-cols-[1.4fr_0.7fr_1.2fr_auto] gap-2 items-center">
           <Input size="sm" label="Item" value={it.name} onValueChange={(v) => update(i, { name: v })} className="col-span-2 sm:col-span-1" />
           <Input size="sm" label="Amount" type="number" min={0} startContent={<span className="text-default-400 text-sm">$</span>} value={it.amount} onValueChange={(v) => update(i, { amount: v })} />
-          <FreeCombobox label="Category" value={it.category} onValueChange={(v) => update(i, { category: v })} options={categories} />
+          <CategoryInput value={it.category} onValueChange={(v) => update(i, { category: v })} options={categories} hint={false} />
           <Button size="sm" isIconOnly variant="light" aria-label="Remove item" onPress={() => onChange(items.filter((_, j) => j !== i))}>
             <FaTrash />
           </Button>
@@ -817,8 +825,8 @@ function BulkModal({
   refs: Refs;
   owners: { id: string }[];
   onClose: () => void;
-  /** The ids that saved, and the fields they got. */
-  onSaved: (savedIds: string[], patch: Record<string, unknown>) => void;
+  /** The ids that saved, the fields they got, and whether a category was created. */
+  onSaved: (savedIds: string[], patch: Record<string, unknown>, newCategories: boolean) => void;
 }) {
   const [category, setCategory] = useState("");
   const [ledger, setLedger] = useState(KEEP);
@@ -835,16 +843,20 @@ function BulkModal({
     setSaving(true);
     const failures: string[] = [];
     const saved: string[] = [];
+    let created = false;
     for (const id of ids) {
       const r = await callOp(financeClient, "update_finance_transaction", { transactionId: id, ...base } as any);
       if ("error" in r) failures.push(r.error);
-      else saved.push(id);
+      else {
+        saved.push(id);
+        if (r.result.newCategories.length) created = true;
+      }
       setDone((d) => d + 1);
     }
     setSaving(false);
     if (failures.length) addToast({ title: `${failures.length} of ${ids.length} failed`, description: failures[0], color: "danger" });
     else addToast({ title: `Updated ${ids.length} transactions`, color: "success" });
-    onSaved(saved, txPatchFromInput(base));
+    onSaved(saved, txPatchFromInput(base), created);
   }
 
   return (
@@ -853,12 +865,14 @@ function BulkModal({
         <ModalHeader>Edit {ids.length} transactions</ModalHeader>
         <ModalBody className="gap-3">
           <p className="text-xs text-default-500">Only the fields you set change.</p>
-          <FreeCombobox label="Category" placeholder="Leave unchanged" value={category} onValueChange={setCategory} options={refs.categories} />
-          <Select label="Spend group" selectedKeys={[group]} onChange={(e) => e.target.value && setGroup(e.target.value)}>
-            {[{ id: KEEP, name: "Leave unchanged" }, { id: NONE, name: "No group" }, ...refs.groups].map((g) => (
-              <SelectItem key={g.id}>{g.name}</SelectItem>
-            ))}
-          </Select>
+          <CategoryInput placeholder="Leave unchanged" value={category} onValueChange={setCategory} options={refs.categories} />
+          <SpendGroupPicker
+            value={group}
+            onChange={setGroup}
+            groups={refs.groups}
+            leading={[{ id: KEEP, name: "Leave unchanged" }, { id: NONE, name: "No group" }]}
+            onCreated={() => void refs.reload()}
+          />
           {owners.length > 0 && (
             <Select label="Counts in" selectedKeys={[ledger]} onChange={(e) => e.target.value && setLedger(e.target.value)}>
               {[{ id: KEEP, name: "Leave unchanged" }, { id: NONE, name: "Each account's own budget" }, { id: HOUSEHOLD_LEDGER, name: "Household budget" }, ...owners.map((p) => ({ id: p.id, name: `${ledgerLabel(p.id, refs.people)}'s own budget` }))].map((o) => (
@@ -915,6 +929,10 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
     });
     setSaving(false);
     if (r.errors?.length) return addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+    // Written straight to the model, so a new category is remembered here (the op does it for edits).
+    if (category.trim()) void rememberCategories(financeClient, [category]).then((added) => {
+        if (added.length) void refs.reload();
+      }).catch(() => {});
     onSaved(r.data);
   }
 
@@ -943,9 +961,9 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
                 <Input label="Date" type="date" value={date} onValueChange={setDate} />
               </div>
               <Input label="Description" value={description} onValueChange={setDescription} />
-              <FreeCombobox label="Category" value={category} onValueChange={setCategory} options={refs.categories} />
+              <CategoryInput value={category} onValueChange={setCategory} options={refs.categories} />
               {type === "INCOME" && <PersonSelect value={person} onChange={setPerson} people={refs.people} label="Contributor" />}
-              <GroupSelect value={group} onChange={setGroup} groups={refs.groups} />
+              <GroupSelect value={group} onChange={setGroup} refs={refs} />
               <Input label="Notes" value={notes} onValueChange={setNotes} />
             </>
           )}

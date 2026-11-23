@@ -10,6 +10,9 @@ interface FreeComboboxProps {
   onValueChange: (value: string) => void;
   options: string[];
   maxResults?: number;
+  /** Offer what was typed as a new entry ("Create “…”") when it matches no option. */
+  createLabel?: (typed: string) => string;
+  description?: React.ReactNode;
 }
 
 /**
@@ -23,6 +26,8 @@ export function FreeCombobox({
   onValueChange,
   options,
   maxResults = 8,
+  createLabel,
+  description,
 }: FreeComboboxProps) {
   const [showResults, setShowResults] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -42,6 +47,8 @@ export function FreeCombobox({
         .filter((o) => o.toLowerCase().includes(value.toLowerCase()))
         .slice(0, maxResults)
     : options.slice(0, maxResults);
+  const typed = value.trim();
+  const offerCreate = !!createLabel && !!typed && !options.some((o) => o.toLowerCase() === typed.toLowerCase());
 
   return (
     <div className="relative" ref={containerRef}>
@@ -54,8 +61,9 @@ export function FreeCombobox({
           setShowResults(true);
         }}
         onFocus={() => setShowResults(true)}
+        description={description}
       />
-      {showResults && filtered.length > 0 && (
+      {showResults && (filtered.length > 0 || offerCreate) && (
         <div className="absolute z-50 w-full mt-1 bg-white dark:bg-default-100 border border-default-200 rounded-md shadow-lg max-h-60 overflow-y-auto">
           {filtered.map((opt) => (
             <button
@@ -70,6 +78,18 @@ export function FreeCombobox({
               {opt}
             </button>
           ))}
+          {offerCreate && (
+            <button
+              type="button"
+              className="w-full text-left px-3 py-2 hover:bg-default-100 dark:hover:bg-default-200 text-sm text-primary"
+              onClick={() => {
+                onValueChange(typed);
+                setShowResults(false);
+              }}
+            >
+              {createLabel!(typed)}
+            </button>
+          )}
         </div>
       )}
     </div>
