@@ -1,4 +1,4 @@
-// Shared bits for the phone's finance screens (app/(tabs)/more/finance):
+// Shared bits for the phone's finance screens (app/(tabs)/finance, its own tab):
 // header, cards, money text, the budget bar, and "Sync now". Numbers and
 // formatting come from root lib/finance; data comes from the finance ops
 // (lib/ops/finance.ts) through callOp.
@@ -24,12 +24,15 @@ export const GOOD = "#2a5a45";
 /** The `result` of an op call, typed. */
 export type OpResultOf<N extends OpName> = Extract<OpCallResult<N>, { result: unknown }>["result"];
 
-export function FinanceHeader({ title, right }: { title: string; right?: React.ReactNode }) {
+/** `back: false` on the tab's own first screen (the overview), which has nothing to go back to. */
+export function FinanceHeader({ title, right, back = true }: { title: string; right?: React.ReactNode; back?: boolean }) {
   return (
-    <View style={fs.header}>
-      <Pressable onPress={() => router.back()} style={fs.backBtn} hitSlop={10}>
-        <Ionicons name="chevron-back" size={26} color={ACCENT} />
-      </Pressable>
+    <View style={[fs.header, !back && { paddingHorizontal: 20 }]}>
+      {back && (
+        <Pressable onPress={() => router.back()} style={fs.backBtn} hitSlop={10}>
+          <Ionicons name="chevron-back" size={26} color={ACCENT} />
+        </Pressable>
+      )}
       <Text style={fs.heading} numberOfLines={1}>
         {title}
       </Text>
@@ -102,7 +105,7 @@ export type FinanceRoute = "transactions" | "budget" | "scheduled" | "goals" | "
  * (.expo/types) only learn about new files on the next `expo start`.
  */
 export function openFinance(route: FinanceRoute, params?: Record<string, string>) {
-  router.push({ pathname: `/more/finance/${route}`, params } as any);
+  router.push({ pathname: `/finance/${route}`, params } as any);
 }
 
 /** "3h ago" from an ISO timestamp. */

@@ -7,11 +7,11 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { ScheduleFormModal, type FinanceSchedule } from "../../../../components/finance/ScheduleFormModal";
-import { Card, DANGER, FinanceHeader, HeaderButton, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../../components/finance/ui";
-import { addDays, CADENCE_LABELS, fmtCurrency, fmtDate, todayIso, type Cadence } from "../../../../../lib/finance/dates";
-import { isScheduleLive, nextDueAfterPaid } from "../../../../../lib/finance/recurring";
+import { callOp } from "../../../lib/ops";
+import { ScheduleFormModal, type FinanceSchedule } from "../../../components/finance/ScheduleFormModal";
+import { Card, DANGER, FinanceHeader, HeaderButton, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../components/finance/ui";
+import { addDays, CADENCE_LABELS, fmtCurrency, fmtDate, todayIso, type Cadence } from "../../../../lib/finance/dates";
+import { isScheduleLive, nextDueAfterPaid } from "../../../../lib/finance/recurring";
 
 type Result = OpResultOf<"list_finance_schedules">;
 

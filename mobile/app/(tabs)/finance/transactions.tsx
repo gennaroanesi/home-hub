@@ -14,15 +14,15 @@ import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { NO_FILTERS, SORT_LABELS, TransactionFiltersSheet, activeFilterCount, type TxFilters } from "../../../../components/finance/TransactionFiltersSheet";
-import { usePeople } from "../../../../lib/use-people";
-import { financePeople, ledgerPeople } from "../../../../../lib/finance/ledger";
-import { TransactionEditModal, type FinanceTx } from "../../../../components/finance/TransactionEditModal";
-import { useSpendGroups } from "../../../../components/finance/SpendGroupField";
-import { ACCENT, Chip, FinanceHeader, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../../components/finance/ui";
-import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "../../../../../lib/finance/dates";
-import { UNCATEGORIZED } from "../../../../../lib/finance/categories";
+import { callOp } from "../../../lib/ops";
+import { NO_FILTERS, SORT_LABELS, TransactionFiltersSheet, activeFilterCount, type TxFilters } from "../../../components/finance/TransactionFiltersSheet";
+import { usePeople } from "../../../lib/use-people";
+import { financePeople, ledgerPeople } from "../../../../lib/finance/ledger";
+import { TransactionEditModal, type FinanceTx } from "../../../components/finance/TransactionEditModal";
+import { useSpendGroups } from "../../../components/finance/SpendGroupField";
+import { ACCENT, Chip, FinanceHeader, Money, WARN, fs, useFinanceAccounts, type OpResultOf } from "../../../components/finance/ui";
+import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "../../../../lib/finance/dates";
+import { UNCATEGORIZED } from "../../../../lib/finance/categories";
 
 type Result = OpResultOf<"list_finance_transactions">;
 

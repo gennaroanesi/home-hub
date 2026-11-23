@@ -13,13 +13,13 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { BudgetLineModal, type BudgetLineRef } from "../../../../components/finance/BudgetLineModal";
-import { NewBudgetLineModal } from "../../../../components/finance/NewBudgetLineModal";
-import { ACCENT, BudgetBar, Card, Chip, DANGER, FinanceHeader, HeaderButton, WARN, fs, openFinance, type OpResultOf } from "../../../../components/finance/ui";
-import { BUDGET_PERIODS, type BudgetPeriod } from "../../../../../lib/finance/budget";
-import { fmtCurrency, fmtDate, monthStart, todayIso } from "../../../../../lib/finance/dates";
-import { periodContaining, periodRange, periodToParam, shiftPeriod, switchKind, type Period, type PeriodKind } from "../../../../../lib/finance/periods";
+import { callOp } from "../../../lib/ops";
+import { BudgetLineModal, type BudgetLineRef } from "../../../components/finance/BudgetLineModal";
+import { NewBudgetLineModal } from "../../../components/finance/NewBudgetLineModal";
+import { ACCENT, BudgetBar, Card, Chip, DANGER, FinanceHeader, HeaderButton, WARN, fs, openFinance, type OpResultOf } from "../../../components/finance/ui";
+import { BUDGET_PERIODS, type BudgetPeriod } from "../../../../lib/finance/budget";
+import { fmtCurrency, fmtDate, monthStart, todayIso } from "../../../../lib/finance/dates";
+import { periodContaining, periodRange, periodToParam, shiftPeriod, switchKind, type Period, type PeriodKind } from "../../../../lib/finance/periods";
 
 type Budget = OpResultOf<"get_finance_budget">;
 

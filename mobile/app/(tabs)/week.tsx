@@ -9,16 +9,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp, type OpCallResult } from "../../../lib/ops";
-import { usePerson } from "../../../lib/use-person";
-import { usePeople } from "../../../lib/use-people";
-import { EventFormModal } from "../../../components/EventFormModal";
-import { TaskFormModal } from "../../../components/TaskFormModal";
-import { Markdown } from "../../../components/Markdown";
-import type { OpName } from "../../../../lib/ops/registry";
+import { callOp, type OpCallResult } from "../../lib/ops";
+import { usePerson } from "../../lib/use-person";
+import { usePeople } from "../../lib/use-people";
+import { EventFormModal } from "../../components/EventFormModal";
+import { TaskFormModal } from "../../components/TaskFormModal";
+import { Markdown } from "../../components/Markdown";
+import type { OpName } from "../../../lib/ops/registry";
 
 type Plan = Extract<OpCallResult<"get_week_plan">, { result: unknown }>["result"];
 type WeekEvent = Plan["events"][number];
@@ -480,9 +479,6 @@ function Sections({ plan }: { plan: Plan }) {
 function Header({ title }: { title: string }) {
   return (
     <View style={styles.header}>
-      <Pressable onPress={() => router.back()} style={styles.backBtn} hitSlop={10}>
-        <Ionicons name="chevron-back" size={26} color="#735f55" />
-      </Pressable>
       <Text style={styles.heading}>{title}</Text>
     </View>
   );
@@ -490,7 +486,7 @@ function Header({ title }: { title: string }) {
 
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: "#f7f7f7" },
-  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 12, paddingTop: 8, paddingBottom: 4, gap: 4 },
+  header: { flexDirection: "row", alignItems: "center", paddingHorizontal: 20, paddingTop: 8, paddingBottom: 4, gap: 4 },
   backBtn: { padding: 4 },
   heading: { fontSize: 28, fontWeight: "600" },
   weekNav: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 8 },

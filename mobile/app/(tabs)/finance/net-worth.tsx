@@ -7,10 +7,10 @@ import { useCallback, useEffect, useState } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { BudgetBar, Card, FinanceHeader, GOOD, Money, WARN, fs, type OpResultOf } from "../../../../components/finance/ui";
-import { fmtCurrency, fmtDate } from "../../../../../lib/finance/dates";
-import { fmtDuration } from "../../../../../lib/finance/loans";
+import { callOp } from "../../../lib/ops";
+import { BudgetBar, Card, FinanceHeader, GOOD, Money, WARN, fs, type OpResultOf } from "../../../components/finance/ui";
+import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
+import { fmtDuration } from "../../../../lib/finance/loans";
 
 type Worth = OpResultOf<"get_net_worth">;
 type Loans = OpResultOf<"list_finance_loans">["loans"];

@@ -1,11 +1,11 @@
 // Bottom tab bar.
 //   - Today    snapshot of today's events + tasks
 //   - Janet    agent chat (Phase 2A)
-//   - Tasks    full task CRUD (Phase 1B)
-//   - Home     Home Assistant device control (Phase 3)
+//   - Week     the week planner (get_week_plan)
+//   - Finance  overview, with transactions / budget / … stacked on top
 //   - Calendar agenda + create (Phase 1D)
-//   - More     launcher for everything else (shopping, reminders,
-//              ha-settings, photos, trips, notes, documents, security)
+//   - More     launcher for everything else (tasks, home devices,
+//              shopping, reminders, trips, documents, …)
 
 import { Ionicons } from "@expo/vector-icons";
 import { Tabs } from "expo-router";
@@ -37,20 +37,20 @@ export default function TabsLayout() {
         }}
       />
       <Tabs.Screen
-        name="tasks"
+        name="week"
         options={{
-          title: "Tasks",
+          title: "Week",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="checkmark-circle-outline" color={color} size={size} />
+            <Ionicons name="calendar-number-outline" color={color} size={size} />
           ),
         }}
       />
       <Tabs.Screen
-        name="home"
+        name="finance"
         options={{
-          title: "Home",
+          title: "Finance",
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home-outline" color={color} size={size} />
+            <Ionicons name="wallet-outline" color={color} size={size} />
           ),
         }}
       />

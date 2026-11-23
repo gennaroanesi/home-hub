@@ -9,10 +9,10 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { ACCENT, BudgetBar, Chip, openFinance, Card, FinanceHeader, HeaderButton, Money, WARN, ago, fs, useFinanceSync, type OpResultOf } from "../../../../components/finance/ui";
-import { fmtCurrency, fmtDate } from "../../../../../lib/finance/dates";
-import { groupAccountsByType } from "../../../../../lib/finance/accounts";
+import { callOp } from "../../../lib/ops";
+import { ACCENT, BudgetBar, Chip, openFinance, Card, FinanceHeader, HeaderButton, Money, WARN, ago, fs, useFinanceSync, type OpResultOf } from "../../../components/finance/ui";
+import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
+import { groupAccountsByType } from "../../../../lib/finance/accounts";
 
 type Summary = OpResultOf<"get_finance_summary">;
 
@@ -55,7 +55,7 @@ export default function FinanceOverview() {
     }
   }
 
-  const header = <FinanceHeader title="Finance" right={<HeaderButton icon="sync-outline" onPress={sync} busy={syncing} />} />;
+  const header = <FinanceHeader title="Finance" back={false} right={<HeaderButton icon="sync-outline" onPress={sync} busy={syncing} />} />;
 
   if (!s) {
     return (

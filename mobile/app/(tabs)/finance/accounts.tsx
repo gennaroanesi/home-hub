@@ -12,15 +12,15 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { getClient } from "../../../../lib/amplify";
-import { usePeople } from "../../../../lib/use-people";
-import { ACCENT, Card, openFinance, FinanceHeader, GOOD, HeaderButton, Money, WARN, ago, forgetFinanceAccounts, fs, type OpResultOf } from "../../../../components/finance/ui";
-import { AccountFormModal } from "../../../../components/finance/AccountFormModal";
-import { fmtCurrency, fmtDate } from "../../../../../lib/finance/dates";
-import { listAccounts } from "../../../../../lib/finance/data";
-import { accountTypeLabel } from "../../../../../lib/finance/accounts";
-import { simplefinConnectionLabel } from "../../../../../lib/finance/simplefin-connections";
+import { callOp } from "../../../lib/ops";
+import { getClient } from "../../../lib/amplify";
+import { usePeople } from "../../../lib/use-people";
+import { ACCENT, Card, openFinance, FinanceHeader, GOOD, HeaderButton, Money, WARN, ago, forgetFinanceAccounts, fs, type OpResultOf } from "../../../components/finance/ui";
+import { AccountFormModal } from "../../../components/finance/AccountFormModal";
+import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
+import { listAccounts } from "../../../../lib/finance/data";
+import { accountTypeLabel } from "../../../../lib/finance/accounts";
+import { simplefinConnectionLabel } from "../../../../lib/finance/simplefin-connections";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 

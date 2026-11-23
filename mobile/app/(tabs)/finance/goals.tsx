@@ -8,10 +8,10 @@ import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } 
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { callOp } from "../../../../lib/ops";
-import { GoalFormModal, type FinanceGoal } from "../../../../components/finance/GoalFormModal";
-import { BudgetBar, Chip, DANGER, FinanceHeader, GOOD, HeaderButton, fs, useFinanceAccounts } from "../../../../components/finance/ui";
-import { fmtCurrency, fmtDate } from "../../../../../lib/finance/dates";
+import { callOp } from "../../../lib/ops";
+import { GoalFormModal, type FinanceGoal } from "../../../components/finance/GoalFormModal";
+import { BudgetBar, Chip, DANGER, FinanceHeader, GOOD, HeaderButton, fs, useFinanceAccounts } from "../../../components/finance/ui";
+import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
 
 const STATUS_ICON = { HIT: "checkmark-circle", MISSED: "close-circle", PENDING: "ellipse-outline" } as const;
 const STATUS_COLOR = { HIT: GOOD, MISSED: DANGER, PENDING: "#999" } as const;

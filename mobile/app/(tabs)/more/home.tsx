@@ -30,7 +30,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getClient } from "../../lib/amplify";
+import { getClient } from "../../../lib/amplify";
 import {
   callService,
   fetchAllStates,
@@ -39,8 +39,8 @@ import {
   loadActiveHaConfig,
   loadHaConfig,
   type ActiveHaConfig,
-} from "../../lib/ha";
-import type { Schema } from "../../../amplify/data/resource";
+} from "../../../lib/ha";
+import type { Schema } from "../../../../amplify/data/resource";
 
 const POLL_INTERVAL_MS = 10_000;
 

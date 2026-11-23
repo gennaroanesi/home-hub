@@ -32,7 +32,8 @@ interface FeatureRow {
 }
 
 const FEATURE_ROWS: FeatureRow[] = [
-  { label: "Week planner", icon: "calendar-outline", route: "/more/week" },
+  { label: "Tasks", icon: "checkmark-circle-outline", route: "/more/tasks" },
+  { label: "Home devices", icon: "home-outline", route: "/more/home" },
   { label: "Shopping", icon: "cart-outline", route: "/more/shopping" },
   { label: "Reminders", icon: "alarm-outline", route: "/more/reminders" },
   { label: "Checklists", icon: "checkbox-outline", route: "/more/checklists" },
@@ -40,14 +41,14 @@ const FEATURE_ROWS: FeatureRow[] = [
   {
     label: "Finance",
     icon: "wallet-outline",
-    route: "/more/finance",
+    route: "/finance",
     sub: [
-      { label: "Overview", route: "/more/finance" },
-      { label: "Transactions", route: "/more/finance/transactions" },
-      { label: "Budget", route: "/more/finance/budget" },
-      { label: "Scheduled", route: "/more/finance/scheduled" },
-      { label: "Goals", route: "/more/finance/goals" },
-      { label: "Accounts", route: "/more/finance/accounts" },
+      { label: "Overview", route: "/finance" },
+      { label: "Transactions", route: "/finance/transactions" },
+      { label: "Budget", route: "/finance/budget" },
+      { label: "Scheduled", route: "/finance/scheduled" },
+      { label: "Goals", route: "/finance/goals" },
+      { label: "Accounts", route: "/finance/accounts" },
     ],
   },
   {

@@ -3,7 +3,8 @@
 // /finance/budget — the household budget for a month, quarter or year:
 // what each of us planned to put in vs what came in, what went to savings,
 // each spending line's pace, what isn't budgeted, and every budget series
-// with its versions.
+// with its versions. Every line and every "Not budgeted" category opens to
+// its transactions, each recategorized in place (BudgetTxList).
 // Computation is lib/finance/budget.ts (householdBudget); writes go
 // through the save_finance_budget op, which versions lines.
 
@@ -19,6 +20,7 @@ import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { BudgetBar, EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
+import { BudgetTxList } from "@/components/finance/budget-tx-list";
 import { BudgetLineModal, draftFromLine, emptyDraft, type BudgetDraft } from "@/components/finance/budget-line-modal";
 import { callOp } from "@/lib/ops-client";
 import {
@@ -65,6 +67,7 @@ export default function BudgetPage() {
   const [seeds, setSeeds] = useState<CategorySeed[] | null>(null);
   const [seeding, setSeeding] = useState(false);
   const [pickTarget, setPickTarget] = useState<string>("");
+  const [savingCat, setSavingCat] = useState<Set<string>>(new Set());
 
   const activeAccountIds = useMemo(() => householdAccounts(refs.accounts).map((a) => a.id), [refs.accounts]);
 
@@ -139,6 +142,35 @@ export default function BudgetPage() {
       setSeeding(false);
     }
   }
+
+  /** Recategorize one row from a budget list: saved through the op, the row updated in place so the budget recomputes. */
+  async function recategorize(t: any, picked: string | null) {
+    const before = { category: t.category ?? null, categorySource: t.categorySource ?? null };
+    if ((picked ?? null) === before.category && before.categorySource !== "LLM") return;
+    const patch = { category: picked, categorySource: picked ? "MANUAL" : null };
+    const setRow = (p: Record<string, unknown>) => setTxs((ts) => ts.map((x) => (x.id === t.id ? { ...x, ...p } : x)));
+    setRow(patch);
+    setSavingCat((s) => new Set(s).add(t.id));
+    let error: string | null = null;
+    try {
+      const r = await callOp(financeClient, "update_finance_transaction", { transactionId: t.id, category: picked });
+      if ("error" in r) error = r.error;
+      else if (r.result.newCategories.length) void refs.reload();
+    } catch (e) {
+      error = e instanceof Error ? e.message : String(e);
+    }
+    setSavingCat((s) => {
+      const n = new Set(s);
+      n.delete(t.id);
+      return n;
+    });
+    if (error) {
+      setRow(before);
+      addToast({ title: "Couldn't change the category", description: error, color: "danger" });
+    }
+  }
+  const txList = (rows: any[], allHref?: string) => <BudgetTxList txs={rows} categories={refs.categories} rules={refs.rules} saving={savingCat} onRecategorize={recategorize} allHref={allHref} />;
+  const txHref = (cats: string[], r: { fromIso: string; toIso: string }) => `/finance/transactions?category=${cats.map(encodeURIComponent).join(",")}&from=${r.fromIso}&to=${r.toIso > today ? today : r.toIso}`;
 
   function addToLine(category: string) {
     const target = view.expenseViews.find((v) => v.line.seriesId === pickTarget);
@@ -345,7 +377,7 @@ export default function BudgetPage() {
                       share={view.allocated > 0 ? v.budgeted / view.allocated : null}
                       open={expanded === v.line.seriesId}
                       onToggle={() => setExpanded(expanded === v.line.seriesId ? null : v.line.seriesId)}
-                      txs={expanded === v.line.seriesId ? budgetTransactions(txsOf(v.line.ledger), range, bucketCategories(v.line)) : []}
+                      list={expanded === v.line.seriesId ? txList(budgetTransactions(txsOf(v.line.ledger), range, bucketCategories(v.line)), txHref(bucketCategories(v.line), range)) : null}
                       owner={ledger === ALL_LEDGERS ? ledgerLabel(v.line.ledger, refs.people) : undefined}
                       onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
                       onEnd={() => endSeries(v.line.seriesId, v.line.name)}
@@ -371,7 +403,7 @@ export default function BudgetPage() {
                       v={v}
                       open={expanded === v.line.seriesId}
                       onToggle={() => setExpanded(expanded === v.line.seriesId ? null : v.line.seriesId)}
-                      txs={expanded === v.line.seriesId ? budgetTransactions(txsOf(v.line.ledger), spanRange(v.line), bucketCategories(v.line)) : []}
+                      list={expanded === v.line.seriesId ? txList(budgetTransactions(txsOf(v.line.ledger), spanRange(v.line), bucketCategories(v.line)), txHref(bucketCategories(v.line), spanRange(v.line))) : null}
                       owner={ledger === ALL_LEDGERS ? ledgerLabel(v.line.ledger, refs.people) : undefined}
                       onEdit={() => setDraft(draftFromLine(v.line, newFrom))}
                     />
@@ -400,18 +432,30 @@ export default function BudgetPage() {
                 </Select>
               </CardHeader>
               <CardBody className="pt-0 gap-1">
-                <p className="text-xs text-default-500 mb-1">Spending in categories no line covers. Pick a line above (or none for a new one), then add.</p>
-                {view.unassigned.map((u) => (
-                  <div key={u.category} className="flex items-center justify-between text-sm py-1">
-                    <span>{u.category}</span>
-                    <span className="flex items-center gap-3">
-                      <Money value={u.spent} />
-                      <Button size="sm" variant="flat" onPress={() => addToLine(u.category)}>
-                        Add to line…
-                      </Button>
-                    </span>
-                  </div>
-                ))}
+                <p className="text-xs text-default-500 mb-1">
+                  Spending in categories no line covers. Open one to see its transactions and recategorize them, or pick a line above (or none for a new one), then add.
+                </p>
+                {view.unassigned.map((u) => {
+                  const key = `unbudgeted:${u.category}`;
+                  const open = expanded === key;
+                  return (
+                    <div key={u.category} className="py-1">
+                      <div className="flex items-center justify-between text-sm gap-2">
+                        <button type="button" className="text-left flex items-center gap-1 min-w-0" onClick={() => setExpanded(open ? null : key)}>
+                          {open ? <FaChevronUp className="text-xs shrink-0" /> : <FaChevronDown className="text-xs shrink-0" />}
+                          <span className="truncate">{u.category}</span>
+                        </button>
+                        <span className="flex items-center gap-3">
+                          <Money value={u.spent} />
+                          <Button size="sm" variant="flat" onPress={() => addToLine(u.category)}>
+                            Add to line…
+                          </Button>
+                        </span>
+                      </div>
+                      {open && <div className="mt-2 ml-4 mb-2">{txList(budgetTransactions(ledger === ALL_LEDGERS ? txs : txsOf(ledger), range, [u.category]), txHref([u.category], range))}</div>}
+                    </div>
+                  );
+                })}
               </CardBody>
             </Card>
           )}
@@ -617,7 +661,7 @@ function ExpenseRow({
   v,
   open,
   onToggle,
-  txs,
+  list,
   onEdit,
   onEnd,
   share,
@@ -630,7 +674,8 @@ function ExpenseRow({
   share: number | null;
   open: boolean;
   onToggle: () => void;
-  txs: any[];
+  /** Its transactions (BudgetTxList), when open. */
+  list: React.ReactNode;
   onEdit: () => void;
   onEnd: () => void;
 }) {
@@ -707,29 +752,12 @@ function ExpenseRow({
         </span>
         <LineActions line={v.line} onEdit={onEdit} onEnd={onEnd} />
       </div>
-      {open && (
-        <div className="mt-2 ml-4 text-sm flex flex-col gap-1">
-          {txs.length === 0 ? (
-            <span className="text-default-500">No spending yet.</span>
-          ) : (
-            txs.map((t) => (
-              <div key={t.id} className="flex justify-between gap-2">
-                <span className="truncate">
-                  <span className="text-default-400 tabular-nums mr-2">{fmtDate(t.date)}</span>
-                  {t.description}
-                  {cats.length > 1 && <span className="text-default-400"> · {t.category}</span>}
-                </span>
-                <Money value={t.amount} />
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      {open && <div className="mt-2 ml-4">{list}</div>}
     </div>
   );
 }
 
-function SpanRow({ v, open, onToggle, txs, onEdit, owner }: { v: BudgetLineView; open: boolean; onToggle: () => void; txs: any[]; onEdit: () => void; owner?: string }) {
+function SpanRow({ v, open, onToggle, list, onEdit, owner }: { v: BudgetLineView; open: boolean; onToggle: () => void; list: React.ReactNode; onEdit: () => void; owner?: string }) {
   const cats = bucketCategories(v.line);
   const d = (iso?: string | null) => (iso ? fmtDate(iso, { month: "short", day: "numeric", year: "numeric" }) : "?");
   return (
@@ -765,24 +793,7 @@ function SpanRow({ v, open, onToggle, txs, onEdit, owner }: { v: BudgetLineView;
         </span>
       </div>
       <BudgetBar spent={v.spent} budgeted={v.budgeted} />
-      {open && (
-        <div className="mt-1 ml-4 flex flex-col gap-1">
-          {txs.length === 0 ? (
-            <span className="text-default-500">No spending yet.</span>
-          ) : (
-            txs.map((t) => (
-              <div key={t.id} className="flex justify-between gap-2">
-                <span className="truncate">
-                  <span className="text-default-400 tabular-nums mr-2">{fmtDate(t.date)}</span>
-                  {t.description}
-                  <span className="text-default-400"> · {t.category}</span>
-                </span>
-                <Money value={t.amount} />
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      {open && <div className="mt-1 ml-4">{list}</div>}
     </div>
   );
 }

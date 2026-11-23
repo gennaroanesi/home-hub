@@ -97,7 +97,7 @@ Computed in `lib/week-plan.ts` (`buildWeekPlan`):
 | `lib/ops/week.ts` | `get_week_plan`, `set_day_status`, `assign_event_people`, `set_pet_day`, `mark_week_reviewed`, `set_week_notes`; `loadWeekPlan` shared with the Lambda |
 | `components/week/week-notes.tsx` | The week's notes on the web page: markdown rendered in place, click to edit, saved with `set_week_notes` (never through the review mark) |
 | `pages/week.tsx`, `components/week/week-sections.tsx` | Web page and its section cards |
-| `mobile/app/(tabs)/more/week.tsx`, `mobile/lib/ops.ts` | Mobile screen (notes rendered with `mobile/components/Markdown.tsx` over `lib/markdown.ts`, Edit / Save, review Undo); `callOp` over raw GraphQL (the bundled outputs predate `runOp`) |
+| `mobile/app/(tabs)/week.tsx`, `mobile/lib/ops.ts` | Mobile screen (its own bottom tab since 2026-11-23) (notes rendered with `mobile/components/Markdown.tsx` over `lib/markdown.ts`, Edit / Save, review Undo); `callOp` over raw GraphQL (the bundled outputs predate `runOp`) |
 | `amplify/functions/week-review/` | Sunday nudge. Invoke with `{"dryRun": true}` to log the message without sending |
 
 Janet also has the older `set_calendar_day` / `list_calendar_days` tools for

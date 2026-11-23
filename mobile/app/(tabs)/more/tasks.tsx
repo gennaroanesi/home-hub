@@ -17,12 +17,12 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { getClient } from "../../lib/amplify";
-import { resolveCurrentPerson } from "../../lib/current-person";
-import { formatRecurrence } from "../../lib/recurrence";
-import { formatAssignees, usePeople, type Person } from "../../lib/use-people";
-import { TaskFormModal } from "../../components/TaskFormModal";
-import type { Schema } from "../../../amplify/data/resource";
+import { getClient } from "../../../lib/amplify";
+import { resolveCurrentPerson } from "../../../lib/current-person";
+import { formatRecurrence } from "../../../lib/recurrence";
+import { formatAssignees, usePeople, type Person } from "../../../lib/use-people";
+import { TaskFormModal } from "../../../components/TaskFormModal";
+import type { Schema } from "../../../../amplify/data/resource";
 
 type Task = Schema["homeTask"]["type"];
 type StatusFilter = "open" | "completed" | "all";
