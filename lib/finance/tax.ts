@@ -142,6 +142,8 @@ export type TaxPaycheck = {
   ytdBonusGross?: number | null;
   ytdRsuGross?: number | null;
   ytdSupplementalFedWh?: number | null;
+  fedWh?: number | null;
+  supplementalFedWh?: number | null;
   lineItems?: unknown;
 };
 
@@ -202,12 +204,30 @@ export function sortLatestFirst<P extends TaxPaycheck>(paychecks: P[]): P[] {
 }
 
 const salaryOf = (p: TaxPaycheck) => Math.max(0, (p.gross ?? 0) - (p.bonusGross ?? 0) - (p.rsuGross ?? 0));
+const isSupplementalOnly = (p: TaxPaycheck) => salaryOf(p) === 0 && (p.rsuGross ?? 0) + (p.bonusGross ?? 0) > 0;
+
+/**
+ * Federal withholding on supplemental wages so far. Stubs don't print it
+ * (Workday shows one federal line), so it is a running sum that only some
+ * rows carry: the latest `ytdSupplementalFedWh` on record, plus the federal
+ * withholding of any RSU- or bonus-only stubs after it. With no row carrying
+ * it, the supplemental-only stubs' withholding; null when nothing is known.
+ */
+export function ytdSupplementalFedWhOf(latestFirst: TaxPaycheck[]): number | null {
+  const withheldOn = (p: TaxPaycheck) => (p.supplementalFedWh != null && p.supplementalFedWh > 0 ? p.supplementalFedWh : (p.fedWh ?? 0));
+  const at = latestFirst.findIndex((p) => p.ytdSupplementalFedWh != null);
+  const later = at < 0 ? latestFirst : latestFirst.slice(0, at);
+  const added = later.filter(isSupplementalOnly).reduce((s, p) => s + withheldOn(p), 0);
+  if (at >= 0) return Math.max(0, latestFirst[at].ytdSupplementalFedWh!) + added;
+  return later.some(isSupplementalOnly) ? added : null;
+}
 
 /**
  * One person's full-year projection from their paychecks for the year.
  * Salary extrapolates linearly from the count of regular stubs; RSU vests
  * on the chosen cadence; bonuses held flat. Federal withholding on
- * supplemental wages uses the observed rate when the stubs show it.
+ * supplemental wages uses the observed rate when the stubs show it
+ * (`ytdSupplementalFedWhOf`), else the IRS flat 22%.
  */
 export function projectFromPaychecks(args: { paychecks: TaxPaycheck[]; rsuVestCadence: RsuVestCadence; paychecksPerYearOverride?: number }): YtdProjection | null {
   const { paychecks, rsuVestCadence } = args;
@@ -225,7 +245,7 @@ export function projectFromPaychecks(args: { paychecks: TaxPaycheck[]; rsuVestCa
   const supplementalYtd = ytdRsuGross + ytdBonusGross;
   const ytdSalaryGross = paychecks.reduce((s, p) => s + salaryOf(p), 0);
   const ytdTaxableSalary = Math.max(0, (latest.ytdTaxableWage ?? 0) - supplementalYtd);
-  const ytdSupplementalFedWh = latest.ytdSupplementalFedWh != null ? Math.max(0, latest.ytdSupplementalFedWh) : supplementalYtd * SUPPLEMENTAL_FED_RATE;
+  const ytdSupplementalFedWh = ytdSupplementalFedWhOf(sorted) ?? supplementalYtd * SUPPLEMENTAL_FED_RATE;
   const ytdSalaryFedWh = Math.max(0, (latest.ytdFedWh ?? 0) - ytdSupplementalFedWh);
 
   const projectedGross = ytdSalaryGross * scale;

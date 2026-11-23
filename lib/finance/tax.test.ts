@@ -13,7 +13,9 @@ import {
   project401kWithCap,
   projectFromPaychecks,
   safeHarbor,
+  sortLatestFirst,
   taxOwedFederal,
+  ytdSupplementalFedWhOf,
   type TaxPaycheck,
 } from "./tax";
 
@@ -70,6 +72,33 @@ describe("projection", () => {
     expect(p.projectedTaxableWage).toBe(160000);
     // Salary WH 2,000 × 8 + supplemental 3,000 + 30,000 more RSU at the observed 30%
     expect(p.projectedFedWh).toBeCloseTo(16000 + 3000 + 9000, 6);
+  });
+
+  it("carries supplemental withholding forward past stubs that don't record it", () => {
+    const regular = (date: string, over: Partial<TaxPaycheck> = {}) => stub(date, { periodStart: date, periodEnd: date, ...over });
+    const vest = (date: string, over: Partial<TaxPaycheck> = {}) => stub(date, { gross: 0, rsuGross: 10000, fedWh: 3000, ...over });
+    // An emailed regular stub after the last backfilled one: the YTD figure is kept, not replaced by 22%.
+    const trailingNull = [regular("2026-01-15", { ytdSupplementalFedWh: 3000, ytdRsuGross: 10000 }), regular("2026-01-31", { ytdRsuGross: 10000 })];
+    expect(ytdSupplementalFedWhOf(sortLatestFirst(trailingNull))).toBe(3000);
+    // A vest after it adds its own withholding (the stub's supplementalFedWh when present, else fedWh).
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([...trailingNull, vest("2026-02-15")]))).toBe(6000);
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([...trailingNull, vest("2026-02-15", { supplementalFedWh: 2500 })]))).toBe(5500);
+    // A later stub that records the field wins over the derivation.
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([...trailingNull, vest("2026-02-15"), regular("2026-02-28", { ytdSupplementalFedWh: 6100 })]))).toBe(6100);
+    // Nothing recorded anywhere: the vest-only stubs' withholding; null without any.
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([regular("2026-01-15"), vest("2026-02-15")]))).toBe(3000);
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([regular("2026-01-15"), regular("2026-01-31")]))).toBeNull();
+    // Same day as a regular stub that already folds it in: the tie-break puts the regular stub later, nothing is double counted.
+    expect(ytdSupplementalFedWhOf(sortLatestFirst([vest("2026-02-15", { ytdTaxableWage: 30000 }), regular("2026-02-15", { ytdTaxableWage: 35000, ytdSupplementalFedWh: 3000 })]))).toBe(3000);
+
+    const paychecks = [
+      stub("2026-01-15", { periodStart: "2026-01-01", periodEnd: "2026-01-14", ytdTaxableWage: 15000, ytdFedWh: 3000 }),
+      vest("2026-02-15"),
+      stub("2026-02-28", { periodStart: "2026-02-12", periodEnd: "2026-02-25", ytdTaxableWage: 25000, ytdFedWh: 6500, ytdRsuGross: 10000 }),
+    ];
+    const p = projectFromPaychecks({ paychecks, rsuVestCadence: "QUARTERLY" })!;
+    // Salary WH (6,500 − 3,000) scaled to 26 stubs over 2, + 3,000, + 30,000 more RSU at the observed 30%.
+    expect(p.projectedFedWh).toBeCloseTo(3500 * 13 + 3000 + 9000, 6);
   });
 });
 
