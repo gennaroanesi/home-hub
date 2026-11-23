@@ -95,6 +95,17 @@ describe("paycheck drafts", () => {
     expect(matchPerson(people, "John Smith")).toBeNull();
     expect(matchPerson(people, null)).toBeNull();
   });
+  it("matches a stub's full first name to a household short name", () => {
+    const short = [
+      { id: "g", name: "Gennaro" },
+      { id: "c", name: "Cris" },
+    ];
+    expect(matchPerson(short, "Cristine Marcon Borges")?.id).toBe("c");
+    expect(matchPerson(short, "BORGES, CRISTINE")?.id).toBe("c");
+    expect(matchPerson(short, "Gennaro Anesi")?.id).toBe("g");
+    expect(matchPerson(short, "Crisanto Lopes")?.id).toBe("c"); // four letters is all a short name can offer
+    expect(matchPerson([{ id: "k", name: "Kim" }], "Kimberly Jones")).toBeNull(); // three is too few
+  });
 
   it("keeps known fields and serializes line items", () => {
     expect(draftToPaycheck({ employeeName: "x", payDate: "2026-11-01", gross: 5000, net: 3500, junk: 1, lineItems: [{ name: "ESPP", amount: 100, type: "POSTTAX" }] })).toEqual({

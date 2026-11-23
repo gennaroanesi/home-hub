@@ -5,7 +5,8 @@
 /**
  * The household member a stub belongs to, by the employee name on it:
  * exact full name, then first name, then a first name that starts the same
- * (Cristina / Cristine). Null when unsure.
+ * (Cristina / Cristine, or a household short name like Cris for Cristine).
+ * Null when unsure.
  */
 export function matchPerson<P extends { id: string; name: string }>(people: P[], employeeName: string | null | undefined): P | null {
   const name = (employeeName ?? "").trim().toLowerCase();
@@ -24,7 +25,9 @@ export function matchPerson<P extends { id: string; name: string }>(people: P[],
     if (!f || f.length < 4) continue;
     const hits = people.filter((p) => {
       const pf = p.name.trim().toLowerCase().split(/\s+/)[0];
-      return pf.length >= 4 && pf.slice(0, 5) === f.slice(0, 5);
+      // The first few letters, as many as the shorter name has (at least 4).
+      const n = Math.min(5, pf.length, f.length);
+      return n >= 4 && pf.slice(0, n) === f.slice(0, n);
     });
     if (hits.length === 1) return hits[0];
   }
