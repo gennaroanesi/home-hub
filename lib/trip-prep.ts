@@ -1,7 +1,8 @@
 // Trip prep: what every trip gets automatically.
 //
 //  1. Checklist templates flagged `autoAttachTrips` are copied onto the
-//     trip (once each: the copy remembers `sourceTemplateId`). A deleted
+//     trip (once each: the copy remembers `sourceTemplateId`; its name
+//     drops "template", checklistNameFromTemplate). A deleted
 //     copy comes back on the next save; to drop one from a trip, archive
 //     it (archived copies still count as attached). Flagging a template
 //     later adds it to every upcoming trip.
@@ -11,6 +12,10 @@
 //     reminder sweep lists whatever is still unchecked on the trip's
 //     checklists (departureMessage).
 //
+//  3. Once a trip is over (endDate before today), its checklists are
+//     archived (archivePastTripChecklists), once: a list unarchived by hand
+//     keeps its archivedAt and is left alone.
+//
 // ensureTripPrep is idempotent and runs after every trip / leg save (web,
 // phone, Janet) and from the reminder sweep for upcoming trips, so a save
 // path that forgets to call it is caught within minutes.
@@ -19,6 +24,7 @@ import type { ReminderItem } from "./reminder-schedule";
 import { DEFAULT_HOUSEHOLD_TZ, parseItems } from "./reminder-schedule";
 import { getHouseholdTimezone } from "./household-settings";
 import { parseLegIso } from "./trip";
+import { archivePatch, copyChecklist } from "./checklist";
 
 export const DEPARTURE_REMINDER_KIND = "trip-departure";
 export const DEPARTURE_LEAD_HOURS = 5;
@@ -119,29 +125,6 @@ async function listAll(model: any, args: Record<string, unknown>): Promise<any[]
   return out;
 }
 
-async function copyTemplate(c: Client, template: any, tripId: string, sortOrder: number) {
-  const { data: copy, errors } = await c.models.homeChecklist.create({
-    entityType: "TRIP",
-    entityId: tripId,
-    name: template.name,
-    sortOrder,
-    sourceTemplateId: template.id,
-  });
-  if (errors?.length || !copy) throw new Error(`copying "${template.name}": ${errors?.[0]?.message ?? "no row"}`);
-  const items = (await listAll(c.models.homeChecklistItem, { filter: { checklistId: { eq: template.id } } })).sort(
-    (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0),
-  );
-  for (const i of items) {
-    await c.models.homeChecklistItem.create({
-      checklistId: copy.id,
-      text: i.text,
-      isDone: false,
-      sortOrder: i.sortOrder ?? 0,
-      ...(i.section ? { section: i.section } : {}),
-    });
-  }
-}
-
 export type TripPrepResult = { checklistsAdded: string[]; reminder: "created" | "moved" | "kept" | "none" | "fired" };
 
 /**
@@ -167,8 +150,8 @@ export async function ensureTripPrep(
   const have = new Set(onTrip.map((l) => l.sourceTemplateId).filter(Boolean));
   let order = onTrip.length;
   for (const t of templates.filter((t) => t.isArchived !== true && !have.has(t.id)).sort((a, b) => a.name.localeCompare(b.name))) {
-    await copyTemplate(c, t, tripId, order++);
-    result.checklistsAdded.push(t.name);
+    const copy = await copyChecklist(c, t, { entityType: "TRIP", entityId: tripId, sortOrder: order++ });
+    result.checklistsAdded.push(copy.name);
   }
 
   // 2. Departure reminder.
@@ -209,6 +192,27 @@ export async function ensureTripPrep(
   const { errors } = await c.models.homeReminder.update({ id: existing.id, ...row });
   if (errors?.length) throw new Error(`departure reminder: ${errors[0].message}`);
   return { ...result, reminder: "moved" };
+}
+
+/**
+ * Archive the checklists of trips that ended before `today` (YYYY-MM-DD),
+ * each once: one with an archivedAt was archived before (and maybe brought
+ * back on purpose), so it's skipped. Returns the ids archived.
+ */
+export async function archivePastTripChecklists(c: Client, today: string, now: Date = new Date()): Promise<string[]> {
+  const [trips, lists] = await Promise.all([
+    listAll(c.models.homeTrip, {}),
+    listAll(c.models.homeChecklist, { filter: { entityType: { eq: "TRIP" } } }),
+  ]);
+  const ended = new Set(trips.filter((t) => t.endDate && t.endDate < today).map((t) => t.id));
+  const archived: string[] = [];
+  for (const l of lists) {
+    if (!ended.has(l.entityId) || l.isArchived === true || l.archivedAt) continue;
+    const { errors } = await c.models.homeChecklist.update({ id: l.id, ...archivePatch(true, now) });
+    if (errors?.length) throw new Error(`archiving "${l.name}": ${errors[0].message}`);
+    archived.push(l.id);
+  }
+  return archived;
 }
 
 /** ensureTripPrep that never throws (for save paths: the trip is saved either way). */

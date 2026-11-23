@@ -21,6 +21,7 @@ import {
 } from "../../../lib/reminder-parent.js";
 import { cascadeDeleteNotesFor } from "../../../lib/note-parent.js";
 import { ensureTripPrepQuietly } from "../../../lib/trip-prep.js";
+import { copyChecklist } from "../../../lib/checklist.js";
 import {
   DEFAULT_ICAO,
   fetchAirportWeather,
@@ -4190,21 +4191,9 @@ async function executeTool(
         }
         const { data: tmpl } = await client.models.homeChecklist.get({ id: input.templateId });
         if (!tmpl) return JSON.stringify({ error: "Template not found" });
-        const { data: newCl } = await client.models.homeChecklist.create({
-          entityType: input.entityType, entityId: input.entityId, name: tmpl.name, sortOrder: 0,
-        });
-        if (!newCl) return JSON.stringify({ error: "Failed to create checklist from template" });
-        const { data: tmplItems } = await client.models.homeChecklistItem.list({
-          filter: { checklistId: { eq: tmpl.id } }, limit: 500,
-        });
-        let itemsCopied = 0;
-        for (const item of (tmplItems ?? []).sort((a: any, b: any) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
-          await client.models.homeChecklistItem.create({
-            checklistId: newCl.id, text: item.text, section: item.section, isDone: false, sortOrder: item.sortOrder ?? 0,
-          });
-          itemsCopied++;
-        }
-        return JSON.stringify({ success: true, checklistId: newCl.id, name: tmpl.name, itemsCopied });
+        // Same copy as the web's "From template" (lib/checklist.ts): the name drops "template", sourceTemplateId is kept.
+        const copy = await copyChecklist(client, tmpl, { entityType: input.entityType, entityId: input.entityId });
+        return JSON.stringify({ success: true, checklistId: copy.id, name: copy.name, itemsCopied: copy.itemsCopied });
       }
 
       return JSON.stringify({ error: `Unknown action: ${action}` });

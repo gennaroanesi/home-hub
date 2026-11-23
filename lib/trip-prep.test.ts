@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { DEPARTURE_REMINDER_KIND, departureMessage, ensureTripPrep, legInstant, tripDeparture } from "./trip-prep";
+import { DEPARTURE_REMINDER_KIND, archivePastTripChecklists, departureMessage, ensureTripPrep, legInstant, tripDeparture } from "./trip-prep";
+import { archivePatch, checklistNameFromTemplate } from "./checklist";
 
 describe("leg times", () => {
   it("reads the stored wall clock in the origin's timezone", () => {
@@ -82,7 +83,7 @@ const seed = () => ({
   homeTrip: [{ id: "t1", name: "Seattle", startDate: "2026-11-16", endDate: "2026-11-20", participantIds: ["p1"] }],
   homeTripLeg: [{ id: "l1", tripId: "t1", departAt: "2026-11-16T19:07:00.000Z", fromLocation: { timezone: "America/Chicago" } }],
   homeChecklist: [
-    { id: "tpl", entityType: "TEMPLATE", entityId: "templates", name: "Every trip", autoAttachTrips: true },
+    { id: "tpl", entityType: "TEMPLATE", entityId: "templates", name: "Every trip - Template", autoAttachTrips: true },
     { id: "tpl2", entityType: "TEMPLATE", entityId: "templates", name: "Camping" },
   ],
   homeChecklistItem: [
@@ -97,7 +98,7 @@ describe("ensureTripPrep", () => {
     const r = await ensureTripPrep(client, "t1", { now: NOW, householdTz: "America/Chicago" });
     expect(r).toEqual({ checklistsAdded: ["Every trip"], reminder: "created" });
     const copy = tables.homeChecklist.find((l) => l.entityType === "TRIP")!;
-    expect(copy).toMatchObject({ entityId: "t1", name: "Every trip", sourceTemplateId: "tpl" });
+    expect(copy).toMatchObject({ entityId: "t1", name: "Every trip", sourceTemplateId: "tpl" }); // "- Template" dropped
     expect(tables.homeChecklistItem.filter((i) => i.checklistId === copy.id).map((i) => [i.text, i.isDone, i.section])).toEqual([
       ["Power bank", false, undefined],
       ["Chargers", false, "Tech"],
@@ -150,5 +151,39 @@ describe("ensureTripPrep", () => {
     const { client, tables } = fakeClient(s);
     await ensureTripPrep(client, "t1", { now: NOW, householdTz: "America/Chicago" });
     expect(tables.homeReminder[0]).toMatchObject({ targetKind: "GROUP", personId: null });
+  });
+});
+
+describe("template names and finished trips", () => {
+  it("a copy drops the word template", () => {
+    expect(checklistNameFromTemplate("Pre-trip Template")).toBe("Pre-trip");
+    expect(checklistNameFromTemplate("Dolce - Template")).toBe("Dolce");
+    expect(checklistNameFromTemplate("Template: Camping")).toBe("Camping");
+    expect(checklistNameFromTemplate("Templates of life")).toBe("Templates of life");
+    expect(checklistNameFromTemplate("Template")).toBe("Template");
+    expect(checklistNameFromTemplate("Essentials")).toBe("Essentials");
+  });
+
+  it("archives a finished trip's lists once, and leaves one brought back alone", async () => {
+    const { client, tables } = fakeClient({
+      homeTrip: [
+        { id: "past", name: "Seattle", startDate: "2026-11-16", endDate: "2026-11-21" },
+        { id: "now", name: "Cancun", startDate: "2026-11-24", endDate: "2026-12-01" },
+      ],
+      homeChecklist: [
+        { id: "a", entityType: "TRIP", entityId: "past", name: "Pre-trip" },
+        { id: "b", entityType: "TRIP", entityId: "past", name: "Packing", isArchived: true, archivedAt: "2026-11-22T00:00:00Z" },
+        { id: "c", entityType: "TRIP", entityId: "past", name: "Back again", isArchived: false, archivedAt: "2026-11-22T00:00:00Z" },
+        { id: "d", entityType: "TRIP", entityId: "now", name: "Essentials" },
+      ],
+    });
+    const now = new Date("2026-11-23T15:00:00Z");
+    expect(await archivePastTripChecklists(client, "2026-11-23", now)).toEqual(["a"]);
+    expect(tables.homeChecklist.find((l) => l.id === "a")).toMatchObject({ isArchived: true, archivedAt: now.toISOString() });
+    expect(tables.homeChecklist.find((l) => l.id === "c")!.isArchived).toBe(false);
+    expect(await archivePastTripChecklists(client, "2026-11-23", now)).toEqual([]);
+    // Ends today: still on.
+    expect(await archivePastTripChecklists(client, "2026-12-01", now)).toEqual([]);
+    expect(archivePatch(false)).toEqual({ isArchived: false });
   });
 });

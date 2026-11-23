@@ -1,9 +1,9 @@
-// Checklists list — mirrors pages/checklists.tsx on web.
+// Checklists list — mirrors pages/checklists.tsx on web: tabs Active,
+// Archived (past trips' lists archive themselves, lib/trip-prep.ts) and
+// Templates, where a template is opened to edit it (?tab=templates).
 //
-//   • Templates section at the top (TEMPLATE entity type, shared
-//     entityId "templates"). Tap a template to open + check off.
-//   • Below that, every non-template checklist grouped by its
-//     entityType (Trips / Events / Tasks / Bills / Documents / Other).
+//   • Active / Archived: every non-template checklist grouped by its
+//     entityType (Trips / Events / Tasks / Documents / Other).
 //   • "+" header button opens the create modal: pick entity type →
 //     pick a specific entity → enter name → land in the detail
 //     screen so you can start adding items.
@@ -28,18 +28,17 @@ import {
   View,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { router, useFocusEffect } from "expo-router";
+import { router, useFocusEffect, useLocalSearchParams } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
 import {
-  ARCHIVE_FILTERS,
+  AUTO_ATTACH_LABEL,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
   ENTITY_TYPE_SINGULAR,
   TEMPLATE_ENTITY_ID,
   matchesArchiveFilter,
-  type ArchiveFilter,
   type Checklist,
   type EntityType,
 } from "../../../../lib/checklist";
@@ -79,12 +78,21 @@ interface EntityOption {
   label: string;
 }
 
+type Tab = "ACTIVE" | "ARCHIVED" | "TEMPLATES";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "ACTIVE", label: "Active" },
+  { id: "ARCHIVED", label: "Archived" },
+  { id: "TEMPLATES", label: "Templates" },
+];
+
 export default function ChecklistsList() {
+  const params = useLocalSearchParams<{ tab?: string }>();
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [checklists, setChecklists] = useState<ChecklistRow[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
-  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("ACTIVE");
+  const [tab, setTab] = useState<Tab>(() => (params.tab?.toUpperCase() === "TEMPLATES" ? "TEMPLATES" : params.tab?.toUpperCase() === "ARCHIVED" ? "ARCHIVED" : "ACTIVE"));
+  const archiveFilter = tab === "ARCHIVED" ? "ARCHIVED" : "ACTIVE";
 
   // Create modal state
   const [createOpen, setCreateOpen] = useState(false);
@@ -178,8 +186,10 @@ export default function ChecklistsList() {
   // type so the user picks one.
 
   function openCreate() {
-    setCreateType("TEMPLATE");
-    setCreateEntityId(TEMPLATE_ENTITY_ID);
+    const type: EntityType = tab === "TEMPLATES" ? "TEMPLATE" : "TRIP";
+    setCreateType(type);
+    setCreateEntityId(defaultEntityId(type));
+    if (type !== "TEMPLATE") void loadEntities(type);
     setCreateEntityName("");
     setCreateName("");
     setEntityOptions([]);
@@ -254,10 +264,10 @@ export default function ChecklistsList() {
 
   const templates = useMemo(
     () =>
-      filtered
+      checklists
         .filter((c) => c.entityType === "TEMPLATE")
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [filtered]
+    [checklists]
   );
 
   const grouped = useMemo(() => {
@@ -292,12 +302,12 @@ export default function ChecklistsList() {
       </View>
 
       <View style={styles.filterRow}>
-        {ARCHIVE_FILTERS.map((f) => {
-          const on = archiveFilter === f.id;
+        {TABS.map((f) => {
+          const on = tab === f.id;
           return (
             <Pressable
               key={f.id}
-              onPress={() => setArchiveFilter(f.id)}
+              onPress={() => setTab(f.id)}
               style={[styles.pill, on && styles.pillOn]}
             >
               <Text style={[styles.pillText, on && styles.pillTextOn]}>
@@ -314,28 +324,30 @@ export default function ChecklistsList() {
         </View>
       ) : (
         <FlatList
-          data={grouped}
+          data={tab === "TEMPLATES" ? [] : grouped}
           keyExtractor={(g) => g.type}
           contentContainerStyle={styles.listBody}
           refreshControl={
             <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
           }
           ListHeaderComponent={
-            <TemplatesSection
-              templates={templates}
-              onOpen={(id) => router.push(`/more/checklists/${id}` as any)}
-            />
+            tab === "TEMPLATES" ? (
+              <TemplatesSection
+                templates={templates}
+                onOpen={(id) => router.push(`/more/checklists/${id}` as any)}
+              />
+            ) : null
           }
           ListEmptyComponent={
-            templates.length === 0 ? (
+            tab === "TEMPLATES" ? null : (
               <Text style={styles.empty}>
                 {archiveFilter === "ARCHIVED"
                   ? "No archived checklists."
-                  : archiveFilter === "ACTIVE" && checklists.length > 0
-                    ? "No active checklists. Toggle Archived to see the rest."
+                  : checklists.some((c) => c.entityType !== "TEMPLATE")
+                    ? "Nothing active. Past trips' checklists are under Archived."
                     : "No checklists yet. Tap + to create one."}
               </Text>
-            ) : null
+            )
           }
           renderItem={({ item: group }) => (
             <View style={styles.section}>
@@ -513,17 +525,18 @@ function TemplatesSection({
 }) {
   return (
     <View style={styles.section}>
-      <Text style={styles.sectionTitle}>Templates</Text>
+      <Text style={styles.sectionEmpty}>
+        Reusable lists. Open one to edit it. One {AUTO_ATTACH_LABEL.toLowerCase()} is copied onto each new and upcoming trip; copies drop the word "template" from the name.
+      </Text>
+      <View style={{ height: 12 }} />
       {templates.length === 0 ? (
-        <Text style={styles.sectionEmpty}>
-          No templates yet. Create one above to spin up reusable lists.
-        </Text>
+        <Text style={styles.sectionEmpty}>No templates yet. Tap + to make one.</Text>
       ) : (
         templates.map((t) => (
           <ChecklistCard
             key={t.id}
             checklist={t}
-            subtitle={null}
+            subtitle={t.autoAttachTrips === true ? AUTO_ATTACH_LABEL : null}
             onPress={() => onOpen(t.id)}
           />
         ))

@@ -1,21 +1,18 @@
 "use client";
 
+// /checklists — every checklist by what it's attached to, in tabs:
+// Active, Archived (past trips' lists archive themselves, lib/trip-prep.ts)
+// and Templates, where templates are edited (?tab=templates&open=<id>
+// opens one; "Edit its template" on a list made from one links here).
+
 import React, { useState, useEffect } from "react";
 import { getCurrentUser } from "aws-amplify/auth";
 import { generateClient } from "aws-amplify/data";
 import { useRouter } from "next/router";
 import { Spinner } from "@heroui/react";
-// Progress bar removed — ChecklistPanel handles its own display
 import { Link } from "@heroui/link";
 import NextLink from "next/link";
-import {
-  FaArchive,
-  FaBoxOpen,
-  FaCheckSquare,
-  FaChevronDown,
-  FaChevronRight,
-  FaPlus,
-} from "react-icons/fa";
+import { FaArchive, FaBoxOpen, FaCheckSquare, FaPlus } from "react-icons/fa";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
@@ -24,12 +21,14 @@ import DefaultLayout from "@/layouts/default";
 import { ChecklistPanel } from "@/components/checklist-panel";
 import { listAllPages } from "@/lib/list-all";
 import {
-  ARCHIVE_FILTERS,
+  AUTO_ATTACH_HINT,
+  AUTO_ATTACH_LABEL,
   ENTITY_TYPE_LABELS,
   ENTITY_TYPE_ORDER,
+  TEMPLATE_ENTITY_ID,
+  archivePatch,
   isArchived,
   matchesArchiveFilter,
-  type ArchiveFilter,
   type Checklist,
   type EntityType,
 } from "@/lib/checklist";
@@ -57,18 +56,35 @@ function entityDetailHref(entityType: string, entityId: string): string | null {
 // ── Page ─────────────────────────────────────────────────────────────────
 
 type EntityOption = { id: string; label: string; type: string };
+type Tab = "ACTIVE" | "ARCHIVED" | "TEMPLATES";
+const TABS: { id: Tab; label: string }[] = [
+  { id: "ACTIVE", label: "Active" },
+  { id: "ARCHIVED", label: "Archived" },
+  { id: "TEMPLATES", label: "Templates" },
+];
 
 export default function ChecklistsPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [entityNames, setEntityNames] = useState<Record<string, string>>({});
-  const [archiveFilter, setArchiveFilter] = useState<ArchiveFilter>("ACTIVE");
+  const [tripDates, setTripDates] = useState<Record<string, string>>({});
+  const [tab, setTabState] = useState<Tab>("ACTIVE");
+  const openId = typeof router.query.open === "string" ? router.query.open : null;
+  const archiveFilter = tab === "ARCHIVED" ? "ARCHIVED" : "ACTIVE";
+  function setTab(t: Tab) {
+    setTabState(t);
+    void router.replace({ pathname: "/checklists", query: t === "ACTIVE" ? {} : { tab: t.toLowerCase() } }, undefined, { shallow: true });
+  }
+  useEffect(() => {
+    if (!router.isReady) return;
+    const q = String(router.query.tab ?? "").toUpperCase();
+    if (q === "TEMPLATES" || q === "ARCHIVED") setTabState(q);
+  }, [router.isReady, router.query.tab]);
   // Bumped per entity after a group archive so that entity's
   // ChecklistPanel remounts and re-fetches (it keeps its own state).
   const [panelVersion, setPanelVersion] = useState<Record<string, number>>({});
   const [archivingEntity, setArchivingEntity] = useState<string | null>(null);
-  const [showTemplates, setShowTemplates] = useState(false);
 
   // Create checklist flow
   const [showCreate, setShowCreate] = useState(false);
@@ -116,6 +132,15 @@ export default function ChecklistsPage() {
         resolveNames(idsByType["PREGNANCY"], "homePregnancy", "dueDate", names),
       ]);
       setEntityNames(names);
+      // Trip dates, to order trips (next first) and show when each is.
+      const dates: Record<string, string> = {};
+      await Promise.all(
+        Array.from(idsByType["TRIP"] ?? []).map(async (id) => {
+          const { data } = await client.models.homeTrip.get({ id });
+          if (data?.startDate) dates[id] = `${data.startDate}|${data.endDate ?? data.startDate}`;
+        }),
+      );
+      setTripDates(dates);
     } catch (err) {
       console.error("Failed to load checklists:", err);
     } finally {
@@ -201,11 +226,7 @@ export default function ChecklistsPage() {
         group
           .filter((c) => isArchived(c) !== archive)
           .map((c) =>
-            client.models.homeChecklist.update({
-              id: c.id,
-              isArchived: archive,
-              archivedAt: archive ? now : null,
-            }),
+            client.models.homeChecklist.update({ id: c.id, ...archivePatch(archive, new Date(now)) }),
           ),
       );
       setPanelVersion((v) => ({ ...v, [entityId]: (v[entityId] ?? 0) + 1 }));
@@ -230,221 +251,193 @@ export default function ChecklistsPage() {
       .sort((a, b) => a.name.localeCompare(b.name)),
   })).filter((g) => g.checklists.length > 0);
 
+  const fmtTrip = (id: string) => {
+    const d = tripDates[id];
+    if (!d) return null;
+    const [from, to] = d.split("|");
+    const f = (iso: string) => new Date(`${iso}T12:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    return from === to ? f(from) : `${f(from)} – ${f(to)}`;
+  };
+
   return (
     <DefaultLayout>
-      <div className="max-w-3xl mx-auto px-4 py-10">
-        {/* ── Templates section ──────────────────────────────────────── */}
-        <div className="mb-10">
-          <div className="flex items-center gap-2 mb-4">
+      <div className="max-w-5xl mx-auto px-4 py-10">
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <div className="flex items-center gap-2">
             <FaCheckSquare className="text-default-500" />
             <h1 className="text-2xl font-bold">Checklists</h1>
           </div>
-
-          <button
-            type="button"
-            onClick={() => setShowTemplates((v) => !v)}
-            className="flex items-center gap-2 mb-3 text-lg font-semibold"
-            aria-expanded={showTemplates}
-          >
-            {showTemplates ? (
-              <FaChevronDown size={12} className="text-default-500" />
-            ) : (
-              <FaChevronRight size={12} className="text-default-500" />
-            )}
-            Templates
-          </button>
-          {/* Not mounted while collapsed, so templates are only fetched on expand. */}
-          {showTemplates && (
-            <ChecklistPanel entityType="TEMPLATE" entityId="templates" />
-          )}
-        </div>
-
-        {/* ── Create checklist on entity ──────────────────────────────── */}
-        <div className="mb-10">
-          {!showCreate ? (
+          {tab !== "TEMPLATES" && !showCreate && (
             <Button
+              size="sm"
               variant="flat"
               startContent={<FaPlus size={12} />}
-              onPress={() => { setShowCreate(true); loadEntitiesForType(createEntityType); }}
+              onPress={() => {
+                setShowCreate(true);
+                loadEntitiesForType(createEntityType);
+              }}
             >
-              Create checklist on entity
+              New checklist
             </Button>
-          ) : (
-            <div className="border border-default-200 rounded-md p-4 bg-default-50 space-y-3">
-              <p className="text-sm font-medium">Create checklist</p>
-              <div className="flex gap-2">
-                <Select
-                  size="sm"
-                  label="Entity type"
-                  selectedKeys={[createEntityType]}
-                  onChange={(e) => {
-                    const v = e.target.value;
-                    if (v) { setCreateEntityType(v); loadEntitiesForType(v); }
-                  }}
-                  className="max-w-[150px]"
-                >
-                  {ENTITY_TYPE_ORDER.map((t) => (
-                    <SelectItem key={t} textValue={ENTITY_TYPE_LABELS[t]}>
-                      {ENTITY_TYPE_LABELS[t]}
-                    </SelectItem>
-                  ))}
-                </Select>
-                <Select
-                  size="sm"
-                  label={loadingEntities ? "Loading..." : "Entity"}
-                  selectedKeys={createEntityId ? [createEntityId] : []}
-                  onChange={(e) => setCreateEntityId(e.target.value)}
-                  isDisabled={loadingEntities || entityOptions.length === 0}
-                  className="flex-1"
-                >
-                  {entityOptions.map((o) => (
-                    <SelectItem key={o.id} textValue={o.label}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </Select>
-              </div>
-              <div className="flex gap-2">
-                <Input
-                  size="sm"
-                  label="Checklist name"
-                  value={createName}
-                  onValueChange={setCreateName}
-                  className="flex-1"
-                />
-                <Button
-                  size="sm"
-                  color="primary"
-                  variant="flat"
-                  isDisabled={!createName.trim() || !createEntityId}
-                  onPress={createChecklistOnEntity}
-                >
-                  Create
-                </Button>
-                <Button
-                  size="sm"
-                  variant="light"
-                  onPress={() => setShowCreate(false)}
-                >
-                  Cancel
-                </Button>
-              </div>
-            </div>
           )}
         </div>
 
-        {/* ── All checklists section ─────────────────────────────────── */}
-        <div>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-lg font-semibold">All Checklists</h2>
-            <div className="flex gap-1">
-              {ARCHIVE_FILTERS.map((f) => {
-                const on = archiveFilter === f.id;
-                return (
-                  <button
-                    key={f.id}
-                    type="button"
-                    onClick={() => setArchiveFilter(f.id)}
-                    className={`px-3 py-1 rounded-full text-xs ${
-                      on
-                        ? "bg-default-700 text-white"
-                        : "bg-default-100 text-default-600"
-                    }`}
-                  >
-                    {f.label}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        <div className="flex gap-1 mb-5 border-b border-default-200">
+          {TABS.map((t) => {
+            const on = tab === t.id;
+            return (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => setTab(t.id)}
+                className={`px-3 py-2 text-sm -mb-px border-b-2 ${on ? "border-primary text-foreground font-medium" : "border-transparent text-default-500 hover:text-default-700"}`}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
 
-          {loading ? (
-            <div className="flex justify-center py-12">
-              <Spinner label="Loading checklists..." />
-            </div>
-          ) : grouped.length === 0 ? (
-            <p className="text-default-400 text-sm py-4">
-              {archiveFilter === "ARCHIVED"
-                ? "No archived checklists."
-                : archiveFilter === "ACTIVE" && checklists.length > 0
-                  ? "No active checklists. Switch to Archived to see the rest."
-                  : "No checklists yet. Create one from a trip, event, or document detail page."}
+        {tab === "TEMPLATES" ? (
+          <div>
+            <p className="text-sm text-default-500 mb-3">
+              Reusable lists. Add one to a trip with &ldquo;From template&rdquo;. One marked &ldquo;{AUTO_ATTACH_LABEL}&rdquo; is copied onto each new and upcoming trip by itself. Copies drop the word &ldquo;template&rdquo; from the name.
             </p>
-          ) : (
-            <div className="space-y-8">
-              {grouped.map((group) => {
-                // Deduplicate by entityId — ChecklistPanel renders all
-                // checklists for a given entity, so we only need one
-                // panel per unique entityId.
-                const seen = new Set<string>();
-                const uniqueEntities = group.checklists.filter((cl) => {
-                  if (seen.has(cl.entityId)) return false;
-                  seen.add(cl.entityId);
-                  return true;
-                });
+            <ChecklistPanel entityType="TEMPLATE" entityId={TEMPLATE_ENTITY_ID} archiveFilter="ALL" openId={openId} bare />
+          </div>
+        ) : (
+          <>
+            {showCreate && (
+              <div className="mb-8 border border-default-200 rounded-md p-4 bg-default-50 space-y-3">
+                <p className="text-sm font-medium">New checklist</p>
+                <div className="flex gap-2">
+                  <Select
+                    size="sm"
+                    label="For a"
+                    selectedKeys={[createEntityType]}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v) {
+                        setCreateEntityType(v);
+                        loadEntitiesForType(v);
+                      }
+                    }}
+                    className="max-w-[150px]"
+                  >
+                    {ENTITY_TYPE_ORDER.filter((t) => t !== "OTHER").map((t) => (
+                      <SelectItem key={t} textValue={ENTITY_TYPE_LABELS[t]}>
+                        {ENTITY_TYPE_LABELS[t]}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                  <Select
+                    size="sm"
+                    label={loadingEntities ? "Loading..." : "Which one"}
+                    selectedKeys={createEntityId ? [createEntityId] : []}
+                    onChange={(e) => setCreateEntityId(e.target.value)}
+                    isDisabled={loadingEntities || entityOptions.length === 0}
+                    className="flex-1"
+                  >
+                    {entityOptions.map((o) => (
+                      <SelectItem key={o.id} textValue={o.label}>
+                        {o.label}
+                      </SelectItem>
+                    ))}
+                  </Select>
+                </div>
+                <div className="flex gap-2">
+                  <Input size="sm" label="Checklist name" value={createName} onValueChange={setCreateName} className="flex-1" />
+                  <Button size="sm" color="primary" variant="flat" isDisabled={!createName.trim() || !createEntityId} onPress={createChecklistOnEntity}>
+                    Create
+                  </Button>
+                  <Button size="sm" variant="light" onPress={() => setShowCreate(false)}>
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
 
-                return (
-                  <div key={group.type}>
-                    <h3 className="text-xs text-default-400 uppercase tracking-wider mb-3">
-                      {group.label}
-                    </h3>
-                    <div className="space-y-4">
-                      {uniqueEntities.map((cl) => {
-                        const href = entityDetailHref(cl.entityType ?? "OTHER", cl.entityId);
-                        const eName = entityNames[cl.entityId] ?? cl.entityId;
-                        const allArchived = checklists
-                          .filter((c) => c.entityId === cl.entityId)
-                          .every(isArchived);
-
-                        return (
-                          <div key={cl.entityId} className="border border-default-200 rounded-md p-4 bg-default-50">
-                            <div className="mb-2 flex items-center justify-between gap-2">
-                              {href ? (
-                                <Link
-                                  as={NextLink}
-                                  href={href}
-                                  className="text-sm font-medium text-primary"
-                                >
-                                  {eName}
-                                </Link>
-                              ) : (
-                                <p className="text-sm font-medium text-default-600">
-                                  {eName}
-                                </p>
-                              )}
-                              <Button
-                                size="sm"
-                                variant="light"
-                                isLoading={archivingEntity === cl.entityId}
-                                startContent={
-                                  archivingEntity === cl.entityId ? null : allArchived ? (
-                                    <FaBoxOpen size={12} />
+            {loading ? (
+              <div className="flex justify-center py-12">
+                <Spinner label="Loading checklists..." />
+              </div>
+            ) : grouped.length === 0 ? (
+              <p className="text-default-400 text-sm py-4">
+                {archiveFilter === "ARCHIVED"
+                  ? "No archived checklists."
+                  : checklists.length > 0
+                    ? "Nothing active. Past trips' checklists are under Archived."
+                    : "No checklists yet. Add one from a trip, event or document, or with New checklist."}
+              </p>
+            ) : (
+              <div className="space-y-8">
+                {grouped.map((group) => {
+                  // One block per entity: its panel shows all of that entity's lists.
+                  const seen = new Set<string>();
+                  const uniqueEntities = group.checklists.filter((cl) => {
+                    if (seen.has(cl.entityId)) return false;
+                    seen.add(cl.entityId);
+                    return true;
+                  });
+                  // Trips: the next one first (archived: the latest first).
+                  if (group.type === "TRIP")
+                    uniqueEntities.sort((a, b) => {
+                      const da = tripDates[a.entityId] ?? "9999";
+                      const db = tripDates[b.entityId] ?? "9999";
+                      return archiveFilter === "ARCHIVED" ? db.localeCompare(da) : da.localeCompare(db);
+                    });
+                  return (
+                    <div key={group.type}>
+                      <h3 className="text-xs text-default-400 uppercase tracking-wider mb-3">{group.label}</h3>
+                      <div className="space-y-5">
+                        {uniqueEntities.map((cl) => {
+                          const href = entityDetailHref(cl.entityType ?? "OTHER", cl.entityId);
+                          const eName = entityNames[cl.entityId] ?? cl.entityId;
+                          const when = group.type === "TRIP" ? fmtTrip(cl.entityId) : null;
+                          const allArchived = checklists.filter((c) => c.entityId === cl.entityId).every(isArchived);
+                          return (
+                            <div key={cl.entityId}>
+                              <div className="mb-1.5 flex items-center justify-between gap-2">
+                                <div className="flex items-baseline gap-2 min-w-0">
+                                  {href ? (
+                                    <Link as={NextLink} href={href} className="text-base font-semibold text-foreground hover:text-primary truncate">
+                                      {eName}
+                                    </Link>
                                   ) : (
-                                    <FaArchive size={12} />
-                                  )
-                                }
-                                onPress={() => toggleArchiveEntity(cl.entityId)}
-                              >
-                                {allArchived ? "Unarchive all" : "Archive all"}
-                              </Button>
+                                    <p className="text-base font-semibold truncate">{eName}</p>
+                                  )}
+                                  {when && <span className="text-xs text-default-500 shrink-0">{when}</span>}
+                                </div>
+                                <Button
+                                  size="sm"
+                                  variant="light"
+                                  isLoading={archivingEntity === cl.entityId}
+                                  startContent={archivingEntity === cl.entityId ? null : allArchived ? <FaBoxOpen size={12} /> : <FaArchive size={12} />}
+                                  onPress={() => toggleArchiveEntity(cl.entityId)}
+                                >
+                                  {allArchived ? "Unarchive all" : "Archive all"}
+                                </Button>
+                              </div>
+                              <ChecklistPanel
+                                key={panelVersion[cl.entityId] ?? 0}
+                                entityType={(cl.entityType as EntityType) ?? "OTHER"}
+                                entityId={cl.entityId}
+                                archiveFilter={archiveFilter}
+                                onArchiveChange={loadAll}
+                                bare
+                                actions={false}
+                              />
                             </div>
-                            <ChecklistPanel
-                              key={panelVersion[cl.entityId] ?? 0}
-                              entityType={cl.entityType as any ?? "OTHER"}
-                              entityId={cl.entityId}
-                              archiveFilter={archiveFilter}
-                              onArchiveChange={loadAll}
-                            />
-                          </div>
-                        );
-                      })}
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-        </div>
+                  );
+                })}
+              </div>
+            )}
+          </>
+        )}
       </div>
     </DefaultLayout>
   );

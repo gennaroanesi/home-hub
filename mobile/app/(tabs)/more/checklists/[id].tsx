@@ -1,18 +1,20 @@
 // Checklist detail — view + edit items.
 //
-//   • Header: back, editable name (tap to rename), trash → delete the
-//     whole checklist.
-//   • Body: progress bar, then items grouped by section. The
-//     "Ungrouped" header is hidden when it's the only group, so
-//     simple lists stay clean. Section editing is web-only — mobile
-//     can add items into existing sections via the inline composer
-//     under each header.
+//   • Header: back, editable name (tap to rename), and one "⋯" menu:
+//     archive, add to every trip (templates), edit its template (a list
+//     made from one), delete.
+//   • Body: progress bar, then items grouped by section. A list with
+//     sections is a board like the web's: one card per section, swiped
+//     sideways. "Ungrouped" items show as General. Section editing is
+//     web-only — mobile adds items into existing sections via the
+//     composer under each.
 //   • Tap an item to toggle done. Tap the row text to rename it
 //     inline. Swipe / trash icon to delete a single item.
 //   • Per-section "+ Add item" composer at the bottom of each group.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   KeyboardAvoidingView,
@@ -23,6 +25,7 @@ import {
   Text,
   TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
@@ -30,7 +33,10 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { getClient } from "../../../../lib/amplify";
 import {
+  AUTO_ATTACH_HINT,
+  AUTO_ATTACH_LABEL,
   UNGROUPED,
+  archivePatch,
   buildSectionGroups,
   progress,
   type Checklist,
@@ -90,6 +96,9 @@ export default function ChecklistDetail() {
   // the ungrouped items don't blur into the next section.
   const hideUngroupedHeader =
     groups.length === 1 && groups[0].sectionId === UNGROUPED;
+  const board = groups.some((g) => g.sectionId !== UNGROUPED) && groups.length > 1;
+  const { width } = useWindowDimensions();
+  const columnWidth = Math.min(340, width - 56);
 
   // ── Mutations ───────────────────────────────────────────────────
 
@@ -226,18 +235,13 @@ export default function ChecklistDetail() {
   async function toggleArchive() {
     if (!checklist) return;
     const nextArchived = !(checklist.isArchived === true);
-    const nowIso = new Date().toISOString();
-    setChecklist({
-      ...checklist,
-      isArchived: nextArchived,
-      archivedAt: nextArchived ? nowIso : null,
-    });
+    const patch = archivePatch(nextArchived);
+    setChecklist({ ...checklist, ...patch });
     try {
       const client = getClient();
       const { errors } = await client.models.homeChecklist.update({
         id: checklist.id,
-        isArchived: nextArchived,
-        archivedAt: nextArchived ? nowIso : null,
+        ...patch,
       });
       if (errors?.length) throw new Error(errors[0].message);
       // Archiving is the typical case — bounce back so the list
@@ -250,6 +254,36 @@ export default function ChecklistDetail() {
         err?.message ?? String(err)
       );
       await load();
+    }
+  }
+
+  async function toggleAutoAttach() {
+    if (!checklist) return;
+    const next = !(checklist.autoAttachTrips === true);
+    setChecklist({ ...checklist, autoAttachTrips: next });
+    const { errors } = await getClient().models.homeChecklist.update({ id: checklist.id, autoAttachTrips: next });
+    if (errors?.length) {
+      Alert.alert("Couldn't change it", errors[0].message);
+      await load();
+    } else if (next) Alert.alert(AUTO_ATTACH_LABEL, AUTO_ATTACH_HINT);
+  }
+
+  // One menu for the list's actions (web: the "⋯" on each checklist).
+  function openMenu() {
+    if (!checklist) return;
+    const isTemplate = checklist.entityType === "TEMPLATE";
+    const actions: { label: string; run: () => void; destructive?: boolean }[] = [];
+    if (isTemplate) actions.push({ label: checklist.autoAttachTrips ? "Stop adding to every trip" : "Add to every trip", run: () => void toggleAutoAttach() });
+    if (!isTemplate && checklist.sourceTemplateId) actions.push({ label: "Edit its template", run: () => router.push(`/more/checklists/${checklist.sourceTemplateId}` as any) });
+    actions.push({ label: checklist.isArchived ? "Unarchive" : "Archive", run: () => void toggleArchive() });
+    actions.push({ label: "Delete", run: deleteChecklist, destructive: true });
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { options: [...actions.map((a) => a.label), "Cancel"], cancelButtonIndex: actions.length, destructiveButtonIndex: actions.findIndex((a) => a.destructive) },
+        (i) => actions[i]?.run(),
+      );
+    } else {
+      Alert.alert(checklist.name, undefined, [...actions.map((a) => ({ text: a.label, onPress: a.run, style: a.destructive ? ("destructive" as const) : undefined })), { text: "Cancel", style: "cancel" as const }]);
     }
   }
 
@@ -360,29 +394,17 @@ export default function ChecklistDetail() {
             <Ionicons name="create-outline" size={16} color="#bbb" />
           </Pressable>
         )}
-        <Pressable
-          onPress={toggleArchive}
-          hitSlop={12}
-          style={styles.headerBtn}
-        >
-          <Ionicons
-            name={
-              checklist.isArchived
-                ? "archive"
-                : "archive-outline"
-            }
-            size={22}
-            color="#735f55"
-          />
-        </Pressable>
-        <Pressable
-          onPress={deleteChecklist}
-          hitSlop={12}
-          style={styles.headerBtn}
-        >
-          <Ionicons name="trash-outline" size={22} color="#b96868" />
+        <Pressable onPress={openMenu} hitSlop={12} style={styles.headerBtn} accessibilityLabel="Checklist actions">
+          <Ionicons name="ellipsis-horizontal-circle-outline" size={24} color="#735f55" />
         </Pressable>
       </View>
+
+      {checklist.entityType === "TEMPLATE" && checklist.autoAttachTrips === true && (
+        <View style={styles.autoBanner}>
+          <Ionicons name="airplane-outline" size={14} color="#735f55" />
+          <Text style={styles.autoBannerText}>{AUTO_ATTACH_LABEL}</Text>
+        </View>
+      )}
 
       {checklist.isArchived && (
         <View style={styles.archivedBanner}>
@@ -420,10 +442,25 @@ export default function ChecklistDetail() {
               No items yet. Add one below.
             </Text>
           ) : (
-            groups.map((group) => (
-              <View key={group.sectionId} style={styles.sectionCard}>
+            <ScrollView
+              horizontal={board}
+              scrollEnabled={board}
+              showsHorizontalScrollIndicator={false}
+              snapToInterval={board ? columnWidth + 12 : undefined}
+              decelerationRate={board ? "fast" : undefined}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={board ? { gap: 12, alignItems: "flex-start", paddingRight: 16 } : undefined}
+              style={board ? { marginHorizontal: -16, paddingLeft: 16 } : undefined}
+            >
+            {groups.map((group) => (
+              <View key={group.sectionId} style={[styles.sectionCard, board && { width: columnWidth, marginBottom: 0 }]}>
                 {!(hideUngroupedHeader && group.sectionId === UNGROUPED) && (
-                  <Text style={styles.sectionHeader}>{group.sectionName}</Text>
+                  <View style={styles.sectionHeaderRow}>
+                    <Text style={styles.sectionHeader}>{group.sectionId === UNGROUPED ? "General" : group.sectionName}</Text>
+                    <Text style={styles.sectionCount}>
+                      {progress(group.items).done}/{group.items.length}
+                    </Text>
+                  </View>
                 )}
                 {group.items.map((item) => (
                   <ChecklistRow
@@ -454,7 +491,8 @@ export default function ChecklistDetail() {
                   }
                 />
               </View>
-            ))
+            ))}
+            </ScrollView>
           )}
 
           {/* Always-on composer for an empty checklist, since there
@@ -674,6 +712,10 @@ const styles = StyleSheet.create({
     paddingTop: 10,
     paddingBottom: 6,
   },
+  sectionHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingRight: 14 },
+  sectionCount: { fontSize: 12, color: "#aaa", paddingTop: 4 },
+  autoBanner: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 16, paddingVertical: 6, backgroundColor: "#f1ebe6" },
+  autoBannerText: { fontSize: 12, color: "#735f55", fontWeight: "500" },
 
   itemRow: {
     flexDirection: "row",

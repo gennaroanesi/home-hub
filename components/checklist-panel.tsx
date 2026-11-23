@@ -1,19 +1,25 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useRef } from "react";
+// Checklists attached to one entity (a trip, event, document, pregnancy)
+// or the templates. Each list is a compact card (name, progress, one "⋯"
+// menu) that opens to its items; a list with sections opens as a board,
+// one column per section, scrolling sideways. Open lists are remembered
+// per browser. Templates have their own tab on /checklists
+// (?tab=templates&open=<id>); a list made from one links back to it.
+
+import React, { useState, useEffect, useCallback, useMemo } from "react";
+import NextLink from "next/link";
 import { generateClient } from "aws-amplify/data";
 import { Button } from "@heroui/button";
 import { Input } from "@heroui/input";
 import { Checkbox } from "@heroui/checkbox";
-import { Spinner, addToast } from "@heroui/react";
-import {
-  FaPlus, FaTrash, FaPen, FaCheck, FaTimes, FaCopy,
-  FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight, FaLink,
-  FaArchive, FaBoxOpen, FaPlane,
-} from "react-icons/fa";
+import { Chip } from "@heroui/chip";
+import { Popover, PopoverContent, PopoverTrigger } from "@heroui/popover";
+import { Dropdown, DropdownItem, DropdownMenu, DropdownSection, DropdownTrigger, Spinner, addToast } from "@heroui/react";
+import { FaPlus, FaTrash, FaCheck, FaTimes, FaFileImport, FaGripVertical, FaChevronDown, FaChevronRight, FaEllipsisH } from "react-icons/fa";
 import {
   DndContext,
-  closestCenter,
+  closestCorners,
   PointerSensor,
   KeyboardSensor,
   useSensor,
@@ -21,22 +27,22 @@ import {
   DragOverlay,
   type DragStartEvent,
   type DragEndEvent,
-  type DragOverEvent,
 } from "@dnd-kit/core";
-import {
-  SortableContext,
-  useSortable,
-  verticalListSortingStrategy,
-  sortableKeyboardCoordinates,
-} from "@dnd-kit/sortable";
+import { SortableContext, useSortable, horizontalListSortingStrategy, verticalListSortingStrategy, sortableKeyboardCoordinates } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
 import type { Schema } from "@/amplify/data/resource";
 import {
+  AUTO_ATTACH_HINT,
+  AUTO_ATTACH_LABEL,
+  TEMPLATE_ENTITY_ID,
   UNGROUPED,
+  archivePatch,
   buildSectionGroups,
+  copyChecklist,
   deriveSectionOrder,
   matchesArchiveFilter,
+  progress,
   type ArchiveFilter,
   type Checklist,
   type ChecklistItem,
@@ -44,22 +50,51 @@ import {
   type SectionGroup,
 } from "@/lib/checklist";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 const client = generateClient<Schema>({ authMode: "userPool" });
+
+/** Where the templates are edited. */
+export function templatesHref(openId?: string | null): string {
+  return `/checklists?tab=templates${openId ? `&open=${openId}` : ""}`;
+}
+
+const OPEN_KEY = "checklists:open";
+function readOpen(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(OPEN_KEY) ?? "[]"));
+  } catch {
+    return new Set();
+  }
+}
+function writeOpen(s: Set<string>) {
+  try {
+    localStorage.setItem(OPEN_KEY, JSON.stringify([...s].slice(-200)));
+  } catch {
+    /* private mode */
+  }
+}
 
 interface ChecklistPanelProps {
   entityType: EntityType;
   entityId: string;
   // Which checklists to render. Detail pages omit it and see everything;
-  // the Checklists page passes its Active / Archived / All pill.
+  // the Checklists page passes its Active / Archived tab.
   archiveFilter?: ArchiveFilter;
   // Fired after a checklist is archived/unarchived so a parent list can
   // re-derive which entities belong under the current filter.
   onArchiveChange?: () => void;
+  /** Open this checklist (and scroll to it) on load. */
+  openId?: string | null;
+  /** Hide the "Checklists" heading (a page that has its own). */
+  bare?: boolean;
+  /** "From template" / "Add checklist" (default on; off where the page offers its own). */
+  actions?: boolean;
 }
 
-// ── Sortable Item ────────────────────────────────────────────────────
+// ── Items ────────────────────────────────────────────────────────────
 
-interface SortableItemProps {
+interface ItemRowProps {
   item: ChecklistItem;
   isEditing: boolean;
   editingText: string;
@@ -71,310 +106,238 @@ interface SortableItemProps {
   onDelete: () => void;
 }
 
-function SortableItem({
-  item, isEditing, editingText,
-  onToggle, onStartEdit, onEditTextChange, onSaveEdit, onCancelEdit, onDelete,
-}: SortableItemProps) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id: item.id, data: { type: "item", item } });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
-  };
-
+function SortableItem({ item, isEditing, editingText, onToggle, onStartEdit, onEditTextChange, onSaveEdit, onCancelEdit, onDelete }: ItemRowProps) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: item.id, data: { type: "item", item } });
+  const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      className="flex items-center gap-2 py-1 border-b border-default-100 last:border-0"
-    >
-      <span
-        className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0"
-        {...attributes}
-        {...listeners}
-      >
+    <div ref={setNodeRef} style={style} className="group flex items-center gap-1.5 py-1 rounded hover:bg-default-50">
+      <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 opacity-0 group-hover:opacity-100" {...attributes} {...listeners}>
         <FaGripVertical size={10} />
       </span>
-      <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={onToggle} />
+      <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={onToggle} aria-label={item.text} />
       {isEditing ? (
-        <form onSubmit={(e) => { e.preventDefault(); onSaveEdit(); }} className="flex gap-1 flex-1">
-          <Input size="sm" value={editingText} onValueChange={onEditTextChange} autoFocus />
-          <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={8} /></Button>
-          <Button size="sm" isIconOnly variant="light" onPress={onCancelEdit}><FaTimes size={8} /></Button>
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSaveEdit();
+          }}
+          className="flex gap-1 flex-1"
+        >
+          <Input size="sm" value={editingText} onValueChange={onEditTextChange} autoFocus onKeyDown={(e) => e.key === "Escape" && onCancelEdit()} />
+          <Button size="sm" type="submit" isIconOnly variant="flat" aria-label="Save">
+            <FaCheck size={8} />
+          </Button>
         </form>
       ) : (
         <>
-          <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>
+          <button type="button" title="Click to edit" onClick={onStartEdit} className={`flex-1 text-left text-sm min-w-0 break-words ${item.isDone ? "line-through text-default-400" : ""}`}>
             {item.text}
-          </span>
-          <Button size="sm" isIconOnly variant="light" onPress={onStartEdit}>
-            <FaPen size={8} />
-          </Button>
-          <Button size="sm" isIconOnly variant="light" color="danger" onPress={onDelete}>
-            <FaTrash size={8} />
-          </Button>
+          </button>
+          <button type="button" aria-label="Delete item" onClick={onDelete} className="text-default-300 hover:text-danger flex-shrink-0 opacity-0 group-hover:opacity-100 px-1">
+            <FaTrash size={10} />
+          </button>
         </>
       )}
     </div>
   );
 }
 
-// ── Sortable Section ─────────────────────────────────────────────────
-
-interface SortableSectionProps {
-  group: SectionGroup;
-  checklistId: string;
-  isCollapsed: boolean;
-  onToggleCollapse: () => void;
-  // Section management
-  editingSectionName: string | null;
-  editingSectionText: string;
-  onStartRenameSection: () => void;
-  onRenameSectionTextChange: (v: string) => void;
-  onSaveRenameSection: () => void;
-  onCancelRenameSection: () => void;
-  onDeleteSection: () => void;
-  // Item operations
-  editingItemId: string | null;
-  editingItemText: string;
-  onToggleItem: (item: ChecklistItem) => void;
-  onStartEditItem: (id: string, text: string) => void;
-  onEditItemTextChange: (v: string) => void;
-  onSaveEditItem: (id: string) => void;
-  onCancelEditItem: () => void;
-  onDeleteItem: (id: string) => void;
-  // Per-section add item
-  addItemText: string;
-  onAddItemTextChange: (v: string) => void;
-  onAddItem: () => void;
-}
-
-function SortableSection({
-  group, checklistId, isCollapsed, onToggleCollapse,
-  editingSectionName, editingSectionText,
-  onStartRenameSection, onRenameSectionTextChange, onSaveRenameSection, onCancelRenameSection,
-  onDeleteSection,
-  editingItemId, editingItemText,
-  onToggleItem, onStartEditItem, onEditItemTextChange, onSaveEditItem, onCancelEditItem,
-  onDeleteItem,
-  addItemText, onAddItemTextChange, onAddItem,
-}: SortableSectionProps) {
-  const isUngrouped = group.sectionId === UNGROUPED;
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({
-    id: `section:${checklistId}:${group.sectionId}`,
-    data: { type: "section", sectionId: group.sectionId, checklistId },
-    disabled: isUngrouped,
-  });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    opacity: isDragging ? 0.4 : 1,
-  };
-
-  const isRenaming = editingSectionName === group.sectionId;
-
-  return (
-    <div ref={setNodeRef} style={style} className="mb-2">
-      {/* Section header */}
-      <div className={`flex items-center gap-1 py-1 px-2 rounded ${isUngrouped ? "" : "bg-default-100"}`}>
-        {!isUngrouped && (
-          <span
-            className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0"
-            {...attributes}
-            {...listeners}
-          >
-            <FaGripVertical size={10} />
-          </span>
-        )}
-        <button
-          type="button"
-          className="flex-shrink-0 text-default-400 hover:text-default-600"
-          onClick={onToggleCollapse}
-        >
-          {isCollapsed ? <FaChevronRight size={10} /> : <FaChevronDown size={10} />}
-        </button>
-        {isRenaming ? (
-          <form onSubmit={(e) => { e.preventDefault(); onSaveRenameSection(); }} className="flex gap-1 flex-1">
-            <Input size="sm" value={editingSectionText} onValueChange={onRenameSectionTextChange} autoFocus />
-            <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={8} /></Button>
-            <Button size="sm" isIconOnly variant="light" onPress={onCancelRenameSection}><FaTimes size={8} /></Button>
-          </form>
-        ) : (
-          <>
-            <span className="text-xs font-semibold text-default-500 uppercase tracking-wider flex-1">
-              {group.sectionName}
-            </span>
-            {!isUngrouped && (
-              <div className="flex gap-0.5">
-                <Button size="sm" isIconOnly variant="light" onPress={onStartRenameSection}>
-                  <FaPen size={8} />
-                </Button>
-                <Button size="sm" isIconOnly variant="light" color="danger" onPress={onDeleteSection}>
-                  <FaTrash size={8} />
-                </Button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
-
-      {/* Items */}
-      {!isCollapsed && (
-        <div className="pl-1">
-          <div className="space-y-0">
-            {group.items.map((item) => (
-              <SortableItem
-                key={item.id}
-                item={item}
-                isEditing={editingItemId === item.id}
-                editingText={editingItemText}
-                onToggle={() => onToggleItem(item)}
-                onStartEdit={() => onStartEditItem(item.id, item.text)}
-                onEditTextChange={onEditItemTextChange}
-                onSaveEdit={() => onSaveEditItem(item.id)}
-                onCancelEdit={onCancelEditItem}
-                onDelete={() => onDeleteItem(item.id)}
-              />
-            ))}
-          </div>
-
-          {/* Per-section add item */}
-          <form
-            onSubmit={(e) => { e.preventDefault(); onAddItem(); }}
-            className="flex gap-2 mt-1"
-          >
-            <Input
-              size="sm"
-              placeholder={`Add item${isUngrouped ? "" : ` to ${group.sectionName}`}...`}
-              value={addItemText}
-              onValueChange={onAddItemTextChange}
-              className="flex-1"
-            />
-            <Button size="sm" type="submit" isIconOnly color="primary" variant="flat">
-              <FaPlus size={10} />
-            </Button>
-          </form>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Drag overlay for items ───────────────────────────────────────────
-
 function DragOverlayItem({ item }: { item: ChecklistItem }) {
   return (
     <div className="flex items-center gap-2 py-1 px-2 bg-white dark:bg-default-50 rounded shadow-md border border-default-200">
       <FaGripVertical size={10} className="text-default-400" />
       <Checkbox size="sm" isSelected={!!item.isDone} isReadOnly />
-      <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>
-        {item.text}
-      </span>
+      <span className={`flex-1 text-sm ${item.isDone ? "line-through text-default-400" : ""}`}>{item.text}</span>
+    </div>
+  );
+}
+
+function AddItemForm({ placeholder, value, onChange, onAdd }: { placeholder: string; value: string; onChange: (v: string) => void; onAdd: () => void }) {
+  return (
+    <form
+      onSubmit={(e) => {
+        e.preventDefault();
+        onAdd();
+      }}
+      className="flex gap-1 mt-1"
+    >
+      <Input size="sm" variant="bordered" placeholder={placeholder} value={value} onValueChange={onChange} className="flex-1" />
+      <Button size="sm" type="submit" isIconOnly color="primary" variant="flat" aria-label="Add item" isDisabled={!value.trim()}>
+        <FaPlus size={10} />
+      </Button>
+    </form>
+  );
+}
+
+// ── Section column ───────────────────────────────────────────────────
+
+interface ColumnProps {
+  group: SectionGroup;
+  checklistId: string;
+  /** Lists without sections render as one plain column. */
+  single: boolean;
+  renaming: boolean;
+  renameText: string;
+  onStartRename: () => void;
+  onRenameTextChange: (v: string) => void;
+  onSaveRename: () => void;
+  onCancelRename: () => void;
+  onDelete: () => void;
+  item: (i: ChecklistItem) => ItemRowProps;
+  addText: string;
+  onAddTextChange: (v: string) => void;
+  onAdd: () => void;
+}
+
+function SectionColumn({ group, checklistId, single, renaming, renameText, onStartRename, onRenameTextChange, onSaveRename, onCancelRename, onDelete, item, addText, onAddTextChange, onAdd }: ColumnProps) {
+  const isUngrouped = group.sectionId === UNGROUPED;
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id: `section:${checklistId}:${group.sectionId}`,
+    data: { type: "section", sectionId: group.sectionId, checklistId },
+    disabled: isUngrouped,
+  });
+  const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
+  const p = progress(group.items);
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className={single ? "max-w-xl" : "w-64 shrink-0 snap-start rounded-lg bg-default-100/70 dark:bg-default-100 p-2 flex flex-col self-start max-h-[32rem]"}
+    >
+      {!single && (
+        <div className="flex items-center gap-1 mb-1 px-0.5">
+          {!isUngrouped && (
+            <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0" {...attributes} {...listeners}>
+              <FaGripVertical size={10} />
+            </span>
+          )}
+          {renaming ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                onSaveRename();
+              }}
+              className="flex gap-1 flex-1"
+            >
+              <Input size="sm" value={renameText} onValueChange={onRenameTextChange} autoFocus onKeyDown={(e) => e.key === "Escape" && onCancelRename()} />
+              <Button size="sm" type="submit" isIconOnly variant="flat" aria-label="Save">
+                <FaCheck size={8} />
+              </Button>
+            </form>
+          ) : (
+            <>
+              <span className="text-xs font-semibold text-default-600 uppercase tracking-wider flex-1 truncate">{group.sectionName}</span>
+              <span className="text-[11px] text-default-400 tabular-nums">{p.total ? `${p.done}/${p.total}` : ""}</span>
+              {!isUngrouped && (
+                <Dropdown placement="bottom-end">
+                  <DropdownTrigger>
+                    <Button size="sm" isIconOnly variant="light" className="min-w-6 w-6 h-6" aria-label="Section actions">
+                      <FaEllipsisH size={10} />
+                    </Button>
+                  </DropdownTrigger>
+                  <DropdownMenu aria-label="Section actions" onAction={(k) => (k === "rename" ? onStartRename() : onDelete())}>
+                    <DropdownItem key="rename">Rename section</DropdownItem>
+                    <DropdownItem key="delete" className="text-danger" color="danger" description="Its items stay, under General">
+                      Remove section
+                    </DropdownItem>
+                  </DropdownMenu>
+                </Dropdown>
+              )}
+            </>
+          )}
+        </div>
+      )}
+      <div className={single ? "" : "overflow-y-auto min-h-[2rem]"}>
+        <SortableContext items={group.items.map((i) => i.id)} strategy={verticalListSortingStrategy}>
+          {group.items.map((i) => (
+            <SortableItem key={i.id} {...item(i)} />
+          ))}
+        </SortableContext>
+      </div>
+      <AddItemForm placeholder={isUngrouped ? "Add item…" : `Add to ${group.sectionName}…`} value={addText} onChange={onAddTextChange} onAdd={onAdd} />
     </div>
   );
 }
 
 // ── Main Component ───────────────────────────────────────────────────
 
-export function ChecklistPanel({
-  entityType,
-  entityId,
-  archiveFilter = "ALL",
-  onArchiveChange,
-}: ChecklistPanelProps) {
+export function ChecklistPanel({ entityType, entityId, archiveFilter = "ALL", onArchiveChange, openId, bare, actions = true }: ChecklistPanelProps) {
+  const isTemplates = entityType === "TEMPLATE";
   const [loading, setLoading] = useState(true);
   const [checklists, setChecklists] = useState<Checklist[]>([]);
   const [itemsByChecklist, setItemsByChecklist] = useState<Record<string, ChecklistItem[]>>({});
-
-  // Section ordering: maps checklistId -> ordered section names
+  // Section ordering: checklistId -> ordered section names (incl. empty new ones).
   const [sectionOrders, setSectionOrders] = useState<Record<string, string[]>>({});
+  const [open, setOpen] = useState<Set<string>>(new Set());
 
-  // New checklist
   const [showNewChecklist, setShowNewChecklist] = useState(false);
   const [newChecklistName, setNewChecklistName] = useState("");
-
   // Per-section new item input: key = `${checklistId}:${sectionId}`
   const [newItemText, setNewItemText] = useState<Record<string, string>>({});
-
-  // Inline editing
   const [editingChecklistId, setEditingChecklistId] = useState<string | null>(null);
   const [editingChecklistName, setEditingChecklistName] = useState("");
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [editingItemText, setEditingItemText] = useState("");
-
-  // Section editing
   const [editingSectionKey, setEditingSectionKey] = useState<string | null>(null); // `checklistId:sectionId`
   const [editingSectionText, setEditingSectionText] = useState("");
-
-  // New section input: which checklist is showing the "add section" input
-  const [addingSectionForChecklist, setAddingSectionForChecklist] = useState<string | null>(null);
+  const [addingSectionFor, setAddingSectionFor] = useState<string | null>(null);
   const [newSectionName, setNewSectionName] = useState("");
-
-  // Collapsed sections: set of `${checklistId}:${sectionId}`
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
-
-  // Templates
   const [templates, setTemplates] = useState<Checklist[]>([]);
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
 
-  // Move checklist to entity
+  // Move checklist to another entity
   const [movingChecklistId, setMovingChecklistId] = useState<string | null>(null);
   const [moveEntityType, setMoveEntityType] = useState<string>("TRIP");
   const [moveEntityId, setMoveEntityId] = useState<string>("");
   const [moveEntityOptions, setMoveEntityOptions] = useState<{ id: string; label: string }[]>([]);
   const [loadingMoveEntities, setLoadingMoveEntities] = useState(false);
-  const [showTemplatePicker, setShowTemplatePicker] = useState(false);
 
-  // DnD
   const [activeItem, setActiveItem] = useState<ChecklistItem | null>(null);
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
-  );
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+
+  useEffect(() => {
+    const s = readOpen();
+    if (openId) s.add(openId);
+    setOpen(s);
+  }, [openId]);
+
+  function toggleOpen(id: string, force?: boolean) {
+    setOpen((prev) => {
+      const next = new Set(prev);
+      const want = force ?? !next.has(id);
+      if (want) next.add(id);
+      else next.delete(id);
+      const stored = readOpen();
+      if (want) stored.add(id);
+      else stored.delete(id);
+      writeOpen(stored);
+      return next;
+    });
+  }
 
   const loadData = useCallback(async () => {
     try {
-      const { data: clData } = await client.models.homeChecklist.list({
-        filter: { entityId: { eq: entityId } },
-        limit: 500,
-      });
-      const lists = (clData ?? []).sort(
-        (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name)
-      );
+      const { data: clData } = await client.models.homeChecklist.list({ filter: { entityId: { eq: entityId } }, limit: 500 });
+      const lists = (clData ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name));
       setChecklists(lists);
-
       const grouped: Record<string, ChecklistItem[]> = {};
-      const orders: Record<string, string[]> = {};
       await Promise.all(
         lists.map(async (cl) => {
-          const { data: items } = await client.models.homeChecklistItem.list({
-            filter: { checklistId: { eq: cl.id } },
-            limit: 500,
-          });
-          const sorted = (items ?? []).sort(
-            (a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0)
-          );
-          grouped[cl.id] = sorted;
-          orders[cl.id] = deriveSectionOrder(sorted);
-        })
+          const { data: items } = await client.models.homeChecklistItem.list({ filter: { checklistId: { eq: cl.id } }, limit: 500 });
+          grouped[cl.id] = (items ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+        }),
       );
       setItemsByChecklist(grouped);
-      setSectionOrders(orders);
+      // Keep empty sections added this session; take the rest from the items.
+      setSectionOrders((prev) => {
+        const next: Record<string, string[]> = {};
+        for (const cl of lists) {
+          const derived = deriveSectionOrder(grouped[cl.id] ?? []);
+          const extra = (prev[cl.id] ?? []).filter((s) => !derived.includes(s));
+          next[cl.id] = [...derived, ...extra];
+        }
+        return next;
+      });
     } catch (err) {
       console.error("Checklist load failed:", err);
     } finally {
@@ -384,20 +347,23 @@ export function ChecklistPanel({
 
   const loadTemplates = useCallback(async () => {
     try {
-      const { data } = await client.models.homeChecklist.list({
-        filter: { entityType: { eq: "TEMPLATE" as any } },
-        limit: 500,
-      });
-      setTemplates((data ?? []).sort((a, b) => a.name.localeCompare(b.name)));
+      const { data } = await client.models.homeChecklist.list({ filter: { entityType: { eq: "TEMPLATE" as any } }, limit: 500 });
+      setTemplates((data ?? []).filter((t) => t.isArchived !== true).sort((a, b) => a.name.localeCompare(b.name)));
     } catch {
-      // Table may not exist yet
+      /* none yet */
     }
   }, []);
 
   useEffect(() => {
     loadData();
-    if (entityType !== "TEMPLATE") loadTemplates();
-  }, [loadData, loadTemplates, entityType]);
+    if (!isTemplates) loadTemplates();
+  }, [loadData, loadTemplates, isTemplates]);
+
+  // Scroll the list asked for into view once it's there.
+  useEffect(() => {
+    if (!openId || loading) return;
+    document.getElementById(`checklist-${openId}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [openId, loading]);
 
   // ── Checklist CRUD ─────────────────────────────────────────────────
 
@@ -406,108 +372,55 @@ export function ChecklistPanel({
     if (!name) return;
     setNewChecklistName("");
     setShowNewChecklist(false);
-    try {
-      const { errors } = await client.models.homeChecklist.create({
-        entityType: entityType as any,
-        entityId,
-        name,
-        sortOrder: checklists.length,
-      });
-      if (errors?.length) {
-        console.error("Create checklist failed:", errors);
-        addToast({ title: "Failed to create checklist", description: errors[0]?.message ?? "Unknown error", color: "danger" });
-        return;
-      }
-      await loadData();
-    } catch (err) {
-      console.error("Create checklist error:", err);
-      addToast({ title: "Failed to create checklist", description: err instanceof Error ? err.message : String(err), color: "danger" });
-    }
+    const { data, errors } = await client.models.homeChecklist.create({ entityType: entityType as any, entityId, name, sortOrder: checklists.length });
+    if (errors?.length || !data) return addToast({ title: "Couldn't create the checklist", description: errors?.[0]?.message, color: "danger" });
+    toggleOpen(data.id, true);
+    await loadData();
   }
 
   async function renameChecklist(id: string) {
     const name = editingChecklistName.trim();
-    if (!name) return;
     setEditingChecklistId(null);
+    if (!name) return;
     await client.models.homeChecklist.update({ id, name });
     await loadData();
   }
 
   async function deleteChecklist(cl: Checklist) {
     const items = itemsByChecklist[cl.id] ?? [];
-    if (!confirm(`Delete "${cl.name}"${items.length ? ` and its ${items.length} items` : ""}?`))
-      return;
-    for (const item of items) {
-      await client.models.homeChecklistItem.delete({ id: item.id });
-    }
+    if (!confirm(`Delete "${cl.name}"${items.length ? ` and its ${items.length} items` : ""}?`)) return;
+    for (const item of items) await client.models.homeChecklistItem.delete({ id: item.id });
     await client.models.homeChecklist.delete({ id: cl.id });
     await loadData();
   }
 
   async function toggleArchiveChecklist(cl: Checklist) {
-    const nextArchived = !(cl.isArchived === true);
-    await client.models.homeChecklist.update({
-      id: cl.id,
-      isArchived: nextArchived,
-      archivedAt: nextArchived ? new Date().toISOString() : null,
-    });
+    await client.models.homeChecklist.update({ id: cl.id, ...archivePatch(cl.isArchived !== true) });
     await loadData();
     onArchiveChange?.();
   }
 
-  // Templates only: copy onto every trip (lib/trip-prep.ts attaches it on
-  // each trip save, and the reminder sweep catches upcoming trips hourly).
   async function toggleAutoAttachTrips(cl: Checklist) {
     const next = !(cl.autoAttachTrips === true);
     await client.models.homeChecklist.update({ id: cl.id, autoAttachTrips: next });
-    addToast({
-      title: next ? "Added to every trip" : "No longer added to trips",
-      description: next ? `"${cl.name}" will be copied onto new and upcoming trips` : `Trips that already have "${cl.name}" keep their copy`,
-    });
+    addToast({ title: next ? AUTO_ATTACH_LABEL : "No longer added to trips", description: next ? AUTO_ATTACH_HINT : `Trips that already have "${cl.name}" keep their copy` });
     await loadData();
   }
 
-  async function duplicateChecklist(source: Checklist, targetEntityType?: EntityType, targetEntityId?: string) {
-    const eType = targetEntityType ?? entityType;
-    const eId = targetEntityId ?? entityId;
-    const { data: newCl } = await client.models.homeChecklist.create({
-      entityType: eType as any,
-      entityId: eId,
-      name: source.name,
-      sortOrder: checklists.length,
-    });
-    if (!newCl) return;
-
-    const { data: sourceItems } = await client.models.homeChecklistItem.list({
-      filter: { checklistId: { eq: source.id } },
-      limit: 500,
-    });
-    for (const item of (sourceItems ?? []).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))) {
-      const dupPayload: Record<string, any> = {
-        checklistId: newCl.id,
-        text: item.text,
-        isDone: false,
-        sortOrder: item.sortOrder ?? 0,
-      };
-      const sec = (item as any).section;
-      if (sec) dupPayload.section = sec;
-      await (client.models.homeChecklistItem as any).create(dupPayload);
+  async function copyHere(source: Checklist, target: { entityType: EntityType; entityId: string }, toastTitle: string) {
+    try {
+      const copy = await copyChecklist(client, source, { ...target, sortOrder: checklists.length });
+      addToast({ title: toastTitle, description: `"${copy.name}" added` });
+      if (target.entityId === entityId) toggleOpen(copy.id, true);
+      await loadData();
+    } catch (e) {
+      addToast({ title: "Couldn't copy it", description: e instanceof Error ? e.message : String(e), color: "danger" });
     }
-    addToast({ title: "Checklist duplicated", description: `"${source.name}" added` });
-    await loadData();
-  }
-
-  async function saveAsTemplate(source: Checklist) {
-    await duplicateChecklist(source, "TEMPLATE" as any, "templates");
-    await loadTemplates();
-    addToast({ title: "Template saved", description: `"${source.name}" is now a reusable template` });
   }
 
   // ── Move checklist to entity ────────────────────────────────────────
 
-  const MOVE_TYPE_LABELS: Record<string, string> = {
-    TRIP: "Trip", EVENT: "Event", TASK: "Task", DOCUMENT: "Document",
-  };
+  const MOVE_TYPE_LABELS: Record<string, string> = { TRIP: "Trip", EVENT: "Event", TASK: "Task", DOCUMENT: "Document" };
   const MOVE_TYPES = ["TRIP", "EVENT", "TASK", "DOCUMENT"];
 
   async function loadMoveEntities(type: string) {
@@ -521,26 +434,21 @@ export function ChecklistPanel({
       DOCUMENT: { model: "homeDocument", field: "title" },
     };
     const cfg = modelMap[type];
-    if (!cfg) { setLoadingMoveEntities(false); return; }
-    try {
-      const { data } = await (client.models as any)[cfg.model].list({ limit: 500 });
-      setMoveEntityOptions(
-        ((data ?? []) as any[])
-          .map((d: any) => ({ id: d.id, label: d[cfg.field] ?? d.id }))
-          .sort((a: any, b: any) => a.label.localeCompare(b.label))
-      );
-    } catch { /* ignore */ }
+    if (cfg) {
+      try {
+        const { data } = await (client.models as any)[cfg.model].list({ limit: 500 });
+        setMoveEntityOptions(((data ?? []) as any[]).map((d: any) => ({ id: d.id, label: d[cfg.field] ?? d.id })).sort((a: any, b: any) => a.label.localeCompare(b.label)));
+      } catch {
+        /* ignore */
+      }
+    }
     setLoadingMoveEntities(false);
   }
 
   async function moveChecklist(clId: string) {
     if (!moveEntityId || !moveEntityType) return;
     try {
-      await client.models.homeChecklist.update({
-        id: clId,
-        entityType: moveEntityType as any,
-        entityId: moveEntityId,
-      });
+      await client.models.homeChecklist.update({ id: clId, entityType: moveEntityType as any, entityId: moveEntityId });
       setMovingChecklistId(null);
       addToast({ title: "Checklist moved" });
       await loadData();
@@ -558,53 +466,26 @@ export function ChecklistPanel({
     if (!text) return;
     setNewItemText((prev) => ({ ...prev, [key]: "" }));
     const existing = itemsByChecklist[checklistId] ?? [];
-
-    // Compute sortOrder: place after last item in same section
-    const sameSection = existing.filter((i) => ((i as any).section || null) === section);
-    const sortOrder = sameSection.length > 0
-      ? Math.max(...sameSection.map((i) => i.sortOrder ?? 0)) + 1
-      : existing.length;
-
-    try {
-      const itemPayload: Record<string, any> = {
-        checklistId,
-        text,
-        isDone: false,
-        sortOrder,
-      };
-      if (section) itemPayload.section = section;
-      const { errors } = await (client.models.homeChecklistItem as any).create(itemPayload);
-      if (errors?.length) {
-        console.error("Add item failed:", errors);
-        addToast({ title: "Failed to add item", description: errors[0]?.message ?? "Unknown error", color: "danger" });
-        return;
-      }
-      await loadData();
-    } catch (err) {
-      console.error("Add item error:", err);
-      addToast({ title: "Failed to add item", description: err instanceof Error ? err.message : String(err), color: "danger" });
-    }
+    const sameSection = existing.filter((i) => (i.section || null) === section);
+    const sortOrder = sameSection.length > 0 ? Math.max(...sameSection.map((i) => i.sortOrder ?? 0)) + 1 : existing.length;
+    const payload: Record<string, any> = { checklistId, text, isDone: false, sortOrder };
+    if (section) payload.section = section;
+    const { errors } = await (client.models.homeChecklistItem as any).create(payload);
+    if (errors?.length) return addToast({ title: "Failed to add item", description: errors[0]?.message ?? "Unknown error", color: "danger" });
+    await loadData();
   }
 
   async function toggleItem(item: ChecklistItem) {
     const nowDone = !item.isDone;
-    setItemsByChecklist((prev) => ({
-      ...prev,
-      [item.checklistId]: (prev[item.checklistId] ?? []).map((i) =>
-        i.id === item.id ? { ...i, isDone: nowDone, doneAt: nowDone ? new Date().toISOString() : null } : i
-      ),
-    }));
-    await client.models.homeChecklistItem.update({
-      id: item.id,
-      isDone: nowDone,
-      doneAt: nowDone ? new Date().toISOString() : null,
-    });
+    const doneAt = nowDone ? new Date().toISOString() : null;
+    setItemsByChecklist((prev) => ({ ...prev, [item.checklistId]: (prev[item.checklistId] ?? []).map((i) => (i.id === item.id ? { ...i, isDone: nowDone, doneAt } : i)) }));
+    await client.models.homeChecklistItem.update({ id: item.id, isDone: nowDone, doneAt });
   }
 
   async function renameItem(id: string) {
     const text = editingItemText.trim();
-    if (!text) return;
     setEditingItemId(null);
+    if (!text) return;
     await client.models.homeChecklistItem.update({ id, text });
     await loadData();
   }
@@ -614,84 +495,35 @@ export function ChecklistPanel({
     await loadData();
   }
 
-  // ── Section management ─────────────────────────────────────────────
+  // ── Sections (implicit: item.section) ──────────────────────────────
 
-  async function createSection(checklistId: string) {
+  function createSection(checklistId: string) {
     const name = newSectionName.trim();
-    if (!name) return;
     setNewSectionName("");
-    setAddingSectionForChecklist(null);
-
-    // Add to local section order
-    setSectionOrders((prev) => ({
-      ...prev,
-      [checklistId]: [...(prev[checklistId] ?? []), name],
-    }));
-
-    // No backend change needed — sections are implicit via item.section.
-    // The section will appear empty until an item is added/moved to it.
-    // But we need at least one placeholder item? No — we'll handle empty sections
-    // via the sectionOrders state. The UI will render the section header even if empty.
+    setAddingSectionFor(null);
+    if (!name) return;
+    // Shows as an empty column until an item is added or dragged into it.
+    setSectionOrders((prev) => ({ ...prev, [checklistId]: [...(prev[checklistId] ?? []).filter((s) => s !== name), name] }));
   }
 
   async function renameSection(checklistId: string, oldName: string) {
     const newName = editingSectionText.trim();
-    if (!newName || newName === oldName) {
-      setEditingSectionKey(null);
-      return;
-    }
     setEditingSectionKey(null);
-
-    const items = itemsByChecklist[checklistId] ?? [];
-    const sectionItems = items.filter((i) => (i as any).section === oldName);
-
-    // Optimistic update
-    setItemsByChecklist((prev) => ({
-      ...prev,
-      [checklistId]: (prev[checklistId] ?? []).map((i) =>
-        (i as any).section === oldName ? { ...i, section: newName } as any : i
-      ),
-    }));
-    setSectionOrders((prev) => ({
-      ...prev,
-      [checklistId]: (prev[checklistId] ?? []).map((s) => s === oldName ? newName : s),
-    }));
-
-    // Persist
-    for (const item of sectionItems) {
-      await (client.models.homeChecklistItem as any).update({
-        id: item.id,
-        section: newName,
-      });
-    }
+    if (!newName || newName === oldName) return;
+    const sectionItems = (itemsByChecklist[checklistId] ?? []).filter((i) => i.section === oldName);
+    setItemsByChecklist((prev) => ({ ...prev, [checklistId]: (prev[checklistId] ?? []).map((i) => (i.section === oldName ? { ...i, section: newName } : i)) }));
+    setSectionOrders((prev) => ({ ...prev, [checklistId]: (prev[checklistId] ?? []).map((s) => (s === oldName ? newName : s)) }));
+    for (const item of sectionItems) await (client.models.homeChecklistItem as any).update({ id: item.id, section: newName });
   }
 
   async function deleteSection(checklistId: string, sectionName: string) {
-    const items = itemsByChecklist[checklistId] ?? [];
-    const sectionItems = items.filter((i) => (i as any).section === sectionName);
-
-    // Move items to ungrouped (null section)
-    setItemsByChecklist((prev) => ({
-      ...prev,
-      [checklistId]: (prev[checklistId] ?? []).map((i) =>
-        (i as any).section === sectionName ? { ...i, section: null } as any : i
-      ),
-    }));
-    setSectionOrders((prev) => ({
-      ...prev,
-      [checklistId]: (prev[checklistId] ?? []).filter((s) => s !== sectionName),
-    }));
-
-    // Persist
-    for (const item of sectionItems) {
-      await (client.models.homeChecklistItem as any).update({
-        id: item.id,
-        section: null,
-      });
-    }
+    const sectionItems = (itemsByChecklist[checklistId] ?? []).filter((i) => i.section === sectionName);
+    setItemsByChecklist((prev) => ({ ...prev, [checklistId]: (prev[checklistId] ?? []).map((i) => (i.section === sectionName ? { ...i, section: null } : i)) }));
+    setSectionOrders((prev) => ({ ...prev, [checklistId]: (prev[checklistId] ?? []).filter((s) => s !== sectionName) }));
+    for (const item of sectionItems) await (client.models.homeChecklistItem as any).update({ id: item.id, section: null });
   }
 
-  // ── Drag and Drop ──────────────────────────────────────────────────
+  // ── Drag and drop ──────────────────────────────────────────────────
 
   function findItemById(id: string): { item: ChecklistItem; checklistId: string } | null {
     for (const [clId, items] of Object.entries(itemsByChecklist)) {
@@ -702,91 +534,52 @@ export function ChecklistPanel({
   }
 
   function handleDragStart(event: DragStartEvent) {
-    const { active } = event;
-    const activeId = String(active.id);
-
-    if (activeId.startsWith("section:")) {
-      // Section drag — no overlay needed
-      setActiveItem(null);
-    } else {
-      const found = findItemById(activeId);
-      setActiveItem(found?.item ?? null);
-    }
+    const id = String(event.active.id);
+    setActiveItem(id.startsWith("section:") ? null : (findItemById(id)?.item ?? null));
   }
 
   function handleDragEnd(event: DragEndEvent) {
     const { active, over } = event;
     setActiveItem(null);
-
     if (!over) return;
-
     const activeId = String(active.id);
     const overId = String(over.id);
-
     if (activeId === overId) return;
-
-    // Section reordering
-    if (activeId.startsWith("section:") && overId.startsWith("section:")) {
-      handleSectionReorder(activeId, overId);
+    if (activeId.startsWith("section:")) {
+      if (overId.startsWith("section:")) handleSectionReorder(activeId, overId);
       return;
     }
-
-    // Item reordering
-    if (!activeId.startsWith("section:")) {
-      handleItemReorder(activeId, overId);
-    }
+    handleItemReorder(activeId, overId);
   }
 
   function handleSectionReorder(activeId: string, overId: string) {
     // Format: section:checklistId:sectionName
-    const activeParts = activeId.split(":");
-    const overParts = overId.split(":");
-    const checklistId = activeParts[1];
-    const activeSectionId = activeParts.slice(2).join(":");
-    const overSectionId = overParts.slice(2).join(":");
-
-    if (activeSectionId === UNGROUPED || overSectionId === UNGROUPED) return;
-    if (activeParts[1] !== overParts[1]) return; // different checklists
-
+    const a = activeId.split(":");
+    const o = overId.split(":");
+    const checklistId = a[1];
+    const from = a.slice(2).join(":");
+    const to = o.slice(2).join(":");
+    if (from === UNGROUPED || to === UNGROUPED || a[1] !== o[1]) return;
     setSectionOrders((prev) => {
       const order = [...(prev[checklistId] ?? [])];
-      const fromIdx = order.indexOf(activeSectionId);
-      const toIdx = order.indexOf(overSectionId);
+      const fromIdx = order.indexOf(from);
+      const toIdx = order.indexOf(to);
       if (fromIdx < 0 || toIdx < 0) return prev;
       order.splice(fromIdx, 1);
-      order.splice(toIdx, 0, activeSectionId);
-
-      // Persist new sortOrder for items in reordered sections
-      persistSectionReorder(checklistId, order);
-
+      order.splice(toIdx, 0, from);
+      void persistSectionReorder(checklistId, order);
       return { ...prev, [checklistId]: order };
     });
   }
 
   async function persistSectionReorder(checklistId: string, order: string[]) {
     const items = itemsByChecklist[checklistId] ?? [];
-    // Assign sortOrder so that sections appear in order:
-    // ungrouped items keep their relative order at the front,
-    // then each section's items in sequence
-    let sortCounter = 0;
-
-    // Ungrouped items first
-    const ungrouped = items.filter((i) => !(i as any).section).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-    for (const item of ungrouped) {
-      if (item.sortOrder !== sortCounter) {
-        await (client.models.homeChecklistItem as any).update({ id: item.id, sortOrder: sortCounter });
-      }
-      sortCounter++;
-    }
-
-    // Then each section in order
-    for (const sec of order) {
-      const secItems = items.filter((i) => (i as any).section === sec).sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-      for (const item of secItems) {
-        if (item.sortOrder !== sortCounter) {
-          await (client.models.homeChecklistItem as any).update({ id: item.id, sortOrder: sortCounter });
-        }
-        sortCounter++;
+    let n = 0;
+    const bySort = (x: ChecklistItem, y: ChecklistItem) => (x.sortOrder ?? 0) - (y.sortOrder ?? 0);
+    for (const sec of [null, ...order]) {
+      for (const item of items.filter((i) => (i.section || null) === sec).sort(bySort)) {
+        if (item.sortOrder !== n) await (client.models.homeChecklistItem as any).update({ id: item.id, sortOrder: n });
+        n++;
       }
     }
   }
@@ -794,102 +587,57 @@ export function ChecklistPanel({
   function handleItemReorder(activeId: string, overId: string) {
     const activeData = findItemById(activeId);
     if (!activeData) return;
-
     const checklistId = activeData.checklistId;
     const items = [...(itemsByChecklist[checklistId] ?? [])];
+    const secOf = (i: ChecklistItem) => i.section || null;
 
-    // Determine target section
-    let targetSection: string | null = null;
-    let targetIndex = -1;
-
+    let targetSection: string | null;
+    let targetIndex: number;
     if (overId.startsWith("section:")) {
-      // Dropped on a section header — add to end of that section
-      const overParts = overId.split(":");
-      const overSectionId = overParts.slice(2).join(":");
-      targetSection = overSectionId === UNGROUPED ? null : overSectionId;
-      const sameSection = items.filter((i) => ((i as any).section || null) === targetSection);
-      targetIndex = sameSection.length; // end of section
+      // Dropped on a column (an empty one, or its header): to its end.
+      const parts = overId.split(":");
+      if (parts[1] !== checklistId) return;
+      const sec = parts.slice(2).join(":");
+      targetSection = sec === UNGROUPED ? null : sec;
+      targetIndex = items.filter((i) => secOf(i) === targetSection).length;
     } else {
-      // Dropped on an item
       const overItem = items.find((i) => i.id === overId);
-      if (!overItem) return;
-      targetSection = (overItem as any).section || null;
-      const sameSection = items.filter((i) => ((i as any).section || null) === targetSection);
-      targetIndex = sameSection.findIndex((i) => i.id === overId);
+      if (!overItem) return; // another checklist
+      targetSection = secOf(overItem);
+      targetIndex = items.filter((i) => secOf(i) === targetSection).findIndex((i) => i.id === overId);
     }
 
-    const activeItem = items.find((i) => i.id === activeId)!;
-    const oldSection = (activeItem as any).section || null;
+    const moving = items.find((i) => i.id === activeId)!;
+    const oldSection = secOf(moving);
+    const rest = items.filter((i) => i.id !== activeId);
+    const targetItems = rest.filter((i) => secOf(i) === targetSection);
+    targetItems.splice(Math.min(targetIndex, targetItems.length), 0, { ...moving, section: targetSection });
 
-    // Remove active item from list
-    const filteredItems = items.filter((i) => i.id !== activeId);
-
-    // Build new item with updated section
-    const updatedItem = { ...activeItem, section: targetSection } as any;
-
-    // Get items in target section (without the active item)
-    const targetItems = filteredItems.filter((i) => ((i as any).section || null) === targetSection);
-
-    // Insert at the right position
-    const insertIdx = Math.min(targetIndex, targetItems.length);
-    targetItems.splice(insertIdx, 0, updatedItem);
-
-    // Rebuild complete items array preserving order
-    const newItems: ChecklistItem[] = [];
-    const otherItems = filteredItems.filter((i) => ((i as any).section || null) !== targetSection);
-
-    // Determine final order: ungrouped, then sections in order
     const order = sectionOrders[checklistId] ?? [];
-    const allSections = [null, ...order.map((s) => s as string | null)];
+    const allSections: (string | null)[] = [null, ...order];
+    for (const i of rest) if (secOf(i) && !allSections.includes(secOf(i))) allSections.push(secOf(i));
+    if (targetSection && !allSections.includes(targetSection)) allSections.push(targetSection);
 
-    // Also add sections not in order
-    for (const i of [...otherItems, ...targetItems]) {
-      const sec = (i as any).section || null;
-      if (sec && !allSections.includes(sec)) allSections.push(sec);
-    }
-
-    let sortCounter = 0;
+    let n = 0;
+    const newItems: ChecklistItem[] = [];
     const updates: { id: string; sortOrder: number; section?: string | null }[] = [];
-
     for (const sec of allSections) {
-      const secItems = sec === targetSection
-        ? targetItems
-        : filteredItems.filter((i) => ((i as any).section || null) === sec);
-
-      for (const item of secItems) {
-        const newSortOrder = sortCounter++;
-        newItems.push({ ...item, sortOrder: newSortOrder } as any);
-
-        const needsSortUpdate = item.sortOrder !== newSortOrder;
-        const needsSectionUpdate = item.id === activeId && oldSection !== targetSection;
-
-        if (needsSortUpdate || needsSectionUpdate) {
-          const update: any = { id: item.id, sortOrder: newSortOrder };
-          if (needsSectionUpdate) update.section = targetSection;
-          updates.push(update);
-        }
+      for (const item of sec === targetSection ? targetItems : rest.filter((i) => secOf(i) === sec)) {
+        const sortOrder = n++;
+        newItems.push({ ...item, sortOrder });
+        const moved = item.id === activeId && oldSection !== targetSection;
+        if (item.sortOrder !== sortOrder || moved) updates.push({ id: item.id, sortOrder, ...(moved ? { section: targetSection } : {}) });
       }
     }
-
-    // Optimistic update
-    setItemsByChecklist((prev) => ({
-      ...prev,
-      [checklistId]: newItems,
-    }));
-
-    // Persist in background
-    (async () => {
-      for (const update of updates) {
-        await (client.models.homeChecklistItem as any).update(update);
-      }
+    setItemsByChecklist((prev) => ({ ...prev, [checklistId]: newItems }));
+    void (async () => {
+      for (const u of updates) await (client.models.homeChecklistItem as any).update(u);
     })();
   }
 
   // ── Render ─────────────────────────────────────────────────────────
 
-  const visibleChecklists = checklists.filter((cl) =>
-    matchesArchiveFilter(cl, archiveFilter),
-  );
+  const visibleChecklists = useMemo(() => checklists.filter((cl) => matchesArchiveFilter(cl, archiveFilter)), [checklists, archiveFilter]);
 
   if (loading) {
     return (
@@ -899,332 +647,334 @@ export function ChecklistPanel({
     );
   }
 
-  return (
-    <div className="border-t border-default-200 pt-4">
-      <div className="flex items-center justify-between mb-2">
-        <p className="text-sm font-medium">Checklists</p>
-        <div className="flex gap-1">
-          {entityType !== "TEMPLATE" && templates.length > 0 && (
-            <Button
-              size="sm"
-              variant="flat"
-              startContent={<FaFileImport size={10} />}
-              onPress={() => setShowTemplatePicker(!showTemplatePicker)}
+  const fromTemplate = !isTemplates && (
+    <Popover isOpen={templatePickerOpen} onOpenChange={setTemplatePickerOpen} placement="bottom-end">
+      <PopoverTrigger>
+        <Button size="sm" variant="flat" startContent={<FaFileImport size={10} />}>
+          From template
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="p-2 w-64">
+        <div className="w-full flex flex-col gap-0.5">
+          {templates.length === 0 && <span className="text-xs text-default-500 px-2 py-1">No templates yet.</span>}
+          {templates.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className="text-left text-sm px-2 py-1.5 rounded-md hover:bg-default-100"
+              onClick={async () => {
+                setTemplatePickerOpen(false);
+                await copyHere(t, { entityType, entityId }, "Added from template");
+              }}
             >
-              From template
-            </Button>
-          )}
-          <Button
-            size="sm"
-            variant="flat"
-            startContent={<FaPlus size={10} />}
-            onPress={() => setShowNewChecklist(true)}
-          >
-            Add checklist
-          </Button>
+              {t.name}
+              {t.autoAttachTrips === true && <span className="block text-[11px] text-default-400">{AUTO_ATTACH_LABEL.toLowerCase()}</span>}
+            </button>
+          ))}
+          <NextLink href={templatesHref()} className="text-xs text-primary px-2 py-1.5 border-t border-default-100 mt-1 hover:underline">
+            Edit templates ›
+          </NextLink>
         </div>
-      </div>
+      </PopoverContent>
+    </Popover>
+  );
 
-      {/* Template picker */}
-      {showTemplatePicker && (
-        <div className="mb-3 border border-default-200 rounded-md p-3 bg-default-50">
-          <p className="text-xs text-default-500 mb-2">Pick a template to import:</p>
-          <div className="flex flex-wrap gap-2">
-            {templates.map((t) => (
-              <Button
-                key={t.id}
-                size="sm"
-                variant="flat"
-                onPress={async () => {
-                  await duplicateChecklist(t);
-                  setShowTemplatePicker(false);
-                }}
-              >
-                {t.name}
+  return (
+    <div className={bare ? "" : "border-t border-default-200 pt-4"}>
+      {(!bare || actions) && (
+        <div className={`flex items-center gap-2 mb-2 ${bare ? "justify-end" : "justify-between"}`}>
+          {!bare && <p className="text-sm font-medium">Checklists</p>}
+          {actions && (
+            <div className="flex gap-1">
+              {fromTemplate}
+              <Button size="sm" variant="flat" startContent={<FaPlus size={10} />} onPress={() => setShowNewChecklist(true)}>
+                {isTemplates ? "New template" : "Add checklist"}
               </Button>
-            ))}
-          </div>
+            </div>
+          )}
         </div>
       )}
 
-      {/* New checklist input */}
       {showNewChecklist && (
         <form
-          onSubmit={(e) => { e.preventDefault(); createChecklist(); }}
+          onSubmit={(e) => {
+            e.preventDefault();
+            void createChecklist();
+          }}
           className="flex gap-2 mb-3"
         >
-          <Input
-            size="sm"
-            placeholder="Checklist name..."
-            value={newChecklistName}
-            onValueChange={setNewChecklistName}
-            autoFocus
-          />
-          <Button size="sm" type="submit" color="primary" variant="flat" isIconOnly>
+          <Input size="sm" placeholder={isTemplates ? "Template name (Pre-trip, Packing…)" : "Checklist name…"} value={newChecklistName} onValueChange={setNewChecklistName} autoFocus />
+          <Button size="sm" type="submit" color="primary" variant="flat" isIconOnly aria-label="Create">
             <FaCheck size={10} />
           </Button>
-          <Button size="sm" variant="light" isIconOnly onPress={() => { setShowNewChecklist(false); setNewChecklistName(""); }}>
+          <Button
+            size="sm"
+            variant="light"
+            isIconOnly
+            aria-label="Cancel"
+            onPress={() => {
+              setShowNewChecklist(false);
+              setNewChecklistName("");
+            }}
+          >
             <FaTimes size={10} />
           </Button>
         </form>
       )}
 
-      {/* Empty state */}
       {checklists.length === 0 && !showNewChecklist && (
-        <p className="text-xs text-default-400 py-2">
-          No checklists yet. Add one{templates.length > 0 ? " or import from a template" : ""} to get started.
-        </p>
+        <p className="text-xs text-default-400 py-2">{isTemplates ? "No templates yet." : `No checklists yet. Add one${templates.length > 0 ? " or start from a template" : ""}.`}</p>
       )}
       {checklists.length > 0 && visibleChecklists.length === 0 && !showNewChecklist && (
-        <p className="text-xs text-default-400 py-2">
-          No {archiveFilter === "ARCHIVED" ? "archived" : "active"} checklists here.
-        </p>
+        <p className="text-xs text-default-400 py-2">No {archiveFilter === "ARCHIVED" ? "archived" : "active"} checklists here.</p>
       )}
 
-      {/* Checklists */}
-      <div className="space-y-3">
+      <div className="flex flex-col gap-2">
         {visibleChecklists.map((cl) => {
           const items = itemsByChecklist[cl.id] ?? [];
           const order = sectionOrders[cl.id] ?? [];
           const groups = buildSectionGroups(items, order);
+          // Empty sections added this session get their column too.
+          const have = new Set(groups.map((g) => g.sectionId));
+          for (const [idx, name] of order.entries()) if (!have.has(name)) groups.push({ sectionId: name, sectionName: name, items: [], sortOrder: idx });
+          groups.sort((a, b) => a.sortOrder - b.sortOrder);
+          const hasSections = groups.some((g) => g.sectionId !== UNGROUPED);
+          // The General column: only when something is in it, or there's nothing else.
+          const columns = groups
+            .filter((g) => g.sectionId !== UNGROUPED || g.items.length > 0 || !hasSections)
+            .map((g) => (g.sectionId === UNGROUPED ? { ...g, sectionName: "General" } : g));
+          if (!columns.length) columns.push({ sectionId: UNGROUPED, sectionName: "General", items: [], sortOrder: -1 });
+          const p = progress(items);
+          const isOpen = open.has(cl.id);
+          const archived = cl.isArchived === true;
 
-          // Also add empty sections from sectionOrders that have no items
-          const existingSectionIds = new Set(groups.map((g) => g.sectionId));
-          for (const secName of order) {
-            if (!existingSectionIds.has(secName)) {
-              // Find insertion position based on order
-              const idx = order.indexOf(secName);
-              // Insert after ungrouped + however many ordered sections come before this one
-              const insertAt = (groups[0]?.sectionId === UNGROUPED ? 1 : 0) +
-                order.slice(0, idx).filter((s) => existingSectionIds.has(s)).length;
-              groups.splice(insertAt, 0, {
-                sectionId: secName,
-                sectionName: secName,
-                items: [],
-                sortOrder: idx,
-              });
-              existingSectionIds.add(secName);
-            }
-          }
+          const itemProps = (i: ChecklistItem): ItemRowProps => ({
+            item: i,
+            isEditing: editingItemId === i.id,
+            editingText: editingItemText,
+            onToggle: () => void toggleItem(i),
+            onStartEdit: () => {
+              setEditingItemId(i.id);
+              setEditingItemText(i.text);
+            },
+            onEditTextChange: setEditingItemText,
+            onSaveEdit: () => void renameItem(i.id),
+            onCancelEdit: () => setEditingItemId(null),
+            onDelete: () => void deleteItem(i.id),
+          });
 
-          // If there are no ungrouped items, still show ungrouped section for adding items
-          if (!existingSectionIds.has(UNGROUPED)) {
-            groups.unshift({
-              sectionId: UNGROUPED,
-              sectionName: "Ungrouped",
-              items: [],
-              sortOrder: -1,
-            });
-          }
-
-          const isEditingName = editingChecklistId === cl.id;
-          const doneCount = items.filter((i) => i.isDone).length;
-
-          const sectionIds = groups.map((g) => `section:${cl.id}:${g.sectionId}`);
-          const allItemIds = groups.flatMap((g) => g.items.map((i) => i.id));
+          const menu = (
+            <Dropdown placement="bottom-end">
+              <DropdownTrigger>
+                <Button size="sm" isIconOnly variant="light" aria-label="Checklist actions">
+                  <FaEllipsisH size={12} />
+                </Button>
+              </DropdownTrigger>
+              <DropdownMenu
+                aria-label="Checklist actions"
+                onAction={(k) => {
+                  if (k === "rename") {
+                    setEditingChecklistId(cl.id);
+                    setEditingChecklistName(cl.name);
+                  } else if (k === "duplicate") void copyHere(cl, { entityType: (cl.entityType ?? entityType) as EntityType, entityId }, "Duplicated");
+                  else if (k === "move") {
+                    setMovingChecklistId(cl.id);
+                    setMoveEntityType("TRIP");
+                    void loadMoveEntities("TRIP");
+                    toggleOpen(cl.id, true);
+                  } else if (k === "save-template") void copyHere(cl, { entityType: "TEMPLATE", entityId: TEMPLATE_ENTITY_ID }, "Saved as a template").then(loadTemplates);
+                  else if (k === "auto") void toggleAutoAttachTrips(cl);
+                  else if (k === "archive") void toggleArchiveChecklist(cl);
+                  else if (k === "delete") void deleteChecklist(cl);
+                }}
+              >
+                <DropdownSection showDivider>
+                  <DropdownItem key="rename">Rename</DropdownItem>
+                  <DropdownItem key="duplicate" description="A fresh, unchecked copy here">
+                    Duplicate
+                  </DropdownItem>
+                  {!isTemplates ? (
+                    <DropdownItem key="move" description="Attach it to another trip, event…">
+                      Move to…
+                    </DropdownItem>
+                  ) : null}
+                  {!isTemplates ? (
+                    <DropdownItem key="save-template" description="Reuse it on other trips">
+                      Save as template
+                    </DropdownItem>
+                  ) : null}
+                  {!isTemplates && cl.sourceTemplateId ? (
+                    <DropdownItem key="edit-template" href={templatesHref(cl.sourceTemplateId)} as={NextLink} description="Changes apply to future copies">
+                      Edit its template
+                    </DropdownItem>
+                  ) : null}
+                  {isTemplates ? (
+                    <DropdownItem key="auto" description={AUTO_ATTACH_HINT}>
+                      {cl.autoAttachTrips === true ? "Stop adding to every trip" : "Add to every trip"}
+                    </DropdownItem>
+                  ) : null}
+                </DropdownSection>
+                <DropdownSection>
+                  <DropdownItem key="archive">{archived ? "Unarchive" : "Archive"}</DropdownItem>
+                  <DropdownItem key="delete" className="text-danger" color="danger">
+                    Delete
+                  </DropdownItem>
+                </DropdownSection>
+              </DropdownMenu>
+            </Dropdown>
+          );
 
           return (
-            <div key={cl.id} className="border border-default-200 rounded-md p-3 bg-default-50">
-              {/* Checklist header */}
-              <div className="flex items-center justify-between mb-2">
-                {isEditingName ? (
-                  <form onSubmit={(e) => { e.preventDefault(); renameChecklist(cl.id); }} className="flex gap-1 flex-1">
-                    <Input size="sm" value={editingChecklistName} onValueChange={setEditingChecklistName} autoFocus />
-                    <Button size="sm" type="submit" isIconOnly variant="flat"><FaCheck size={10} /></Button>
-                    <Button size="sm" isIconOnly variant="light" onPress={() => setEditingChecklistId(null)}><FaTimes size={10} /></Button>
+            <div key={cl.id} id={`checklist-${cl.id}`} className={`border border-default-200 rounded-lg bg-content1 ${archived ? "opacity-70" : ""}`}>
+              {/* Header: click to open / close */}
+              <div className="flex items-center gap-2 px-3 py-2">
+                {editingChecklistId === cl.id ? (
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      void renameChecklist(cl.id);
+                    }}
+                    className="flex gap-1 flex-1"
+                  >
+                    <Input size="sm" value={editingChecklistName} onValueChange={setEditingChecklistName} autoFocus onKeyDown={(e) => e.key === "Escape" && setEditingChecklistId(null)} />
+                    <Button size="sm" type="submit" isIconOnly variant="flat" aria-label="Save">
+                      <FaCheck size={10} />
+                    </Button>
                   </form>
                 ) : (
-                  <>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <p className="text-sm font-medium">{cl.name}</p>
-                        {cl.isArchived === true && (
-                          <span className="text-[10px] uppercase tracking-wider text-default-500 bg-default-100 px-1.5 py-0.5 rounded">
-                            Archived
-                          </span>
-                        )}
-                        {entityType === "TEMPLATE" && cl.autoAttachTrips === true && (
-                          <span className="text-[10px] uppercase tracking-wider text-primary bg-primary-50 px-1.5 py-0.5 rounded">
-                            Every trip
-                          </span>
-                        )}
-                      </div>
-                      {items.length > 0 && (
-                        <p className="text-xs text-default-400">{doneCount}/{items.length} done</p>
-                      )}
-                    </div>
-                    <div className="flex gap-1">
-                      <Button size="sm" isIconOnly variant="light" title="Move to entity" onPress={() => { setMovingChecklistId(cl.id); setMoveEntityType("TRIP"); loadMoveEntities("TRIP"); }}>
-                        <FaLink size={10} />
-                      </Button>
-                      <Button size="sm" isIconOnly variant="light" title="Duplicate" onPress={() => duplicateChecklist(cl)}>
-                        <FaCopy size={10} />
-                      </Button>
-                      {entityType !== "TEMPLATE" && (
-                        <Button size="sm" isIconOnly variant="light" title="Save as template" onPress={() => saveAsTemplate(cl)}>
-                          <FaFileImport size={10} />
-                        </Button>
-                      )}
-                      {entityType === "TEMPLATE" && (
-                        <Button
-                          size="sm"
-                          isIconOnly
-                          variant={cl.autoAttachTrips === true ? "flat" : "light"}
-                          color={cl.autoAttachTrips === true ? "primary" : "default"}
-                          title={cl.autoAttachTrips === true ? "Added to every trip (click to stop)" : "Add to every trip"}
-                          onPress={() => toggleAutoAttachTrips(cl)}
-                        >
-                          <FaPlane size={10} />
-                        </Button>
-                      )}
-                      <Button size="sm" isIconOnly variant="light" onPress={() => { setEditingChecklistId(cl.id); setEditingChecklistName(cl.name); }}>
-                        <FaPen size={10} />
-                      </Button>
-                      <Button
-                        size="sm"
-                        isIconOnly
-                        variant="light"
-                        title={cl.isArchived === true ? "Unarchive" : "Archive"}
-                        onPress={() => toggleArchiveChecklist(cl)}
-                      >
-                        {cl.isArchived === true ? (
-                          <FaBoxOpen size={10} />
-                        ) : (
-                          <FaArchive size={10} />
-                        )}
-                      </Button>
-                      <Button size="sm" isIconOnly variant="light" color="danger" onPress={() => deleteChecklist(cl)}>
-                        <FaTrash size={10} />
-                      </Button>
-                    </div>
-                  </>
+                  <button type="button" className="flex-1 min-w-0 flex items-center gap-2 text-left" onClick={() => toggleOpen(cl.id)} aria-expanded={isOpen}>
+                    {isOpen ? <FaChevronDown size={10} className="text-default-400 shrink-0" /> : <FaChevronRight size={10} className="text-default-400 shrink-0" />}
+                    <span className="text-sm font-medium truncate">{cl.name}</span>
+                    {archived && (
+                      <Chip size="sm" variant="flat" className="h-5">
+                        Archived
+                      </Chip>
+                    )}
+                    {isTemplates && cl.autoAttachTrips === true && (
+                      <Chip size="sm" variant="flat" color="primary" className="h-5" title={AUTO_ATTACH_HINT}>
+                        {AUTO_ATTACH_LABEL}
+                      </Chip>
+                    )}
+                  </button>
                 )}
+                {p.total > 0 && (
+                  <span className="flex items-center gap-2 shrink-0" title={`${p.done} of ${p.total} done`}>
+                    <span className="hidden sm:block w-20 h-1.5 rounded-full bg-default-200 overflow-hidden">
+                      <span className={`block h-full ${p.done === p.total ? "bg-success" : "bg-primary"}`} style={{ width: `${p.pct}%` }} />
+                    </span>
+                    <span className="text-xs text-default-500 tabular-nums">
+                      {p.done}/{p.total}
+                    </span>
+                  </span>
+                )}
+                {menu}
               </div>
 
-              {/* Move to entity picker */}
-              {movingChecklistId === cl.id && (
-                <div className="mb-3 border border-default-200 rounded-md p-3 bg-default-100 space-y-2">
-                  <p className="text-xs font-medium">Move to:</p>
-                  <div className="flex gap-2">
-                    <select
-                      className="text-sm border border-default-300 rounded px-2 py-1 bg-white"
-                      value={moveEntityType}
-                      onChange={(e) => { setMoveEntityType(e.target.value); loadMoveEntities(e.target.value); }}
-                    >
-                      {MOVE_TYPES.map((t) => (
-                        <option key={t} value={t}>{MOVE_TYPE_LABELS[t]}</option>
-                      ))}
-                    </select>
-                    <select
-                      className="text-sm border border-default-300 rounded px-2 py-1 bg-white flex-1"
-                      value={moveEntityId}
-                      onChange={(e) => setMoveEntityId(e.target.value)}
-                      disabled={loadingMoveEntities || moveEntityOptions.length === 0}
-                    >
-                      <option value="">{loadingMoveEntities ? "Loading..." : "Select..."}</option>
-                      {moveEntityOptions.map((o) => (
-                        <option key={o.id} value={o.id}>{o.label}</option>
-                      ))}
-                    </select>
-                    <Button size="sm" color="primary" variant="flat" isDisabled={!moveEntityId} onPress={() => moveChecklist(cl.id)}>
-                      Move
-                    </Button>
-                    <Button size="sm" variant="light" onPress={() => setMovingChecklistId(null)}>
-                      Cancel
-                    </Button>
-                  </div>
+              {isOpen && (
+                <div className="px-3 pb-3">
+                  {movingChecklistId === cl.id && (
+                    <div className="mb-3 border border-default-200 rounded-md p-3 bg-default-50 flex flex-wrap gap-2 items-center">
+                      <span className="text-xs font-medium">Move to</span>
+                      <select
+                        className="text-sm border border-default-300 rounded px-2 py-1 bg-white dark:bg-default-100"
+                        value={moveEntityType}
+                        onChange={(e) => {
+                          setMoveEntityType(e.target.value);
+                          void loadMoveEntities(e.target.value);
+                        }}
+                      >
+                        {MOVE_TYPES.map((t) => (
+                          <option key={t} value={t}>
+                            {MOVE_TYPE_LABELS[t]}
+                          </option>
+                        ))}
+                      </select>
+                      <select
+                        className="text-sm border border-default-300 rounded px-2 py-1 bg-white dark:bg-default-100 flex-1 min-w-[10rem]"
+                        value={moveEntityId}
+                        onChange={(e) => setMoveEntityId(e.target.value)}
+                        disabled={loadingMoveEntities || moveEntityOptions.length === 0}
+                      >
+                        <option value="">{loadingMoveEntities ? "Loading…" : "Select…"}</option>
+                        {moveEntityOptions.map((o) => (
+                          <option key={o.id} value={o.id}>
+                            {o.label}
+                          </option>
+                        ))}
+                      </select>
+                      <Button size="sm" color="primary" variant="flat" isDisabled={!moveEntityId} onPress={() => void moveChecklist(cl.id)}>
+                        Move
+                      </Button>
+                      <Button size="sm" variant="light" onPress={() => setMovingChecklistId(null)}>
+                        Cancel
+                      </Button>
+                    </div>
+                  )}
+
+                  <DndContext sensors={sensors} collisionDetection={closestCorners} onDragStart={handleDragStart} onDragEnd={handleDragEnd}>
+                    <div className={hasSections ? "flex gap-3 overflow-x-auto pb-2 snap-x" : ""}>
+                      <SortableContext items={columns.map((g) => `section:${cl.id}:${g.sectionId}`)} strategy={horizontalListSortingStrategy}>
+                        {columns.map((group) => {
+                          const key = `${cl.id}:${group.sectionId}`;
+                          const section = group.sectionId === UNGROUPED ? null : group.sectionId;
+                          return (
+                            <SectionColumn
+                              key={group.sectionId}
+                              group={group}
+                              checklistId={cl.id}
+                              single={!hasSections}
+                              renaming={editingSectionKey === key}
+                              renameText={editingSectionText}
+                              onStartRename={() => {
+                                setEditingSectionKey(key);
+                                setEditingSectionText(group.sectionName);
+                              }}
+                              onRenameTextChange={setEditingSectionText}
+                              onSaveRename={() => void renameSection(cl.id, group.sectionId)}
+                              onCancelRename={() => setEditingSectionKey(null)}
+                              onDelete={() => void deleteSection(cl.id, group.sectionId)}
+                              item={itemProps}
+                              addText={newItemText[key] ?? ""}
+                              onAddTextChange={(v) => setNewItemText((prev) => ({ ...prev, [key]: v }))}
+                              onAdd={() => void addItem(cl.id, section)}
+                            />
+                          );
+                        })}
+                      </SortableContext>
+                      {/* Add a section: the board's last column (a plain button on a list without sections). */}
+                      <div className={hasSections ? "w-56 shrink-0 self-start" : "mt-2"}>
+                        {addingSectionFor === cl.id ? (
+                          <form
+                            onSubmit={(e) => {
+                              e.preventDefault();
+                              createSection(cl.id);
+                            }}
+                            className="flex gap-1"
+                          >
+                            <Input size="sm" placeholder="Section name (Carry-on…)" value={newSectionName} onValueChange={setNewSectionName} autoFocus onKeyDown={(e) => e.key === "Escape" && setAddingSectionFor(null)} />
+                            <Button size="sm" type="submit" color="primary" variant="flat" isIconOnly aria-label="Add section">
+                              <FaCheck size={10} />
+                            </Button>
+                          </form>
+                        ) : (
+                          <Button
+                            size="sm"
+                            variant={hasSections ? "bordered" : "light"}
+                            className={hasSections ? "w-full border-dashed" : ""}
+                            startContent={<FaPlus size={10} />}
+                            onPress={() => {
+                              setAddingSectionFor(cl.id);
+                              setNewSectionName("");
+                            }}
+                          >
+                            {hasSections ? "Add section" : "Group into sections"}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                    <DragOverlay>{activeItem ? <DragOverlayItem item={activeItem} /> : null}</DragOverlay>
+                  </DndContext>
                 </div>
-              )}
-
-              {/* Sections with DnD */}
-              <DndContext
-                sensors={sensors}
-                collisionDetection={closestCenter}
-                onDragStart={handleDragStart}
-                onDragEnd={handleDragEnd}
-              >
-                <SortableContext items={[...sectionIds, ...allItemIds]} strategy={verticalListSortingStrategy}>
-                  {groups.map((group) => {
-                    const sectionKey = `${cl.id}:${group.sectionId}`;
-                    const isCollapsed = collapsedSections.has(sectionKey);
-                    const addItemKey = `${cl.id}:${group.sectionId}`;
-                    const sectionForItem = group.sectionId === UNGROUPED ? null : group.sectionId;
-
-                    return (
-                      <SortableSection
-                        key={group.sectionId}
-                        group={group}
-                        checklistId={cl.id}
-                        isCollapsed={isCollapsed}
-                        onToggleCollapse={() => {
-                          setCollapsedSections((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(sectionKey)) next.delete(sectionKey);
-                            else next.add(sectionKey);
-                            return next;
-                          });
-                        }}
-                        editingSectionName={editingSectionKey === sectionKey ? group.sectionId : null}
-                        editingSectionText={editingSectionText}
-                        onStartRenameSection={() => {
-                          setEditingSectionKey(sectionKey);
-                          setEditingSectionText(group.sectionName);
-                        }}
-                        onRenameSectionTextChange={setEditingSectionText}
-                        onSaveRenameSection={() => renameSection(cl.id, group.sectionId)}
-                        onCancelRenameSection={() => setEditingSectionKey(null)}
-                        onDeleteSection={() => deleteSection(cl.id, group.sectionId)}
-                        editingItemId={editingItemId}
-                        editingItemText={editingItemText}
-                        onToggleItem={(item) => toggleItem(item)}
-                        onStartEditItem={(id, text) => { setEditingItemId(id); setEditingItemText(text); }}
-                        onEditItemTextChange={setEditingItemText}
-                        onSaveEditItem={(id) => renameItem(id)}
-                        onCancelEditItem={() => setEditingItemId(null)}
-                        onDeleteItem={(id) => deleteItem(id)}
-                        addItemText={newItemText[addItemKey] ?? ""}
-                        onAddItemTextChange={(v) => setNewItemText((prev) => ({ ...prev, [addItemKey]: v }))}
-                        onAddItem={() => addItem(cl.id, sectionForItem)}
-                      />
-                    );
-                  })}
-                </SortableContext>
-
-                <DragOverlay>
-                  {activeItem ? <DragOverlayItem item={activeItem} /> : null}
-                </DragOverlay>
-              </DndContext>
-
-              {/* Add section */}
-              {addingSectionForChecklist === cl.id ? (
-                <form
-                  onSubmit={(e) => { e.preventDefault(); createSection(cl.id); }}
-                  className="flex gap-2 mt-2"
-                >
-                  <Input
-                    size="sm"
-                    placeholder="Section name..."
-                    value={newSectionName}
-                    onValueChange={setNewSectionName}
-                    autoFocus
-                  />
-                  <Button size="sm" type="submit" color="primary" variant="flat" isIconOnly>
-                    <FaCheck size={10} />
-                  </Button>
-                  <Button size="sm" variant="light" isIconOnly onPress={() => { setAddingSectionForChecklist(null); setNewSectionName(""); }}>
-                    <FaTimes size={10} />
-                  </Button>
-                </form>
-              ) : (
-                <Button
-                  size="sm"
-                  variant="light"
-                  startContent={<FaPlus size={10} />}
-                  className="mt-1"
-                  onPress={() => { setAddingSectionForChecklist(cl.id); setNewSectionName(""); }}
-                >
-                  Add section
-                </Button>
               )}
             </div>
           );

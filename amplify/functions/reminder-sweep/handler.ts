@@ -11,7 +11,7 @@ import {
   nextOccurrence,
   earliestNextOccurrence,
 } from "../../../lib/reminder-schedule.js";
-import { DEPARTURE_REMINDER_KIND, departureMessage, ensureTripPrep } from "../../../lib/trip-prep.js";
+import { DEPARTURE_REMINDER_KIND, archivePastTripChecklists, departureMessage, ensureTripPrep } from "../../../lib/trip-prep.js";
 import {
   getHouseholdTimezone,
   resolveReminderTimezone,
@@ -220,6 +220,18 @@ async function prepUpcomingTrips(now: Date, householdTz: string) {
   }
 }
 
+// Checklists of trips that are over get archived (once each; see
+// archivePastTripChecklists), so the Checklists page only shows what's ahead.
+async function archiveFinishedTrips(now: Date, householdTz: string) {
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: householdTz, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+  try {
+    const ids = await archivePastTripChecklists(client, today, now);
+    if (ids.length) console.log(`reminder-sweep: archived ${ids.length} checklist(s) of finished trips`);
+  } catch (err) {
+    console.warn("reminder-sweep: archiving finished trips' checklists failed:", err);
+  }
+}
+
 // ── Per-reminder processing ─────────────────────────────────────────────────
 
 async function processReminder(
@@ -399,7 +411,10 @@ export const handler: Handler = async () => {
   const householdTz = await getHouseholdTimezone(client);
   console.log(`reminder-sweep: household TZ = ${householdTz}`);
 
-  if (now.getUTCMinutes() < 5) await prepUpcomingTrips(now, householdTz);
+  if (now.getUTCMinutes() < 5) {
+    await prepUpcomingTrips(now, householdTz);
+    await archiveFinishedTrips(now, householdTz);
+  }
 
   // Find reminders whose scheduledAt has come due. Filter on PENDING
   // status to skip paused/cancelled/expired reminders.

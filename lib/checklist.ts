@@ -167,7 +167,9 @@ export function progress(items: ChecklistItem[]): ChecklistProgress {
 // ── Archive filter ────────────────────────────────────────────────
 // A row is "archived" when isArchived === true. null/undefined counts
 // as active so existing rows created before this field lands stay
-// visible without a backfill.
+// visible without a backfill. `archivedAt` stays set after an unarchive:
+// it records that the list was archived once, so the automatic archive of
+// past trips' lists (lib/trip-prep.ts) never re-archives one brought back.
 
 export type ArchiveFilter = "ACTIVE" | "ARCHIVED" | "ALL";
 
@@ -176,6 +178,11 @@ export const ARCHIVE_FILTERS: { id: ArchiveFilter; label: string }[] = [
   { id: "ARCHIVED", label: "Archived" },
   { id: "ALL", label: "All" },
 ];
+
+/** The fields an archive / unarchive writes (archivedAt is kept on unarchive, see above). */
+export function archivePatch(archive: boolean, now: Date = new Date()): { isArchived: boolean; archivedAt?: string } {
+  return archive ? { isArchived: true, archivedAt: now.toISOString() } : { isArchived: false };
+}
 
 export function isArchived(cl: Pick<Checklist, "isArchived">): boolean {
   return cl.isArchived === true;
@@ -189,4 +196,67 @@ export function matchesArchiveFilter(
   if (filter === "ACTIVE") return !archived;
   if (filter === "ARCHIVED") return archived;
   return true;
+}
+
+// ── Templates ─────────────────────────────────────────────────────
+
+/**
+ * The name a checklist made from a template gets: the template's, without
+ * the word "template" ("Pre-trip Template" → "Pre-trip", "Dolce - Template"
+ * → "Dolce"). Every copy path (trip prep, "From template", Janet) uses it.
+ */
+export function checklistNameFromTemplate(name: string): string {
+  const stripped = name
+    .replace(/\s*[-–—:·|]?\s*\btemplate\s*$/i, "")
+    .replace(/^\s*template\b\s*[-–—:·|]?\s*/i, "")
+    .trim();
+  return stripped || name.trim();
+}
+
+/** What a template's "add to every trip" switch means, said once for every surface. */
+export const AUTO_ATTACH_LABEL = "Added to every trip";
+export const AUTO_ATTACH_HINT = "Copied onto each new and upcoming trip. Trips that already have it keep their copy.";
+
+/* eslint-disable @typescript-eslint/no-explicit-any */
+type ChecklistClient = { models: any };
+
+/**
+ * Copy a checklist (usually a template) with its items, unchecked, onto an
+ * entity. A template's copy drops "template" from its name and remembers
+ * where it came from (sourceTemplateId), so "Edit template" can find it.
+ */
+export async function copyChecklist(
+  c: ChecklistClient,
+  source: { id: string; name: string; entityType?: string | null },
+  target: { entityType: EntityType; entityId: string; sortOrder?: number; name?: string },
+): Promise<{ id: string; name: string; itemsCopied: number }> {
+  const fromTemplate = source.entityType === "TEMPLATE" && target.entityType !== "TEMPLATE";
+  const name = target.name ?? (fromTemplate ? checklistNameFromTemplate(source.name) : source.name);
+  const { data: copy, errors } = await c.models.homeChecklist.create({
+    entityType: target.entityType,
+    entityId: target.entityId,
+    name,
+    sortOrder: target.sortOrder ?? 0,
+    ...(fromTemplate ? { sourceTemplateId: source.id } : {}),
+  });
+  if (errors?.length || !copy) throw new Error(`copying "${source.name}": ${errors?.[0]?.message ?? "no row"}`);
+  const items: any[] = [];
+  let nextToken: string | null | undefined;
+  do {
+    const res = await c.models.homeChecklistItem.list({ filter: { checklistId: { eq: source.id } }, limit: 1000, nextToken });
+    if (res.errors?.length) throw new Error(res.errors[0].message);
+    items.push(...(res.data ?? []));
+    nextToken = res.nextToken;
+  } while (nextToken);
+  items.sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
+  for (const i of items) {
+    await c.models.homeChecklistItem.create({
+      checklistId: copy.id,
+      text: i.text,
+      isDone: false,
+      sortOrder: i.sortOrder ?? 0,
+      ...(i.section ? { section: i.section } : {}),
+    });
+  }
+  return { id: copy.id, name, itemsCopied: items.length };
 }
