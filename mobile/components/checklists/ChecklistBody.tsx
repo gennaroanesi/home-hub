@@ -3,11 +3,13 @@
 // screen, so the two never drift.
 //
 //   • Items grouped by section. A list with sections is a board like the
-//     web's: one card per section, swiped sideways. Items without one show
-//     as General; the header is hidden when that's the only group.
+//     web's: one card per section, swiped sideways, then General (items in
+//     no section; always there, so something can be added outside the
+//     sections). The header is hidden when General is the only group.
 //   • Tap the box to tick, the text to rename, the trash to delete; a
-//     composer under each section adds to it. Section editing (add,
-//     rename, reorder) is web-only.
+//     composer under each section adds to it. "New section" adds one (an
+//     empty card until its first item, like the web). Renaming and
+//     reordering sections is web-only.
 //   • openChecklistMenu: rename, add to every trip (templates), edit its
 //     template (a list made from one), archive, delete. Same actions as the
 //     web's "⋯" menu.
@@ -23,6 +25,7 @@ import {
   UNGROUPED,
   archivePatch,
   buildSectionGroups,
+  deriveSectionOrder,
   progress,
   type Checklist,
   type ChecklistItem,
@@ -126,11 +129,30 @@ export function ChecklistBody({
   const [editingItemId, setEditingItemId] = useState<string | null>(null);
   const [itemDraft, setItemDraft] = useState("");
   const [drafts, setDrafts] = useState<Record<string, string>>({});
-  const groups: SectionGroup[] = useMemo(() => buildSectionGroups(items), [items]);
+  // Sections added here that have no items yet (sections only exist on items).
+  const [newSections, setNewSections] = useState<string[]>([]);
+  const [sectionDraft, setSectionDraft] = useState<string | null>(null);
+  const groups: SectionGroup[] = useMemo(() => {
+    // Sections in their stored order (lowest item sortOrder), like the web.
+    const built = buildSectionGroups(items, deriveSectionOrder(items));
+    const named = built.filter((g) => g.sectionId !== UNGROUPED);
+    for (const name of newSections) if (!named.some((g) => g.sectionId === name)) named.push({ sectionId: name, sectionName: name, items: [], sortOrder: 9999 });
+    const general = built.find((g) => g.sectionId === UNGROUPED) ?? { sectionId: UNGROUPED, sectionName: "General", items: [], sortOrder: -1 };
+    // Sections first, then General (always, so items can go outside a section).
+    return [...named, general];
+  }, [items, newSections]);
   const { width } = useWindowDimensions();
-  const board = groups.length > 1 && groups.some((g) => g.sectionId !== UNGROUPED);
+  const board = groups.length > 1;
   const columnWidth = Math.min(340, width - inset * 2 - 40);
-  const hideHeader = groups.length <= 1 && (groups[0]?.sectionId ?? UNGROUPED) === UNGROUPED;
+  const hideHeader = !board;
+
+  function addSection() {
+    const name = (sectionDraft ?? "").trim().replace(/\s+/g, " ");
+    setSectionDraft(null);
+    if (!name || name.toLowerCase() === "general") return;
+    if (groups.some((g) => g.sectionId.toLowerCase() === name.toLowerCase())) return;
+    setNewSections((prev) => [...prev, name]);
+  }
 
   async function toggleItem(item: ChecklistItem) {
     const next = !item.isDone;
@@ -190,9 +212,10 @@ export function ChecklistBody({
     await reload();
   }
 
-  const shown: SectionGroup[] = groups.length ? groups : [{ sectionId: UNGROUPED, sectionName: "General", items: [], sortOrder: -1 }];
+  const shown = groups;
 
   return (
+    <View>
     <ScrollView
       horizontal={board}
       scrollEnabled={board}
@@ -272,6 +295,28 @@ export function ChecklistBody({
         );
       })}
     </ScrollView>
+    {sectionDraft === null ? (
+      <Pressable onPress={() => setSectionDraft("")} style={({ pressed }) => [s.newSectionBtn, pressed && { opacity: 0.6 }]} hitSlop={6}>
+        <Ionicons name="add" size={16} color={ACCENT} />
+        <Text style={s.newSectionText}>New section</Text>
+      </Pressable>
+    ) : (
+      <View style={[s.sectionCard, s.composerRow, { borderTopWidth: 0 }]}>
+        <Ionicons name="albums-outline" size={16} color="#bbb" />
+        <TextInput
+          style={s.composerInput}
+          value={sectionDraft}
+          onChangeText={setSectionDraft}
+          onSubmitEditing={addSection}
+          onBlur={addSection}
+          placeholder="Section name (Carry-on, Documents…)"
+          placeholderTextColor="#bbb"
+          returnKeyType="done"
+          autoFocus
+        />
+      </View>
+    )}
+    </View>
   );
 }
 
@@ -298,4 +343,6 @@ const s = StyleSheet.create({
   composerInput: { flex: 1, fontSize: 15, color: "#3d3a37", paddingVertical: 0 },
   composerAddBtn: { paddingHorizontal: 10, paddingVertical: 4, backgroundColor: ACCENT, borderRadius: 14 },
   composerAddText: { color: "#fff", fontSize: 13, fontWeight: "500" },
+  newSectionBtn: { flexDirection: "row", alignItems: "center", gap: 4, alignSelf: "flex-start", paddingVertical: 6, paddingHorizontal: 4, marginBottom: 8 },
+  newSectionText: { color: ACCENT, fontSize: 14, fontWeight: "500" },
 });
