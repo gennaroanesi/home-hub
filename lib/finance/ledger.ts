@@ -21,7 +21,7 @@
 //   they're left out of it.
 
 import { categoryParts, effectiveCategory, isExcludedFromBudget, parseLineItems, INCOME_CATEGORIES, TRANSFER_CATEGORY, type LineItem } from "./categories";
-import { householdBudget, type BudgetLine, type HouseholdBudgetView } from "./budget";
+import { householdBudget, receivedByPerson, type BudgetLine, type HouseholdBudgetView } from "./budget";
 import type { DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 import { isHouseholdMember } from "../household";
@@ -174,6 +174,19 @@ export function inKindContributions(txs: (TxLike & { ledger?: string | null })[]
       else if (acct === HOUSEHOLD && part.ledger !== HOUSEHOLD) add(part.ledger, -spend);
     }
   }
+  return out;
+}
+
+/**
+ * Per person, everything the household counts as their contribution in the
+ * window: income-category money into household accounts attributed to them
+ * (a Contribution row with their personId) plus `inKindContributions`. The
+ * same number the household budget's income lines and the Review page show
+ * as received, for anything that asks "how much did each of us put in".
+ */
+export function householdContributions(txs: (TxLike & { ledger?: string | null })[], accounts: AccountLike[], window: DateRange): Map<string, number> {
+  const out = receivedByPerson(txsForLedger(txs, accounts, HOUSEHOLD), window);
+  for (const [person, amount] of inKindContributions(txs, accounts, window)) out.set(person, (out.get(person) ?? 0) + amount);
   return out;
 }
 

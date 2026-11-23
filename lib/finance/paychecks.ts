@@ -3,8 +3,8 @@
 // built for: of what each of us took home, how much went into the joint
 // account?
 
-import { receivedByPerson } from "./budget";
 import type { DateRange } from "./dates";
+import { householdContributions } from "./ledger";
 import type { TxLike } from "./types";
 
 export type PaycheckLike = {
@@ -59,21 +59,29 @@ export type ContributionShare = {
   personId: string;
   net: number; // take-home in the range
   gross: number;
-  contributed: number; // money in to the joint account attributed to them
+  contributed: number; // what the household counts as theirs: money in attributed to them + paid in kind
   /** contributed ÷ net; null without pay in the range. */
   shareOfNet: number | null;
   shareOfGross: number | null;
 };
 
 /**
- * Per person: take-home pay vs what they put into the household accounts
- * over the same range. Contributions are income-category money in with that
- * personId (lib/finance/budget.ts receivedByPerson), so set the person
- * rules up for each person's transfers.
+ * Per person: take-home pay vs what they put into the household over the
+ * same range, counted the way the household budget does
+ * (lib/finance/ledger.ts householdContributions): Contribution rows with
+ * their personId, transfers from their own account into a household one,
+ * and household spending paid from their own accounts. `txs` are every
+ * cash-flow transaction, all accounts.
  */
-export function contributionShare(paychecks: PaycheckLike[], txs: TxLike[], range: DateRange, personIds: string[]): ContributionShare[] {
+export function contributionShare(
+  paychecks: PaycheckLike[],
+  txs: (TxLike & { ledger?: string | null })[],
+  accounts: { id: string; ownerPersonIds?: (string | null)[] | null }[],
+  range: DateRange,
+  personIds: string[],
+): ContributionShare[] {
   const pay = payByPerson(paychecks, range);
-  const got = receivedByPerson(txs, range);
+  const got = householdContributions(txs, accounts, range);
   return personIds.map((personId) => {
     const p = pay.get(personId);
     const contributed = got.get(personId) ?? 0;

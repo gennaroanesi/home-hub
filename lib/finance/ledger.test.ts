@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { HOUSEHOLD, accountLedger, allLedgersBudget, financePeople, ledgerPeople, inKindContributions, ledgerBudget, ledgerParts, sliceForLedger, txsForLedger } from "./ledger";
+import { HOUSEHOLD, accountLedger, allLedgersBudget, financePeople, householdContributions, ledgerPeople, inKindContributions, ledgerBudget, ledgerParts, sliceForLedger, txsForLedger } from "./ledger";
 import type { BudgetLine } from "./budget";
 import { CARD_PAYMENT_CATEGORY, TRANSFER_CATEGORY } from "./categories";
 
@@ -66,6 +66,20 @@ describe("contributions in kind", () => {
       window,
     );
     expect(Object.fromEntries(m)).toEqual({ [C]: 120, [G]: -40 });
+  });
+
+  it("householdContributions adds attributed money in to what was paid in kind", () => {
+    const m = householdContributions(
+      [
+        tx({ accountId: "joint", amount: 1000, category: "Contribution", personId: G }),
+        tx({ accountId: "cCard", amount: 3000, category: "Income" }), // her paycheck into her own account: not a contribution
+        tx({ accountId: "cCard", amount: -120, category: "Groceries", ledger: HOUSEHOLD }),
+        tx({ accountId: "joint", amount: -40, category: "Clothing", ledger: G }),
+      ],
+      accounts,
+      window,
+    );
+    expect(Object.fromEntries(m)).toEqual({ [G]: 960, [C]: 120 });
   });
 });
 

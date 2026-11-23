@@ -106,7 +106,7 @@ export default function PaychecksPage() {
       cancelled = true;
     };
   }, [refs.loading, range.fromIso, range.toIso, accountIds]);
-  const shares = useMemo(() => contributionShare(paychecks, txs, range, people.map((p) => p.id)), [paychecks, txs, range, people]);
+  const shares = useMemo(() => contributionShare(paychecks, txs, refs.accounts, range, people.map((p) => p.id)), [paychecks, txs, refs.accounts, range, people]);
   const maxNet = Math.max(1, ...shares.map((s) => Math.max(s.net, s.contributed)));
 
   // ── Upload ────────────────────────────────────────────────────────────────
@@ -301,7 +301,8 @@ export default function PaychecksPage() {
                 })
               )}
               <p className="text-xs text-default-500">
-                &ldquo;Put in&rdquo; is money into the household accounts categorized Contribution and attributed to each person. Set that up with a person rule per transfer on{" "}
+                &ldquo;Put in&rdquo; is what the household budget counts as each person&rsquo;s contribution: transfers from their own account into a household one, household
+                spending paid from their own accounts, and money in categorized Contribution with a person rule on{" "}
                 <NextLink href="/finance/rules" className="text-primary">
                   Rules
                 </NextLink>

@@ -23,7 +23,7 @@ import { periodContaining, periodNoun, shiftPeriod } from "@/lib/finance/periods
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
-import { ALL_LEDGERS, HOUSEHOLD, inKindContributions, linesForLedger, txsForLedger } from "@/lib/finance/ledger";
+import { ALL_LEDGERS, HOUSEHOLD, householdContributions, linesForLedger, txsForLedger } from "@/lib/finance/ledger";
 import { CONTRIBUTION_CATEGORY } from "@/lib/finance/categories";
 import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 
@@ -102,12 +102,11 @@ export default function ReviewPage() {
   const periodTxs = useMemo(() => txs.filter((t) => t.date >= range.fromIso && t.date <= range.toIso), [txs, range]);
 
   // In vs out
-  const received = useMemo(() => {
-    const m = receivedByPerson(txs, range);
-    // Household spending someone paid from their own account is their contribution too.
-    if (ledger === HOUSEHOLD) for (const [p, n] of inKindContributions(rawTxs, refs.accounts, range)) m.set(p, (m.get(p) ?? 0) + n);
-    return m;
-  }, [txs, rawTxs, refs.accounts, range, ledger]);
+  const received = useMemo(
+    // The household counts transfers and spending from personal accounts as contributions too.
+    () => (ledger === HOUSEHOLD ? householdContributions(rawTxs, refs.accounts, range) : receivedByPerson(txs, range)),
+    [txs, rawTxs, refs.accounts, range, ledger],
+  );
   const totalIn = [...received.values()].reduce((s, n) => s + n, 0);
   const totalOut = useMemo(() => totalOutflow(txs, range), [txs, range]);
   const groupedOut = useMemo(
