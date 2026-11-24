@@ -82,7 +82,10 @@ function txPatchFromInput(input: Record<string, any>): Record<string, unknown> {
   }
   if ("spendGroupId" in input) p.spendGroupId = input.spendGroupId ?? null;
   if ("notes" in input) p.notes = input.notes ?? null;
-  if ("ledger" in input) p.ledger = input.ledger || null;
+  if ("ledger" in input) {
+    p.ledger = input.ledger || null;
+    p.ledgerSource = input.ledger ? "MANUAL" : null;
+  }
   if ("lineItems" in input) {
     const items = ((input.lineItems ?? []) as Array<Record<string, any>>).map((i) => ({
       name: i.name?.trim() || null,

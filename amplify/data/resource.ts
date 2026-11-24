@@ -1198,6 +1198,10 @@ const schema = a
         // Whose budget: "household" or a person id; null = the account's
         // (joint → household, one owner → that person). lib/finance/ledger.ts.
         ledger: a.string(),
+        // Who set `ledger`: MANUAL (never overridden), SCHEDULE (its bill),
+        // RULE (a category rule; a bill's ledger replaces it). Null on rows
+        // from before this: treated as a choice unless it's the account's.
+        ledgerSource: a.string(),
         sfTransactionId: a.string(), // SimpleFIN id: stable across pending → posted
         notes: a.string(),
       })
@@ -1344,6 +1348,10 @@ const schema = a
         pattern: a.string().required(),
         category: a.string(),
         personId: a.id(),
+        // Whose budget matching transactions count in ("household" or a
+        // person id); null = their account's. Never overrides a budget set
+        // by hand or by the transaction's bill (lib/finance/ledger.ts).
+        ledger: a.string(),
         sortOrder: a.integer().required(),
         active: a.boolean().default(true),
         notes: a.string(),

@@ -22,6 +22,8 @@ export type TxDraft = {
   category: string | null;
   categorySource: CategorySource | null;
   personId: string | null;
+  /** A category rule's budget for it (ledgerSource RULE), if any. */
+  ledger?: string | null;
   toAccountId?: string | null;
   importHash: string;
   sfTransactionId: string;
@@ -50,7 +52,7 @@ export function sfTxToDraft(sfTx: SfTransaction, accountId: string, rules?: Cate
   if (!sfTx.posted) return null;
   const description = sfTx.description || sfTx.payee || "(no description)";
   const type: TxType = sfTx.amount >= 0 ? "INCOME" : "EXPENSE";
-  const { category, personId } = classify({ type, description, amount: sfTx.amount }, rules);
+  const { category, personId, ledger } = classify({ type, description, amount: sfTx.amount }, rules);
   return {
     accountId,
     date: sfTx.posted,
@@ -63,6 +65,7 @@ export function sfTxToDraft(sfTx: SfTransaction, accountId: string, rules?: Cate
     // A person on a transaction is only ever a contributor (money in); whose
     // budget spending counts in is the ledger (lib/finance/ledger.ts).
     personId: sfTx.amount > 0 ? personId : null,
+    ledger,
     importHash: importHash(sfTx.posted, sfTx.amount, description),
     sfTransactionId: sfTx.id,
   };

@@ -11,7 +11,7 @@
 
 import rulesData from "./category-rules.json";
 
-export type CategoryRule = { pattern: string; category: string | null; personId?: string | null };
+export type CategoryRule = { pattern: string; category: string | null; personId?: string | null; ledger?: string | null };
 
 /** Bundled fallback rules (first match wins). */
 export const CATEGORY_RULES: CategoryRule[] = (rulesData.rules ?? []) as CategoryRule[];
@@ -85,15 +85,16 @@ export function rulesFromDbRows(
     pattern?: string | null;
     category?: string | null;
     personId?: string | null;
+    ledger?: string | null;
     sortOrder?: number | null;
     active?: boolean | null;
   }>,
 ): CategoryRule[] {
-  const usable = rows.filter((r) => r.active !== false && r.pattern && (r.category || r.personId));
+  const usable = rows.filter((r) => r.active !== false && r.pattern && (r.category || r.personId || r.ledger?.trim()));
   if (usable.length === 0) return CATEGORY_RULES;
   return [...usable]
     .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-    .map((r) => ({ pattern: r.pattern as string, category: r.category ?? null, personId: r.personId ?? null }));
+    .map((r) => ({ pattern: r.pattern as string, category: r.category ?? null, personId: r.personId ?? null, ledger: r.ledger?.trim() || null }));
 }
 
 /** `/regex/flags` or a case-insensitive substring. A bad regex falls back to substring. */
@@ -149,26 +150,28 @@ function ruleHits(rule: CategoryRule, desc: string, stripped: string): boolean {
 }
 
 /**
- * Category and attributed person for a transaction. Category rules and
- * person rules are independent: the first rule with a category decides the
- * category, the first rule with a personId decides the person, so a rule
- * like "transfer from … 1234 → Gennaro" can sit next to the generic
- * transfer rule.
+ * Category, attributed person and budget (ledger) for a transaction. Each
+ * is decided independently: the first rule with a category decides the
+ * category, the first with a personId the person, the first with a ledger
+ * the budget, so a rule like "transfer from … 1234 → Gennaro" can sit next
+ * to the generic transfer rule.
  */
 export function classify(
   tx: InferInput,
   rules: CategoryRule[] = CATEGORY_RULES,
-): { category: string | null; personId: string | null } {
+): { category: string | null; personId: string | null; ledger: string | null } {
   let category: string | null = null;
   let personId: string | null = null;
+  let ledger: string | null = null;
   const desc = (tx.description ?? "").trim();
   if (desc) {
     const stripped = stripProcessorPrefix(desc);
     for (const rule of rules) {
-      if (category && personId) break;
+      if (category && personId && ledger) break;
       if (!ruleHits(rule, desc, stripped)) continue;
       if (!personId && rule.personId) personId = rule.personId;
       if (!category && rule.category) category = rule.category;
+      if (!ledger && rule.ledger) ledger = rule.ledger;
     }
   }
   if (tx.type === "TRANSFER") category = TRANSFER_CATEGORY;
@@ -177,7 +180,7 @@ export function classify(
     else if (!NON_REFUNDABLE.has(category)) category = REFUND_CATEGORY;
   }
   if (!category && tx.type === "INCOME") category = "Income";
-  return { category, personId };
+  return { category, personId, ledger };
 }
 
 /** Category alone (see classify). Null = no rule matched and the type implies nothing. */

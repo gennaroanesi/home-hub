@@ -4,6 +4,7 @@ import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./d
 import { budgetTransactions, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, planScheduleLinks, lowestPoint, nextDateAfter, nextDueAfterPaid, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress, milestoneViews } from "./goals";
+import { canTakeRuleLedger, canTakeScheduleLedger } from "./ledger";
 import { buildDedupIndex, desiredHoldingsFromSf, diffHoldings, holdingKeyOf, markSelfTransfers, reconcileDraft, sfTxToDraft, syncedTransactionId, type TxDraft } from "./sync-engine";
 import type { SfAccount } from "./simplefin";
 import type { RecurringLike, TxLike } from "./types";
@@ -25,14 +26,46 @@ describe("categories", () => {
       { pattern: "/transfer from chk 1234/i", personId: "gennaro", sortOrder: 1 },
       { pattern: "/transfer from/i", category: "Transfers", sortOrder: 2 },
     ]);
-    expect(classify({ description: "Online Transfer from CHK 1234", amount: 3000 }, rules)).toEqual({ category: "Contribution", personId: "gennaro" });
-    expect(classify({ description: "Online Transfer from CHK 5555", amount: 3000 }, rules)).toEqual({ category: "Contribution", personId: null });
+    expect(classify({ description: "Online Transfer from CHK 1234", amount: 3000 }, rules)).toEqual({ category: "Contribution", personId: "gennaro", ledger: null });
+    expect(classify({ description: "Online Transfer from CHK 5555", amount: 3000 }, rules)).toEqual({ category: "Contribution", personId: null, ledger: null });
   });
 
   it("falls back to the bundled rules when the table is empty and keeps a stored category", () => {
     expect(rulesFromDbRows([])).toBe(CATEGORY_RULES);
     expect(effectiveCategory({ category: "Baby", description: "H-E-B" })).toBe("Baby");
     expect(effectiveCategory({ description: "zzz unknown merchant", amount: -5 })).toBe("Uncategorized");
+  });
+});
+
+describe("rules that set the budget", () => {
+  const rules = rulesFromDbRows([
+    { pattern: "NETFLIX", category: "Streaming", sortOrder: 1, active: true },
+    { pattern: "NETFLIX", ledger: "gen", sortOrder: 2, active: true },
+    { pattern: "H-E-B", category: "Groceries", ledger: "household", sortOrder: 3, active: true },
+  ]);
+
+  it("decides the budget independently of the category, first match wins", () => {
+    expect(classify({ description: "NETFLIX.COM", amount: -15 }, rules)).toMatchObject({ category: "Streaming", ledger: "gen" });
+    expect(classify({ description: "H-E-B #123", amount: -80 }, rules)).toMatchObject({ category: "Groceries", ledger: "household" });
+    expect(classify({ description: "COSTCO", amount: -80 }, rules).ledger).toBeNull();
+    // A rule with only a budget is kept by rulesFromDbRows.
+    expect(rules).toHaveLength(3);
+  });
+
+  it("puts it on synced drafts", () => {
+    const d = sfTxToDraft({ id: "x", posted: "2026-11-02", amount: -15, description: "NETFLIX.COM", pending: false } as never, "joint", rules)!;
+    expect(d.ledger).toBe("gen");
+  });
+
+  it("never overrides a budget set by hand or by a bill; a bill overrides a rule's", () => {
+    expect(canTakeRuleLedger({}, "household")).toBe(true);
+    expect(canTakeRuleLedger({ ledger: "household" }, "household")).toBe(true); // just the account's
+    expect(canTakeRuleLedger({ ledger: "gen", ledgerSource: "RULE" }, "household")).toBe(true);
+    expect(canTakeRuleLedger({ ledger: "gen", ledgerSource: "MANUAL" }, "household")).toBe(false);
+    expect(canTakeRuleLedger({ ledger: "household", ledgerSource: "SCHEDULE" }, "household")).toBe(false);
+    expect(canTakeRuleLedger({ ledger: "gen" }, "household")).toBe(false); // from before ledgerSource: a choice
+    expect(canTakeScheduleLedger({ ledger: "gen", ledgerSource: "RULE" }, "household")).toBe(true);
+    expect(canTakeScheduleLedger({ ledger: "gen", ledgerSource: "MANUAL" }, "household")).toBe(false);
   });
 });
 

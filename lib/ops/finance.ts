@@ -596,7 +596,7 @@ export const updateFinanceTransaction = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Change a transaction's category, ledger (whose budget it counts in: household or a person), contributor (money in only), spend group, goal, notes or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category and person automatically. Find the transactionId with list_finance_transactions.",
+    "Change a transaction's category, ledger (whose budget it counts in: household or a person), contributor (money in only), spend group, goal, notes or itemization (only what's given; null clears). lineItems splits one charge across categories (an Amazon order with diapers and a patio cover): its spending then counts per item category instead of the charge's. A category set here is MANUAL and never overwritten by the sync. Pass rememberPattern (a word or phrase from the description, e.g. 'BLUE BOTTLE') to also add a rule so future transactions like it get the same category, person and budget (ledger, when this call sets one) automatically. Find the transactionId with list_finance_transactions.",
   input: z.object({
     transactionId: z.string(),
     category: z.string().nullable().optional(),
@@ -646,7 +646,11 @@ export const updateFinanceTransaction = defineOp({
     if (input.spendGroupId === null) patch.outOfBudget = null;
     if (input.goalId !== undefined) patch.goalId = input.goalId;
     if (input.notes !== undefined) patch.notes = input.notes;
-    if (input.ledger !== undefined) patch.ledger = await ledgerRef(ctx, input.ledger);
+    if (input.ledger !== undefined) {
+      patch.ledger = await ledgerRef(ctx, input.ledger);
+      // A budget picked by hand: neither a rule nor a bill changes it later.
+      patch.ledgerSource = patch.ledger ? "MANUAL" : null;
+    }
     if (input.lineItems !== undefined) {
       const items = [];
       for (const i of input.lineItems ?? []) {
@@ -669,7 +673,9 @@ export const updateFinanceTransaction = defineOp({
     if (pattern) {
       const category = (patch.category as string | null | undefined) ?? saved.category ?? null;
       const rulePerson = (patch.personId as string | null | undefined) ?? null;
-      if (!category && !rulePerson) throw new OpError("A rule needs a category or a person");
+      // The budget too, when this save picked one ("always Gennaro's").
+      const ruleLedger = (patch.ledger as string | null | undefined) ?? null;
+      if (!category && !rulePerson && !ruleLedger) throw new OpError("A rule needs a category, a person or a budget");
       const haystack = saved.description ?? "";
       if (!patternMatches(pattern, haystack)) throw new OpError(`"${pattern}" doesn't match this transaction's description ("${haystack}")`);
       const rows = await listCategoryRules(ctx.client);
@@ -677,7 +683,7 @@ export const updateFinanceTransaction = defineOp({
       // rule sits on top of everything that was in force before.
       if (rows.length === 0) await seedRules(ctx);
       const top = Math.min(0, ...(await listCategoryRules(ctx.client)).map((r) => r.sortOrder ?? 0)) - 10;
-      const r = await ctx.client.models.homeFinanceCategoryRule.create({ pattern, category, personId: rulePerson, sortOrder: top, active: true });
+      const r = await ctx.client.models.homeFinanceCategoryRule.create({ pattern, category, personId: rulePerson, ledger: ruleLedger, sortOrder: top, active: true });
       if (r.errors?.length) throw new Error(r.errors[0].message);
       ruleCreated = true;
     }
@@ -1060,7 +1066,7 @@ async function applyScheduleLinks(ctx: OpContext, plan: ReturnType<typeof planSc
       id: tx.id,
       recurringId: l.rule.id,
       ...(category && tx.categorySource !== "MANUAL" ? { category, categorySource: "RULE" } : {}),
-      ...(l.rule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: l.rule.ledger.trim() } : {}),
+      ...(l.rule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: l.rule.ledger.trim(), ledgerSource: "SCHEDULE" } : {}),
     });
     if (r.errors?.length) throw new Error(`${tx.date} ${tx.description}: ${r.errors[0].message}`);
   }
@@ -1726,8 +1732,8 @@ export const importFinanceTransactions = defineOp({
     const rules = rulesFromDbRows(await listCategoryRules(ctx.client));
     const drafts = fresh.map((r) => {
       const type = r.amount >= 0 ? "INCOME" : "EXPENSE";
-      const category = r.category ?? classify({ type, description: r.description, amount: r.amount }, rules).category;
-      return { ...r, type, category };
+      const hit = classify({ type, description: r.description, amount: r.amount }, rules);
+      return { ...r, type, category: r.category ?? hit.category, ruleLedger: hit.ledger };
     });
 
     let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
@@ -1746,6 +1752,7 @@ export const importFinanceTransactions = defineOp({
           type: d.type,
           category: d.category,
           categorySource: d.category ? "RULE" : null,
+          ...(d.ruleLedger ? { ledger: d.ruleLedger, ledgerSource: "RULE" } : {}),
           description: d.description,
           date: d.date,
           status: "POSTED",

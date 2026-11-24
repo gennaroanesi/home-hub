@@ -31,6 +31,7 @@ export type TxLike = {
   recurringId?: string | null;
   lineItems?: string | null; // JSON [{ name, amount, category, quantity?, ledger? }] (categories.ts)
   ledger?: string | null; // whose budget, when not the account's (ledger.ts)
+  ledgerSource?: string | null; // MANUAL | SCHEDULE | RULE
   toAccountId?: string | null; // TRANSFER: the other account
 };
 

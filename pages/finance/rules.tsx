@@ -21,16 +21,18 @@ import { FinanceCategoryManager } from "@/components/finance/category-manager";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
-import { FreeCombobox } from "@/components/free-combobox";
+import { CategoryInput } from "@/components/finance/category-input";
 import { CATEGORY_RULES, classify, patternMatches, rulesFromDbRows, stripProcessorPrefix } from "@/lib/finance/categories";
 import { addDays, todayIso } from "@/lib/finance/dates";
 import { listCategoryRules, listTransactions } from "@/lib/finance/data";
+import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, canTakeRuleLedger, ledgerLabel, ledgerPeople } from "@/lib/finance/ledger";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 const HOUSEHOLD = "__none";
 
-type Change = { tx: any; category?: string; personId?: string };
+type Change = { tx: any; category?: string; personId?: string; ledger?: string };
+const ACCOUNT_LEDGER = "__account";
 
 export default function RulesPage() {
   const refs = useFinanceRefs();
@@ -173,7 +175,7 @@ export default function RulesPage() {
         </div>
         <div className="flex flex-col gap-4">
           <Tester dbRows={rows} people={refs.people} />
-          <Reapply dbRows={rows} people={refs.people} />
+          <Reapply dbRows={rows} people={refs.people} accounts={refs.accounts} />
         </div>
       </div>
 
@@ -237,6 +239,11 @@ function RuleList({
                 </Chip>
               ) : null}
               {r.personId && <PersonChip personId={r.personId} people={people} />}
+              {r.ledger && (
+                <Chip size="sm" variant="flat" color="secondary">
+                  {ledgerLabel(r.ledger, people)}&apos;s budget
+                </Chip>
+              )}
               {r.notes && <span className="text-xs text-default-500 italic truncate">{r.notes}</span>}
             </div>
           </div>
@@ -282,6 +289,7 @@ function RuleModal({
   const [pattern, setPattern] = useState<string>(rule.pattern ?? "");
   const [category, setCategory] = useState<string>(rule.category ?? "");
   const [person, setPerson] = useState<string>(rule.personId ?? "");
+  const [ledger, setLedger] = useState<string>(rule.ledger ?? "");
   const [notes, setNotes] = useState<string>(rule.notes ?? "");
   const [position, setPosition] = useState<"top" | "bottom">("top");
   const [saving, setSaving] = useState(false);
@@ -299,9 +307,9 @@ function RuleModal({
 
   async function save() {
     if (!pattern.trim()) return addToast({ title: "A pattern is required", color: "warning" });
-    if (!category.trim() && !person) return addToast({ title: "Set a category, a person, or both", color: "warning" });
+    if (!category.trim() && !person && !ledger) return addToast({ title: "Set a category, a person or a budget", color: "warning" });
     setSaving(true);
-    const fields = { pattern: pattern.trim(), category: category.trim() || null, personId: person || null, notes: notes.trim() || null };
+    const fields = { pattern: pattern.trim(), category: category.trim() || null, personId: person || null, ledger: ledger || null, notes: notes.trim() || null };
     let r;
     if (isNew) {
       const rows = await listCategoryRules(financeClient);
@@ -328,7 +336,19 @@ function RuleModal({
             isInvalid={!!regexError}
             errorMessage={regexError ?? undefined}
           />
-          <FreeCombobox label="Category" placeholder="Leave empty to only set the person" value={category} onValueChange={setCategory} options={refs.categories} />
+          <CategoryInput label="Category" placeholder="Leave empty to only set the person or budget" value={category} onValueChange={setCategory} options={refs.categories} />
+          <Select
+            label="Counts in"
+            description="Whose budget matching spending counts in. A budget picked by hand on a transaction, or its bill's, still wins."
+            selectedKeys={[ledger || ACCOUNT_LEDGER]}
+            onChange={(e) => setLedger(e.target.value === ACCOUNT_LEDGER ? "" : e.target.value)}
+          >
+            {[
+              <SelectItem key={ACCOUNT_LEDGER}>Its account&apos;s budget (default)</SelectItem>,
+              <SelectItem key={HOUSEHOLD_LEDGER}>Household</SelectItem>,
+              ...ledgerPeople(refs.people).map((p) => <SelectItem key={p.id}>{p.name}</SelectItem>),
+            ]}
+          </Select>
           <Select label="Person" description="e.g. 'transfer from … 1234' → whoever owns that account" selectedKeys={[person || HOUSEHOLD]} onChange={(e) => setPerson(e.target.value === HOUSEHOLD ? "" : e.target.value)}>
             {[{ id: HOUSEHOLD, name: "Don't set a person" }, ...refs.people].map((p) => (
               <SelectItem key={p.id}>{p.name}</SelectItem>
@@ -371,7 +391,13 @@ function Tester({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof u
     const hits = (p: string) => patternMatches(p, desc) || (stripped !== desc && patternMatches(p, stripped));
     const catIdx = rules.findIndex((r) => r.category && hits(r.pattern));
     const personIdx = rules.findIndex((r) => r.personId && hits(r.pattern));
-    return { ...out, catRule: catIdx >= 0 ? { n: catIdx + 1, ...rules[catIdx] } : null, personRule: personIdx >= 0 ? { n: personIdx + 1, ...rules[personIdx] } : null };
+    const ledgerIdx = rules.findIndex((r) => r.ledger && hits(r.pattern));
+    return {
+      ...out,
+      catRule: catIdx >= 0 ? { n: catIdx + 1, ...rules[catIdx] } : null,
+      personRule: personIdx >= 0 ? { n: personIdx + 1, ...rules[personIdx] } : null,
+      ledgerRule: ledgerIdx >= 0 ? { n: ledgerIdx + 1, ...rules[ledgerIdx] } : null,
+    };
   }, [description, direction, rules]);
 
   return (
@@ -405,6 +431,15 @@ function Tester({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof u
               Rule #{result.personRule.n} <code className="break-all">{result.personRule.pattern}</code>
             </p>
           )}
+          <div className="flex items-center gap-2">
+            <span className="text-default-500 w-16">Budget</span>
+            <span className="text-xs text-default-500">{result.ledger ? `${ledgerLabel(result.ledger, people)}'s` : "its account's"}</span>
+          </div>
+          {result.ledgerRule && (
+            <p className="text-xs text-default-500">
+              Rule #{result.ledgerRule.n} <code className="break-all">{result.ledgerRule.pattern}</code>
+            </p>
+          )}
         </div>
       )}
     </div>
@@ -418,18 +453,20 @@ function Tester({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof u
  * MANUAL category or person; a guessed (LLM) category is replaced only
  * when a rule now matches; transfers paired by the sync are left alone.
  */
-function planChange(tx: any, rules: ReturnType<typeof rulesFromDbRows>): Change | null {
+function planChange(tx: any, rules: ReturnType<typeof rulesFromDbRows>, accountLedgerOf: (id: string) => string): Change | null {
   if (tx.type === "TRANSFER") return null;
-  const { category, personId } = classify({ description: tx.description, amount: tx.amount, type: tx.type }, rules);
+  const { category, personId, ledger } = classify({ description: tx.description, amount: tx.amount, type: tx.type }, rules);
   const change: Change = { tx };
   const src = tx.categorySource ?? null;
   if (src !== "MANUAL" && category && category !== (tx.category ?? "")) change.category = category;
   // A person is only a contributor (money in); spending's owner is its ledger.
   if ((tx.amount ?? 0) > 0 && tx.personSource !== "MANUAL" && personId && personId !== tx.personId) change.personId = personId;
-  return change.category !== undefined || change.personId !== undefined ? change : null;
+  // Never over a budget picked by hand or by the row's bill (canTakeRuleLedger).
+  if (ledger && ledger !== (tx.ledger ?? "") && canTakeRuleLedger(tx, accountLedgerOf(tx.accountId))) change.ledger = ledger;
+  return change.category !== undefined || change.personId !== undefined || change.ledger !== undefined ? change : null;
 }
 
-function Reapply({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof useFinanceRefs>["people"] }) {
+function Reapply({ dbRows, people, accounts }: { dbRows: any[]; people: ReturnType<typeof useFinanceRefs>["people"]; accounts: any[] }) {
   const [days, setDays] = useState("90");
   const [plan, setPlan] = useState<Change[] | null>(null);
   const [checking, setChecking] = useState(false);
@@ -445,7 +482,8 @@ function Reapply({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof 
       const today = todayIso();
       const txs = await listTransactions(financeClient, { fromIso: addDays(today, -n), toIso: today });
       const rules = rulesFromDbRows(dbRows);
-      setPlan(txs.map((t) => planChange(t, rules)).filter((c): c is Change => !!c));
+      const ledgerOfAccount = (id: string) => accountLedger(accounts.find((a) => a.id === id));
+      setPlan(txs.map((t) => planChange(t, rules, ledgerOfAccount)).filter((c): c is Change => !!c));
     } catch (e) {
       addToast({ title: "Couldn't check", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
@@ -462,6 +500,7 @@ function Reapply({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof 
       const patch: Record<string, unknown> = {};
       if (c.category !== undefined) Object.assign(patch, { category: c.category, categorySource: "RULE" });
       if (c.personId !== undefined) Object.assign(patch, { personId: c.personId, personSource: "RULE" });
+      if (c.ledger !== undefined) Object.assign(patch, { ledger: c.ledger, ledgerSource: "RULE" });
       const r = await financeClient.models.homeFinanceTransaction.update({ id: c.tx.id, ...patch });
       if (r.errors?.length) failed++;
       setDone((d) => d + 1);
@@ -500,6 +539,8 @@ function Reapply({ dbRows, people }: { dbRows: any[]; people: ReturnType<typeof 
                       )}
                       {c.category !== undefined && c.personId !== undefined && " · "}
                       {c.personId !== undefined && <>person → {personName(c.personId)}</>}
+                      {(c.category !== undefined || c.personId !== undefined) && c.ledger !== undefined && " · "}
+                      {c.ledger !== undefined && <>budget → {ledgerLabel(c.ledger, people)}</>}
                     </div>
                   </div>
                 ))}

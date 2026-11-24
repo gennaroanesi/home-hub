@@ -811,6 +811,28 @@ describe("a transaction's person is only a contributor", () => {
   });
 });
 
+describe("budget (ledger) from rules", () => {
+  it("remember for similar saves the budget picked in the same edit, and marks it MANUAL on the row", async () => {
+    const { ctx, tables } = setup({ homePerson: people, homeFinanceAccount: [joint], homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -15, description: "NETFLIX.COM", date: today }] });
+    const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Streaming", ledger: "Gennaro", rememberPattern: "NETFLIX" });
+    expect(out.error).toBeUndefined();
+    expect(tables.homeFinanceTransaction[0]).toMatchObject({ ledger: "gen", ledgerSource: "MANUAL" });
+    const rule = tables.homeFinanceCategoryRule.find((r: any) => r.pattern === "NETFLIX");
+    expect(rule).toMatchObject({ category: "Streaming", ledger: "gen" });
+  });
+
+  it("CSV import applies a rule's budget", async () => {
+    const heb = { id: "heb", name: "H-E-B Card", type: "CREDIT", active: true, ownerPersonIds: ["cris"] };
+    const { ctx, tables } = setup({
+      homePerson: people,
+      homeFinanceAccount: [heb],
+      homeFinanceCategoryRule: [{ id: "r", pattern: "H-E-B", category: "Groceries", ledger: "household", sortOrder: 0, active: true }],
+    });
+    await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: 'Date,Amount,Type,Merchant,Category,Method\n"2026/11/02, 10:11:12",84.10,PURCHASE,H-E-B #123,Groceries,Card' });
+    expect(tables.homeFinanceTransaction[0]).toMatchObject({ category: "Groceries", ledger: "household", ledgerSource: "RULE" });
+  });
+});
+
 describe("import_finance_transactions", () => {
   const HEB = [
     "Date,Amount,Type,Merchant,Category,Method",

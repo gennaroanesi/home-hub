@@ -57,11 +57,22 @@ export function ledgerOf(tx: { ledger?: string | null }, accountLedgerKey: strin
 
 /**
  * Whether linking a row to a schedule with its own ledger may set the row's:
- * when the row has none, or only repeats its account's (not a choice).
+ * when the row has none, only repeats its account's (not a choice), or got
+ * it from a category rule (a bill is more specific than a merchant rule).
+ * Set by hand (or from before ledgerSource) otherwise: kept.
  */
-export function canTakeScheduleLedger(tx: { ledger?: string | null }, accountLedgerKey: string): boolean {
+export function canTakeScheduleLedger(tx: { ledger?: string | null; ledgerSource?: string | null }, accountLedgerKey: string): boolean {
   const own = tx.ledger?.trim();
-  return !own || own === accountLedgerKey;
+  return !own || own === accountLedgerKey || tx.ledgerSource === "RULE";
+}
+
+/**
+ * Whether a category rule may set a row's ledger: the same rows a schedule
+ * may (never one set by hand or by the row's bill).
+ */
+export function canTakeRuleLedger(tx: { ledger?: string | null; ledgerSource?: string | null; recurringId?: string | null }, accountLedgerKey: string): boolean {
+  if (tx.ledgerSource === "MANUAL" || tx.ledgerSource === "SCHEDULE") return false;
+  return canTakeScheduleLedger(tx, accountLedgerKey);
 }
 
 /** A schedule's budget: its own ledger (a household bill on a personal card), else its account's. */

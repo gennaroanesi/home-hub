@@ -216,6 +216,20 @@ sub-categories indented, search any words of the path, and read
 categories in use. The sync's LLM fallback still picks from the rules'
 categories only (so a trip's sub-category never catches unrelated charges).
 
+**Rules set the budget too (2026-11-23).** A category rule can say whose
+budget matching spending counts in (`homeFinanceCategoryRule.ledger`,
+"Counts in" on the Rules page): H-E-B on Cristine's card → household, a
+subscription on the joint card → Gennaro. `classify` returns it (first rule
+with a ledger wins, independent of category/person), and the sync, the CSV
+import and Re-apply write it with `ledgerSource: "RULE"`.
+`homeFinanceTransaction.ledgerSource` says who set a row's ledger: MANUAL
+(`update_finance_transaction`, never overridden), SCHEDULE (its bill: the
+sync, `applyScheduleLinks`, the web Link dialog), RULE. Precedence is hand >
+bill > rule > account: `canTakeScheduleLedger` lets a bill replace a rule's
+budget, `canTakeRuleLedger` never touches MANUAL or SCHEDULE (rows from before
+the field keep a non-account ledger as a choice). "Remember for similar" puts
+the budget picked in the same edit on the new rule.
+
 **Budget drill-in (2026-11-23).** On /finance/budget every spending line,
 every line for a stretch of dates and every "Not budgeted" category opens
 to its transactions (`components/finance/budget-tx-list.tsx`), each with

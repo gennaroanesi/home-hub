@@ -517,7 +517,7 @@ function MatchModal({ schedule, accounts, onClose, onLinked }: { schedule: Sched
     // Linking by hand also hands the row the schedule's category, unless it was categorized by hand.
     const cat = schedule.category?.trim() && tx.categorySource !== "MANUAL" ? { category: schedule.category.trim(), categorySource: "RULE" as const } : {};
     // …and its budget, when it has its own (a household bill on a personal card).
-    const ledger = schedule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: schedule.ledger.trim() } : {};
+    const ledger = schedule.ledger?.trim() && canTakeScheduleLedger(tx, accountLedger(accounts.find((a) => a.id === tx.accountId))) ? { ledger: schedule.ledger.trim(), ledgerSource: "SCHEDULE" } : {};
     const r = await financeClient.models.homeFinanceTransaction.update({ id: tx.id, recurringId: schedule.id, ...cat, ...ledger });
     if (r.errors?.length) {
       setLinking(null);
