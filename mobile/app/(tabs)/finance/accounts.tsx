@@ -5,18 +5,19 @@
 // them; inactive ones listed last. Each card says whose SimpleFIN connection
 // it syncs from and when (read from the homeFinanceAccount rows directly; the
 // ops don't carry the link). Tap a card to edit it (AccountFormModal), + to
-// add one; the chevron opens its transactions / positions.
+// add one; its ⋯ menu edits, syncs (SimpleFIN-linked ones), deletes or opens
+// its transactions; an invested card's chevron shows its positions.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActionSheetIOS, ActivityIndicator, Alert, Platform, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { callOp } from "../../../lib/ops";
 import { getClient } from "../../../lib/amplify";
 import { usePeople } from "../../../lib/use-people";
-import { ACCENT, Card, openFinance, FinanceHeader, GOOD, HeaderButton, Money, WARN, ago, forgetFinanceAccounts, fs, type OpResultOf } from "../../../components/finance/ui";
-import { AccountFormModal } from "../../../components/finance/AccountFormModal";
+import { ACCENT, Card, openFinance, FinanceHeader, GOOD, HeaderButton, Money, WARN, ago, forgetFinanceAccounts, fs, useFinanceSync, type OpResultOf } from "../../../components/finance/ui";
+import { AccountFormModal, confirmDeleteAccount } from "../../../components/finance/AccountFormModal";
 import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
 import { listAccounts } from "../../../../lib/finance/data";
 import { accountTypeLabel } from "../../../../lib/finance/accounts";
@@ -87,6 +88,7 @@ export default function FinanceAccounts() {
     }
   }
 
+  const { syncingId, sync } = useFinanceSync(() => void load());
   const byId = useMemo(() => new Map((rows ?? []).map((a) => [a.id, a])), [rows]);
   const owners = (a: any) => {
     const ids: string[] = (a?.ownerPersonIds ?? []).filter(Boolean);
@@ -98,6 +100,46 @@ export default function FinanceAccounts() {
     const row = byId.get(id);
     if (row) setEditing({ account: row });
   };
+  /** The ⋯ menu: edit, view transactions, sync (linked, active accounts), delete. */
+  const menu = (id: string, name: string) => {
+    const row = byId.get(id);
+    const actions: Array<{ label: string; run: () => void; destructive?: boolean }> = [
+      { label: "Edit", run: () => edit(id) },
+      { label: "View transactions", run: () => openTx(id, name) },
+    ];
+    if (row?.simplefinAccountId && row.active !== false) actions.push({ label: "Sync now", run: () => void sync(id) });
+    actions.push({
+      label: "Delete",
+      destructive: true,
+      run: () =>
+        void confirmDeleteAccount(
+          { id, name },
+          {
+            onDeleted: () => {
+              forgetFinanceAccounts();
+              void load();
+            },
+          },
+        ),
+    });
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions(
+        { title: name, options: [...actions.map((a) => a.label), "Cancel"], cancelButtonIndex: actions.length, destructiveButtonIndex: actions.findIndex((a) => a.destructive) },
+        (i) => actions[i]?.run(),
+      );
+    } else {
+      Alert.alert(name, undefined, [...actions.map((a) => ({ text: a.label, onPress: a.run, style: a.destructive ? ("destructive" as const) : undefined })), { text: "Cancel", style: "cancel" as const }]);
+    }
+  };
+  const menuButton = (id: string, name: string) =>
+    syncingId === id ? (
+      <ActivityIndicator size="small" />
+    ) : (
+      <Pressable onPress={() => menu(id, name)} hitSlop={12} accessibilityLabel={`${name} actions`}>
+        <Ionicons name="ellipsis-horizontal" size={18} color="#999" />
+      </Pressable>
+    );
+
   // One section per account type, in this order (invested types get the positions view).
   const cashGroups = TYPE_SECTIONS.filter((t) => !t.invested)
     .map((t) => ({ ...t, accounts: (summary?.accounts ?? []).filter((a) => !a.invested && sectionOf(a.type) === t.type) }))
@@ -130,9 +172,7 @@ export default function FinanceAccounts() {
                         {a.name}
                       </Text>
                       <Money value={a.balance} style={{ fontSize: 17, fontWeight: "600" }} />
-                      <Pressable onPress={() => openTx(a.id, a.name)} hitSlop={12} accessibilityLabel={`${a.name} transactions`}>
-                        <Ionicons name="chevron-forward" size={18} color="#bbb" />
-                      </Pressable>
+                      {menuButton(a.id, a.name)}
                     </View>
                     <Text style={fs.muted}>
                       {accountTypeLabel(row ?? a)} · {owners(row)}
@@ -171,6 +211,7 @@ export default function FinanceAccounts() {
                         <Pressable onPress={toggle} hitSlop={12} accessibilityLabel={expanded ? "Hide positions" : "Show positions"}>
                           <Ionicons name={expanded ? "chevron-up" : "chevron-down"} size={18} color="#bbb" />
                         </Pressable>
+                        {menuButton(a.id, a.name)}
                       </View>
                       <Text style={fs.muted}>
                         {a.type}
@@ -228,6 +269,7 @@ export default function FinanceAccounts() {
                       {a.name}
                     </Text>
                     <Money value={a.currentBalance ?? 0} />
+                    {menuButton(a.id, a.name)}
                   </View>
                   <Text style={fs.muted}>
                     {accountTypeLabel(a)} · {owners(a)}
@@ -239,7 +281,7 @@ export default function FinanceAccounts() {
               ))}
             </Card>
           )}
-          <Text style={[fs.muted, { paddingHorizontal: 4 }]}>Tap an account to edit it or link it to SimpleFIN.</Text>
+          <Text style={[fs.muted, { paddingHorizontal: 4 }]}>Tap an account to edit it or link it to SimpleFIN; ⋯ for more.</Text>
         </ScrollView>
       )}
 

@@ -149,29 +149,34 @@ export function useFinanceAccounts(): FinanceAccount[] {
 }
 
 const SYNC_FINANCE = /* GraphQL */ `
-  mutation SyncFinance {
-    syncFinance
+  mutation SyncFinance($accountId: ID) {
+    syncFinance(accountId: $accountId)
   }
 `;
 
-/** "Sync now": the syncFinance mutation (finance-sync Lambda), same as the web's button. */
+/**
+ * "Sync now": the syncFinance mutation (finance-sync Lambda), same as the
+ * web's button. `sync(accountId)` syncs just that account; `syncingId` says
+ * which one is running ("" for all).
+ */
 export function useFinanceSync(onSynced: () => void) {
-  const [syncing, setSyncing] = useState(false);
-  async function sync() {
-    setSyncing(true);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  async function sync(accountId?: string) {
+    if (syncingId !== null) return;
+    setSyncingId(accountId ?? "");
     let out;
     try {
-      const r: any = await getClient().graphql({ query: SYNC_FINANCE });
+      const r: any = await getClient().graphql({ query: SYNC_FINANCE, variables: accountId ? { accountId } : {} });
       out = await waitForSync(r.data?.syncFinance, r.errors?.[0]?.message, syncLogsSince(getClient()));
     } catch (e: any) {
       out = describeSyncResult(null, e?.errors?.[0]?.message ?? e?.message ?? String(e));
     } finally {
-      setSyncing(false);
+      setSyncingId(null);
     }
     Alert.alert(out.title, out.detail || undefined);
     if (out.ok) onSynced();
   }
-  return { syncing, sync };
+  return { syncing: syncingId !== null, syncingId, sync };
 }
 
 export const fs = StyleSheet.create({

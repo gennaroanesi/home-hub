@@ -55,7 +55,7 @@ export default function FinanceOverview() {
     }
   }
 
-  const header = <FinanceHeader title="Finance" back={false} right={<HeaderButton icon="sync-outline" onPress={sync} busy={syncing} />} />;
+  const header = <FinanceHeader title="Finance" back={false} right={<HeaderButton icon="sync-outline" onPress={() => void sync()} busy={syncing} />} />;
 
   if (!s) {
     return (

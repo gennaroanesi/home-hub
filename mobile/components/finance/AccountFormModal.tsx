@@ -45,6 +45,43 @@ const LIST_SIMPLEFIN = /* GraphQL */ `
 
 const errMsg = (e: any) => e?.errors?.[0]?.message ?? (e instanceof Error ? e.message : String(e));
 
+/**
+ * Delete an account after a confirm, refusing one that has transactions
+ * (ACCOUNT_HAS_TRANSACTIONS). Shared by the form's Delete button and the
+ * Accounts screen's ⋯ menu.
+ */
+export async function confirmDeleteAccount(account: { id: string; name: string }, h: { onDeleted: () => void; setBusy?: (b: boolean) => void }) {
+  const busy = (b: boolean) => h.setBusy?.(b);
+  busy(true);
+  let has: boolean;
+  try {
+    has = await accountHasTransactions(getClient(), account.id);
+  } catch (e) {
+    busy(false);
+    return Alert.alert("Couldn't check for transactions", errMsg(e));
+  }
+  busy(false);
+  if (has) return Alert.alert(ACCOUNT_HAS_TRANSACTIONS.title, ACCOUNT_HAS_TRANSACTIONS.detail);
+  Alert.alert(`Delete ${account.name}?`, undefined, [
+    { text: "Cancel", style: "cancel" },
+    {
+      text: "Delete",
+      style: "destructive",
+      onPress: async () => {
+        busy(true);
+        try {
+          await deleteAccountWithHoldings(getClient(), account.id);
+          h.onDeleted();
+        } catch (e) {
+          Alert.alert("Couldn't delete", errMsg(e));
+        } finally {
+          busy(false);
+        }
+      },
+    },
+  ]);
+}
+
 /** Signed amount as typed ("-12.5"): digits, one dot, a leading minus. */
 const cleanSigned = (v: string) => {
   const neg = v.trim().startsWith("-");
@@ -99,36 +136,7 @@ export function AccountFormModal({
   }
 
   async function remove() {
-    const id = form.id;
-    if (!id) return;
-    setBusy(true);
-    let has: boolean;
-    try {
-      has = await accountHasTransactions(getClient(), id);
-    } catch (e) {
-      setBusy(false);
-      return Alert.alert("Couldn't check for transactions", errMsg(e));
-    }
-    setBusy(false);
-    if (has) return Alert.alert(ACCOUNT_HAS_TRANSACTIONS.title, ACCOUNT_HAS_TRANSACTIONS.detail);
-    Alert.alert(`Delete ${form.name}?`, undefined, [
-      { text: "Cancel", style: "cancel" },
-      {
-        text: "Delete",
-        style: "destructive",
-        onPress: async () => {
-          setBusy(true);
-          try {
-            await deleteAccountWithHoldings(getClient(), id);
-            onSaved();
-          } catch (e) {
-            Alert.alert("Couldn't delete", errMsg(e));
-          } finally {
-            setBusy(false);
-          }
-        },
-      },
-    ]);
+    if (form.id) await confirmDeleteAccount({ id: form.id, name: form.name }, { onDeleted: onSaved, setBusy });
   }
 
   return (
