@@ -6539,6 +6539,13 @@
               "isRequired": false,
               "attributes": []
             },
+            "outOfBudget": {
+              "name": "outOfBudget",
+              "isArray": false,
+              "type": "Boolean",
+              "isRequired": false,
+              "attributes": []
+            },
             "toAccountId": {
               "name": "toAccountId",
               "isArray": false,
@@ -7353,6 +7360,13 @@
               "isRequired": false,
               "attributes": []
             },
+            "keepOutOfBudget": {
+              "name": "keepOutOfBudget",
+              "isArray": false,
+              "type": "Boolean",
+              "isRequired": false,
+              "attributes": []
+            },
             "createdAt": {
               "name": "createdAt",
               "isArray": false,
@@ -7372,6 +7386,89 @@
           },
           "syncable": true,
           "pluralName": "homeFinanceSpendGroups",
+          "attributes": [
+            {
+              "type": "model",
+              "properties": {}
+            },
+            {
+              "type": "auth",
+              "properties": {
+                "rules": [
+                  {
+                    "groupClaim": "cognito:groups",
+                    "provider": "userPools",
+                    "allow": "groups",
+                    "groups": [
+                      "home-users"
+                    ],
+                    "operations": [
+                      "create",
+                      "update",
+                      "delete",
+                      "read"
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "primaryKeyInfo": {
+            "isCustomPrimaryKey": false,
+            "primaryKeyFieldName": "id",
+            "sortKeyFieldNames": []
+          }
+        },
+        "homeFinanceCategory": {
+          "name": "homeFinanceCategory",
+          "fields": {
+            "id": {
+              "name": "id",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": true,
+              "attributes": []
+            },
+            "name": {
+              "name": "name",
+              "isArray": false,
+              "type": "String",
+              "isRequired": true,
+              "attributes": []
+            },
+            "parentId": {
+              "name": "parentId",
+              "isArray": false,
+              "type": "ID",
+              "isRequired": false,
+              "attributes": []
+            },
+            "sortOrder": {
+              "name": "sortOrder",
+              "isArray": false,
+              "type": "Int",
+              "isRequired": false,
+              "attributes": []
+            },
+            "createdAt": {
+              "name": "createdAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            },
+            "updatedAt": {
+              "name": "updatedAt",
+              "isArray": false,
+              "type": "AWSDateTime",
+              "isRequired": false,
+              "attributes": [],
+              "isReadOnly": true
+            }
+          },
+          "syncable": true,
+          "pluralName": "homeFinanceCategories",
           "attributes": [
             {
               "type": "model",
@@ -9597,6 +9694,27 @@
               "isRequired": false,
               "attributes": []
             },
+            "externalHref": {
+              "name": "externalHref",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "externalEtag": {
+              "name": "externalEtag",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "syncHash": {
+              "name": "syncHash",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
             "createdAt": {
               "name": "createdAt",
               "isArray": false,
@@ -9996,6 +10114,20 @@
               "isRequired": false,
               "attributes": [],
               "isArrayNullable": true
+            },
+            "caldavUrl": {
+              "name": "caldavUrl",
+              "isArray": false,
+              "type": "String",
+              "isRequired": false,
+              "attributes": []
+            },
+            "writeNewEvents": {
+              "name": "writeNewEvents",
+              "isArray": false,
+              "type": "Boolean",
+              "isRequired": false,
+              "attributes": []
             },
             "createdAt": {
               "name": "createdAt",
