@@ -12,7 +12,7 @@ import { getClient } from "../../lib/amplify";
 import type { OpCallResult } from "../../lib/ops";
 import type { OpName } from "../../../lib/ops/registry";
 import { fmtCurrency } from "../../../lib/finance/dates";
-import { describeSyncResult } from "../../../lib/finance/sync-result";
+import { describeSyncResult, syncLogsSince, waitForSync } from "../../../lib/finance/sync-result";
 import { listAccounts } from "../../../lib/finance/data";
 import { isInvested } from "../../../lib/finance/accounts";
 
@@ -162,7 +162,7 @@ export function useFinanceSync(onSynced: () => void) {
     let out;
     try {
       const r: any = await getClient().graphql({ query: SYNC_FINANCE });
-      out = describeSyncResult(r.data?.syncFinance, r.errors?.[0]?.message);
+      out = await waitForSync(r.data?.syncFinance, r.errors?.[0]?.message, syncLogsSince(getClient()));
     } catch (e: any) {
       out = describeSyncResult(null, e?.errors?.[0]?.message ?? e?.message ?? String(e));
     } finally {

@@ -23,6 +23,7 @@
 // and mapped accounts are pulled per connection, only the ids mapped to it.
 
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { Amplify } from "aws-amplify";
 import { generateClient } from "aws-amplify/data";
 import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtime";
@@ -139,13 +140,36 @@ export type SyncSummary = {
   errors: string[];
 };
 
+const lambdaClient = new LambdaClient({});
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const handler = async (event: any = {}) => {
   const field: string | undefined = event?.fieldName ?? event?.info?.fieldName;
   if (field === "listSimplefinAccounts") return listSimplefinAccounts();
   if (field === "syncFinance") {
     const args = event.arguments ?? {};
-    return runSync({ trigger: "MANUAL", days: args.days ?? undefined, accountId: args.accountId ?? undefined, dryRun: args.dryRun ?? false });
+    const opts: SyncOptions = { trigger: "MANUAL", days: args.days ?? undefined, accountId: args.accountId ?? undefined, dryRun: args.dryRun ?? false };
+    if (opts.dryRun) return runSync(opts);
+    // A run can outlast AppSync's 30s limit, so "Sync now" starts it in the
+    // background and returns at once; the app waits for its homeFinanceSyncLog
+    // row (startedAt ≥ requestedAt, lib/finance/sync-result.ts waitForSync).
+    const requestedAt = new Date().toISOString();
+    try {
+      await lambdaClient.send(
+        new InvokeCommand({
+          FunctionName: process.env.AWS_LAMBDA_FUNCTION_NAME!,
+          InvocationType: "Event",
+          Payload: Buffer.from(JSON.stringify({ manualSync: { days: opts.days, accountId: opts.accountId } })),
+        }),
+      );
+      return { ok: true, status: "STARTED", requestedAt };
+    } catch (e) {
+      console.error("[finance-sync] background start failed, running inline", e);
+      return runSync(opts);
+    }
+  }
+  if (event?.manualSync) {
+    return runSync({ trigger: "MANUAL", days: event.manualSync.days ?? undefined, accountId: event.manualSync.accountId ?? undefined });
   }
   if (field === "refreshAssetValues") {
     const assetId = event.arguments?.assetId ? String(event.arguments.assetId) : null;

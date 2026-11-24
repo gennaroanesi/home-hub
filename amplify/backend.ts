@@ -417,6 +417,12 @@ financeSyncLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_
 // .env.local for the sandbox, the Amplify Hosting build env for prod.
 financeSyncLambda.addEnvironment("RENTCAST_API_KEY", process.env.RENTCAST_API_KEY ?? "");
 financeSyncLambda.addEnvironment("MARKETCHECK_API_KEY", process.env.MARKETCHECK_API_KEY ?? "");
+// "Sync now" starts the run as an async invoke of itself (a run can outlast
+// AppSync's 30s). String ARN, not functionArn: a self-reference would cycle.
+financeSyncLambda.addToRolePolicy(new PolicyStatement({
+  actions: ["lambda:InvokeFunction"],
+  resources: [`arn:aws:lambda:${financeSyncStack.region}:${financeSyncStack.account}:function:*financesynclambda*`],
+}));
 
 const financeSyncScheduleRole = new iam.Role(financeSyncStack, "financeSyncSchedulerRole", {
   assumedBy: new iam.ServicePrincipal("scheduler.amazonaws.com"),

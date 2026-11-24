@@ -807,7 +807,7 @@ describe("a transaction's person is only a contributor", () => {
   it("refuses a person on money out and points at the ledger", async () => {
     const { ctx } = setup({ homePerson: people, homeFinanceAccount: [joint], homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -30, description: "HEB", date: today }] });
     const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", personName: "Cristine" });
-    expect(out.error).toMatch(/only set on money in.*ledger/s);
+    expect(out.error).toMatch(/only set on money in[\s\S]*ledger/);
   });
 });
 

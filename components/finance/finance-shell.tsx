@@ -1,7 +1,8 @@
 "use client";
 
 // Frame for every /finance page: auth gate, title and a "Sync now"
-// button (syncFinance mutation → finance-sync Lambda). Pages
+// button (syncFinance mutation → finance-sync Lambda, which runs in the
+// background; waitForSync watches the sync log for the result). Pages
 // pass `onSynced` to reload after a sync. Navigation between finance
 // pages is the Finance section of the sidebar (config/nav.ts).
 
@@ -14,7 +15,7 @@ import { FaSyncAlt, FaWallet } from "react-icons/fa";
 
 import DefaultLayout from "@/layouts/default";
 import { financeClient } from "@/components/finance/client";
-import { describeSyncResult } from "@/lib/finance/sync-result";
+import { syncLogsSince, waitForSync } from "@/lib/finance/sync-result";
 
 export function FinanceShell({
   title,
@@ -43,7 +44,7 @@ export function FinanceShell({
     setSyncing(true);
     try {
       const r = await financeClient.mutations.syncFinance({});
-      const out = describeSyncResult(r.data, r.errors?.[0]?.message);
+      const out = await waitForSync(r.data, r.errors?.[0]?.message, syncLogsSince(financeClient));
       addToast({ title: out.title, description: out.detail, color: out.ok ? "success" : "danger" });
       if (out.ok) onSynced?.();
     } catch (e) {
