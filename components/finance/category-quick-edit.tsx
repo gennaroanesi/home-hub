@@ -13,7 +13,8 @@ import { Input } from "@heroui/input";
 import { Spinner } from "@heroui/react";
 import { FaSearch } from "react-icons/fa";
 
-import { UNCATEGORIZED } from "@/lib/finance/categories";
+import { normalizeCategoryName, SUBCATEGORY_SEPARATOR, UNCATEGORIZED } from "@/lib/finance/categories";
+import { categoryMatches } from "@/lib/inventory";
 
 export function CategoryQuickEdit({
   value,
@@ -44,18 +45,25 @@ export function CategoryQuickEdit({
     }
   }, [open]);
 
-  // Matches, plus the typed text as a new category when nothing is exactly it.
+  // Tree order (the vocabulary's) with sub-categories indented; while
+  // searching, any words of the path, names starting with it first. Plus
+  // the typed text as a new category when nothing is exactly it.
   const choices = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const typed = normalizeCategoryName(query);
     const base = options.filter((o) => o !== UNCATEGORIZED);
-    const hits = q ? base.filter((o) => o.toLowerCase().includes(q)) : base;
-    hits.sort((a, b) => {
-      const ap = a.toLowerCase().startsWith(q) ? 0 : 1;
-      const bp = b.toLowerCase().startsWith(q) ? 0 : 1;
-      return ap - bp || a.localeCompare(b);
+    const hits = q ? base.filter((o) => categoryMatches(o, q.replace(/:/g, " "))) : base;
+    if (q) {
+      const leaf = (o: string) => o.split(SUBCATEGORY_SEPARATOR).pop()!.toLowerCase();
+      hits.sort((a, b) => (leaf(a).startsWith(q) ? 0 : 1) - (leaf(b).startsWith(q) ? 0 : 1));
+    }
+    const out: Array<{ key: string; label: string; value: string | null; isNew?: boolean; depth?: number; parent?: string }> = hits.map((o) => {
+      const parts = o.split(SUBCATEGORY_SEPARATOR);
+      return q
+        ? { key: o, label: parts[parts.length - 1], parent: parts.length > 1 ? parts.slice(0, -1).join(SUBCATEGORY_SEPARATOR) + SUBCATEGORY_SEPARATOR : undefined, value: o }
+        : { key: o, label: parts[parts.length - 1], depth: parts.length - 1, value: o };
     });
-    const out: Array<{ key: string; label: string; value: string | null; isNew?: boolean }> = hits.map((o) => ({ key: o, label: o, value: o }));
-    if (q && !base.some((o) => o.toLowerCase() === q)) out.push({ key: "__new", label: `Create “${query.trim()}”`, value: query.trim(), isNew: true });
+    if (typed && !base.some((o) => o.toLowerCase() === typed.toLowerCase())) out.push({ key: "__new", label: `Create “${typed}”`, value: typed, isNew: true });
     if (!q || UNCATEGORIZED.toLowerCase().includes(q)) out.push({ key: "__none", label: UNCATEGORIZED, value: null });
     return out;
   }, [options, query]);
@@ -125,8 +133,11 @@ export function CategoryQuickEdit({
                     data-idx={i}
                     onMouseEnter={() => setActive(i)}
                     onClick={() => pick(c.value)}
-                    className={`text-left text-sm px-2 py-1.5 rounded-md truncate ${i === active ? "bg-default-100" : ""} ${current ? "font-semibold" : ""} ${c.isNew ? "text-primary" : ""} ${c.value === null ? "text-default-500" : ""}`}
+                    style={c.depth ? { paddingLeft: 8 + c.depth * 14 } : undefined}
+                    // shrink-0: with truncate's overflow hidden, flex rows would otherwise squash to fit the list's max height.
+                    className={`shrink-0 text-left text-sm px-2 py-1.5 rounded-md truncate ${i === active ? "bg-default-100" : ""} ${current ? "font-semibold" : ""} ${c.isNew ? "text-primary" : ""} ${c.value === null ? "text-default-500" : ""}`}
                   >
+                    {c.parent && <span className="text-default-400 font-normal">{c.parent}</span>}
                     {c.label}
                   </button>
                 );
