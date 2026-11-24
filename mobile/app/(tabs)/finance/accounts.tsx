@@ -104,6 +104,7 @@ export default function FinanceAccounts() {
   const menu = (id: string, name: string) => {
     const row = byId.get(id);
     const actions: Array<{ label: string; run: () => void; destructive?: boolean }> = [
+      { label: "Details", run: () => openFinance("account", { id }) },
       { label: "Edit", run: () => edit(id) },
       { label: "View transactions", run: () => openTx(id, name) },
     ];

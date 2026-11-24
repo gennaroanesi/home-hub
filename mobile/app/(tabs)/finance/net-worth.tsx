@@ -1,14 +1,15 @@
 // Net worth — the phone's /finance/net-worth: the total with cash /
 // invested / property / debt, each asset's equity against its loans, and
-// each loan's payoff. Reads get_net_worth and list_finance_loans (the same
+// each loan's payoff (tap one for its loan screen, an account for its detail). Reads get_net_worth and list_finance_loans (the same
 // Janet uses); editing assets and loans is on the web.
 
 import { useCallback, useEffect, useState } from "react";
-import { ActivityIndicator, RefreshControl, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Pressable, RefreshControl, ScrollView, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { Ionicons } from "@expo/vector-icons";
 
 import { callOp } from "../../../lib/ops";
-import { BudgetBar, Card, FinanceHeader, GOOD, Money, WARN, fs, type OpResultOf } from "../../../components/finance/ui";
+import { BudgetBar, Card, FinanceHeader, GOOD, Money, WARN, fs, openFinance, type OpResultOf } from "../../../components/finance/ui";
 import { fmtCurrency, fmtDate } from "../../../../lib/finance/dates";
 import { fmtDuration } from "../../../../lib/finance/loans";
 
@@ -105,12 +106,13 @@ export default function NetWorth() {
           {loans.length > 0 && (
             <Card title="Loans">
               {loans.map((l) => (
-                <View key={l.id} style={{ gap: 3 }}>
+                <Pressable key={l.id} onPress={() => openFinance("loan", { id: l.id })} style={({ pressed }) => [{ gap: 3 }, pressed && fs.pressed]}>
                   <View style={fs.rowBetween}>
                     <Text style={fs.textFlex} numberOfLines={1}>
                       {l.name}
                     </Text>
                     <Money value={-l.owed} cents={false} style={{ fontWeight: "600" }} />
+                    <Ionicons name="chevron-forward" size={16} color="#bbb" />
                   </View>
                   <BudgetBar spent={l.paidOffPct * 100} budgeted={100} income />
                   <Text style={fs.muted}>
@@ -120,19 +122,19 @@ export default function NetWorth() {
                     {l.projectedPayoff ? `Paid off ${fmtDate(l.projectedPayoff, { month: "short", year: "numeric" })} (${fmtDuration(l.monthsLeft ?? 0)})` : "No payoff at this payment"}
                     {l.monthsAhead ? <Text style={{ color: l.monthsAhead > 0 ? GOOD : WARN }}> · {l.monthsAhead > 0 ? `${l.monthsAhead} mo ahead` : `${-l.monthsAhead} mo behind`}</Text> : null}
                   </Text>
-                </View>
+                </Pressable>
               ))}
             </Card>
           )}
 
           <Card title="Accounts">
             {w.accounts.map((a) => (
-              <View key={a.id} style={fs.rowBetween}>
+              <Pressable key={a.id} onPress={() => openFinance("account", { id: a.id })} style={({ pressed }) => [fs.rowBetween, pressed && fs.pressed]}>
                 <Text style={fs.textFlex} numberOfLines={1}>
                   {a.name} <Text style={fs.muted}>· {a.group}</Text>
                 </Text>
                 <Money value={a.balance} cents={false} />
-              </View>
+              </Pressable>
             ))}
           </Card>
           <Text style={[fs.muted, { textAlign: "center" }]}>Add or update assets and loans on the web (Finance → Net worth).</Text>

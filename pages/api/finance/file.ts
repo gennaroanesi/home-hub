@@ -9,7 +9,8 @@ const s3 = new S3Client({ region: "us-east-1" });
 
 /**
  * GET /api/finance/file?key=home/finance/…
- * Redirects to a 5-minute presigned URL for a paystub or invoice file.
+ * Redirects to a 5-minute presigned URL for a paystub or invoice file
+ * (?format=json answers { url } instead, for the phone).
  * Unlike /api/d (unauthenticated, for WhatsApp links), this requires a
  * home-users session: these are pay stubs and bills.
  */
@@ -35,6 +36,13 @@ async function handler(req: NextApiRequest, res: NextApiResponse): Promise<void>
     { expiresIn: 300 },
   );
   res.setHeader("Cache-Control", "no-store");
+  // The phone asks for the link itself (?format=json) and opens it: following
+  // the redirect from a Bearer-authed fetch could carry the Authorization
+  // header to S3, which then refuses the presigned request.
+  if (req.query.format === "json") {
+    res.status(200).json({ url });
+    return;
+  }
   res.redirect(302, url);
 }
 

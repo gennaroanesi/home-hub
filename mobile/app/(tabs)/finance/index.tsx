@@ -23,6 +23,13 @@ const SECTIONS = [
   { label: "Scheduled", icon: "calendar-outline", route: "scheduled" },
   { label: "Goals", icon: "flag-outline", route: "goals" },
   { label: "Accounts", icon: "wallet-outline", route: "accounts" },
+  { label: "Monthly review", icon: "checkmark-done-outline", route: "review" },
+  { label: "Spend groups", icon: "albums-outline", route: "groups" },
+  { label: "Rules", icon: "git-branch-outline", route: "rules" },
+  { label: "Categories", icon: "pricetags-outline", route: "categories" },
+  { label: "Paychecks", icon: "cash-outline", route: "paychecks" },
+  { label: "Invoices", icon: "receipt-outline", route: "invoices" },
+  { label: "Tax outlook", icon: "calculator-outline", route: "tax-outlook" },
 ] as const;
 
 export default function FinanceOverview() {
