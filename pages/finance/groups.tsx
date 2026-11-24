@@ -14,6 +14,7 @@ import { Checkbox } from "@heroui/checkbox";
 import { Chip } from "@heroui/chip";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
+import { Switch } from "@heroui/switch";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { addToast, Spinner } from "@heroui/react";
 import { FaMagic, FaPen, FaPlus, FaTimes, FaTrash } from "react-icons/fa";
@@ -34,7 +35,7 @@ type Kind = SpendGroupKind;
 const KIND_LABELS = SPEND_GROUP_KIND_LABELS;
 const NO_TRIP = "__none";
 
-type Form = { id?: string; name: string; kind: Kind; budget: string; startDate: string; endDate: string; tripId: string; notes: string };
+type Form = { id?: string; name: string; kind: Kind; budget: string; startDate: string; endDate: string; tripId: string; notes: string; keepOutOfBudget: boolean };
 
 async function taggedTxs(groupId: string): Promise<any[]> {
   const out: any[] = [];
@@ -96,7 +97,9 @@ export default function GroupsPage() {
       return;
     }
     setSaving(true);
-    const fields = {
+    // Through the op: it copies keepOutOfBudget onto the tagged transactions.
+    const r = await callOp(financeClient, "save_finance_spend_group", {
+      ...(form.id ? { id: form.id } : {}),
       name: form.name.trim(),
       kind: form.kind,
       budget,
@@ -104,13 +107,11 @@ export default function GroupsPage() {
       endDate: form.endDate || null,
       tripId: form.tripId === NO_TRIP ? null : form.tripId,
       notes: form.notes.trim() || null,
-    };
-    const r = form.id
-      ? await financeClient.models.homeFinanceSpendGroup.update({ id: form.id, ...fields })
-      : await financeClient.models.homeFinanceSpendGroup.create(fields);
+      keepOutOfBudget: form.keepOutOfBudget,
+    });
     setSaving(false);
-    if (r.errors?.length) {
-      addToast({ title: "Couldn't save", description: r.errors[0].message, color: "danger" });
+    if ("error" in r) {
+      addToast({ title: "Couldn't save", description: r.error, color: "danger" });
       return;
     }
     setForm(null);
@@ -158,7 +159,7 @@ export default function GroupsPage() {
       subtitle="Trips and projects, budgeted on their own instead of against the month"
       onSynced={load}
       actions={
-        <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setForm({ name: "", kind: "PROJECT", budget: "", startDate: "", endDate: "", tripId: NO_TRIP, notes: "" })}>
+        <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setForm({ name: "", kind: "PROJECT", budget: "", startDate: "", endDate: "", tripId: NO_TRIP, notes: "", keepOutOfBudget: false })}>
           New group
         </Button>
       }
@@ -200,7 +201,9 @@ export default function GroupsPage() {
                         </>
                       )}
                     </span>
-                    <span className="text-xs text-default-500">{txs.length} transaction(s)</span>
+                    <span className="text-xs text-default-500">
+                      {txs.length} transaction(s){g.keepOutOfBudget ? " · not in the monthly budget" : ""}
+                    </span>
                   </div>
                   {g.budget != null && <BudgetBar spent={spent} budgeted={g.budget} />}
                 </CardBody>
@@ -237,6 +240,14 @@ export default function GroupsPage() {
                     onValueChange={(v) => setForm({ ...form, budget: v })}
                   />
                   <Input label="Notes" value={form.notes} onValueChange={(v) => setForm({ ...form, notes: v })} />
+                  <Switch size="sm" isSelected={form.keepOutOfBudget} onValueChange={(v) => setForm({ ...form, keepOutOfBudget: v })} className="sm:col-span-2">
+                    <span className="text-sm">Keep out of the monthly budget</span>
+                    <span className="block text-xs text-default-500">
+                      {form.keepOutOfBudget
+                        ? "Its transactions only count here (e.g. a remodel paid from savings)."
+                        : "Its transactions also count in the monthly budget, under their category."}
+                    </span>
+                  </Switch>
                 </div>
               </ModalBody>
               <ModalFooter>
@@ -270,6 +281,7 @@ export default function GroupsPage() {
               endDate: detail.endDate ?? "",
               tripId: detail.tripId ?? NO_TRIP,
               notes: detail.notes ?? "",
+              keepOutOfBudget: detail.keepOutOfBudget === true,
             });
           }}
           onDelete={() => remove(detail)}

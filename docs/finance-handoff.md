@@ -183,6 +183,19 @@ can make a new category or spend group without leaving it.
   it lacked, and its rows show the group, like the web.
   `update_finance_transaction` now refuses a spendGroupId that doesn't exist.
 
+**Spend groups count in the budget (2026-11-23).** A tagged transaction
+adds up to its group's total and still counts in the monthly budget under
+its category (Seattle's hotel is in Travel for November and in "Seattle Nov
+2026"). Before, tagging took a row out of the budget. A group can opt out
+with "Keep out of the monthly budget" (`homeFinanceSpendGroup.keepOutOfBudget`,
+for a remodel paid from savings); the budget code reads a copy on each row,
+`homeFinanceTransaction.outOfBudget`, so it needs no group lookup. The copy
+is written by `update_finance_transaction` when spendGroupId changes, by
+`save_finance_spend_group` on every save of a group (all its rows), and by
+the web Add; a new write path that sets spendGroupId must set it too. The
+Groups page now saves through `save_finance_spend_group` (which gained
+tripId and notes).
+
 **Budget drill-in (2026-11-23).** On /finance/budget every spending line,
 every line for a stretch of dates and every "Not budgeted" category opens
 to its transactions (`components/finance/budget-tx-list.tsx`), each with

@@ -22,7 +22,7 @@ import {
 import { filterTransactions, sortTransactions, TX_SORTS } from "../finance/tx-filter";
 import { allCategories, CATEGORY_RULES, classify, effectiveCategory, parseLineItems, patternMatches, rulesFromDbRows, UNCATEGORIZED } from "../finance/categories";
 import { addDays, CADENCE_MONTHLY_FACTOR, CADENCES, monthEnd, monthRange, monthStart, normalizeAmountSign, todayIso, type Cadence } from "../finance/dates";
-import { listAccountTransactions, listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listSpendGroups, listTransactions } from "../finance/data";
+import { listAccountTransactions, listAccounts, listBudgetLines, listCategoryRules, listGoalMilestones, listGoals, listHoldings, listSchedules, listSpendGroups, listTransactions, txIndexQuery } from "../finance/data";
 import { goalAccountIds, goalProgress, milestoneViews } from "../finance/goals";
 import { accountTypeLabel, householdAccounts, isInvested, isOutsideCashFlow } from "../finance/accounts";
 import { isScheduleLive, lowestPoint, nextDueAfterPaid, planScheduleLinks, projectBalance, upcomingEvents } from "../finance/recurring";
@@ -637,8 +637,10 @@ export const updateFinanceTransaction = defineOp({
     if (input.spendGroupId) {
       const { data: group } = await ctx.client.models.homeFinanceSpendGroup.get({ id: input.spendGroupId });
       if (!group) throw new OpError(`No spend group ${input.spendGroupId}. Use list_finance_spend_groups, or save_finance_spend_group to create one.`);
+      patch.outOfBudget = group.keepOutOfBudget === true ? true : null;
     }
     if (input.spendGroupId !== undefined) patch.spendGroupId = input.spendGroupId;
+    if (input.spendGroupId === null) patch.outOfBudget = null;
     if (input.goalId !== undefined) patch.goalId = input.goalId;
     if (input.notes !== undefined) patch.notes = input.notes;
     if (input.ledger !== undefined) patch.ledger = await ledgerRef(ctx, input.ledger);
@@ -1369,17 +1371,49 @@ const SpendGroupOut = z.object({
   budget: z.number().nullable(),
   startDate: z.string().nullable(),
   endDate: z.string().nullable(),
+  tripId: z.string().nullable(),
+  notes: z.string().nullable(),
+  keepOutOfBudget: z.boolean().describe("True: its transactions don't count in the monthly budget"),
 });
 
 function spendGroupOut(g: any): z.infer<typeof SpendGroupOut> {
-  return { id: g.id, name: g.name, kind: g.kind ?? null, budget: g.budget ?? null, startDate: g.startDate ?? null, endDate: g.endDate ?? null };
+  return {
+    id: g.id,
+    name: g.name,
+    kind: g.kind ?? null,
+    budget: g.budget ?? null,
+    startDate: g.startDate ?? null,
+    endDate: g.endDate ?? null,
+    tripId: g.tripId ?? null,
+    notes: g.notes ?? null,
+    keepOutOfBudget: g.keepOutOfBudget === true,
+  };
+}
+
+/** Copy a group's keepOutOfBudget onto its tagged transactions; returns how many changed. */
+async function syncGroupBudgetFlag(client: any, groupId: string, keepOut: boolean): Promise<number> {
+  const want = keepOut ? true : null;
+  let changed = 0;
+  let nextToken: string | null | undefined;
+  do {
+    const r = await txIndexQuery(client, "SpendGroupId")({ spendGroupId: groupId }, { limit: 500, nextToken });
+    for (const t of r.data ?? []) {
+      if ((t.outOfBudget === true ? true : null) === want) continue;
+      const u = await client.models.homeFinanceTransaction.update({ id: t.id, outOfBudget: want });
+      if (u.errors?.length) throw new Error(u.errors[0].message);
+      changed++;
+    }
+    nextToken = r.nextToken;
+  } while (nextToken);
+  return changed;
 }
 
 export const listFinanceSpendGroups = defineOp({
   name: "list_finance_spend_groups",
   domain: "finance",
   access: "read",
-  description: "Spend groups (a trip, the nursery, a remodel), newest first. Transactions tagged with one (update_finance_transaction spendGroupId) count there instead of against the monthly budget.",
+  description:
+    "Spend groups (a trip, the nursery, a remodel), newest first. Transactions tagged with one (update_finance_transaction spendGroupId) add up to the group's total and still count in the monthly budget under their category, unless the group is keepOutOfBudget.",
   input: z.object({}),
   output: z.object({ groups: z.array(SpendGroupOut) }),
   async run(ctx) {
@@ -1392,7 +1426,7 @@ export const saveFinanceSpendGroup = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Create a spend group (a trip, a project like the nursery, an event), or change one when id is given. Tag transactions with it through update_finance_transaction spendGroupId; they then count against the group's own budget instead of the monthly one.",
+    "Create a spend group (a trip, a project like the nursery, an event), or change one when id is given. Tag transactions with it through update_finance_transaction spendGroupId: they add up to the group's total (against its own budget, if set) and still count in the monthly budget under their category. keepOutOfBudget takes them out of the monthly budget (a remodel paid from savings).",
   input: z.object({
     id: z.string().optional(),
     name: z.string(),
@@ -1400,8 +1434,11 @@ export const saveFinanceSpendGroup = defineOp({
     budget: z.number().nullable().optional().describe("What the whole group may cost"),
     startDate: DATE.nullable().optional(),
     endDate: DATE.nullable().optional(),
+    tripId: z.string().nullable().optional().describe("The trip it's for (list_trips)"),
+    notes: z.string().nullable().optional(),
+    keepOutOfBudget: z.boolean().optional().describe("Default false: tagged transactions count in the monthly budget too"),
   }),
-  output: z.object({ group: SpendGroupOut, created: z.boolean() }),
+  output: z.object({ group: SpendGroupOut, created: z.boolean(), transactionsUpdated: z.number() }),
   async run(ctx, input) {
     const checked = spendGroupFields({
       name: input.name,
@@ -1418,15 +1455,25 @@ export const saveFinanceSpendGroup = defineOp({
       if (input.budget !== undefined) patch.budget = fields.budget;
       if (input.startDate !== undefined) patch.startDate = fields.startDate;
       if (input.endDate !== undefined) patch.endDate = fields.endDate;
+      if (input.tripId !== undefined) patch.tripId = input.tripId || null;
+      if (input.notes !== undefined) patch.notes = input.notes?.trim() || null;
+      if (input.keepOutOfBudget !== undefined) patch.keepOutOfBudget = input.keepOutOfBudget;
       const r = await ctx.client.models.homeFinanceSpendGroup.update({ id: input.id, ...patch });
       if (r.errors?.length || !r.data) throw new OpError(r.errors?.[0]?.message ?? `No spend group ${input.id}`);
-      return { group: spendGroupOut(r.data), created: false };
+      // Every save re-copies the switch, so a row tagged some other way is fixed too.
+      const transactionsUpdated = await syncGroupBudgetFlag(ctx.client, r.data.id, r.data.keepOutOfBudget === true);
+      return { group: spendGroupOut(r.data), created: false, transactionsUpdated };
     }
     const existing = (await listSpendGroups(ctx.client)).find((g) => g.name.toLowerCase() === fields.name.toLowerCase());
     if (existing) throw new OpError(`There's already a spend group named "${existing.name}" (id ${existing.id})`);
-    const r = await ctx.client.models.homeFinanceSpendGroup.create(fields);
+    const r = await ctx.client.models.homeFinanceSpendGroup.create({
+      ...fields,
+      tripId: input.tripId || null,
+      notes: input.notes?.trim() || null,
+      keepOutOfBudget: input.keepOutOfBudget === true,
+    });
     if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
-    return { group: spendGroupOut(r.data), created: true };
+    return { group: spendGroupOut(r.data), created: true, transactionsUpdated: 0 };
   },
 });
 

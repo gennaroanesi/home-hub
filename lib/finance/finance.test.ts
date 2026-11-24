@@ -117,7 +117,8 @@ describe("budget", () => {
       tx({ amount: -1000, category: "Groceries" }),
       tx({ amount: -60, category: "Pets" }),
       tx({ amount: -500, category: "Transfers" }), // internal: never counted
-      tx({ amount: -200, category: "Groceries", spendGroupId: "trip" }), // counts toward its group, not the budget
+      tx({ amount: -200, category: "Groceries", spendGroupId: "trip", outOfBudget: true }), // a group kept out of the budget
+      tx({ amount: -50, category: "Groceries", spendGroupId: "seattle" }), // other groups count under their category too
       tx({ amount: -99, category: "Groceries", status: "PENDING" }),
     ];
     const schedules: RecurringLike[] = [{ id: "m", accountId: "joint", amount: -2400, type: "EXPENSE", category: "Mortgage Payment", cadence: "MONTHLY", startDate: "2026-01-01", nextDate: "2026-11-01" }];
@@ -129,10 +130,10 @@ describe("budget", () => {
       ["gen", 4000],
     ]);
     expect(v.expenseViews.find((x) => x.line.id === "h")).toMatchObject({ spent: 2400, committed: 2400, variable: 600 });
-    expect(v.expenseViews.find((x) => x.line.id === "f")).toMatchObject({ spent: 1000, remaining: -100 });
-    expect(v.overspend).toBe(100);
+    expect(v.expenseViews.find((x) => x.line.id === "f")).toMatchObject({ spent: 1050, remaining: -150 });
+    expect(v.overspend).toBe(150);
     expect(v.unassigned).toEqual([{ category: "Pets", spent: 60 }]);
-    expect(v.spentTotal).toBe(3660);
+    expect(v.spentTotal).toBe(3710);
   });
 
   it("splits a person's contributions across their lines by what each plans", () => {

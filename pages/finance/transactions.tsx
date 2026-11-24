@@ -925,6 +925,8 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
       personId: type === "INCOME" ? person || null : null,
       personSource: type === "INCOME" && person ? "MANUAL" : null,
       spendGroupId: group || null,
+      // Written straight to the model, so the group's budget switch is copied here (the op does it for edits).
+      outOfBudget: group && refs.groups.find((g) => g.id === group)?.keepOutOfBudget === true ? true : null,
       notes: notes.trim() || null,
     });
     setSaving(false);

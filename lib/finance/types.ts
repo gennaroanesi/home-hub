@@ -26,6 +26,7 @@ export type TxLike = {
   status?: string | null;
   personId?: string | null;
   spendGroupId?: string | null;
+  outOfBudget?: boolean | null; // its spend group is kept out of the monthly budget
   goalId?: string | null;
   recurringId?: string | null;
   lineItems?: string | null; // JSON [{ name, amount, category, quantity?, ledger? }] (categories.ts)

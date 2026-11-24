@@ -145,14 +145,14 @@ export function txsForLedger<T extends TxLike & { ledger?: string | null }>(txs:
  * one (a transfer the sync paired: in counts for them, back out against),
  * plus household spending paid from their own accounts, minus personal
  * spending paid with household money. Posted, in the window, not
- * spend-group rows; card payments and other transfers aren't spending.
+ * in a spend group kept out of the budget; card payments and other transfers aren't spending.
  */
 export function inKindContributions(txs: (TxLike & { ledger?: string | null })[], accounts: AccountLike[], window: DateRange): Map<string, number> {
   const byId = new Map(accounts.map((a) => [a.id, accountLedger(a)]));
   const out = new Map<string, number>();
   const add = (k: string, n: number) => out.set(k, (out.get(k) ?? 0) + n);
   for (const tx of txs) {
-    if (tx.status === "PENDING" || tx.spendGroupId) continue;
+    if (tx.status === "PENDING" || tx.outOfBudget) continue;
     if ((tx.date ?? "") < window.fromIso || (tx.date ?? "") > window.toIso) continue;
     const acct = byId.get(tx.accountId) ?? HOUSEHOLD;
     // Transfers are counted on the household side only, so a pair counts once.

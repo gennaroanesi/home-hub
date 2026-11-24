@@ -1183,6 +1183,10 @@ const schema = a
         personSource: a.enum(["RULE", "MANUAL"]),
         goalId: a.id(),
         spendGroupId: a.id(),
+        // Copy of the spend group's keepOutOfBudget (set by the finance ops
+        // whenever spendGroupId or the switch changes): true = not counted
+        // in the monthly budget. Tagged rows count there by default.
+        outOfBudget: a.boolean(),
         toAccountId: a.id(), // TRANSFER destination
         recurringId: a.id(), // scheduled transaction this realizes
         importHash: a.string(), // dedup fingerprint (date|amount|description)
@@ -1311,6 +1315,10 @@ const schema = a
         endDate: a.date(),
         tripId: a.id(), // optional link to homeTrip
         notes: a.string(),
+        // Its transactions count in the monthly budget under their
+        // category unless this is on (a remodel paid from savings).
+        // Copied onto each tagged row as outOfBudget.
+        keepOutOfBudget: a.boolean(),
       })
       .authorization((allow) => [allow.group("home-users")]),
 

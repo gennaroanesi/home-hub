@@ -366,12 +366,12 @@ function inWindow(tx: TxLike, window: DateRange): boolean {
 
 /**
  * Counts against the monthly budget: posted money out in the window, not
- * tagged to a spend group (those have their own budget) and not internal
- * movement or income. Refunds are money in under their own category, so
+ * internal movement or income, and not in a spend group kept out of the
+ * budget (`outOfBudget`; other spend groups count under their category). Refunds are money in under their own category, so
  * they don't reduce a line's spend.
  */
 export function countsTowardBudget(tx: TxLike, window: DateRange): boolean {
-  if (tx.status === "PENDING" || tx.spendGroupId || !inWindow(tx, window)) return false;
+  if (tx.status === "PENDING" || tx.outOfBudget || !inWindow(tx, window)) return false;
   return (tx.amount ?? 0) < 0 && spendParts(tx).length > 0;
 }
 
@@ -767,7 +767,7 @@ export type CategorySeed = { category: string; median: number; min: number; max:
 export function seedFromHistory(txs: TxLike[], months: string[]): CategorySeed[] {
   const byCat = new Map<string, Map<string, number>>();
   for (const tx of txs) {
-    if (tx.status === "PENDING" || tx.spendGroupId) continue;
+    if (tx.status === "PENDING" || tx.outOfBudget) continue;
     const amt = tx.amount ?? 0;
     if (amt >= 0) continue;
     const m = (tx.date ?? "").slice(0, 7);
