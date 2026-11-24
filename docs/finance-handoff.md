@@ -196,6 +196,26 @@ the web Add; a new write path that sets spendGroupId must set it too. The
 Groups page now saves through `save_finance_spend_group` (which gained
 tripId and notes).
 
+**Category tree (2026-11-23).** Finance categories are managed like
+inventory's: `homeFinanceCategory` (name, parentId, sortOrder) is the tree,
+edited in the Categories window (Transactions, Budget and Rules pages;
+`components/finance/category-manager.tsx`): add, add a sub-category,
+rename, move (Inside…), delete (its rows move to a chosen category, its
+parent, or Uncategorized; sub-categories move up). Rows still store the
+category as its path text, "Parent: Child", so nothing that reads
+categories changed; `save_finance_category` / `delete_finance_category`
+rewrite the path on every transaction, itemized line, rule, budget line
+(all versions), schedule, invoice and the legacy `categories` setting
+(`rewriteCategories` in `lib/finance/category-tree.ts`). The vocabulary is
+the tree in tree order, then anything else rules or budgets name;
+`rememberCategories` adds typed names to the tree. Pickers (web
+`CategoryInput`, phone `CategorySheet`) list in tree order with
+sub-categories indented, search any words of the path, and read
+"Parent > Child" as "Parent: Child". Names can't contain ":" or ">".
+`scripts/finance-categories-backfill.ts` filled the tree from the
+categories in use. The sync's LLM fallback still picks from the rules'
+categories only (so a trip's sub-category never catches unrelated charges).
+
 **Budget drill-in (2026-11-23).** On /finance/budget every spending line,
 every line for a stretch of dates and every "Not budgeted" category opens
 to its transactions (`components/finance/budget-tx-list.tsx`), each with

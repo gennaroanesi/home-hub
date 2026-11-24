@@ -26,6 +26,7 @@ import { NO_WEB_TX_FILTERS, TransactionFiltersPane, webTxFilterCount, type WebTx
 
 import { CategoryQuickEdit } from "@/components/finance/category-quick-edit";
 import { FinanceShell } from "@/components/finance/finance-shell";
+import { FinanceCategoryManager } from "@/components/finance/category-manager";
 import { ImportCsvModal } from "@/components/finance/import-csv-modal";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
@@ -37,7 +38,7 @@ import { NO_SPEND_GROUP, TX_SORT_LABELS, filterTransactions, sortTransactions, t
 import { categoryParts, effectiveCategory, parseLineItems, suggestPattern, UNCATEGORIZED } from "@/lib/finance/categories";
 import { addDays, fmtDate, monthRange, normalizeAmountSign, shiftMonth, todayIso, type DateRange } from "@/lib/finance/dates";
 import { listTransactions } from "@/lib/finance/data";
-import { rememberCategories } from "@/lib/finance/category-list";
+import { normalizeCategoryName, rememberCategories } from "@/lib/finance/category-list";
 import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerParts, ledgerPeople } from "@/lib/finance/ledger";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -101,6 +102,7 @@ type EditResult = { deleted?: boolean; patch?: Record<string, unknown>; ruleCrea
 export default function TransactionsPage() {
   const router = useRouter();
   const refs = useFinanceRefs();
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
   const today = todayIso();
 
   const [period, setPeriod] = useState<string>(today.slice(0, 7));
@@ -342,6 +344,9 @@ export default function TransactionsPage() {
       onSynced={quietReload}
       actions={
         <div className="flex gap-2">
+          <Button size="sm" variant="flat" onPress={() => setCategoriesOpen(true)}>
+            Categories
+          </Button>
           <Button size="sm" variant="flat" startContent={<FaFileImport />} onPress={() => setImportOpen(true)} isDisabled={refs.loading}>
             Import
           </Button>
@@ -554,6 +559,14 @@ export default function TransactionsPage() {
         />
       )}
       <ImportCsvModal isOpen={importOpen} onClose={() => setImportOpen(false)} accounts={refs.accounts} onImported={() => void load()} />
+      <FinanceCategoryManager
+        isOpen={categoriesOpen}
+        onClose={() => setCategoriesOpen(false)}
+        onChanged={async () => {
+          await refs.reload();
+          await quietReload();
+        }}
+      />
     </FinanceShell>
   );
 }
@@ -919,7 +932,7 @@ function AddModal({ accounts, refs, onClose, onSaved }: { accounts: any[]; refs:
       type,
       date,
       description: description.trim() || null,
-      category: category.trim() || null,
+      category: normalizeCategoryName(category) || null,
       categorySource: category.trim() ? "MANUAL" : null,
       status: "POSTED",
       personId: type === "INCOME" ? person || null : null,

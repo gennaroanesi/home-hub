@@ -39,6 +39,15 @@ export function isExcludedFromBudget(category: string): boolean {
 /** Sub-categories are named "Parent: Child" ("Baby: Furniture"); a line on the parent covers them all. */
 export const SUBCATEGORY_SEPARATOR = ": ";
 
+/** Trimmed, single-spaced, and "Parent:Child" (or "Parent > Child", inventory's way) spelled "Parent: Child". */
+export function normalizeCategoryName(name: string): string {
+  return name
+    .split(/[:>›]/)
+    .map((p) => p.trim().replace(/\s+/g, " "))
+    .filter(Boolean)
+    .join(SUBCATEGORY_SEPARATOR);
+}
+
 export function categoryCovers(lineCategory: string, category: string): boolean {
   return category === lineCategory || category.startsWith(lineCategory + SUBCATEGORY_SEPARATOR);
 }

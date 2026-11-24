@@ -17,6 +17,7 @@ import { addToast, Spinner } from "@heroui/react";
 import { FaArrowDown, FaArrowUp, FaCopy, FaPen, FaPlus, FaSyncAlt, FaTrash } from "react-icons/fa";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
+import { FinanceCategoryManager } from "@/components/finance/category-manager";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
@@ -33,6 +34,7 @@ type Change = { tx: any; category?: string; personId?: string };
 
 export default function RulesPage() {
   const refs = useFinanceRefs();
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
   const [rows, setRows] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
@@ -127,11 +129,16 @@ export default function RulesPage() {
       title="Rules"
       subtitle="How transactions get a category and a person. First match wins, top to bottom."
       actions={
-        !usingBundled && (
-          <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setEditing({})}>
-            Add rule
+        <div className="flex gap-2">
+          <Button size="sm" variant="flat" onPress={() => setCategoriesOpen(true)}>
+            Categories
           </Button>
-        )
+          {!usingBundled && (
+            <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setEditing({})}>
+              Add rule
+            </Button>
+          )}
+        </div>
       }
     >
       <div className="grid gap-4 lg:grid-cols-[1fr_320px]">
@@ -183,6 +190,14 @@ export default function RulesPage() {
           }}
         />
       )}
+      <FinanceCategoryManager
+        isOpen={categoriesOpen}
+        onClose={() => setCategoriesOpen(false)}
+        onChanged={async () => {
+          await refs.reload();
+          await load();
+        }}
+      />
     </FinanceShell>
   );
 }

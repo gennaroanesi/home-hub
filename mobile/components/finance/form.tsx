@@ -23,6 +23,8 @@ import DateTimePicker from "@react-native-community/datetimepicker";
 
 import { callOp } from "../../lib/ops";
 import { fmtDate } from "../../../lib/finance/dates";
+import { normalizeCategoryName, SUBCATEGORY_SEPARATOR } from "../../../lib/finance/categories";
+import { categoryMatches } from "../../../lib/inventory";
 import { ACCENT, Chip, fs } from "./ui";
 
 export function FormSheet({
@@ -180,11 +182,13 @@ export function CategorySheet({ visible, value, onPick, onClose, allowClear = tr
   useEffect(() => {
     if (visible) setQ("");
   }, [visible]);
+  // Tree order from list_finance_categories; search matches any words of
+  // the path, like the inventory picker. "Parent > Child" creates a sub-category.
   const shown = useMemo(() => {
-    const w = q.trim().toLowerCase();
-    return w ? cats.filter((c) => c.toLowerCase().includes(w)) : cats;
+    const w = q.trim();
+    return w ? cats.filter((c) => categoryMatches(c, w.replace(/:/g, " "))) : cats;
   }, [cats, q]);
-  const typed = q.trim();
+  const typed = normalizeCategoryName(q);
   const exact = cats.some((c) => c.toLowerCase() === typed.toLowerCase());
   return (
     <Modal visible={visible} animationType="slide" presentationStyle="pageSheet" onRequestClose={onClose}>
@@ -217,12 +221,19 @@ export function CategorySheet({ visible, value, onPick, onClose, allowClear = tr
               </Pressable>
             ) : null
           }
-          renderItem={({ item }) => (
-            <Pressable onPress={() => onPick(item)} style={({ pressed }) => [ff.option, pressed && fs.pressed]}>
-              <Text style={ff.optionText}>{item}</Text>
+          renderItem={({ item }) => {
+            const parts = item.split(SUBCATEGORY_SEPARATOR);
+            const searching = !!q.trim();
+            return (
+            <Pressable onPress={() => onPick(item)} style={({ pressed }) => [ff.option, pressed && fs.pressed, !searching && { paddingLeft: 16 + (parts.length - 1) * 18 }]}>
+              <Text style={ff.optionText} numberOfLines={1}>
+                {searching && parts.length > 1 ? <Text style={{ color: "#999" }}>{parts.slice(0, -1).join(SUBCATEGORY_SEPARATOR) + SUBCATEGORY_SEPARATOR}</Text> : null}
+                {parts[parts.length - 1]}
+              </Text>
               {item === value && <Ionicons name="checkmark" size={18} color={ACCENT} />}
             </Pressable>
-          )}
+            );
+          }}
         />
       </View>
     </Modal>

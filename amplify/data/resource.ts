@@ -1322,6 +1322,19 @@ const schema = a
       })
       .authorization((allow) => [allow.group("home-users")]),
 
+    // The finance category tree (the Categories window, like inventory's).
+    // Rows elsewhere keep the category as its path text, "Parent: Child"
+    // (transactions, line items, rules, budget lines, schedules, invoices),
+    // so renaming or moving one rewrites them (save_finance_category,
+    // lib/finance/category-tree.ts). Names can't contain ":".
+    homeFinanceCategory: a
+      .model({
+        name: a.string().required(),
+        parentId: a.id(), // FK → homeFinanceCategory.id; null = top level
+        sortOrder: a.integer().default(0),
+      })
+      .authorization((allow) => [allow.group("home-users")]),
+
     // Editable classification rules, first match wins by sortOrder.
     // pattern = "/regex/flags" or a case-insensitive substring. personId
     // also attributes the row (e.g. "transfer from … 1234" → Gennaro).

@@ -30,7 +30,9 @@ import { defaultCadences, periodContaining, periodFromParam, periodRange, period
 import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
 import { CSV_FORMATS, newCsvRows, parseBankCsv } from "../finance/csv-import";
 import { importHash } from "../finance/sync-engine";
-import { loadCategoryVocabulary, rememberCategories } from "../finance/category-list";
+import { loadCategoryVocabulary, normalizeCategoryName, rememberCategories } from "../finance/category-list";
+import { checkCategoryName, countCategoryUse, financeCategoryTree, renamePath, rewriteCategories, type FinanceCategoryRow } from "../finance/category-tree";
+import { categoryAndDescendants } from "../inventory";
 import { SPEND_GROUP_KINDS, sortSpendGroups, spendGroupFields } from "../finance/spend-groups";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
@@ -626,7 +628,8 @@ export const updateFinanceTransaction = defineOp({
       throw new OpError("A person is only set on money in (who contributed it). For spending, set ledger: whose budget it counts in (household or a person).");
     const patch: Record<string, unknown> = {};
     if (input.category !== undefined) {
-      const cat = input.category?.trim() || null;
+      // "Parent > Child" (inventory's way) and loose spacing become "Parent: Child".
+      const cat = normalizeCategoryName(input.category ?? "") || null;
       patch.category = cat;
       patch.categorySource = cat ? "MANUAL" : null;
     }
@@ -648,7 +651,7 @@ export const updateFinanceTransaction = defineOp({
       const items = [];
       for (const i of input.lineItems ?? []) {
         const ledger = await ledgerRef(ctx, i.ledger ?? undefined);
-        items.push({ name: i.name?.trim() || null, amount: r2(i.amount), category: i.category.trim(), ...(i.quantity != null ? { quantity: i.quantity } : {}), ...(ledger ? { ledger } : {}) });
+        items.push({ name: i.name?.trim() || null, amount: r2(i.amount), category: normalizeCategoryName(i.category) || i.category.trim(), ...(i.quantity != null ? { quantity: i.quantity } : {}), ...(ledger ? { ledger } : {}) });
       }
       patch.lineItems = items.length ? JSON.stringify(items) : null;
     }
@@ -1349,16 +1352,141 @@ export const listFinanceGoals = defineOp({
 
 // ── list_finance_categories ───────────────────────────────────────────────────
 
+const CategoryNodeOut = z.object({
+  id: z.string(),
+  name: z.string(),
+  parentId: z.string().nullable(),
+  path: z.string().describe('As stored on transactions: "Parent: Child"'),
+  depth: z.number(),
+  transactions: z.number().optional().describe("Transactions filed directly under it (withCounts)"),
+});
+
 export const listFinanceCategories = defineOp({
   name: "list_finance_categories",
   domain: "finance",
   access: "read",
   description:
-    "The category names in use (from the rules, existing budgets and categories created by hand), for picking a category in update_finance_transaction or save_finance_budget. A new name given to update_finance_transaction is created and joins this list. Sub-categories are \"Parent: Child\".",
-  input: z.object({}),
-  output: z.object({ categories: z.array(z.string()) }),
-  async run(ctx) {
-    return { categories: (await loadCategoryVocabulary(ctx.client)).categories };
+    'The finance categories: `categories` is every name to pick from (the category tree first, in tree order, then any other name the rules or budgets use), for update_finance_transaction or save_finance_budget; `tree` has their ids for save_finance_category / delete_finance_category. A new name given to update_finance_transaction is added to the tree. Sub-categories are "Parent: Child".',
+  input: z.object({ withCounts: z.boolean().optional().describe("Also count each category's transactions (slower)") }),
+  output: z.object({ categories: z.array(z.string()), tree: z.array(CategoryNodeOut) }),
+  async run(ctx, input) {
+    const { categories, tree } = await loadCategoryVocabulary(ctx.client);
+    let counts: Map<string, number> | null = null;
+    if (input.withCounts) counts = countCategoryUse(await listAllPages<any>(ctx.client.models.homeFinanceTransaction, { limit: 1000 }));
+    return {
+      categories,
+      tree: tree.map((n) => ({ id: n.id, name: n.name, parentId: n.parentId, path: n.path, depth: n.depth, ...(counts ? { transactions: counts.get(n.path) ?? 0 } : {}) })),
+    };
+  },
+});
+
+const RewriteOut = z.object({ transactions: z.number(), rules: z.number(), budgetLines: z.number(), schedules: z.number(), invoices: z.number() });
+
+export const saveFinanceCategory = defineOp({
+  name: "save_finance_category",
+  domain: "finance",
+  access: "write",
+  description:
+    "Create a finance category or change one (the Categories window). Without categoryId it creates one (name required), at the top level unless parentId is given. With categoryId: name renames it, parentId moves it with its sub-categories (null = top level), sortOrder sets its place among siblings. Renaming or moving rewrites the category on every transaction, itemized line, rule, budget line, scheduled transaction and invoice that uses it or a sub-category, so nothing is lost. Ids from list_finance_categories `tree`.",
+  input: z.object({
+    categoryId: z.string().optional(),
+    name: z.string().optional(),
+    parentId: z.string().nullable().optional(),
+    sortOrder: z.number().int().optional(),
+  }),
+  output: z.object({ action: z.enum(["created", "updated"]), category: CategoryNodeOut, renamedFrom: z.string().nullable(), rewritten: RewriteOut.nullable() }),
+  async run(ctx, input) {
+    const rows = await listAllPages<FinanceCategoryRow>(ctx.client.models.homeFinanceCategory);
+    const name = input.name?.trim().replace(/\s+/g, " ");
+    if (input.name !== undefined) {
+      const bad = checkCategoryName(input.name);
+      if (bad) throw new OpError(bad);
+    }
+    const existing = input.categoryId ? rows.find((r) => r.id === input.categoryId) : undefined;
+    if (input.categoryId && !existing) throw new OpError(`No category ${input.categoryId}. Use list_finance_categories to find the id.`);
+    if (input.parentId && !rows.some((r) => r.id === input.parentId)) throw new OpError(`No parent category ${input.parentId}`);
+    const parentId = input.parentId === undefined ? (existing?.parentId ?? null) : input.parentId;
+    if (existing && parentId && categoryAndDescendants(existing.id, rows).has(parentId)) throw new OpError("A category can't move inside itself or one of its sub-categories");
+    const finalName = name ?? existing?.name;
+    if (!finalName) throw new OpError("name is required to create a category");
+    const clash = rows.find((r) => r.id !== existing?.id && (r.parentId ?? null) === parentId && r.name.toLowerCase() === finalName.toLowerCase());
+    if (clash) throw new OpError(`There's already a "${clash.name}" there. To combine them, delete one and move its transactions to the other.`);
+
+    const before = existing ? financeCategoryTree(rows).find((n) => n.id === existing.id)!.path : null;
+    let saved: FinanceCategoryRow;
+    if (existing) {
+      const r = await ctx.client.models.homeFinanceCategory.update({
+        id: existing.id,
+        ...(name ? { name } : {}),
+        ...(input.parentId !== undefined ? { parentId } : {}),
+        ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
+      });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+      saved = r.data;
+    } else {
+      const r = await ctx.client.models.homeFinanceCategory.create({
+        name: finalName,
+        parentId,
+        sortOrder: input.sortOrder ?? rows.filter((x) => (x.parentId ?? null) === parentId).length,
+      });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+      saved = r.data;
+    }
+    const after = [...rows.filter((r) => r.id !== saved.id), saved];
+    const node = financeCategoryTree(after).find((n) => n.id === saved.id)!;
+    let rewritten: z.infer<typeof RewriteOut> | null = null;
+    if (before && before !== node.path) rewritten = await rewriteCategories(ctx.client, (c) => renamePath(c, before, node.path));
+    return {
+      action: existing ? ("updated" as const) : ("created" as const),
+      category: { id: node.id, name: node.name, parentId: node.parentId, path: node.path, depth: node.depth },
+      renamedFrom: before && before !== node.path ? before : null,
+      rewritten,
+    };
+  },
+});
+
+export const deleteFinanceCategory = defineOp({
+  name: "delete_finance_category",
+  domain: "finance",
+  access: "write",
+  description:
+    "Delete a finance category without losing anything. Whatever uses it (transactions, itemized lines, rules, budget lines, scheduled transactions, invoices) moves to moveToCategoryId, or to its parent when that's left out; a top-level category in use needs moveToCategoryId, or uncategorize: true to clear it. Its sub-categories move up to its parent, and their rows with them.",
+  input: z.object({
+    categoryId: z.string(),
+    moveToCategoryId: z.string().optional(),
+    uncategorize: z.boolean().optional().describe("A top-level category's rows become Uncategorized"),
+  }),
+  output: z.object({ deleted: z.string(), movedTo: z.string().nullable(), subcategoriesMoved: z.number(), rewritten: RewriteOut }),
+  async run(ctx, input) {
+    const rows = await listAllPages<FinanceCategoryRow>(ctx.client.models.homeFinanceCategory);
+    const tree = financeCategoryTree(rows);
+    const node = tree.find((n) => n.id === input.categoryId);
+    if (!node) throw new OpError(`No category ${input.categoryId}. Use list_finance_categories to find the id.`);
+    const target = input.moveToCategoryId ? tree.find((n) => n.id === input.moveToCategoryId) : undefined;
+    if (input.moveToCategoryId && !target) throw new OpError(`No category ${input.moveToCategoryId}`);
+    if (target && categoryAndDescendants(node.id, rows).has(target.id)) throw new OpError("Move its transactions to a category outside the one being deleted");
+    const parent = node.parentId ? tree.find((n) => n.id === node.parentId) : undefined;
+    const targetPath = target?.path ?? parent?.path ?? "";
+    const children = rows.filter((r) => r.parentId === node.id);
+    const parentId = node.parentId ?? null;
+    for (const child of children) {
+      if (rows.some((r) => r.id !== child.id && r.id !== node.id && (r.parentId ?? null) === parentId && r.name.toLowerCase() === child.name.toLowerCase()))
+        throw new OpError(`"${child.name}" would land next to another "${child.name}". Rename or move one of them first.`);
+    }
+    if (!targetPath && !input.uncategorize) {
+      const used = countCategoryUse(await listAllPages<any>(ctx.client.models.homeFinanceTransaction, { limit: 1000 })).get(node.path) ?? 0;
+      if (used) throw new OpError(`"${node.name}" has ${used} transaction${used === 1 ? "" : "s"}. Pass moveToCategoryId to say where they go, or uncategorize: true.`, { transactionCount: used });
+    }
+    // Its own rows go to the target; its sub-categories' rows move up a level.
+    const childPrefix = parent?.path ?? "";
+    const rewritten = await rewriteCategories(ctx.client, (c) => (c === node.path ? targetPath : renamePath(c, node.path, childPrefix)));
+    for (const child of children) {
+      const r = await ctx.client.models.homeFinanceCategory.update({ id: child.id, parentId });
+      if (r.errors?.length) throw new Error(r.errors[0].message);
+    }
+    const r = await ctx.client.models.homeFinanceCategory.delete({ id: node.id });
+    if (r.errors?.length) throw new Error(r.errors[0].message);
+    return { deleted: node.path, movedTo: targetPath || null, subcategoriesMoved: children.length, rewritten };
   },
 });
 
@@ -1676,6 +1804,8 @@ export const financeOps = [
   importFinanceTransactions,
   saveFinanceGoal,
   listFinanceCategories,
+  saveFinanceCategory,
+  deleteFinanceCategory,
   listFinanceSpendGroups,
   saveFinanceSpendGroup,
 ] as const;

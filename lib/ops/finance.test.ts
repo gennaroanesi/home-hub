@@ -33,6 +33,7 @@ function setup(seed: Record<string, any[]> = {}) {
         Object.assign(row, patch);
         return { data: row };
       },
+      listHomeFinanceTransactionBySpendGroupId: async ({ spendGroupId }: any) => ({ data: rows.filter((r) => r.spendGroupId === spendGroupId), nextToken: null }),
       // Runtime name (capital H), not the typed one: see txIndexQuery.
       listHomeFinanceTransactionByAccountIdAndDate: async ({ accountId, date }: any) => ({
         data: rows.filter((r) => {
@@ -45,7 +46,7 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog", "homeFinanceSetting"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog", "homeFinanceSetting", "homeFinanceCategory", "homeInvoice"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
@@ -155,7 +156,8 @@ describe("creating categories and spend groups while editing", () => {
     const { ctx, tables } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -80, description: "TARGET", date: today }] });
     const out: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", category: "Nursery:  Paint" });
     expect(out.result.newCategories).toEqual(["Nursery", "Nursery: Paint"]);
-    expect(JSON.parse(tables.homeFinanceSetting[0].value)).toEqual(["Nursery", "Nursery: Paint"]);
+    expect(tables.homeFinanceTransaction[0].category).toBe("Nursery: Paint");
+    expect(tables.homeFinanceCategory.map((c: any) => c.name)).toEqual(["Nursery", "Paint"]);
     const cats: any = await runOp(ctx, "list_finance_categories", {});
     expect(cats.result.categories).toEqual(expect.arrayContaining(["Nursery", "Nursery: Paint", "Groceries"]));
     // Known already (any case): nothing new.
@@ -189,6 +191,85 @@ describe("creating categories and spend groups while editing", () => {
     expect(tables.homeFinanceTransaction[0].spendGroupId).toBe(made.result.group.id);
     const missing: any = await runOp(ctx, "update_finance_transaction", { transactionId: "t", spendGroupId: "nope" });
     expect(missing.error).toMatch(/No spend group/);
+  });
+});
+
+describe("finance category tree", () => {
+  const seed = () =>
+    setup({
+      homeFinanceCategory: [
+        { id: "travel", name: "Travel", parentId: null, sortOrder: 0 },
+        { id: "sea", name: "Seattle", parentId: "travel", sortOrder: 0 },
+        { id: "food", name: "Food", parentId: null, sortOrder: 1 },
+      ],
+      homeFinanceTransaction: [
+        { id: "t1", accountId: "joint", amount: -300, category: "Travel: Seattle", date: today },
+        { id: "t2", accountId: "joint", amount: -50, category: "Travel", date: today },
+        { id: "t3", accountId: "joint", amount: -90, date: today, lineItems: JSON.stringify([{ name: "x", amount: 90, category: "Travel: Seattle" }]) },
+        { id: "t4", accountId: "joint", amount: -20, category: "Food", date: today },
+      ],
+      homeFinanceCategoryRule: [{ id: "r", pattern: "ALASKA AIR", category: "Travel: Seattle", sortOrder: 0, active: true }],
+      homeFinanceBudget: [{ id: "b", seriesId: "s", name: "Travel", kind: "EXPENSE", categories: ["Travel", "Travel: Seattle"], amount: 500, period: "MONTHLY", effectiveFrom: "2026-01-01" }],
+    });
+
+  it("lists the tree in order with counts", async () => {
+    const { ctx } = seed();
+    const out: any = await runOp(ctx, "list_finance_categories", { withCounts: true });
+    expect(out.result.tree.map((n: any) => [n.path, n.depth, n.transactions])).toEqual([
+      ["Travel", 0, 1],
+      ["Travel: Seattle", 1, 2],
+      ["Food", 0, 1],
+    ]);
+    expect(out.result.categories.slice(0, 3)).toEqual(["Travel", "Travel: Seattle", "Food"]);
+  });
+
+  it("renaming a parent rewrites its sub-categories everywhere", async () => {
+    const { ctx, tables } = seed();
+    const out: any = await runOp(ctx, "save_finance_category", { categoryId: "travel", name: "Trips" });
+    expect(out.result).toMatchObject({ renamedFrom: "Travel", category: { path: "Trips" }, rewritten: { transactions: 3, rules: 1, budgetLines: 1 } });
+    expect(tables.homeFinanceTransaction.map((t: any) => t.category)).toEqual(["Trips: Seattle", "Trips", undefined, "Food"]);
+    expect(JSON.parse(tables.homeFinanceTransaction[2].lineItems)[0].category).toBe("Trips: Seattle");
+    expect(tables.homeFinanceCategoryRule[0].category).toBe("Trips: Seattle");
+    expect(tables.homeFinanceBudget[0].categories).toEqual(["Trips", "Trips: Seattle"]);
+  });
+
+  it("moves a category under another, and refuses a loop or a clash", async () => {
+    const { ctx, tables } = seed();
+    const moved: any = await runOp(ctx, "save_finance_category", { categoryId: "sea", parentId: "food" });
+    expect(moved.result.category.path).toBe("Food: Seattle");
+    expect(tables.homeFinanceTransaction[0].category).toBe("Food: Seattle");
+    const loop: any = await runOp(ctx, "save_finance_category", { categoryId: "food", parentId: "sea" });
+    expect(loop.error).toMatch(/inside itself/);
+    const clash: any = await runOp(ctx, "save_finance_category", { name: "food" });
+    expect(clash.error).toMatch(/already a "Food"/);
+    const colon: any = await runOp(ctx, "save_finance_category", { name: "A: B" });
+    expect(colon.error).toMatch(/can't contain/);
+  });
+
+  it("deleting moves its rows and lifts its sub-categories", async () => {
+    const { ctx, tables } = seed();
+    const refused: any = await runOp(ctx, "delete_finance_category", { categoryId: "travel" });
+    expect(refused.error).toMatch(/has 1 transaction/);
+    const out: any = await runOp(ctx, "delete_finance_category", { categoryId: "travel", moveToCategoryId: "food" });
+    expect(out.result).toMatchObject({ deleted: "Travel", movedTo: "Food", subcategoriesMoved: 1 });
+    expect(tables.homeFinanceTransaction.map((t: any) => t.category)).toEqual(["Seattle", "Food", undefined, "Food"]);
+    expect(tables.homeFinanceBudget[0].categories).toEqual(["Food", "Seattle"]);
+    expect(tables.homeFinanceCategory.find((c: any) => c.id === "sea").parentId).toBeNull();
+  });
+});
+
+describe("spend groups and the budget", () => {
+  it("copies keepOutOfBudget onto tagged transactions", async () => {
+    const { ctx, tables } = setup({ homeFinanceTransaction: [{ id: "t", accountId: "joint", amount: -300, description: "LOWES", date: today }] });
+    const g: any = await runOp(ctx, "save_finance_spend_group", { name: "Remodel", keepOutOfBudget: true });
+    await runOp(ctx, "update_finance_transaction", { transactionId: "t", spendGroupId: g.result.group.id });
+    expect(tables.homeFinanceTransaction[0].outOfBudget).toBe(true);
+    const off: any = await runOp(ctx, "save_finance_spend_group", { id: g.result.group.id, name: "Remodel", keepOutOfBudget: false });
+    expect(off.result.transactionsUpdated).toBe(1);
+    expect(tables.homeFinanceTransaction[0].outOfBudget).toBeNull();
+    await runOp(ctx, "save_finance_spend_group", { id: g.result.group.id, name: "Remodel", keepOutOfBudget: true });
+    await runOp(ctx, "update_finance_transaction", { transactionId: "t", spendGroupId: null });
+    expect(tables.homeFinanceTransaction[0].outOfBudget).toBeNull();
   });
 });
 

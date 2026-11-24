@@ -17,6 +17,7 @@ import { Spinner, addToast } from "@heroui/react";
 import { FaChevronDown, FaChevronUp, FaExclamationTriangle, FaHistory, FaPen, FaPlus, FaStop, FaTrash } from "react-icons/fa";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
+import { FinanceCategoryManager } from "@/components/finance/category-manager";
 import { financeClient } from "@/components/finance/client";
 import { BudgetBar, EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
@@ -51,6 +52,7 @@ import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 
 export default function BudgetPage() {
   const refs = useFinanceRefs();
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
   const today = todayIso();
   // Whose budget: household, a person (their own money), or everything (?ledger=).
   const ledgerState = useLedger(refs.people);
@@ -185,11 +187,16 @@ export default function BudgetPage() {
       subtitle="What we planned to put in and spend, and how it's going"
       onSynced={load}
       actions={
-        ledger === ALL_LEDGERS ? undefined : (
-          <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setDraft(emptyDraft(newFrom, { ledger }))}>
-            New line
+        <div className="flex gap-2">
+          <Button size="sm" variant="flat" onPress={() => setCategoriesOpen(true)}>
+            Categories
           </Button>
-        )
+          {ledger !== ALL_LEDGERS && (
+            <Button size="sm" color="primary" startContent={<FaPlus />} onPress={() => setDraft(emptyDraft(newFrom, { ledger }))}>
+              New line
+            </Button>
+          )}
+        </div>
       }
     >
       <LedgerTabs state={ledgerState} />
@@ -593,6 +600,14 @@ export default function BudgetPage() {
           setDraft(null);
           refs.reload();
           load();
+        }}
+      />
+      <FinanceCategoryManager
+        isOpen={categoriesOpen}
+        onClose={() => setCategoriesOpen(false)}
+        onChanged={async () => {
+          await refs.reload();
+          await load();
         }}
       />
     </FinanceShell>

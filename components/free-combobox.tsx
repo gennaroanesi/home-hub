@@ -13,6 +13,10 @@ interface FreeComboboxProps {
   /** Offer what was typed as a new entry ("Create “…”") when it matches no option. */
   createLabel?: (typed: string) => string;
   description?: React.ReactNode;
+  /** Does an option match what's typed? Default: contains it. */
+  matches?: (option: string, typed: string) => boolean;
+  /** How an option shows in the list. Default: the option. */
+  renderOption?: (option: string, typed: string) => React.ReactNode;
 }
 
 /**
@@ -28,6 +32,8 @@ export function FreeCombobox({
   maxResults = 8,
   createLabel,
   description,
+  matches = (o, t) => o.toLowerCase().includes(t.toLowerCase()),
+  renderOption = (o) => o,
 }: FreeComboboxProps) {
   const [showResults, setShowResults] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -44,7 +50,7 @@ export function FreeCombobox({
 
   const filtered = value
     ? options
-        .filter((o) => o.toLowerCase().includes(value.toLowerCase()))
+        .filter((o) => matches(o, value))
         .slice(0, maxResults)
     : options.slice(0, maxResults);
   const typed = value.trim();
@@ -75,7 +81,7 @@ export function FreeCombobox({
                 setShowResults(false);
               }}
             >
-              {opt}
+              {renderOption(opt, value)}
             </button>
           ))}
           {offerCreate && (
