@@ -2,6 +2,8 @@
 
 // /finance/accounts — the household's finance accounts: create/edit, order,
 // deactivate, and link each to its SimpleFIN account so finance-sync pulls it.
+// Each card's ⋯ menu: edit, view transactions, sync just that account
+// (SimpleFIN-linked), import a CSV (manual ones), delete.
 
 import React, { useState } from "react";
 import NextLink from "next/link";
@@ -11,10 +13,11 @@ import { Chip } from "@heroui/chip";
 import { Input, Textarea } from "@heroui/input";
 import { Modal, ModalBody, ModalContent, ModalFooter, ModalHeader } from "@heroui/modal";
 import { Select, SelectItem } from "@heroui/select";
-import { Checkbox, Spinner, Switch, addToast } from "@heroui/react";
-import { FaFileImport, FaLink, FaPen, FaPlus, FaTrash, FaUnlink } from "react-icons/fa";
+import { Checkbox, Dropdown, DropdownItem, DropdownMenu, DropdownTrigger, Spinner, Switch, addToast } from "@heroui/react";
+import { FaEllipsisH, FaFileImport, FaLink, FaList, FaPen, FaPlus, FaSyncAlt, FaTrash, FaUnlink } from "react-icons/fa";
+import { useRouter } from "next/router";
 
-import { FinanceShell } from "@/components/finance/finance-shell";
+import { FinanceShell, runFinanceSync } from "@/components/finance/finance-shell";
 import { ImportCsvModal } from "@/components/finance/import-csv-modal";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, ago } from "@/components/finance/ui";
@@ -44,6 +47,8 @@ import { DEFAULT_SIMPLEFIN_CONNECTION, SIMPLEFIN_CONNECTIONS, simplefinConnectio
 
 export default function FinanceAccountsPage() {
   const refs = useFinanceRefs();
+  const router = useRouter();
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [form, setForm] = useState<Form | null>(null);
   const [importFor, setImportFor] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -76,10 +81,21 @@ export default function FinanceAccountsPage() {
     }
   }
 
-  async function remove() {
-    if (!form?.id) return;
+  async function syncOne(id: string) {
+    setSyncingId(id);
     try {
-      if (await accountHasTransactions(financeClient, form.id)) {
+      if (await runFinanceSync(id)) await refs.reload();
+    } finally {
+      setSyncingId(null);
+    }
+  }
+
+  /** Delete an account (the form's Delete or the ⋯ menu); refuses one with transactions. */
+  async function remove(account: { id?: string | null; name: string } | null = form) {
+    if (!account?.id) return;
+    const id = account.id;
+    try {
+      if (await accountHasTransactions(financeClient, id)) {
         addToast({ title: ACCOUNT_HAS_TRANSACTIONS.title, description: ACCOUNT_HAS_TRANSACTIONS.detail, color: "warning" });
         return;
       }
@@ -87,9 +103,9 @@ export default function FinanceAccountsPage() {
       addToast({ title: "Couldn't check for transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
       return;
     }
-    if (!confirm(`Delete ${form.name}?`)) return;
+    if (!confirm(`Delete ${account.name}?`)) return;
     try {
-      await deleteAccountWithHoldings(financeClient, form.id);
+      await deleteAccountWithHoldings(financeClient, id);
     } catch (e) {
       return addToast({ title: "Couldn't delete", description: e instanceof Error ? e.message : String(e), color: "danger" });
     }
@@ -177,14 +193,48 @@ export default function FinanceAccountsPage() {
                   </div>
                 </div>
                 <Money value={a.currentBalance ?? 0} className="font-semibold" />
-                {!a.simplefinAccountId && a.active !== false && (
-                  <Button size="sm" isIconOnly variant="light" aria-label="Import CSV" title="Import a CSV export" onPress={() => setImportFor(a.id)}>
-                    <FaFileImport />
-                  </Button>
+                {syncingId === a.id ? (
+                  <Spinner size="sm" className="mx-2" />
+                ) : (
+                  <Dropdown placement="bottom-end">
+                    <DropdownTrigger>
+                      <Button size="sm" isIconOnly variant="light" aria-label={`${a.name} actions`}>
+                        <FaEllipsisH />
+                      </Button>
+                    </DropdownTrigger>
+                    <DropdownMenu
+                      aria-label={`${a.name} actions`}
+                      disabledKeys={syncingId ? ["sync"] : []}
+                      onAction={(k) => {
+                        if (k === "edit") edit(a);
+                        else if (k === "transactions") void router.push(`/finance/transactions?account=${a.id}`);
+                        else if (k === "sync") void syncOne(a.id);
+                        else if (k === "import") setImportFor(a.id);
+                        else if (k === "delete") void remove({ id: a.id, name: a.name });
+                      }}
+                    >
+                      <DropdownItem key="edit" startContent={<FaPen />}>
+                        Edit
+                      </DropdownItem>
+                      <DropdownItem key="transactions" startContent={<FaList />}>
+                        View transactions
+                      </DropdownItem>
+                      {a.simplefinAccountId && a.active !== false ? (
+                        <DropdownItem key="sync" startContent={<FaSyncAlt />} description="Just this account">
+                          Sync now
+                        </DropdownItem>
+                      ) : null}
+                      {!a.simplefinAccountId && a.active !== false ? (
+                        <DropdownItem key="import" startContent={<FaFileImport />} description="From the bank's CSV export">
+                          Import CSV
+                        </DropdownItem>
+                      ) : null}
+                      <DropdownItem key="delete" startContent={<FaTrash />} className="text-danger" color="danger">
+                        Delete
+                      </DropdownItem>
+                    </DropdownMenu>
+                  </Dropdown>
                 )}
-                <Button size="sm" isIconOnly variant="light" aria-label="Edit" onPress={() => edit(a)}>
-                  <FaPen />
-                </Button>
               </CardBody>
             </Card>
           ))}
@@ -294,7 +344,7 @@ export default function FinanceAccountsPage() {
               <ModalFooter className="justify-between">
                 <div>
                   {form.id && (
-                    <Button color="danger" variant="light" startContent={<FaTrash />} onPress={remove}>
+                    <Button color="danger" variant="light" startContent={<FaTrash />} onPress={() => void remove()}>
                       Delete
                     </Button>
                   )}

@@ -17,6 +17,22 @@ import DefaultLayout from "@/layouts/default";
 import { financeClient } from "@/components/finance/client";
 import { syncLogsSince, waitForSync } from "@/lib/finance/sync-result";
 
+/**
+ * Sync now (every linked account, or just `accountId`) and toast the outcome
+ * once the background run finishes. True when it succeeded.
+ */
+export async function runFinanceSync(accountId?: string): Promise<boolean> {
+  try {
+    const r = await financeClient.mutations.syncFinance(accountId ? { accountId } : {});
+    const out = await waitForSync(r.data, r.errors?.[0]?.message, syncLogsSince(financeClient));
+    addToast({ title: out.title, description: out.detail, color: out.ok ? "success" : "danger" });
+    return out.ok;
+  } catch (e) {
+    addToast({ title: "Sync failed", description: e instanceof Error ? e.message : String(e), color: "danger" });
+    return false;
+  }
+}
+
 export function FinanceShell({
   title,
   subtitle,
@@ -43,12 +59,7 @@ export function FinanceShell({
   async function syncNow() {
     setSyncing(true);
     try {
-      const r = await financeClient.mutations.syncFinance({});
-      const out = await waitForSync(r.data, r.errors?.[0]?.message, syncLogsSince(financeClient));
-      addToast({ title: out.title, description: out.detail, color: out.ok ? "success" : "danger" });
-      if (out.ok) onSynced?.();
-    } catch (e) {
-      addToast({ title: "Sync failed", description: e instanceof Error ? e.message : String(e), color: "danger" });
+      if (await runFinanceSync()) onSynced?.();
     } finally {
       setSyncing(false);
     }
