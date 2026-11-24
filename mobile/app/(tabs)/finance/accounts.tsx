@@ -1,6 +1,6 @@
 // Accounts — the household's finance accounts, like the web's Finance →
 // Accounts. Cash accounts (checking, savings, cards) from get_finance_summary
-// with their buffer and projected low; invested ones (401k, IRA, brokerage)
+// (ledger "all", so personal accounts show too) with their buffer and projected low; invested ones (401k, IRA, brokerage)
 // from list_finance_holdings with their positions as SimpleFIN last reported
 // them; inactive ones listed last. Each card says whose SimpleFIN connection
 // it syncs from and when (read from the homeFinanceAccount rows directly; the
@@ -61,7 +61,8 @@ export default function FinanceAccounts() {
 
   const load = useCallback(async () => {
     const [s, h, r] = await Promise.all([
-      callOp("get_finance_summary", {}),
+      // "all": every account, not just the household's (personal checking / cards too).
+      callOp("get_finance_summary", { ledger: "all" }),
       callOp("list_finance_holdings", {}),
       listAccounts(getClient()).catch((e: any) => ({ error: e?.errors?.[0]?.message ?? e?.message ?? String(e) })),
     ]);
