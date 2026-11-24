@@ -23,7 +23,9 @@ import {
   paymentCandidates,
   paymentSearchRange,
   type InvoiceForm,
-  type InvoiceItem,
+  type InvoiceItemDraft,
+  EMPTY_INVOICE_ITEM,
+  invoiceItemsSum,
 } from "../../../lib/finance/invoice-screen";
 import { CategoryField, DateField, Field, FormSheet, Input, ff } from "./form";
 import { ACCENT, Chip, DANGER, GOOD, Money, WARN, fs, useFinanceAccounts } from "./ui";
@@ -33,7 +35,6 @@ import { openFinancePdf } from "./paycheck-screen-pdf";
 
 type Linked = { link: any; tx: any | null };
 const errText = (e: any) => e?.errors?.[0]?.message ?? e?.message ?? String(e);
-const numStr = (n: number | null) => (n == null ? "" : String(n));
 
 export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: any | null; onClose: () => void; onChanged: () => void }) {
   const accounts = useFinanceAccounts();
@@ -80,7 +81,7 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
   }, [invoice?.id, loadLinks]);
 
   const set = <K extends keyof InvoiceForm>(k: K, v: InvoiceForm[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
-  const setItem = (i: number, patch: Partial<InvoiceItem>) => setForm((f) => (f ? { ...f, items: f.items.map((it, j) => (j === i ? { ...it, ...patch } : it)) } : f));
+  const setItem = (i: number, patch: Partial<InvoiceItemDraft>) => setForm((f) => (f ? { ...f, items: f.items.map((it, j) => (j === i ? { ...it, ...patch } : it)) } : f));
 
   async function save(extra: Record<string, unknown> = {}) {
     if (!form || !invoice) return;
@@ -181,7 +182,7 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
     </Pressable>
   );
 
-  const itemsSum = form?.items.reduce((s, it) => s + (it.amount ?? 0), 0) ?? 0;
+  const itemsSum = (form ? invoiceItemsSum(form.items) : 0);
   const total = form ? invoiceNum(form.total) : null;
   const anchor = form ? invoiceAnchor(form) : null;
 
@@ -269,7 +270,7 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
           <View style={ff.box}>
             <View style={fs.rowBetween}>
               <Text style={ff.label}>Items</Text>
-              <Pressable onPress={() => set("items", [...form.items, { description: "", qty: null, unitPrice: null, amount: null }])} hitSlop={8}>
+              <Pressable onPress={() => set("items", [...form.items, { ...EMPTY_INVOICE_ITEM }])} hitSlop={8}>
                 <Text style={fs.link}>+ Add item</Text>
               </Pressable>
             </View>
@@ -283,9 +284,9 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
                   </Pressable>
                 </View>
                 <View style={{ flexDirection: "row", gap: 8 }}>
-                  <Input value={numStr(it.qty)} onChangeText={(v) => setItem(i, { qty: invoiceNum(v) })} placeholder="Qty" keyboardType="decimal-pad" style={{ flex: 1 }} />
-                  <Input value={numStr(it.unitPrice)} onChangeText={(v) => setItem(i, { unitPrice: invoiceNum(v) })} placeholder="Unit price" keyboardType="decimal-pad" style={{ flex: 1 }} />
-                  <Input value={numStr(it.amount)} onChangeText={(v) => setItem(i, { amount: invoiceNum(v) })} placeholder="Amount" keyboardType="decimal-pad" style={{ flex: 1 }} />
+                  <Input value={it.qty} onChangeText={(v) => setItem(i, { qty: v })} placeholder="Qty" keyboardType="decimal-pad" style={{ flex: 1 }} />
+                  <Input value={it.unitPrice} onChangeText={(v) => setItem(i, { unitPrice: v })} placeholder="Unit price" keyboardType="decimal-pad" style={{ flex: 1 }} />
+                  <Input value={it.amount} onChangeText={(v) => setItem(i, { amount: v })} placeholder="Amount" keyboardType="decimal-pad" style={{ flex: 1 }} />
                 </View>
               </View>
             ))}

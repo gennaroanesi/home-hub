@@ -28,14 +28,15 @@ import {
   paymentCandidates,
   paymentSearchRange,
   type InvoiceForm,
-  type InvoiceItem,
+  type InvoiceItemDraft,
+  EMPTY_INVOICE_ITEM,
+  invoiceItemsSum,
 } from "@/lib/finance/invoice-screen";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 export const fileUrl = (key: string) => `/api/finance/file?key=${encodeURIComponent(key)}`;
 
-const toStr = (n: number | null | undefined) => (n == null ? "" : String(n));
 
 type Linked = { link: any; tx: any | null };
 
@@ -158,8 +159,8 @@ export function InvoiceDetailModal({
     onClose();
   }
 
-  const setItem = (i: number, patch: Partial<InvoiceItem>) => set("items", form.items.map((it, j) => (j === i ? { ...it, ...patch } : it)));
-  const itemsSum = form.items.reduce((s, it) => s + (it.amount ?? 0), 0);
+  const setItem = (i: number, patch: Partial<InvoiceItemDraft>) => set("items", form.items.map((it, j) => (j === i ? { ...it, ...patch } : it)));
+  const itemsSum = invoiceItemsSum(form.items);
 
   const txRow = (t: any, action: React.ReactNode) => (
     <div key={t.id} className="flex items-center justify-between gap-2 text-sm py-1">
@@ -234,7 +235,7 @@ export function InvoiceDetailModal({
           <div>
             <div className="flex items-center justify-between mb-1">
               <span className="text-sm font-semibold">Items</span>
-              <Button size="sm" variant="light" startContent={<FaPlus />} onPress={() => set("items", [...form.items, { description: "", qty: null, unitPrice: null, amount: null }])}>
+              <Button size="sm" variant="light" startContent={<FaPlus />} onPress={() => set("items", [...form.items, { ...EMPTY_INVOICE_ITEM }])}>
                 Add item
               </Button>
             </div>
@@ -245,9 +246,9 @@ export function InvoiceDetailModal({
                 {form.items.map((it, i) => (
                   <div key={i} className="grid grid-cols-[1fr_4rem_6rem_6rem_2rem] gap-1 items-center">
                     <Input size="sm" aria-label="Description" value={it.description} onValueChange={(v) => setItem(i, { description: v })} />
-                    <Input size="sm" aria-label="Qty" value={toStr(it.qty)} onValueChange={(v) => setItem(i, { qty: invoiceNum(v) })} />
-                    <Input size="sm" aria-label="Unit price" value={toStr(it.unitPrice)} onValueChange={(v) => setItem(i, { unitPrice: invoiceNum(v) })} />
-                    <Input size="sm" aria-label="Amount" value={toStr(it.amount)} onValueChange={(v) => setItem(i, { amount: invoiceNum(v) })} />
+                    <Input size="sm" aria-label="Qty" value={it.qty} onValueChange={(v) => setItem(i, { qty: v })} />
+                    <Input size="sm" aria-label="Unit price" value={it.unitPrice} onValueChange={(v) => setItem(i, { unitPrice: v })} />
+                    <Input size="sm" aria-label="Amount" value={it.amount} onValueChange={(v) => setItem(i, { amount: v })} />
                     <Button size="sm" isIconOnly variant="light" aria-label="Remove item" onPress={() => set("items", form.items.filter((_, j) => j !== i))}>
                       <FaTrash className="text-default-400" />
                     </Button>

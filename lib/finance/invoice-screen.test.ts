@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { filterInvoices, invoiceForm, invoiceTotals, invoiceUpdate, invoiceYears, parseInvoiceItems, paymentCandidates } from "./invoice-screen";
+import { filterInvoices, invoiceForm, invoiceItemsSum, invoiceTotals, invoiceUpdate, invoiceYears, parseInvoiceItems, paymentCandidates } from "./invoice-screen";
 
 const invoices = [
   { id: "1", vendor: "Plumber Co", issueDate: "2026-03-01", total: 200, parseStatus: "PARSED", paid: true },
@@ -32,8 +32,8 @@ describe("invoice detail", () => {
   it("round-trips the form", () => {
     const f = invoiceForm({ vendor: " ACME ", total: 10.5, currency: "usd", items: JSON.stringify(JSON.stringify([{ description: "Bolt", qty: "2", amount: 10.5 }, { description: "" }])) });
     expect(f.items).toEqual([
-      { description: "Bolt", qty: 2, unitPrice: null, amount: 10.5 },
-      { description: "", qty: null, unitPrice: null, amount: null },
+      { description: "Bolt", qty: "2", unitPrice: "", amount: "10.5" },
+      { description: "", qty: "", unitPrice: "", amount: "" },
     ]);
     const u = invoiceUpdate({ ...f, total: "$1,010.50" });
     expect(u.vendor).toBe("ACME");
@@ -41,6 +41,13 @@ describe("invoice detail", () => {
     expect(u.total).toBe(1010.5);
     expect(parseInvoiceItems(u.items)).toHaveLength(1);
     expect(invoiceUpdate({ ...f, items: [] }).items).toBeNull();
+  });
+
+  it("keeps cents typed into line items", () => {
+    // Mid-typing values stay as typed; they're parsed on save.
+    const items = [{ description: "Labor", qty: "1.5", unitPrice: "80.", amount: "120.05" }];
+    expect(invoiceItemsSum(items)).toBe(120.05);
+    expect(parseInvoiceItems(invoiceUpdate({ ...invoiceForm({}), items }).items)).toEqual([{ description: "Labor", qty: 1.5, unitPrice: 80, amount: 120.05 }]);
   });
 
   it("finds exact and close payments, leaving out linked ones", () => {

@@ -76,6 +76,14 @@ export function parseInvoiceItems(raw: unknown): InvoiceItem[] {
   }
 }
 
+/**
+ * A line item as typed in the editor: numbers stay text until save, so "12."
+ * or "12.0" on the way to "12.05" isn't reparsed away mid-typing.
+ */
+export type InvoiceItemDraft = { description: string; qty: string; unitPrice: string; amount: string };
+
+export const EMPTY_INVOICE_ITEM: InvoiceItemDraft = { description: "", qty: "", unitPrice: "", amount: "" };
+
 export type InvoiceForm = {
   vendor: string;
   invoiceNumber: string;
@@ -89,7 +97,7 @@ export type InvoiceForm = {
   spendGroupId: string;
   paid: boolean;
   notes: string;
-  items: InvoiceItem[];
+  items: InvoiceItemDraft[];
 };
 
 const toStr = (n: number | null | undefined) => (n == null ? "" : String(n));
@@ -116,13 +124,18 @@ export function invoiceForm(inv: any): InvoiceForm {
     spendGroupId: inv.spendGroupId ?? "",
     paid: !!inv.paid,
     notes: inv.notes ?? "",
-    items: parseInvoiceItems(inv.items),
+    items: parseInvoiceItems(inv.items).map((it) => ({ description: it.description, qty: toStr(it.qty), unitPrice: toStr(it.unitPrice), amount: toStr(it.amount) })),
   };
 }
 
+/** What the form's line items add up to. */
+export const invoiceItemsSum = (items: InvoiceItemDraft[]): number => items.reduce((s, it) => s + (invoiceNum(it.amount) ?? 0), 0);
+
 /** The homeInvoice fields to write from the form (items JSON for the AWSJSON field). */
 export function invoiceUpdate(form: InvoiceForm): Record<string, unknown> {
-  const items = form.items.filter((it) => it.description.trim() || it.amount != null);
+  const items: InvoiceItem[] = form.items
+    .map((it) => ({ description: it.description.trim(), qty: invoiceNum(it.qty), unitPrice: invoiceNum(it.unitPrice), amount: invoiceNum(it.amount) }))
+    .filter((it) => it.description || it.amount != null);
   return {
     vendor: form.vendor.trim() || null,
     invoiceNumber: form.invoiceNumber.trim() || null,
