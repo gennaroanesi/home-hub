@@ -16,65 +16,42 @@ import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
-import { bucketCategories, budgetedForRange, budgetKind, monthsInRange, receivedByPerson, resolutionDate, resolveBudgetLines, seedFromHistory, spendByCategory, totalOutflow, type BudgetLine } from "@/lib/finance/budget";
-import { effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "@/lib/finance/categories";
-import { fmtCurrency, fmtDate, monthEnd, monthStart, monthsIn, occurrencesBetween, shiftMonth, todayIso } from "@/lib/finance/dates";
-import { periodContaining, periodNoun, shiftPeriod } from "@/lib/finance/periods";
+import { effectiveCategory } from "@/lib/finance/categories";
+import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
+import { periodNoun } from "@/lib/finance/periods";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { listBudgetLines, listSchedules, listTransactions } from "@/lib/finance/data";
-import { ALL_LEDGERS, HOUSEHOLD, householdContributions, linesForLedger, txsForLedger } from "@/lib/finance/ledger";
-import { CONTRIBUTION_CATEGORY } from "@/lib/finance/categories";
+import { type BudgetLine } from "@/lib/finance/budget";
+import { ALL_LEDGERS, HOUSEHOLD } from "@/lib/finance/ledger";
+import { REVIEW_TREND_MONTHS, REVIEW_USUAL_MONTHS, buildReview, defaultReviewPeriod, reviewWindow } from "@/lib/finance/review";
 import { LedgerTabs, useLedger } from "@/components/finance/ledger-tabs";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-const TREND_MONTHS = 12;
-// "Usual" = median month over this many months before the period, scaled to its length.
-const USUAL_MONTHS = 6;
-const TOP_CATEGORIES = 6;
 // Categorical palette (8 hues), readable on light and dark backgrounds.
 const PALETTE = ["#4e79a7", "#f28e2b", "#59a14f", "#e15759", "#76b7b2", "#edc948", "#b07aa1", "#9c755f"];
-
-function monthLabel(ym: string): string {
-  return new Date(`${ym}-01T00:00:00Z`).toLocaleDateString("en-US", { month: "short", year: "2-digit", timeZone: "UTC" });
-}
 
 export default function ReviewPage() {
   const refs = useFinanceRefs();
   const today = todayIso();
   // Default: this month, or last month on the 1st (nothing to review yet).
-  const { period, range, setPeriod } = usePeriod(() => {
-    const m = periodContaining("month", today);
-    return monthStart(today) === today ? shiftPeriod(m, -1) : m;
-  });
+  const { period, range, setPeriod } = usePeriod(() => defaultReviewPeriod(today));
   const noun = periodNoun(period);
 
   const [rawTxs, setTxs] = useState<any[]>([]);
   const [rawLines, setLines] = useState<BudgetLine[]>([]);
   // Whose money: the household's share of each charge, a person's, or everything
-  // (lib/finance/ledger.ts). Everything leaves out contributions (money moving
-  // between ledgers) and budget lines (each ledger has its own).
+  // (lib/finance/ledger.ts; buildReview says what "everything" leaves out).
   const ledgerState = useLedger(refs.people);
   const { ledger } = ledgerState;
-  const txs = useMemo(
-    () =>
-      ledger === ALL_LEDGERS
-        ? rawTxs.filter((t) => !((t.amount ?? 0) > 0 && effectiveCategory(t) === CONTRIBUTION_CATEGORY))
-        : txsForLedger(rawTxs, refs.accounts, ledger),
-    [rawTxs, refs.accounts, ledger],
-  );
-  const lines = useMemo(() => (ledger === ALL_LEDGERS ? [] : linesForLedger(rawLines, ledger)), [rawLines, ledger]);
   const [schedules, setSchedules] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
 
   const accountIds = useMemo(() => refs.accounts.filter((a) => !isOutsideCashFlow(a.type)).map((a) => a.id), [refs.accounts]);
   const accountName = useMemo(() => new Map(refs.accounts.map((a) => [a.id, a.name as string])), [refs.accounts]);
-  // The trend ends with the period; "usual" looks at the months before it.
-  const endMonth = monthStart(range.toIso);
-  const trendFrom = shiftMonth(endMonth, -(TREND_MONTHS - 1));
-  const usualFrom = shiftMonth(monthStart(range.fromIso), -USUAL_MONTHS);
-  const loadFrom = usualFrom < trendFrom ? usualFrom : trendFrom;
+  // Load far enough back for the trend and the "usual" level (lib/finance/review.ts).
+  const { loadFrom } = reviewWindow(range);
 
   const load = useCallback(async () => {
     if (refs.loading) return;
@@ -99,110 +76,10 @@ export default function ReviewPage() {
     load();
   }, [load]);
 
-  const periodTxs = useMemo(() => txs.filter((t) => t.date >= range.fromIso && t.date <= range.toIso), [txs, range]);
-
-  // In vs out
-  const received = useMemo(
-    // The household counts transfers and spending from personal accounts as contributions too.
-    () => (ledger === HOUSEHOLD ? householdContributions(rawTxs, refs.accounts, range) : receivedByPerson(txs, range)),
-    [txs, rawTxs, refs.accounts, range, ledger],
+  const { periodTxs, received, totalIn, totalOut, groupedOut, byCategory, maxCategory: maxCat, trend, biggest, scheduled, groups, hasOtherIncome } = useMemo(
+    () => buildReview({ rawTxs, accounts: refs.accounts, lines: rawLines, schedules, groups: refs.groups, ledger, range, today }),
+    [rawTxs, refs.accounts, rawLines, schedules, refs.groups, ledger, range, today],
   );
-  const totalIn = [...received.values()].reduce((s, n) => s + n, 0);
-  const totalOut = useMemo(() => totalOutflow(txs, range), [txs, range]);
-  const groupedOut = useMemo(
-    () => periodTxs.filter((t) => t.status !== "PENDING" && t.spendGroupId && (t.amount ?? 0) < 0 && !isExcludedFromBudget(effectiveCategory(t))).reduce((s, t) => s - t.amount, 0),
-    [periodTxs],
-  );
-
-  // By category: the period, its budget line, and the usual level — the
-  // median month over the USUAL_MONTHS before the period (only months we
-  // have data for), times the period's length in months.
-  const byCategory = useMemo(() => {
-    const spent = spendByCategory(txs, range);
-    const firstMonth = txs.reduce((min: string, t) => (t.date && t.date < min ? t.date : min), "9999").slice(0, 7);
-    const prior = monthsIn({ fromIso: usualFrom, toIso: shiftMonth(monthStart(range.fromIso), -1) }).filter((ym) => ym >= firstMonth);
-    const scale = monthsInRange(range);
-    const medians = new Map(seedFromHistory(txs, prior).map((s) => [s.category, s.median * scale]));
-    const inForce = resolveBudgetLines(lines, resolutionDate(range, today)).filter((l) => budgetKind(l) === "EXPENSE");
-    const lineOf = new Map<string, BudgetLine>();
-    for (const l of inForce) for (const c of bucketCategories(l)) lineOf.set(c, l);
-    const cats = new Set([...spent.keys(), ...medians.keys()]);
-    return [...cats]
-      .map((category) => {
-        const line = lineOf.get(category) ?? null;
-        return {
-          category,
-          spent: spent.get(category) ?? 0,
-          median: medians.get(category) ?? 0,
-          line,
-          lineBudget: line ? budgetedForRange(line, range) : null,
-          lineShared: line ? bucketCategories(line).length > 1 : false,
-        };
-      })
-      .filter((r) => r.spent > 0 || r.median > 0)
-      .sort((a, b) => b.spent - a.spent || b.median - a.median);
-  }, [txs, range, usualFrom, lines, today]);
-  const maxCat = Math.max(1, ...byCategory.map((r) => Math.max(r.spent, r.median, r.lineShared ? 0 : r.lineBudget ?? 0)));
-
-  // Trend: spending by top categories per month + contributions.
-  const trend = useMemo(() => {
-    const months = monthsIn({ fromIso: trendFrom, toIso: endMonth });
-    const total = spendByCategory(txs, { fromIso: trendFrom, toIso: range.toIso, label: "" });
-    const top = [...total.entries()].sort((a, b) => b[1] - a[1]).slice(0, TOP_CATEGORIES).map(([c]) => c);
-    const rows = months.map((ym) => {
-      const r = { fromIso: `${ym}-01`, toIso: monthEnd(`${ym}-01`), label: ym };
-      const spent = spendByCategory(txs, r);
-      const row: Record<string, number | string> = { month: monthLabel(ym) };
-      let other = 0;
-      for (const [c, v] of spent) {
-        if (top.includes(c)) row[c] = Math.round(v);
-        else other += v;
-      }
-      row.Other = Math.round(other);
-      row.Contributions = Math.round([...receivedByPerson(txs, r).values()].reduce((s, n) => s + n, 0));
-      return row;
-    });
-    // The months of the selected period, shaded on the chart.
-    const inPeriod = months.filter((ym) => `${ym}-01` >= monthStart(range.fromIso)).map(monthLabel);
-    return { rows, series: [...top, "Other"], shade: inPeriod.length ? { x1: inPeriod[0], x2: inPeriod[inPeriod.length - 1] } : null };
-  }, [txs, trendFrom, endMonth, range.fromIso]);
-
-  const biggest = useMemo(
-    () =>
-      periodTxs
-        .filter((t) => t.status !== "PENDING" && (t.amount ?? 0) < 0 && !isExcludedFromBudget(effectiveCategory(t)))
-        .sort((a, b) => a.amount - b.amount)
-        .slice(0, 10),
-    [periodTxs],
-  );
-
-  // Scheduled vs actual: every schedule due in the period, and whether a posted row is linked to it.
-  const scheduled = useMemo(() => {
-    const linked = new Map<string, any[]>();
-    for (const t of periodTxs) if (t.recurringId) linked.set(t.recurringId, [...(linked.get(t.recurringId) ?? []), t]);
-    return schedules
-      .filter((r) => r.active !== false || linked.has(r.id))
-      .map((r) => {
-        const due = occurrencesBetween({ ...r, nextDate: r.startDate ?? r.nextDate }, range.fromIso, range.toIso);
-        return { r, due, paid: linked.get(r.id) ?? [] };
-      })
-      .filter((x) => x.due.length > 0 || x.paid.length > 0)
-      .sort((a, b) => (a.due[0] ?? a.paid[0]?.date ?? "").localeCompare(b.due[0] ?? b.paid[0]?.date ?? ""));
-  }, [schedules, periodTxs, range]);
-
-  // Spend groups with activity in the period, or whose dates overlap it.
-  const groups = useMemo(() => {
-    return refs.groups
-      .map((g) => {
-        const tagged = txs.filter((t) => t.spendGroupId === g.id && t.status !== "PENDING");
-        const net = (rows: any[]) => -rows.reduce((s, t) => s + (t.amount ?? 0), 0);
-        const inMonth = tagged.filter((t) => t.date >= range.fromIso && t.date <= range.toIso);
-        const overlaps = (!g.startDate || g.startDate <= range.toIso) && (!g.endDate || g.endDate >= range.fromIso) && (g.startDate || g.endDate);
-        return { g, month: net(inMonth), total: net(tagged), active: inMonth.length > 0 || !!overlaps };
-      })
-      .filter((x) => x.active)
-      .sort((a, b) => b.month - a.month);
-  }, [refs.groups, txs, range]);
 
   const isEmpty = !loading && periodTxs.length === 0;
 
@@ -265,7 +142,7 @@ export default function ReviewPage() {
                   <span className="inline-block w-3 h-2 rounded-sm bg-primary" /> {noun}
                 </span>
                 <span className="flex items-center gap-1">
-                  <span className="inline-block w-0.5 h-3 bg-default-500" /> usual ({USUAL_MONTHS}-mo median{period.kind === "month" ? "" : ", scaled"})
+                  <span className="inline-block w-0.5 h-3 bg-default-500" /> usual ({REVIEW_USUAL_MONTHS}-mo median{period.kind === "month" ? "" : ", scaled"})
                 </span>
                 <span className="flex items-center gap-1">
                   <span className="inline-block w-0.5 h-3 bg-danger" /> budget
@@ -297,7 +174,7 @@ export default function ReviewPage() {
 
           {/* Trend */}
           <Card>
-            <CardHeader className="font-semibold">Last {TREND_MONTHS} months</CardHeader>
+            <CardHeader className="font-semibold">Last {REVIEW_TREND_MONTHS} months</CardHeader>
             <CardBody className="pt-0">
               <div className="h-72">
                 <ResponsiveContainer width="100%" height="100%">
@@ -349,30 +226,26 @@ export default function ReviewPage() {
                 {scheduled.length === 0 ? (
                   <span className="text-sm text-default-500">Nothing was scheduled {noun}.</span>
                 ) : (
-                  scheduled.map(({ r, due, paid }) => {
-                    const actual = paid.reduce((s: number, t: any) => s + t.amount, 0);
-                    const done = paid.length >= due.length && paid.length > 0;
-                    return (
-                      <div key={r.id} className="flex justify-between gap-2 text-sm items-center">
-                        <span className="flex items-center gap-2 min-w-0">
-                          {done ? <FaCheckCircle className="text-success-500 shrink-0" /> : <FaRegCircle className="text-default-400 shrink-0" />}
-                          <span className="min-w-0">
-                            <span className="block truncate">{r.description}</span>
-                            <span className="text-xs text-default-400">
-                              {due.length ? `due ${due.map((d: string) => fmtDate(d)).join(", ")}` : "not due"}
-                              {paid.length ? ` · posted ${paid.map((t: any) => fmtDate(t.date)).join(", ")}` : due.some((d: string) => d < today) ? " · not seen yet" : ""}
-                            </span>
+                  scheduled.map(({ r, due, paid, actual, expected, done, notSeen }) => (
+                    <div key={r.id} className="flex justify-between gap-2 text-sm items-center">
+                      <span className="flex items-center gap-2 min-w-0">
+                        {done ? <FaCheckCircle className="text-success-500 shrink-0" /> : <FaRegCircle className="text-default-400 shrink-0" />}
+                        <span className="min-w-0">
+                          <span className="block truncate">{r.description}</span>
+                          <span className="text-xs text-default-400">
+                            {due.length ? `due ${due.map((d: string) => fmtDate(d)).join(", ")}` : "not due"}
+                            {paid.length ? ` · posted ${paid.map((t: any) => fmtDate(t.date)).join(", ")}` : notSeen ? " · not seen yet" : ""}
                           </span>
                         </span>
-                        <span className="text-right tabular-nums shrink-0">
-                          <Money value={paid.length ? actual : r.amount * due.length} className={paid.length ? "" : "text-default-400"} />
-                          {paid.length > 0 && Math.abs(actual - r.amount * Math.max(1, due.length)) >= 1 && (
-                            <span className="block text-xs text-default-400">expected {fmtCurrency(r.amount * Math.max(1, due.length))}</span>
-                          )}
-                        </span>
-                      </div>
-                    );
-                  })
+                      </span>
+                      <span className="text-right tabular-nums shrink-0">
+                        <Money value={paid.length ? actual : expected} className={paid.length ? "" : "text-default-400"} />
+                        {paid.length > 0 && Math.abs(actual - expected) >= 1 && (
+                          <span className="block text-xs text-default-400">expected {fmtCurrency(expected)}</span>
+                        )}
+                      </span>
+                    </div>
+                  ))
                 )}
               </CardBody>
             </Card>
@@ -383,7 +256,7 @@ export default function ReviewPage() {
             <Card>
               <CardHeader className="font-semibold">Spend groups</CardHeader>
               <CardBody className="pt-0 gap-1">
-                <p className="text-xs text-default-500 mb-1">Tagged spending counts here instead of the monthly budget. Totals cover the last {TREND_MONTHS} months.</p>
+                <p className="text-xs text-default-500 mb-1">Tagged spending counts here instead of the monthly budget. Totals cover the last {REVIEW_TREND_MONTHS} months.</p>
                 {groups.map(({ g, month, total }) => (
                   <div key={g.id} className="flex justify-between gap-2 text-sm">
                     <span>
@@ -406,7 +279,7 @@ export default function ReviewPage() {
           )}
 
           {/* Income categories other than contributions, if any */}
-          {periodTxs.some((t) => (t.amount ?? 0) > 0 && INCOME_CATEGORIES.has(effectiveCategory(t)) && effectiveCategory(t) !== "Contribution") && (
+          {hasOtherIncome && (
             <p className="text-xs text-default-500">“We put in” also counts income landing in the account directly (interest, deposits).</p>
           )}
         </div>

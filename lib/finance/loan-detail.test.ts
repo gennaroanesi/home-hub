@@ -126,4 +126,17 @@ describe("terms form", () => {
     expect("input" in r3 && "owed" in r3.input).toBe(false);
     expect("error" in loanTermsSaveInput({ ...f, ratePct: "" }, loan, manual)).toBe(true);
   });
+
+  it("a new loan: a blank mortgage form, and no loanId / owed in its input", () => {
+    const f = loanTermsFormFrom(null, null, accounts);
+    expect(f).toMatchObject({ loanType: "MORTGAGE", termMonths: "360", ratePct: "", originalPrincipal: "", recurringId: NO_SCHEDULE, matchPattern: "", payFromId: "c1" });
+    expect("error" in loanTermsSaveInput(f, null, null)).toBe(true);
+    const r = loanTermsSaveInput({ ...f, originalPrincipal: "30000", ratePct: "6", firstPaymentDate: "2026-12-01", owed: "30000" }, null, null);
+    expect("input" in r && r.input).toMatchObject({ loanType: "MORTGAGE", originalPrincipal: 30000, interestRate: 0.06, termMonths: 360 });
+    expect("input" in r && ("loanId" in r.input || "owed" in r.input || "recurringId" in r.input)).toBe(false);
+  });
+
+  it("an existing loan with no kind reads as OTHER, like the op's default", () => {
+    expect(loanTermsFormFrom({ ...loan, loanType: null }, manual, accounts).loanType).toBe("OTHER");
+  });
 });

@@ -1,7 +1,7 @@
-// The paycheck form's field spec and the helpers around it, out of the web's
-// components/finance/paycheck-form.tsx and pages/finance/paychecks.tsx
-// (which still carry their own inline copies) so the phone's Paychecks
-// screen builds the same form and the same homePaycheck row. Pure.
+// The paycheck form's field spec and the helpers around it, shared by the
+// web (components/finance/paycheck-form.tsx, pages/finance/paychecks.tsx)
+// and the phone's Paychecks screen so both build the same form and the same
+// homePaycheck row. Pure.
 
 import { draftToPaycheck } from "./paycheck-fields";
 

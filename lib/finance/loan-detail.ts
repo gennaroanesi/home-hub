@@ -2,7 +2,7 @@
 // screen): the derivations both pages show on top of lib/finance/loans.ts —
 // payments against the plan and grouped by year, the payoff what-if and its
 // balance series, the payment form's suggested split, and the terms form ⇄
-// save_finance_loan input. Pure.
+// save_finance_loan input (also the web's new-loan form). Pure.
 
 import { fmtDate, round2 } from "./dates";
 import {
@@ -188,9 +188,10 @@ export function estimatePaymentSplit(opts: {
   return { ...s, days };
 }
 
-// ── Terms form (an existing loan) ──────────────────────────────────────────
+// ── Terms form ─────────────────────────────────────────────────────────────
 
-export const NO_SCHEDULE = "";
+// Not "": the web's Select needs a real key for "no scheduled transaction".
+export const NO_SCHEDULE = "__none__";
 export const NEW_SCHEDULE = "__new_schedule__";
 
 export type LoanTermsForm = {
@@ -217,28 +218,31 @@ export type LoanTermsForm = {
 export const numOrNull = (s: string): number | null => (s.trim() === "" || !Number.isFinite(Number(s)) ? null : Number(s));
 const str = (n: number | null | undefined) => (n == null ? "" : String(n));
 
-/** The form for an existing loan row; `payFromId` defaults to the joint checking account. */
-export function loanTermsFormFrom(loan: any, account: any | null | undefined, accounts: any[]): LoanTermsForm {
+/**
+ * The form for a loan row, or a blank one for a new loan (null: a mortgage,
+ * 360 months); `payFromId` defaults to the joint checking account.
+ */
+export function loanTermsFormFrom(loan: any | null, account: any | null | undefined, accounts: any[]): LoanTermsForm {
   const checking = accounts.filter((a) => a.active !== false && (a.type === "CHECKING" || a.type === "SAVINGS"));
   return {
     owed: account && !account.simplefinAccountId ? str(round2(-(account.currentBalance ?? 0))) : "",
-    loanType: loan.loanType ?? "OTHER",
-    lender: loan.lender ?? "",
-    originalPrincipal: str(loan.originalPrincipal),
-    ratePct: str(round2(loan.interestRate * 100 * 1000) / 1000),
-    termMonths: str(loan.termMonths),
-    startDate: loan.startDate ?? "",
-    firstPaymentDate: loan.firstPaymentDate ?? "",
-    monthlyPayment: str(loan.monthlyPayment),
-    escrowMonthly: str(loan.escrowMonthly),
-    interestAccrual: loan.interestAccrual ?? "MONTHLY",
-    assetId: loan.assetId ?? "",
-    recurringId: loan.recurringId ?? NO_SCHEDULE,
+    loanType: loan ? (loan.loanType ?? "OTHER") : "MORTGAGE",
+    lender: loan?.lender ?? "",
+    originalPrincipal: str(loan?.originalPrincipal),
+    ratePct: loan ? str(round2(loan.interestRate * 100 * 1000) / 1000) : "",
+    termMonths: str(loan ? loan.termMonths : 360),
+    startDate: loan?.startDate ?? "",
+    firstPaymentDate: loan?.firstPaymentDate ?? "",
+    monthlyPayment: str(loan?.monthlyPayment),
+    escrowMonthly: str(loan?.escrowMonthly),
+    interestAccrual: loan?.interestAccrual ?? "MONTHLY",
+    assetId: loan?.assetId ?? "",
+    recurringId: loan?.recurringId ?? NO_SCHEDULE,
     payFromId: checking.find((a) => !(a.ownerPersonIds ?? []).length && a.type === "CHECKING")?.id ?? checking[0]?.id ?? "",
-    matchPattern: loan.lender ?? "",
+    matchPattern: loan?.lender ?? "",
     payAmount: "",
     payLastDay: false,
-    notes: loan.notes ?? "",
+    notes: loan?.notes ?? "",
   };
 }
 
@@ -251,12 +255,15 @@ export function formContractualPayment(f: Pick<LoanTermsForm, "originalPrincipal
   return contractualPayment({ originalPrincipal: p, interestRate: r / 100, termMonths: n, firstPaymentDate: f.firstPaymentDate });
 }
 
-/** save_finance_loan's input for an existing loan, or an error to show. */
-export function loanTermsSaveInput(f: LoanTermsForm, loan: any, account: any | null | undefined): { input: Record<string, unknown> } | { error: string } {
+/**
+ * save_finance_loan's terms input, or an error to show. With loan null (a new
+ * loan) there's no loanId and no owed: the caller adds the account.
+ */
+export function loanTermsSaveInput(f: LoanTermsForm, loan: any | null, account: any | null | undefined): { input: Record<string, unknown> } | { error: string } {
   const rate = numOrNull(f.ratePct);
   if (numOrNull(f.originalPrincipal) == null || rate == null || numOrNull(f.termMonths) == null || !f.firstPaymentDate) return { error: "The original amount, rate, term and first payment are required" };
   const input: Record<string, unknown> = {
-    loanId: loan.id,
+    ...(loan ? { loanId: loan.id } : {}),
     loanType: f.loanType,
     lender: f.lender.trim() || null,
     originalPrincipal: numOrNull(f.originalPrincipal),
@@ -273,10 +280,10 @@ export function loanTermsSaveInput(f: LoanTermsForm, loan: any, account: any | n
   if (f.recurringId === NEW_SCHEDULE) {
     if (!f.payFromId) return { error: "Which account is it paid from?" };
     input.newSchedule = { accountId: f.payFromId, matchPattern: f.matchPattern.trim() || null, amount: numOrNull(f.payAmount) ?? undefined, lastDayOfMonth: f.payLastDay };
-  } else if ((loan.recurringId ?? NO_SCHEDULE) !== f.recurringId) {
+  } else if ((loan?.recurringId ?? NO_SCHEDULE) !== f.recurringId) {
     input.recurringId = f.recurringId === NO_SCHEDULE ? null : f.recurringId;
   }
   const owed = numOrNull(f.owed);
-  if (account && !account.simplefinAccountId && owed != null && Math.abs(owed + (account.currentBalance ?? 0)) >= 0.005) input.owed = owed;
+  if (loan && account && !account.simplefinAccountId && owed != null && Math.abs(owed + (account.currentBalance ?? 0)) >= 0.005) input.owed = owed;
   return { input };
 }

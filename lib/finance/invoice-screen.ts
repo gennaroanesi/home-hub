@@ -1,7 +1,7 @@
-// Invoice list filters, totals, the detail form and the payment search, out
-// of the web's pages/finance/invoices.tsx and
-// components/finance/invoice-detail-modal.tsx (which still carry their own
-// inline copies) so the phone's Invoices screen behaves the same. Pure.
+// Invoice list filters, totals, the detail form and the payment search,
+// shared by the web (pages/finance/invoices.tsx,
+// components/finance/invoice-detail-modal.tsx) and the phone's Invoices
+// screen so both behave the same. Pure.
 
 import { addDays } from "./dates";
 import { autoMatchCandidates } from "./invoice-fields";

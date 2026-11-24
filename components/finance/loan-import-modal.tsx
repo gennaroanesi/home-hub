@@ -17,7 +17,7 @@ import { Chip, addToast } from "@heroui/react";
 
 import { financeClient } from "@/components/finance/client";
 import { Money } from "@/components/finance/ui";
-import { parseJsonLayers } from "@/components/finance/paycheck-form";
+import { parseJsonLayers } from "@/lib/finance/paycheck-screen";
 import { callOp } from "@/lib/ops-client";
 import { fmtCurrency, fmtDate } from "@/lib/finance/dates";
 import type { ExtractedLoanSchedule } from "@/lib/finance/loan-schedule-extract";

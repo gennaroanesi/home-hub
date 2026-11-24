@@ -10,7 +10,8 @@
 import { z } from "zod/v4";
 import { listAccounts, listAssetValuations, listAssets, listLoanPayments, listLoans, listSchedules, listSnapshots } from "../finance/data";
 import { monthEnd, round2, todayIso } from "../finance/dates";
-import { INTEREST_ACCRUALS, LOAN_TYPES, LOAN_TYPE_LABELS, compareToPlan, contractualPayment, interestDays, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit, type LoanTerms } from "../finance/loans";
+import { INTEREST_ACCRUALS, LOAN_TYPES, LOAN_TYPE_LABELS, compareToPlan, contractualPayment, interestDays, loanOutlook, paymentsBetween, paymentToFinishIn, simulatePayoff, suggestSplit } from "../finance/loans";
+import { loanTermsOf } from "../finance/loan-detail";
 import { ASSET_TYPES, GROUP_LABELS, accountGroup, assetEquity, changeSince, netWorthHistory, netWorthNow, type NetWorthGroup } from "../finance/net-worth";
 import { VALUE_PROVIDERS } from "../finance/asset-values";
 import type { OpContext } from "./context";
@@ -33,15 +34,6 @@ async function loadAll(ctx: OpContext): Promise<Loaded> {
 
 const owedOn = (account: any) => round2(Math.max(0, -(account?.currentBalance ?? 0)));
 const isSynced = (account: any) => !!account?.simplefinAccountId;
-const termsOf = (l: any): LoanTerms => ({
-  originalPrincipal: l.originalPrincipal,
-  interestRate: l.interestRate,
-  termMonths: l.termMonths,
-  firstPaymentDate: l.firstPaymentDate,
-  monthlyPayment: l.monthlyPayment,
-  escrowMonthly: l.escrowMonthly,
-  interestAccrual: l.interestAccrual ?? null,
-});
 
 function loanName(l: any, d: Loaded): string {
   return d.accounts.find((a) => a.id === l.accountId)?.name ?? LOAN_TYPE_LABELS[l.loanType as keyof typeof LOAN_TYPE_LABELS] ?? "Loan";
@@ -175,7 +167,7 @@ const LoanOut = z.object({
 function loanOut(l: any, d: Loaded, today: string, paymentLimit: number): z.input<typeof LoanOut> {
   const account = d.accounts.find((a) => a.id === l.accountId);
   const payments = d.payments.filter((p) => p.loanId === l.id);
-  const terms = termsOf(l);
+  const terms = loanTermsOf(l);
   const o = loanOutlook(terms, owedOn(account), payments, today);
   const eq = l.assetId ? assetEquity(d.assets, d.loans, d.accounts).find((e) => e.asset.id === l.assetId) : null;
   const schedule = l.recurringId ? d.schedules.find((s) => s.id === l.recurringId) : null;
@@ -383,7 +375,7 @@ export const simulateLoanPayoff = defineOp({
     const d = await loadAll(ctx);
     const l = findLoan(d, input);
     const today = todayIso();
-    const terms = termsOf(l);
+    const terms = loanTermsOf(l);
     const o = loanOutlook(terms, owedOn(d.accounts.find((a) => a.id === l.accountId)), [], today);
     const base = o.projected;
     const pay = input.payment ?? o.payment;
@@ -702,7 +694,7 @@ export const saveFinanceLoan = defineOp({
         ? d.accounts.find((a) => a.id === ns.accountId)
         : (d.accounts.find((a) => a.active !== false && a.type === "CHECKING" && !(a.ownerPersonIds ?? []).length) ?? d.accounts.find((a) => a.active !== false && a.type === "CHECKING"));
       if (!from) throw new OpError(ns.accountId ? `No account ${ns.accountId}` : "No household checking account to pay it from; pass newSchedule.accountId");
-      const terms = termsOf(saved);
+      const terms = loanTermsOf(saved);
       const o = loanOutlook(terms, owedOn(account), [], todayIso());
       const name = account?.name ?? LOAN_TYPE_LABELS[saved.loanType as keyof typeof LOAN_TYPE_LABELS] ?? "Loan";
       const due = ns.nextDate ?? o.nextPaymentDate;
@@ -807,7 +799,7 @@ export const recordLoanPayment = defineOp({
       else if (interest != null) principal = round2(total - escrow - fees - interest);
       else {
         const others = d.payments.filter((p) => p.loanId === loan.id && p.id !== old?.id);
-        ({ principal, interest } = suggestSplit(owedBefore, loan.interestRate, total, escrow, fees, interestDays(termsOf(loan), others, date)));
+        ({ principal, interest } = suggestSplit(owedBefore, loan.interestRate, total, escrow, fees, interestDays(loanTermsOf(loan), others, date)));
         estimated = true;
       }
     } else if (input.principal != null || input.interest != null) estimated = false;

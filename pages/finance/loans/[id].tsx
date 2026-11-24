@@ -29,11 +29,8 @@ import { LoanImportModal, parseLoanSchedulePdf } from "@/components/finance/loan
 import { listAssets, listLoanPayments, listLoans, listSchedules } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, round2, todayIso } from "@/lib/finance/dates";
 import type { ExtractedLoanSchedule } from "@/lib/finance/loan-schedule-extract";
-import { LOAN_TYPE_LABELS, compareToPlan, fmtDuration, loanOutlook, paymentDate, paymentsBetween, paymentToFinishIn, simulatePayoff, type LoanType } from "@/lib/finance/loans";
-
-const pct = (r: number) => `${(r * 100).toFixed(3).replace(/\.?0+$/, "")}%`;
-const longDate = (d: string | null | undefined) => fmtDate(d, { month: "short", day: "numeric", year: "numeric" });
-const monthYear = (d: string | null | undefined) => fmtDate(d, { month: "short", year: "numeric" });
+import { LOAN_TYPE_LABELS, fmtDuration, loanOutlook, type LoanType } from "@/lib/finance/loans";
+import { loanTermsOf, longDate, monthYear, owedOnAccount, payoffSeries, payoffWhatIf, paymentsByYear, planByPayment, ratePct } from "@/lib/finance/loan-detail";
 
 export default function LoanPage() {
   const router = useRouter();
@@ -80,18 +77,13 @@ export default function LoanPage() {
   const loan = loans.find((l) => l.id === id) ?? null;
   const account = loan ? refs.accounts.find((a) => a.id === loan.accountId) : null;
   const synced = !!account?.simplefinAccountId;
-  const owed = Math.max(0, -(account?.currentBalance ?? 0));
+  const owed = owedOnAccount(account);
   const asset = loan?.assetId ? assets.find((a) => a.id === loan.assetId) : null;
   const schedule = loan?.recurringId ? schedules.find((s) => s.id === loan.recurringId) : null;
   const o = useMemo(() => (loan ? loanOutlook(loan, owed, payments, today) : null), [loan, owed, payments, today]);
+  const terms = useMemo(() => (loan ? loanTermsOf(loan) : null), [loan]);
   // Each payment against the contract's row: extra principal, running total.
-  const plan = useMemo(() => {
-    const m = new Map<string, { delta: number; cumulative: number; n: number }>();
-    if (!loan) return { byId: m, ahead: 0 };
-    const rows = compareToPlan(loan, payments);
-    for (const r of rows) if (r.id) m.set(r.id, r);
-    return { byId: m, ahead: rows.length ? rows[rows.length - 1].cumulative : 0 };
-  }, [loan, payments]);
+  const plan = useMemo(() => (terms ? planByPayment(terms, payments) : { byId: new Map(), ahead: 0 }), [terms, payments]);
 
   async function importPdf(file: File) {
     setParsing(true);
@@ -105,58 +97,15 @@ export default function LoanPage() {
     }
   }
 
-  // The simulator: current pace vs with extra / a lump sum.
-  const extra = Math.max(0, Number(sim.extra) || 0);
-  const lump = Math.max(0, Number(sim.lump) || 0);
-  const scenario = useMemo(() => (o && loan && (extra || lump) ? simulatePayoff({ balance: o.owed, annualRate: loan.interestRate, payment: o.payment, firstDate: o.nextPaymentDate, extraMonthly: extra, lumpSum: lump }) : null), [o, loan, extra, lump]);
-  const byTarget = useMemo(() => {
-    if (!o || !loan || !sim.by || sim.by < o.nextPaymentDate) return null;
-    const n = paymentsBetween(o.nextPaymentDate, sim.by);
-    const payment = paymentToFinishIn(Math.max(0, o.owed - lump), loan.interestRate, n);
-    return { n, payment, extra: round2(Math.max(0, payment - o.payment)) };
-  }, [o, loan, sim.by, lump]);
-
-  const chart = useMemo(() => {
-    if (!o || !loan) return [];
-    // From today: the original schedule, the current pace and the what-if.
-    const rows = new Map<string, { date: string; contract: number | null; pace: number | null; scenario: number | null }>();
-    const point = (date: string) => {
-      let row = rows.get(date);
-      if (!row) rows.set(date, (row = { date, contract: null, pace: null, scenario: null }));
-      return row;
-    };
-    // Contract balance on each remaining payment date.
-    const r = loan.interestRate / 12;
-    const pmt = o.payment;
-    let b = o.contractBalance;
-    point(today).contract = b;
-    for (let n = o.paymentsMade + 1; n <= loan.termMonths && b > 0; n++) {
-      b = Math.max(0, b * (1 + r) - pmt);
-      point(paymentDate(loan, n)).contract = round2(b);
-    }
-    point(today).pace = o.owed;
-    for (const row of o.projected.rows) point(row.date).pace = row.balance;
-    if (scenario) {
-      point(today).scenario = round2(Math.max(0, o.owed - lump));
-      for (const row of scenario.rows) point(row.date).scenario = row.balance;
-    }
-    return [...rows.values()].sort((a, b) => a.date.localeCompare(b.date));
-  }, [o, loan, scenario, lump, today]);
-
-  const byYear = useMemo(() => {
-    const m = new Map<string, { rows: any[]; principal: number; interest: number; escrow: number; total: number }>();
-    for (const p of payments) {
-      const y = p.date.slice(0, 4);
-      if (!m.has(y)) m.set(y, { rows: [], principal: 0, interest: 0, escrow: 0, total: 0 });
-      const g = m.get(y)!;
-      g.rows.push(p);
-      g.principal += p.principal ?? 0;
-      g.interest += p.interest ?? 0;
-      g.escrow += p.escrow ?? 0;
-      g.total += p.totalAmount ?? 0;
-    }
-    return [...m.entries()].sort((a, b) => b[0].localeCompare(a[0]));
-  }, [payments]);
+  // The simulator: current pace vs with extra / a lump sum / a target date.
+  const whatIf = useMemo(() => (o && terms ? payoffWhatIf(terms, o, sim) : null), [o, terms, sim]);
+  const extra = whatIf?.extra ?? 0;
+  const lump = whatIf?.lump ?? 0;
+  const scenario = whatIf?.scenario ?? null;
+  const byTarget = whatIf?.byTarget ?? null;
+  // From today: the original schedule, the current pace and the what-if.
+  const chart = useMemo(() => (o && terms ? payoffSeries(terms, o, scenario, lump, today) : []), [o, terms, scenario, lump, today]);
+  const byYear = useMemo(() => paymentsByYear(payments), [payments]);
   const [openYears, setOpenYears] = useState<Set<string>>(new Set([today.slice(0, 4)]));
 
   if (refs.loading || (loading && !loan)) {
@@ -220,7 +169,7 @@ export default function LoanPage() {
         <Stat label="Payment">
           <Money value={o.payment + o.escrow} className="text-2xl font-semibold" />
           <div className="text-xs text-default-500 mt-1">
-            <Money value={o.payment} /> P&amp;I{o.escrow ? <> + <Money value={o.escrow} /> escrow</> : null} · {pct(loan.interestRate)}
+            <Money value={o.payment} /> P&amp;I{o.escrow ? <> + <Money value={o.escrow} /> escrow</> : null} · {ratePct(loan.interestRate)}
           </div>
           <div className="text-xs text-default-500">Next {longDate(o.nextPaymentDate)}</div>
         </Stat>
@@ -285,7 +234,7 @@ export default function LoanPage() {
                 )}
               </div>
             )}
-            {sim.by && sim.by < o.nextPaymentDate && <div className="text-sm text-warning-600">The next payment is {longDate(o.nextPaymentDate)}; pick a later date.</div>}
+            {whatIf?.targetTooEarly && <div className="text-sm text-warning-600">The next payment is {longDate(o.nextPaymentDate)}; pick a later date.</div>}
             {byTarget && (
               <div className="rounded-lg bg-primary-50 dark:bg-primary-50/10 px-3 py-2 text-sm">
                 To be done by <b>{longDate(sim.by)}</b> ({byTarget.n} payments{lump ? ", after the lump sum" : ""}): <Money value={byTarget.payment} className="font-semibold" /> a month P&amp;I
@@ -347,7 +296,7 @@ export default function LoanPage() {
                 <Money value={loan.originalPrincipal} cents={false} />
                 {loan.startDate && <span className="text-default-500"> · {monthYear(loan.startDate)}</span>}
               </Row>
-              <Row label="Rate">{pct(loan.interestRate)}</Row>
+              <Row label="Rate">{ratePct(loan.interestRate)}</Row>
               <Row label="Term">
                 {loan.termMonths} months ({round2(loan.termMonths / 12)} years)
               </Row>
@@ -404,7 +353,8 @@ export default function LoanPage() {
                 No payments recorded yet.{synced ? " The balance still follows the bank; recording them adds the interest history." : " Each one you record lowers the balance by its principal."} Import the lender&apos;s schedule to load them all at once.
               </div>
             )}
-            {byYear.map(([year, g]) => {
+            {byYear.map((g) => {
+              const year = g.year;
               const open = openYears.has(year);
               return (
                 <div key={year} className="border-b border-default-100 last:border-0">

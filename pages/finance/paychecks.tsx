@@ -23,20 +23,19 @@ import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { PeriodPicker, usePeriod } from "@/components/finance/period-picker";
-import { PaycheckForm, parseJsonLayers, type PaycheckFormInit } from "@/components/finance/paycheck-form";
+import { PaycheckForm, type PaycheckFormInit } from "@/components/finance/paycheck-form";
 import { listAllPages } from "@/lib/list-all";
 import { isOutsideCashFlow } from "@/lib/finance/accounts";
 import { listPaychecks, listTransactions } from "@/lib/finance/data";
 import { financePeople } from "@/lib/finance/ledger";
 import { fmtCurrency, fmtDate, todayIso } from "@/lib/finance/dates";
 import { periodContaining } from "@/lib/finance/periods";
-import { contributionShare, latestByPerson } from "@/lib/finance/paychecks";
+import { contributionShare, latestByPerson, payTotals } from "@/lib/finance/paychecks";
 import { draftToPaycheck } from "@/lib/finance/paycheck-fields";
+import { inboxDraftValues, inboxToReview, parseJsonLayers, sharePct, supplementalOf } from "@/lib/finance/paycheck-screen";
+import { paycheckYears } from "@/lib/finance/tax-screen";
 
 const n = (v: number | null | undefined) => v ?? 0;
-const taxesOf = (p: any) => n(p.fedWh) + n(p.stateWh) + n(p.oasdi) + n(p.medicare);
-const retirementOf = (p: any) => n(p.contrib401k) + n(p.contribRoth401k) + n(p.contribAfterTax401k);
-const pct = (x: number | null) => (x == null ? "—" : `${Math.round(x * 100)}%`);
 
 export default function PaychecksPage() {
   const refs = useFinanceRefs();
@@ -59,7 +58,7 @@ export default function PaychecksPage() {
     try {
       const [p, ib] = await Promise.all([listPaychecks(financeClient), listAllPages<any>(financeClient.models.homePaycheckInbox)]);
       setPaychecks(p);
-      setInbox(ib.filter((r) => r.status === "NEEDS_REVIEW" || r.status === "ERROR").sort((a, b) => (b.receivedAt ?? "").localeCompare(a.receivedAt ?? "")));
+      setInbox(inboxToReview(ib));
     } catch (e) {
       addToast({ title: "Couldn't load paychecks", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
@@ -71,11 +70,7 @@ export default function PaychecksPage() {
     load();
   }, [load]);
 
-  const years = useMemo(() => {
-    const ys = new Set<number>([thisYear]);
-    for (const p of paychecks) ys.add(Number(String(p.payDate).slice(0, 4)));
-    return [...ys].sort((a, b) => b - a);
-  }, [paychecks, thisYear]);
+  const years = useMemo(() => paycheckYears(paychecks, thisYear), [paychecks, thisYear]);
 
   const yearRows = useMemo(
     () => paychecks.filter((p) => Number(String(p.payDate).slice(0, 4)) === year && (!personFilter || p.personId === personFilter)),
@@ -169,13 +164,12 @@ export default function PaychecksPage() {
   }
 
   function review(row: any) {
-    const draft = (parseJsonLayers(row.draft) ?? {}) as Record<string, unknown>;
     setForm({
       source: "EMAIL",
       s3KeyPdf: row.s3KeyPdf ?? null,
       inboxId: row.id,
       personId: row.personId ?? null,
-      values: draftToPaycheck(draft),
+      values: inboxDraftValues(row),
       warning: row.parseError ?? null,
     });
   }
@@ -187,14 +181,7 @@ export default function PaychecksPage() {
     else load();
   }
 
-  const totals = useMemo(
-    () =>
-      yearRows.reduce(
-        (t, p) => ({ gross: t.gross + n(p.gross), taxes: t.taxes + taxesOf(p), retirement: t.retirement + retirementOf(p), net: t.net + n(p.net) }),
-        { gross: 0, taxes: 0, retirement: 0, net: 0 },
-      ),
-    [yearRows],
-  );
+  const totals = useMemo(() => payTotals(yearRows), [yearRows]);
 
   return (
     <FinanceShell
@@ -287,8 +274,8 @@ export default function PaychecksPage() {
                           <span>
                             put in <Money value={s.contributed} cents={false} />
                           </span>
-                          <span className="font-semibold">{pct(s.shareOfNet)} of take-home</span>
-                          <span className="text-default-500">{pct(s.shareOfGross)} of gross</span>
+                          <span className="font-semibold">{sharePct(s.shareOfNet)} of take-home</span>
+                          <span className="text-default-500">{sharePct(s.shareOfGross)} of gross</span>
                         </span>
                       </div>
                       <div className="relative h-2 mt-1 rounded bg-default-100" title={`${person?.name ?? ""}: contributed vs take-home`}>
@@ -398,14 +385,15 @@ export default function PaychecksPage() {
                     </thead>
                     <tbody>
                       {yearRows.map((p) => {
-                        const supplemental = n(p.bonusGross) + n(p.rsuGross);
+                        const t = payTotals([p]);
+                        const supplemental = supplementalOf(p);
                         return (
                           <tr key={p.id} className="border-t border-default-100 hover:bg-default-50 cursor-pointer" onClick={() => setForm({ id: p.id, source: p.source ?? "MANUAL", s3KeyPdf: p.s3KeyPdf, personId: p.personId, values: p })}>
                             <td className="py-1.5 pr-2 whitespace-nowrap">
                               {fmtDate(p.payDate, { month: "short", day: "numeric" })}
-                              {supplemental > 0 && (
+                              {supplemental && (
                                 <Chip size="sm" variant="flat" color="secondary" className="ml-1">
-                                  {n(p.rsuGross) > 0 ? "RSU" : "bonus"} {fmtCurrency(supplemental, { cents: false })}
+                                  {supplemental.label} {fmtCurrency(supplemental.amount, { cents: false })}
                                 </Chip>
                               )}
                             </td>
@@ -417,10 +405,10 @@ export default function PaychecksPage() {
                               <Money value={p.gross} />
                             </td>
                             <td className="py-1.5 pr-2 text-right text-default-500">
-                              <Money value={taxesOf(p)} />
+                              <Money value={t.taxes} />
                             </td>
                             <td className="py-1.5 pr-2 text-right text-default-500">
-                              <Money value={retirementOf(p)} />
+                              <Money value={t.retirement} />
                             </td>
                             <td className="py-1.5 pr-2 text-right font-medium">
                               <Money value={p.net} />

@@ -19,69 +19,23 @@ import { Money } from "@/components/finance/ui";
 import { FreeCombobox } from "@/components/free-combobox";
 import { listAllPages } from "@/lib/list-all";
 import { listTransactions } from "@/lib/finance/data";
-import { addDays, fmtDate } from "@/lib/finance/dates";
-import { autoMatchCandidates } from "@/lib/finance/invoice-fields";
+import { fmtDate } from "@/lib/finance/dates";
+import {
+  invoiceAnchor,
+  invoiceForm,
+  invoiceNum,
+  invoiceUpdate,
+  paymentCandidates,
+  paymentSearchRange,
+  type InvoiceForm,
+  type InvoiceItem,
+} from "@/lib/finance/invoice-screen";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-export type InvoiceItem = { description: string; qty: number | null; unitPrice: number | null; amount: number | null };
-
-export function parseItems(raw: string | null | undefined): InvoiceItem[] {
-  if (!raw) return [];
-  try {
-    let v: unknown = raw;
-    while (typeof v === "string") v = JSON.parse(v);
-    if (!Array.isArray(v)) return [];
-    const num = (x: unknown) => (typeof x === "number" && Number.isFinite(x) ? x : x == null || x === "" ? null : Number.isFinite(Number(x)) ? Number(x) : null);
-    return v.map((it: any) => ({ description: String(it?.description ?? ""), qty: num(it?.qty), unitPrice: num(it?.unitPrice), amount: num(it?.amount) }));
-  } catch {
-    return [];
-  }
-}
-
 export const fileUrl = (key: string) => `/api/finance/file?key=${encodeURIComponent(key)}`;
 
-type Form = {
-  vendor: string;
-  invoiceNumber: string;
-  issueDate: string;
-  dueDate: string;
-  currency: string;
-  subtotal: string;
-  tax: string;
-  total: string;
-  category: string;
-  spendGroupId: string;
-  paid: boolean;
-  notes: string;
-  items: InvoiceItem[];
-};
-
 const toStr = (n: number | null | undefined) => (n == null ? "" : String(n));
-const toNum = (s: string): number | null => {
-  const t = s.trim();
-  if (!t) return null;
-  const n = Number(t.replace(/[,$]/g, ""));
-  return Number.isFinite(n) ? n : null;
-};
-
-function formFrom(inv: any): Form {
-  return {
-    vendor: inv.vendor ?? "",
-    invoiceNumber: inv.invoiceNumber ?? "",
-    issueDate: inv.issueDate ?? "",
-    dueDate: inv.dueDate ?? "",
-    currency: inv.currency ?? "USD",
-    subtotal: toStr(inv.subtotal),
-    tax: toStr(inv.tax),
-    total: toStr(inv.total),
-    category: inv.category ?? "",
-    spendGroupId: inv.spendGroupId ?? "",
-    paid: !!inv.paid,
-    notes: inv.notes ?? "",
-    items: parseItems(inv.items),
-  };
-}
 
 type Linked = { link: any; tx: any | null };
 
@@ -100,7 +54,7 @@ export function InvoiceDetailModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const [form, setForm] = useState<Form | null>(null);
+  const [form, setForm] = useState<InvoiceForm | null>(null);
   const [saving, setSaving] = useState(false);
   const [links, setLinks] = useState<Linked[]>([]);
   const [linksLoading, setLinksLoading] = useState(false);
@@ -132,7 +86,7 @@ export function InvoiceDetailModal({
       setForm(null);
       return;
     }
-    setForm(formFrom(invoice));
+    setForm(invoiceForm(invoice));
     loadLinks(invoice.id).catch((e) => addToast({ title: "Couldn't load linked transactions", description: String(e), color: "danger" }));
     // Only when a different invoice opens: a reload after saving or linking
     // must not wipe edits in progress.
@@ -140,32 +94,15 @@ export function InvoiceDetailModal({
   }, [invoice?.id, loadLinks]);
 
   if (!invoice || !form) return null;
-  const set = <K extends keyof Form>(k: K, v: Form[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
-  const total = toNum(form.total);
-  const anchor = form.issueDate || form.dueDate || null;
+  const set = <K extends keyof InvoiceForm>(k: K, v: InvoiceForm[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
+  const total = invoiceNum(form.total);
+  const anchor = invoiceAnchor(form);
 
   async function save(extra: Record<string, unknown> = {}) {
     if (!form) return;
     setSaving(true);
     try {
-      const items = form.items.filter((it) => it.description.trim() || it.amount != null);
-      const r = await financeClient.models.homeInvoice.update({
-        id: invoice.id,
-        vendor: form.vendor.trim() || null,
-        invoiceNumber: form.invoiceNumber.trim() || null,
-        issueDate: form.issueDate || null,
-        dueDate: form.dueDate || null,
-        currency: form.currency.trim().toUpperCase() || "USD",
-        subtotal: toNum(form.subtotal),
-        tax: toNum(form.tax),
-        total: toNum(form.total),
-        category: form.category.trim() || null,
-        spendGroupId: form.spendGroupId || null,
-        paid: form.paid,
-        notes: form.notes.trim() || null,
-        items: items.length ? JSON.stringify(items) : null,
-        ...extra,
-      } as any);
+      const r = await financeClient.models.homeInvoice.update({ id: invoice.id, ...invoiceUpdate(form), ...extra } as any);
       if (r.errors?.length) throw new Error(r.errors[0].message);
       addToast({ title: "Invoice saved", color: "success" });
       onChanged();
@@ -185,15 +122,8 @@ export function InvoiceDetailModal({
     }
     setSearching(true);
     try {
-      const txs = await listTransactions(financeClient, { fromIso: addDays(anchor, -30), toIso: addDays(anchor, 30) });
-      const linkedIds = new Set(links.map((l) => l.link.transactionId));
-      const pool = txs.filter((t) => !linkedIds.has(t.id));
-      const exact = autoMatchCandidates(pool, anchor, total);
-      const exactIds = new Set(exact.map((t) => t.id));
-      const loose = pool
-        .filter((t) => !exactIds.has(t.id) && Math.abs(total) > 0 && Math.abs(Math.abs(t.amount ?? 0) - Math.abs(total)) / Math.abs(total) <= 0.05)
-        .sort((a, b) => Math.abs(Math.abs(a.amount) - Math.abs(total)) - Math.abs(Math.abs(b.amount) - Math.abs(total)));
-      setCandidates({ exact, loose });
+      const txs = await listTransactions(financeClient, paymentSearchRange(anchor));
+      setCandidates(paymentCandidates(txs, anchor, total, new Set(links.map((l) => l.link.transactionId))));
     } catch (e) {
       addToast({ title: "Couldn't search transactions", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
@@ -315,9 +245,9 @@ export function InvoiceDetailModal({
                 {form.items.map((it, i) => (
                   <div key={i} className="grid grid-cols-[1fr_4rem_6rem_6rem_2rem] gap-1 items-center">
                     <Input size="sm" aria-label="Description" value={it.description} onValueChange={(v) => setItem(i, { description: v })} />
-                    <Input size="sm" aria-label="Qty" value={toStr(it.qty)} onValueChange={(v) => setItem(i, { qty: toNum(v) })} />
-                    <Input size="sm" aria-label="Unit price" value={toStr(it.unitPrice)} onValueChange={(v) => setItem(i, { unitPrice: toNum(v) })} />
-                    <Input size="sm" aria-label="Amount" value={toStr(it.amount)} onValueChange={(v) => setItem(i, { amount: toNum(v) })} />
+                    <Input size="sm" aria-label="Qty" value={toStr(it.qty)} onValueChange={(v) => setItem(i, { qty: invoiceNum(v) })} />
+                    <Input size="sm" aria-label="Unit price" value={toStr(it.unitPrice)} onValueChange={(v) => setItem(i, { unitPrice: invoiceNum(v) })} />
+                    <Input size="sm" aria-label="Amount" value={toStr(it.amount)} onValueChange={(v) => setItem(i, { amount: invoiceNum(v) })} />
                     <Button size="sm" isIconOnly variant="light" aria-label="Remove item" onPress={() => set("items", form.items.filter((_, j) => j !== i))}>
                       <FaTrash className="text-default-400" />
                     </Button>

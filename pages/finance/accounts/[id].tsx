@@ -19,28 +19,12 @@ import { financeClient } from "@/components/finance/client";
 import { EmptyState, Money, PersonChip, ago } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { effectiveCategory, UNCATEGORIZED } from "@/lib/finance/categories";
-import { addDays, fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "@/lib/finance/dates";
+import { fmtCurrency, fmtDate, monthRange, shiftMonth, todayIso } from "@/lib/finance/dates";
 import { accountTypeLabel, isInvested } from "@/lib/finance/accounts";
 import { listAccountTransactions, listHoldings, listLoans } from "@/lib/finance/data";
-import { listAllPages } from "@/lib/list-all";
+import { HISTORY_WINDOWS, balanceHistory, holdingsSummary, lastSyncSummary, listAccountSnapshots, listAccountSyncRuns, monthFlow, parseJsonOr, syncEntrySummary, type AccountSyncRun, type SyncEntry } from "@/lib/finance/account-detail";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-const HISTORY_DAYS: Array<{ label: string; days: number | null }> = [
-  { label: "30d", days: 30 },
-  { label: "90d", days: 90 },
-  { label: "1y", days: 365 },
-  { label: "All", days: null },
-];
-
-function parseJson<T>(s: string | null | undefined, fallback: T): T {
-  if (!s) return fallback;
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return fallback;
-  }
-}
 
 export default function FinanceAccountDetailPage() {
   const router = useRouter();
@@ -54,10 +38,10 @@ export default function FinanceAccountDetailPage() {
 
   const [account, setAccount] = useState<any | null>(null);
   const [missing, setMissing] = useState(false);
-  const [snapshots, setSnapshots] = useState<any[]>([]);
+  const [snapshots, setSnapshots] = useState<Array<{ date: string; balance: number }>>([]);
   const [txs, setTxs] = useState<any[] | null>(null);
   const [holdings, setHoldings] = useState<any[] | null>(null);
-  const [logs, setLogs] = useState<Array<{ log: any; entry: any }>>([]);
+  const [logs, setLogs] = useState<AccountSyncRun[]>([]);
   const [loanId, setLoanId] = useState<string | null>(null);
 
   // A LOAN account with terms has its own page (payoff, payments, equity).
@@ -74,21 +58,8 @@ export default function FinanceAccountDetailPage() {
     if (!data) return setMissing(true);
     setAccount(data);
     setHoldings(isInvested(data.type) ? await listHoldings(financeClient, id) : null);
-    const snaps: any[] = [];
-    let nextToken: string | null | undefined;
-    do {
-      const res: any = await financeClient.models.homeFinanceAccountSnapshot.list({ accountId: id, limit: 1000, nextToken } as any);
-      snaps.push(...(res.data ?? []));
-      nextToken = res.nextToken;
-    } while (nextToken);
-    setSnapshots(snaps.sort((a, b) => a.date.localeCompare(b.date)));
-    const all = await listAllPages<any>(financeClient.models.homeFinanceSyncLog);
-    const mine = all
-      .map((log) => ({ log, entry: parseJson<any[]>(log.perAccountJson, []).find((p) => p?.accountId === id) }))
-      .filter((x) => x.entry)
-      .sort((a, b) => (b.log.startedAt ?? "").localeCompare(a.log.startedAt ?? ""))
-      .slice(0, 10);
-    setLogs(mine);
+    setSnapshots(await listAccountSnapshots(financeClient, id));
+    setLogs(await listAccountSyncRuns(financeClient, id));
   }, [id]);
 
   useEffect(() => {
@@ -106,19 +77,8 @@ export default function FinanceAccountDetailPage() {
       });
   }, [id, month, reloadTick]);
 
-  const chartData = useMemo(() => {
-    const from = historyDays == null ? "" : addDays(today, -historyDays);
-    return snapshots.filter((s) => s.date >= from).map((s) => ({ date: s.date, balance: s.balance }));
-  }, [snapshots, historyDays, today]);
-
-  const totals = useMemo(() => {
-    const posted = (txs ?? []).filter((t) => t.status !== "PENDING");
-    return {
-      inflow: posted.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
-      outflow: posted.filter((t) => t.amount < 0).reduce((s, t) => s + t.amount, 0),
-      pending: (txs ?? []).filter((t) => t.status === "PENDING").length,
-    };
-  }, [txs]);
+  const chartData = useMemo(() => balanceHistory(snapshots, historyDays, today), [snapshots, historyDays, today]);
+  const totals = useMemo(() => monthFlow(txs ?? []), [txs]);
 
   if (missing) {
     return (
@@ -141,7 +101,7 @@ export default function FinanceAccountDetailPage() {
     );
   }
 
-  const details = parseJson<any>(account.lastSyncDetails, null);
+  const syncLine = lastSyncSummary(parseJsonOr<SyncEntry | null>(account.lastSyncDetails, null));
   const accName = (aid: string | null | undefined) => refs.accounts.find((a) => a.id === aid)?.name ?? "another account";
 
   return (
@@ -188,13 +148,7 @@ export default function FinanceAccountDetailPage() {
               {account.simplefinAccountId ? (
                 <>
                   SimpleFIN · last sync {ago(account.lastSyncAt)}
-                  {details && (
-                    <div>
-                      {details.fromIso} → {details.toIso}: {details.txNew ?? 0} new, {details.txUpdated ?? 0} updated
-                      {details.linked ? `, ${details.linked} matched` : ""} of {details.txTotal ?? 0}
-                      {details.holdingsChanged ? `; ${details.holdingsChanged} position${details.holdingsChanged === 1 ? "" : "s"} changed` : ""}
-                    </div>
-                  )}
+                  {syncLine && <div>{syncLine}</div>}
                   {isInvested(account.type) && <div>Investment account: its transactions stay out of the budget and overview.</div>}
                   {account.type === "LOAN" && <div>Loan: its transactions stay out of the budget and overview (the payment is counted where it left checking).</div>}
                 </>
@@ -209,7 +163,7 @@ export default function FinanceAccountDetailPage() {
           <CardHeader className="flex justify-between">
             <span className="font-semibold text-sm">Balance history</span>
             <div className="flex gap-1">
-              {HISTORY_DAYS.map((h) => (
+              {HISTORY_WINDOWS.map((h) => (
                 <Button key={h.label} size="sm" variant={historyDays === h.days ? "solid" : "light"} className="min-w-0 px-2 h-7" onPress={() => setHistoryDays(h.days)}>
                   {h.label}
                 </Button>
@@ -318,9 +272,7 @@ export default function FinanceAccountDetailPage() {
                     </Chip>
                     <span className="text-xs text-default-500">{log.trigger?.toLowerCase()}</span>
                     <span className="flex-1 text-xs">
-                      {entry.txNew ?? 0} new · {entry.txUpdated ?? 0} updated · {entry.txTotal ?? 0} seen
-                      {entry.linked ? ` · ${entry.linked} matched` : ""}
-                      {entry.holdingsChanged ? ` · ${entry.holdingsChanged} position${entry.holdingsChanged === 1 ? "" : "s"} changed` : ""}
+                      {syncEntrySummary(entry)}
                       {entry.balanceAfter !== entry.balanceBefore && ` · ${fmtCurrency(entry.balanceBefore)} → ${fmtCurrency(entry.balanceAfter)}`}
                     </span>
                     {(log.errorCount ?? 0) > 0 && <span className="text-xs text-danger">{log.errorCount} error(s)</span>}
@@ -337,9 +289,7 @@ export default function FinanceAccountDetailPage() {
 
 /** Positions in an invested account, as SimpleFIN last reported them. */
 function HoldingsCard({ balance, holdings }: { balance: number; holdings: any[] }) {
-  const positions = holdings.reduce((s, h) => s + (h.marketValue ?? 0), 0);
-  const cash = balance - positions;
-  const asOf = holdings.map((h) => h.asOf).filter(Boolean).sort().pop();
+  const { rows, cash, asOf } = holdingsSummary(balance, holdings);
   return (
     <Card shadow="sm" className="mb-4">
       <CardHeader className="flex flex-wrap justify-between gap-2">
@@ -351,8 +301,8 @@ function HoldingsCard({ balance, holdings }: { balance: number; holdings: any[] 
           <div className="text-sm text-default-500 py-6 text-center">No positions yet. They arrive with the next sync of a linked account.</div>
         ) : (
           <ul className="flex flex-col divide-y divide-default-100">
-            {holdings.map((h) => {
-              const gain = h.marketValue != null && h.costBasisTotal != null ? h.marketValue - h.costBasisTotal : null;
+            {rows.map((h) => {
+              const gain = h.gain;
               return (
                 <li key={h.holdingKey} className="flex items-center gap-3 py-2 text-sm">
                   <div className="flex-1 min-w-0">

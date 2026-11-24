@@ -21,14 +21,14 @@ import { Money } from "@/components/finance/ui";
 import { callOp } from "@/lib/ops-client";
 import { listSchedules } from "@/lib/finance/data";
 import { fmtCurrency, fmtDate, round2, todayIso } from "@/lib/finance/dates";
-import { INTEREST_ACCRUALS, INTEREST_ACCRUAL_LABELS, LOAN_TYPES, LOAN_TYPE_LABELS, contractualPayment, interestDays, suggestSplit } from "@/lib/finance/loans";
+import { INTEREST_ACCRUALS, INTEREST_ACCRUAL_LABELS, LOAN_TYPES, LOAN_TYPE_LABELS } from "@/lib/finance/loans";
+import { NEW_SCHEDULE, NO_SCHEDULE, estimatePaymentSplit, formContractualPayment, loanTermsFormFrom, loanTermsSaveInput, newPaymentDraft, numOrNull as num, type LoanTermsForm } from "@/lib/finance/loan-detail";
 import { ASSET_TYPES, ASSET_TYPE_LABELS } from "@/lib/finance/net-worth";
 import { DEFAULT_ANNUAL_DEPRECIATION, VALUE_PROVIDERS, VALUE_PROVIDER_LABELS } from "@/lib/finance/asset-values";
 
 const BY_HAND = "__manual__";
 
 const $ = <span className="text-default-400 text-sm">$</span>;
-const num = (s: string): number | null => (s.trim() === "" || !Number.isFinite(Number(s)) ? null : Number(s));
 const str = (n: number | null | undefined) => (n == null ? "" : String(n));
 
 function toastError(title: string, description: string) {
@@ -286,8 +286,9 @@ export function AssetModal({
 // ── Loan ───────────────────────────────────────────────────────────────────
 
 const NEW_ACCOUNT = "__new__";
-const NEW_SCHEDULE = "__new_schedule__";
-const NO_SCHEDULE = "__none__";
+
+// The terms (lib/finance/loan-detail.ts) plus, for a new loan, where its balance lives.
+type LoanForm = LoanTermsForm & { accountId: string; newName: string; institution: string };
 
 export function LoanModal({
   loan,
@@ -311,7 +312,7 @@ export function LoanModal({
   const synced = !!account?.simplefinAccountId;
   // LOAN accounts without terms yet, for attaching.
   const free = accounts.filter((a) => a.type === "LOAN" && a.active !== false && !loans.some((l) => l.accountId === a.id));
-  const [f, setF] = useState({ accountId: "", newName: "", institution: "", owed: "", loanType: "MORTGAGE", lender: "", originalPrincipal: "", ratePct: "", termMonths: "360", startDate: "", firstPaymentDate: "", monthlyPayment: "", escrowMonthly: "", interestAccrual: "MONTHLY", assetId: "", recurringId: NO_SCHEDULE, payFromId: "", matchPattern: "", payAmount: "", payLastDay: false, notes: "" });
+  const [f, setF] = useState<LoanForm>(() => ({ ...loanTermsFormFrom(null, null, []), accountId: "", newName: "", institution: "" }));
   const [saving, setSaving] = useState(false);
   // Scheduled transactions, for "paid by"; loaded when the editor opens.
   const [schedules, setSchedules] = useState<any[]>([]);
@@ -321,72 +322,23 @@ export function LoanModal({
     if (loan === undefined) return;
     const acct = loan ? accounts.find((a) => a.id === loan.accountId) : null;
     const preset = presetAccountId ?? free[0]?.id ?? NEW_ACCOUNT;
-    setF({
-      accountId: loan ? loan.accountId : preset,
-      newName: "",
-      institution: "",
-      owed: acct && !acct.simplefinAccountId ? str(round2(-(acct.currentBalance ?? 0))) : "",
-      loanType: loan?.loanType ?? "MORTGAGE",
-      lender: loan?.lender ?? "",
-      originalPrincipal: str(loan?.originalPrincipal),
-      ratePct: loan ? str(round2(loan.interestRate * 100 * 1000) / 1000) : "",
-      termMonths: str(loan?.termMonths ?? 360),
-      startDate: loan?.startDate ?? "",
-      firstPaymentDate: loan?.firstPaymentDate ?? "",
-      monthlyPayment: str(loan?.monthlyPayment),
-      escrowMonthly: str(loan?.escrowMonthly),
-      interestAccrual: loan?.interestAccrual ?? "MONTHLY",
-      assetId: loan?.assetId ?? "",
-      recurringId: loan?.recurringId ?? NO_SCHEDULE,
-      payFromId: checking.find((a) => !(a.ownerPersonIds ?? []).length && a.type === "CHECKING")?.id ?? checking[0]?.id ?? "",
-      matchPattern: loan?.lender ?? "",
-      payAmount: "",
-      payLastDay: false,
-      notes: loan?.notes ?? "",
-    });
+    setF({ ...loanTermsFormFrom(loan, acct, accounts), accountId: loan ? loan.accountId : preset, newName: "", institution: "" });
     listSchedules(financeClient)
       .then((rows) => setSchedules(rows.filter((s) => s.active !== false && s.type !== "INCOME").sort((a, b) => (a.description ?? "").localeCompare(b.description ?? ""))))
       .catch(() => setSchedules([]));
   }, [loan, presetAccountId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const computed = useMemo(() => {
-    const p = num(f.originalPrincipal);
-    const r = num(f.ratePct);
-    const n = num(f.termMonths);
-    if (!p || r == null || !n || !f.firstPaymentDate) return null;
-    return contractualPayment({ originalPrincipal: p, interestRate: r / 100, termMonths: n, firstPaymentDate: f.firstPaymentDate });
-  }, [f.originalPrincipal, f.ratePct, f.termMonths, f.firstPaymentDate]);
+  const computed = useMemo(() => formContractualPayment(f), [f.originalPrincipal, f.ratePct, f.termMonths, f.firstPaymentDate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function save() {
-    const rate = num(f.ratePct);
-    const input: any = {
-      ...(isNew ? {} : { loanId: loan.id }),
-      loanType: f.loanType,
-      lender: f.lender.trim() || null,
-      originalPrincipal: num(f.originalPrincipal) ?? undefined,
-      interestRate: rate == null ? undefined : round2(rate * 1000) / 100000,
-      termMonths: num(f.termMonths) ?? undefined,
-      startDate: f.startDate || null,
-      firstPaymentDate: f.firstPaymentDate || undefined,
-      monthlyPayment: num(f.monthlyPayment),
-      escrowMonthly: num(f.escrowMonthly),
-      interestAccrual: f.interestAccrual,
-      assetId: f.assetId || null,
-      notes: f.notes.trim() || null,
-    };
-    if (f.recurringId === NEW_SCHEDULE) {
-      if (!f.payFromId) return toastError("Missing account", "Which account is it paid from?");
-      input.newSchedule = { accountId: f.payFromId, matchPattern: f.matchPattern.trim() || null, amount: num(f.payAmount) ?? undefined, lastDayOfMonth: f.payLastDay };
-    } else if ((loan?.recurringId ?? NO_SCHEDULE) !== f.recurringId) {
-      input.recurringId = f.recurringId === NO_SCHEDULE ? null : f.recurringId;
-    }
+    const built = loanTermsSaveInput(f, loan, account);
+    if ("error" in built) return toastError("Missing details", built.error);
+    const input: any = built.input;
     if (isNew) {
       if (f.accountId === NEW_ACCOUNT) {
         if (!f.newName.trim() || num(f.owed) == null) return toastError("Missing account", "Name the new loan account and say what's owed");
         Object.assign(input, { newAccountName: f.newName.trim(), owed: num(f.owed), institution: f.institution.trim() || undefined });
       } else input.accountId = f.accountId;
-    } else if (!synced && num(f.owed) != null && Math.abs(num(f.owed)! + (account?.currentBalance ?? 0)) >= 0.005) {
-      input.owed = num(f.owed);
     }
     setSaving(true);
     const r = await callOp(financeClient, "save_finance_loan", input);
@@ -406,7 +358,7 @@ export function LoanModal({
     onClose();
   }
 
-  const set = (k: keyof typeof f) => (v: string) => setF({ ...f, [k]: v });
+  const set = (k: keyof LoanForm) => (v: string) => setF({ ...f, [k]: v });
 
   return (
     <Modal isOpen={loan !== undefined} onClose={onClose} size="2xl" scrollBehavior="inside">
@@ -589,7 +541,8 @@ export function PaymentModal({
   const [f, setF] = useState({ date: todayIso(), total: "", principal: "", interest: "", escrow: "", fees: "", isExtra: false, paymentNumber: "", notes: "" });
   const [touchedSplit, setTouchedSplit] = useState(false);
   const [saving, setSaving] = useState(false);
-  const days = (date: string) => interestDays(loan, payments.filter((p) => p.id !== payment?.id), date);
+  // The split as the total / date / escrow / fees stand (until it's typed by hand).
+  const estimate = (o: { total: number; escrow: number; fees: number; isExtra: boolean; date: string }) => estimatePaymentSplit({ loan, owed, payments, editing: payment, ...o });
 
   useEffect(() => {
     if (payment === undefined) return;
@@ -597,26 +550,19 @@ export function PaymentModal({
       setF({ date: payment.date, total: str(payment.totalAmount), principal: str(payment.principal), interest: str(payment.interest), escrow: str(payment.escrow), fees: str(payment.fees), isExtra: !!payment.isExtra, paymentNumber: str(payment.paymentNumber), notes: payment.notes ?? "" });
       setTouchedSplit(true);
     } else {
-      const pi = contractualPayment(loan);
-      const escrow = loan.escrowMonthly ?? 0;
-      const total = round2(pi + escrow);
-      const today = todayIso();
-      const s = suggestSplit(owed, loan.interestRate, total, escrow, 0, days(today));
-      setF({ date: today, total: str(total), principal: str(s.principal), interest: str(s.interest), escrow: escrow ? str(escrow) : "", fees: "", isExtra: false, paymentNumber: "", notes: "" });
+      const d = newPaymentDraft(loan, owed, payments, todayIso());
+      setF({ date: d.date, total: str(d.total), principal: str(d.principal), interest: str(d.interest), escrow: d.escrow ? str(d.escrow) : "", fees: "", isExtra: false, paymentNumber: "", notes: "" });
       setTouchedSplit(false);
     }
   }, [payment]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Re-estimate the split as the total (or date) changes, until it's typed by hand.
   function setTotal(v: string, extra = f.isExtra, escrowS = f.escrow, feesS = f.fees, date = f.date) {
-    const total = num(v) ?? 0;
-    const escrow = num(escrowS) ?? 0;
-    const fees = num(feesS) ?? 0;
     if (touchedSplit) return setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS, date }));
-    const s = extra ? { principal: round2(total - escrow - fees), interest: 0 } : suggestSplit(owed + (payment?.principal ?? 0), loan.interestRate, total, escrow, fees, days(date));
+    const s = estimate({ total: num(v) ?? 0, escrow: num(escrowS) ?? 0, fees: num(feesS) ?? 0, isExtra: extra, date });
     setF((x) => ({ ...x, total: v, isExtra: extra, escrow: escrowS, fees: feesS, date, principal: str(s.principal), interest: str(s.interest) }));
   }
-  const dayCount = days(f.date);
+  const dayCount = estimate({ total: num(f.total) ?? 0, escrow: num(f.escrow) ?? 0, fees: num(f.fees) ?? 0, isExtra: f.isExtra, date: f.date }).days;
 
   const sum = round2((num(f.principal) ?? 0) + (num(f.interest) ?? 0) + (num(f.escrow) ?? 0) + (num(f.fees) ?? 0));
   const total = num(f.total) ?? 0;

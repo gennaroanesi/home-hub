@@ -14,34 +14,18 @@ import { FaPen, FaPlus, FaTrash } from "react-icons/fa";
 
 import { financeClient } from "@/components/finance/client";
 import { callOp } from "@/lib/ops-client";
+import {
+  categoriesOutside,
+  categoryDirectCount,
+  categoryUseCount,
+  deleteNeedsTarget,
+  rewrittenNote,
+  type CategoryManagerNode as Node,
+} from "@/lib/finance/category-manager";
 
-type Node = { id: string; name: string; parentId: string | null; path: string; depth: number; transactions?: number };
 type Draft = { id: string | null; name: string; parentId: string };
 type Removing = { id: string; name: string; moveTo: string };
 const UNCATEGORIZE = "__none";
-
-function descendants(id: string, nodes: Node[]): Set<string> {
-  const out = new Set([id]);
-  for (let grew = true; grew; ) {
-    grew = false;
-    for (const n of nodes) if (n.parentId && out.has(n.parentId) && !out.has(n.id)) (out.add(n.id), (grew = true));
-  }
-  return out;
-}
-
-function rewrittenNote(r: { transactions: number; rules: number; budgetLines: number; schedules: number; invoices: number } | null | undefined): string | undefined {
-  if (!r) return undefined;
-  const parts = [
-    [r.transactions, "transaction"],
-    [r.rules, "rule"],
-    [r.budgetLines, "budget line"],
-    [r.schedules, "scheduled transaction"],
-    [r.invoices, "invoice"],
-  ]
-    .filter(([n]) => (n as number) > 0)
-    .map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`);
-  return parts.length ? `Updated ${parts.join(", ")}` : undefined;
-}
 
 export function FinanceCategoryManager({ isOpen, onClose, onChanged }: { isOpen: boolean; onClose: () => void; onChanged?: () => void | Promise<void> }) {
   const [nodes, setNodes] = useState<Node[]>([]);
@@ -66,11 +50,8 @@ export function FinanceCategoryManager({ isOpen, onClose, onChanged }: { isOpen:
     }
   }, [isOpen, load]);
 
-  const count = (id: string) => {
-    const ids = descendants(id, nodes);
-    return nodes.filter((n) => ids.has(n.id)).reduce((s, n) => s + (n.transactions ?? 0), 0);
-  };
-  const directCount = (id: string) => nodes.find((n) => n.id === id)?.transactions ?? 0;
+  const count = (id: string) => categoryUseCount(id, nodes);
+  const directCount = (id: string) => categoryDirectCount(id, nodes);
 
   async function changed() {
     await load();
@@ -106,9 +87,8 @@ export function FinanceCategoryManager({ isOpen, onClose, onChanged }: { isOpen:
     await changed();
   }
 
-  const parentChoices = draft ? nodes.filter((n) => !draft.id || !descendants(draft.id, nodes).has(n.id)) : [];
-  const removingNode = removing ? nodes.find((n) => n.id === removing.id) : undefined;
-  const needsTarget = !!removingNode && !removingNode.parentId && directCount(removingNode.id) > 0;
+  const parentChoices = draft ? categoriesOutside(draft.id, nodes) : [];
+  const needsTarget = !!removing && deleteNeedsTarget(removing.id, nodes);
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} size="lg" scrollBehavior="inside">
@@ -209,7 +189,7 @@ export function FinanceCategoryManager({ isOpen, onClose, onChanged }: { isOpen:
                   onChange={(e) => setRemoving({ ...removing, moveTo: e.target.value })}
                 >
                   {[
-                    ...nodes.filter((n) => !descendants(removing.id, nodes).has(n.id)).map((n) => <SelectItem key={n.id}>{n.path}</SelectItem>),
+                    ...categoriesOutside(removing.id, nodes).map((n) => <SelectItem key={n.id}>{n.path}</SelectItem>),
                     <SelectItem key={UNCATEGORIZE}>Uncategorized</SelectItem>,
                   ]}
                 </Select>

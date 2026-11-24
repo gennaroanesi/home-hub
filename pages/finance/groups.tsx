@@ -25,9 +25,10 @@ import { BudgetBar, EmptyState, Money } from "@/components/finance/ui";
 import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { callOp } from "@/lib/ops-client";
 import { listAllPages } from "@/lib/list-all";
-import { effectiveCategory, isExcludedFromBudget } from "@/lib/finance/categories";
-import { listSpendGroups, listTransactions, txIndexQuery } from "@/lib/finance/data";
+import { effectiveCategory } from "@/lib/finance/categories";
+import { listSpendGroups, listTransactions } from "@/lib/finance/data";
 import { fmtDate } from "@/lib/finance/dates";
+import { groupAutoAssignCandidates, groupNetSpend, listGroupTransactions } from "@/lib/finance/group-spend";
 import { SPEND_GROUP_KINDS, SPEND_GROUP_KIND_LABELS, type SpendGroupKind } from "@/lib/finance/spend-groups";
 
 const KINDS = SPEND_GROUP_KINDS;
@@ -36,22 +37,6 @@ const KIND_LABELS = SPEND_GROUP_KIND_LABELS;
 const NO_TRIP = "__none";
 
 type Form = { id?: string; name: string; kind: Kind; budget: string; startDate: string; endDate: string; tripId: string; notes: string; keepOutOfBudget: boolean };
-
-async function taggedTxs(groupId: string): Promise<any[]> {
-  const out: any[] = [];
-  let nextToken: string | null | undefined;
-  do {
-    const r = await txIndexQuery(financeClient, "SpendGroupId")({ spendGroupId: groupId }, { limit: 500, nextToken });
-    out.push(...(r.data ?? []));
-    nextToken = r.nextToken;
-  } while (nextToken);
-  return out.sort((a, b) => (b.date ?? "").localeCompare(a.date ?? ""));
-}
-
-/** Net spend of tagged rows: money out minus refunds, pending excluded. */
-function netSpend(txs: any[]): number {
-  return -txs.filter((t) => t.status !== "PENDING").reduce((s, t) => s + (t.amount ?? 0), 0);
-}
 
 export default function GroupsPage() {
   const refs = useFinanceRefs();
@@ -70,7 +55,7 @@ export default function GroupsPage() {
       rows.sort((a, b) => (b.startDate ?? "").localeCompare(a.startDate ?? "") || a.name.localeCompare(b.name));
       setGroups(rows);
       setTrips(tripRows.sort((a, b) => (b.startDate ?? "").localeCompare(a.startDate ?? "")));
-      const pairs = await Promise.all(rows.map(async (g) => [g.id, await taggedTxs(g.id)] as const));
+      const pairs = await Promise.all(rows.map(async (g) => [g.id, await listGroupTransactions(financeClient, g.id)] as const));
       setTxsByGroup(new Map(pairs));
     } catch (e) {
       addToast({ title: "Couldn't load groups", description: e instanceof Error ? e.message : String(e), color: "danger" });
@@ -174,7 +159,7 @@ export default function GroupsPage() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {groups.map((g) => {
             const txs = txsByGroup.get(g.id) ?? [];
-            const spent = netSpend(txs);
+            const spent = groupNetSpend(txs);
             const trip = tripName(g.tripId);
             return (
               <Card key={g.id} isPressable onPress={() => setDetailId(g.id)}>
@@ -314,14 +299,14 @@ function GroupDetail({
   const [candidates, setCandidates] = useState<any[] | null>(null);
   const [picked, setPicked] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
-  const spent = netSpend(txs);
+  const spent = groupNetSpend(txs);
   const canAutoAssign = !!group.startDate && !!group.endDate;
 
   async function loadCandidates() {
     setCandidates(null);
     try {
       const rows = await listTransactions(financeClient, { fromIso: group.startDate, toIso: group.endDate });
-      const out = rows.filter((t) => (t.amount ?? 0) < 0 && !t.spendGroupId && !isExcludedFromBudget(effectiveCategory(t)));
+      const out = groupAutoAssignCandidates(rows);
       setCandidates(out);
       setPicked(new Set(out.map((t) => t.id)));
     } catch (e) {

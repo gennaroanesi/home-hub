@@ -23,15 +23,17 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { InvoiceDetailModal, fileUrl } from "@/components/finance/invoice-detail-modal";
 import { listAllPages } from "@/lib/list-all";
 import { fmtDate } from "@/lib/finance/dates";
+import {
+  INVOICE_INBOX as INBOX,
+  filterInvoices,
+  invoiceIsPaid,
+  invoiceTotals,
+  invoiceYears,
+  type InvoicePaidFilter as PaidFilter,
+  type InvoiceStatusFilter as StatusFilter,
+} from "@/lib/finance/invoice-screen";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
-
-const INBOX = "invoices@import.cristinegennaro.com";
-type StatusFilter = "all" | "review" | "parsed";
-type PaidFilter = "all" | "unpaid" | "paid";
-
-const STATUS_RANK: Record<string, number> = { ERROR: 0, NEEDS_REVIEW: 1, PARSED: 2 };
-const invoiceDate = (inv: any): string => inv.issueDate ?? inv.receivedAt?.slice(0, 10) ?? inv.createdAt?.slice(0, 10) ?? "";
 
 function unwrap(data: unknown): any {
   let v = data;
@@ -72,36 +74,9 @@ export default function InvoicesPage() {
     load();
   }, [load]);
 
-  const years = useMemo(() => [...new Set(invoices.map((i) => invoiceDate(i).slice(0, 4)).filter(Boolean))].sort().reverse(), [invoices]);
-
-  const shown = useMemo(() => {
-    const words = query.toLowerCase().split(/\s+/).filter(Boolean);
-    return invoices
-      .filter((inv) => {
-        if (status === "review" && inv.parseStatus === "PARSED") return false;
-        if (status === "parsed" && inv.parseStatus !== "PARSED") return false;
-        const isPaid = !!inv.paid || linkedIds.has(inv.id);
-        if (paid === "paid" && !isPaid) return false;
-        if (paid === "unpaid" && isPaid) return false;
-        if (year !== "all" && invoiceDate(inv).slice(0, 4) !== year) return false;
-        const hay = `${inv.vendor ?? ""} ${inv.invoiceNumber ?? ""} ${inv.category ?? ""} ${inv.notes ?? ""}`.toLowerCase();
-        return words.every((w) => hay.includes(w));
-      })
-      .sort((a, b) => (STATUS_RANK[a.parseStatus ?? "PARSED"] ?? 2) - (STATUS_RANK[b.parseStatus ?? "PARSED"] ?? 2) || invoiceDate(b).localeCompare(invoiceDate(a)));
-  }, [invoices, linkedIds, status, paid, year, query]);
-
-  const totals = useMemo(() => {
-    let sum = 0;
-    let unpaid = 0;
-    let review = 0;
-    for (const inv of shown) {
-      const t = inv.total ?? 0;
-      sum += t;
-      if (!inv.paid && !linkedIds.has(inv.id)) unpaid += t;
-      if (inv.parseStatus !== "PARSED") review++;
-    }
-    return { sum, unpaid, review };
-  }, [shown, linkedIds]);
+  const years = useMemo(() => invoiceYears(invoices), [invoices]);
+  const shown = useMemo(() => filterInvoices(invoices, linkedIds, { status, paid, year, query }), [invoices, linkedIds, status, paid, year, query]);
+  const totals = useMemo(() => invoiceTotals(shown, linkedIds), [shown, linkedIds]);
 
   async function upload(file: File) {
     if (file.type && file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
@@ -218,7 +193,7 @@ export default function InvoicesPage() {
               <CardBody className="p-0">
                 {shown.map((inv) => {
                   const isLinked = linkedIds.has(inv.id);
-                  const isPaid = !!inv.paid || isLinked;
+                  const isPaid = invoiceIsPaid(inv, linkedIds);
                   return (
                     <div
                       key={inv.id}

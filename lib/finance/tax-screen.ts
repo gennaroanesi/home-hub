@@ -1,10 +1,10 @@
-// The tax outlook's view model: what /finance/tax-outlook computes inline
+// The tax outlook's view model: what /finance/tax-outlook shows
 // (per person with paychecks in the year: projection, current 401(k) rate,
 // staleness; their single-filer outcomes at the current and what-if rate,
 // the 415(c) total and the rate that reaches the cap; the household return
 // and the safe-harbor check). Pure; the math is lib/finance/tax.ts. Used by
-// the phone's tax outlook (mobile/app/(tabs)/finance/tax-outlook.tsx); the
-// web page still has its own inline copy of this.
+// the web page and the phone's tax outlook
+// (mobile/app/(tabs)/finance/tax-outlook.tsx).
 //
 // Settings persist in homeFinanceSetting "tax-outlook:<year>" (taxSettingsKey).
 
