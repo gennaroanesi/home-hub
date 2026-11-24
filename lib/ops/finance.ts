@@ -519,7 +519,7 @@ export const listFinanceTransactions = defineOp({
     accountId: z.string().optional(),
     accountIds: z.array(z.string()).optional().describe("Any of these accounts (an invested account's rows only when it's listed)."),
     spendGroupId: z.string().optional(),
-    direction: z.enum(["in", "out"]).optional(),
+    direction: z.enum(["in", "out", "spending"]).optional().describe('"spending" = money out as the budget counts it (no transfers, card payments or pending)'),
     ledger: z.string().optional().describe('Only what counts in this budget: "household" or a person\'s name or id (an itemized charge matches when any item does).'),
     sort: z
       .enum(TX_SORTS)

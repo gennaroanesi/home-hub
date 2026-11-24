@@ -18,7 +18,7 @@ export type TxFilters = {
   /** null = the month picked on the screen. */
   custom: { from: string; to: string } | null;
   sort: TxSort;
-  direction: "" | "in" | "out";
+  direction: "" | "in" | "out" | "spending";
   uncategorized: boolean;
   /** "" = every budget; household or a person id. */
   ledger: string;
@@ -103,6 +103,7 @@ export function TransactionFiltersSheet({
             <Chip label="In and out" on={!d.direction} onPress={() => set({ direction: "" })} />
             <Chip label="Money in" on={d.direction === "in"} onPress={() => set({ direction: "in" })} />
             <Chip label="Money out" on={d.direction === "out"} onPress={() => set({ direction: "out" })} />
+            <Chip label="Spending" on={d.direction === "spending"} onPress={() => set({ direction: "spending" })} />
             <Chip label="Needs category" on={d.uncategorized} color={WARN} onPress={() => set({ uncategorized: !d.uncategorized })} />
           </Section>
 

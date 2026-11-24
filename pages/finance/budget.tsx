@@ -9,6 +9,7 @@
 // through the save_finance_budget op, which versions lines.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import NextLink from "next/link";
 import { Button } from "@heroui/button";
 import { Card, CardBody, CardHeader } from "@heroui/card";
 import { Chip } from "@heroui/chip";
@@ -232,7 +233,7 @@ export default function BudgetPage() {
             <Stat
               label={ledger === HOUSEHOLD ? "We planned to put in" : ledger === ALL_LEDGERS ? "Planned income, everyone" : `${whose}'s planned income`}
               value={view.planned}
-              sub={<>received <Money value={view.received} /></>}
+              sub={<IncomeGap planned={view.planned} received={view.received} inProgress={range.toIso >= today} />}
             />
             <Stat
               label="Budgeted to spend"
@@ -254,6 +255,8 @@ export default function BudgetPage() {
               label="Spent in total"
               value={view.spentTotal}
               sub={view.overspend > 0 ? <span className="text-danger-600">{fmtCurrency(view.overspend)} over on some lines</span> : "no line over"}
+              // Every charge behind the number, in Transactions (same rules: lib/finance/tx-filter.ts "spending").
+              href={`/finance/transactions?dir=spending${ledger === ALL_LEDGERS ? "" : `&ledger=${encodeURIComponent(ledger)}`}&from=${range.fromIso}&to=${range.toIso > today ? today : range.toIso}`}
             />
           </div>
 
@@ -614,15 +617,33 @@ export default function BudgetPage() {
   );
 }
 
-function Stat({ label, value, sub }: { label: string; value: number; sub?: React.ReactNode }) {
-  return (
-    <Card>
-      <CardBody className="gap-0.5">
-        <span className="text-xs text-default-500">{label}</span>
-        <Money value={value} cents={false} className="text-xl font-semibold" />
-        {sub && <span className="text-xs text-default-500">{sub}</span>}
-      </CardBody>
+function Stat({ label, value, sub, href }: { label: string; value: number; sub?: React.ReactNode; href?: string }) {
+  const body = (
+    <CardBody className="gap-0.5">
+      <span className="text-xs text-default-500">{label}</span>
+      <Money value={value} cents={false} className="text-xl font-semibold" />
+      {sub && <span className="text-xs text-default-500">{sub}</span>}
+      {href && <span className="text-xs text-primary mt-0.5">See the transactions ›</span>}
+    </CardBody>
+  );
+  return href ? (
+    <Card as={NextLink} href={href} isPressable className="text-left">
+      {body}
     </Card>
+  ) : (
+    <Card>{body}</Card>
+  );
+}
+
+/** Received against planned: what's still to come (or short, once the period is over), or the surplus. */
+function IncomeGap({ planned, received, inProgress }: { planned: number; received: number; inProgress: boolean }) {
+  const gap = Math.round((received - planned) * 100) / 100;
+  return (
+    <>
+      received <Money value={received} />
+      {gap < 0 && <span className={inProgress ? "" : "text-danger-600"}> · {fmtCurrency(-gap)} {inProgress ? "still to come" : "short"}</span>}
+      {gap > 0 && <span className="text-success-600"> · {fmtCurrency(gap)} more than planned</span>}
+    </>
   );
 }
 

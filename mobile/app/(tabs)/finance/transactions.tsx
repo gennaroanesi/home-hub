@@ -109,7 +109,7 @@ export default function FinanceTransactions() {
   // What's on, each removable.
   const onChips: Array<{ key: string; label: string; remove: () => void; color?: string }> = [
     ...(filters.uncategorized ? [{ key: "uncat", label: "Needs category", color: WARN, remove: () => setFilters({ ...filters, uncategorized: false }) }] : []),
-    ...(filters.direction ? [{ key: "dir", label: filters.direction === "in" ? "Money in" : "Money out", remove: () => setFilters({ ...filters, direction: "" as const }) }] : []),
+    ...(filters.direction ? [{ key: "dir", label: filters.direction === "in" ? "Money in" : filters.direction === "spending" ? "Spending" : "Money out", remove: () => setFilters({ ...filters, direction: "" as const }) }] : []),
     ...(filters.ledger ? [{ key: "ledger", label: `Counts in ${ledgers.find((l) => l.key === filters.ledger)?.name ?? "?"}`, remove: () => setFilters({ ...filters, ledger: "" }) }] : []),
     ...filters.accountIds.map((id) => ({ key: `a-${id}`, label: nameOf(accounts, id), remove: () => setFilters({ ...filters, accountIds: filters.accountIds.filter((x) => x !== id) }) })),
     ...filters.categories.map((c) => ({ key: `c-${c}`, label: c, remove: () => setFilters({ ...filters, categories: filters.categories.filter((x) => x !== c) }) })),

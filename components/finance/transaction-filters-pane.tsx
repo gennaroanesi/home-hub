@@ -13,7 +13,7 @@ import { UNCATEGORIZED } from "@/lib/finance/categories";
 
 export type WebTxFilters = {
   sort: TxSort;
-  direction: "" | "in" | "out";
+  direction: "" | "in" | "out" | "spending";
   /** Category names; UNCATEGORIZED = "needs a category". */
   cats: string[];
   ledger: string;
@@ -87,6 +87,9 @@ export function TransactionFiltersPane({
             </Toggle>
             <Toggle on={f.direction === "out"} onClick={() => onChange({ direction: "out" })}>
               Money out
+            </Toggle>
+            <Toggle on={f.direction === "spending"} onClick={() => onChange({ direction: "spending" })}>
+              Spending
             </Toggle>
             <Toggle on={uncategorized} warn onClick={() => onChange({ cats: uncategorized ? picked : [...picked, UNCATEGORIZED] })}>
               Needs category

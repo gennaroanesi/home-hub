@@ -230,6 +230,15 @@ budget, `canTakeRuleLedger` never touches MANUAL or SCHEDULE (rows from before
 the field keep a non-account ledger as a choice). "Remember for similar" puts
 the budget picked in the same edit on the new rule.
 
+**Everything spent, and the income gap (2026-11-23).** "Spent in total" on
+the budget opens Transactions filtered to `dir=spending` for that budget
+and period: money out as the budget counts it (posted, not transfers / card
+payments / income, not in a spend group kept out of the budget), the
+`spending` direction in `lib/finance/tx-filter.ts` (also on the phone and
+`list_finance_transactions`). Its total matches the card (checked against
+prod, Nov 2026). The planned-income card says what's still to come (or
+short, once the period is over) or the surplus.
+
 **Budget drill-in (2026-11-23).** On /finance/budget every spending line,
 every line for a stretch of dates and every "Not budgeted" category opens
 to its transactions (`components/finance/budget-tx-list.tsx`), each with

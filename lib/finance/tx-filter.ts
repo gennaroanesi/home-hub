@@ -4,6 +4,7 @@
 
 import { CATEGORY_RULES, categoryCovers, categoryParts, effectiveCategory, parseLineItems, UNCATEGORIZED, type CategoryRule } from "./categories";
 import { HOUSEHOLD, ledgerParts } from "./ledger";
+import { spendParts } from "./budget";
 import type { TxLike } from "./types";
 
 export const TX_SORTS = ["newest", "oldest", "largest", "smallest", "description"] as const;
@@ -26,7 +27,8 @@ export type TxFilter = {
   personIds?: string[];
   /** A spend group, or NO_SPEND_GROUP. */
   spendGroupId?: string;
-  direction?: "in" | "out";
+  /** "spending": money out as the budget counts it (posted, not transfers, card payments or a spend group kept out of the budget). */
+  direction?: "in" | "out" | "spending";
   /** Counts (at least partly) in this budget: "household" or a person id. */
   ledger?: string;
 };
@@ -43,6 +45,7 @@ export function txMatches(
   if (f.accountIds?.length && !f.accountIds.includes(t.accountId)) return false;
   if (f.direction === "in" && amount <= 0) return false;
   if (f.direction === "out" && amount >= 0) return false;
+  if (f.direction === "spending" && (t.status === "PENDING" || t.outOfBudget || spendParts(t).length === 0)) return false;
   if (f.personIds?.length && !(amount > 0 && f.personIds.includes(t.personId ?? ""))) return false;
   if (f.spendGroupId === NO_SPEND_GROUP ? !!t.spendGroupId : f.spendGroupId && t.spendGroupId !== f.spendGroupId) return false;
   if (f.uncategorized && effectiveCategory(t, rules) !== UNCATEGORIZED) return false;

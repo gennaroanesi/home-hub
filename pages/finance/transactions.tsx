@@ -319,7 +319,7 @@ export default function TransactionsPage() {
   }
   const activeChips: Array<{ key: string; label: string; warn?: boolean; remove: () => void }> = [
     ...(cats.includes(UNCATEGORIZED) ? [{ key: "uncat", label: "Needs category", warn: true, remove: () => setCats(cats.filter((c) => c !== UNCATEGORIZED)) }] : []),
-    ...(direction ? [{ key: "dir", label: direction === "in" ? "Money in" : "Money out", remove: () => setDirection("") }] : []),
+    ...(direction ? [{ key: "dir", label: direction === "in" ? "Money in" : direction === "spending" ? "Spending" : "Money out", remove: () => setDirection("") }] : []),
     ...(ledgerFilter ? [{ key: "ledger", label: `Counts in ${ledgerLabel(ledgerFilter, refs.people)}`, remove: () => setLedgerFilter("") }] : []),
     ...(group ? [{ key: "group", label: group === NONE ? "No group" : (groupName.get(group) ?? "Group"), remove: () => setGroup("") }] : []),
     ...accounts.map((id) => ({ key: `a-${id}`, label: accName.get(id) ?? "Account", remove: () => setAccounts(accounts.filter((x) => x !== id)) })),
