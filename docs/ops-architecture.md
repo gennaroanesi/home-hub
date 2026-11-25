@@ -53,7 +53,28 @@ scripts/hh.ts              generic CLI over the external API (dry run unless --y
 - **Long ops** (Claude calls) keep the async pattern: write a GENERATING row,
   return its id, let the client poll. AppSync times out at 30s.
 - **Person:** ops take `personId` or `personName`; if neither, the actor
-  (Janet's sender, the API key's `MUSE_SENDER`). The web always passes `personId`.
+  (Janet's sender, the API client's `sender`). The web always passes `personId`.
+
+## API clients (keys for third-party services)
+
+Each external caller has its own bearer key, so one can be revoked without
+breaking the others. The list is the Secrets Manager secret
+`home-hub/api-clients` (`{"clients": [{name, keyHash, sender, disabledAt}]}`,
+lib/api-clients.ts): only the key's SHA-256 is stored, and `sender` is the
+household member the client acts as. `withApiKey` re-reads it every 5 minutes,
+so adding or revoking a key needs no redeploy. The Hosting compute role's read
+grant is in amplify/backend.ts (needs `HOME_HUB_COMPUTE_ROLE_NAME` at deploy).
+
+```bash
+AWS_PROFILE=amplify-dev npm run api-clients -- add <name> --sender <member> [--note "…"]   # prints the key once
+AWS_PROFILE=amplify-dev npm run api-clients -- list | rotate <name> | revoke <name> | restore <name> | remove <name>
+```
+
+Give the service the key, `Authorization: Bearer <key>`, and the spec at
+`/api/v1/openapi.json`. The old single `MUSE_API_KEY` / `MUSE_SENDER` from the
+Hosting env still works (logged as client `muse-env`); to move it into the
+secret unchanged: `MUSE_API_KEY=… npm run api-clients -- add muse --sender <member> --key-from-env MUSE_API_KEY`,
+then drop the env vars. Each call logs `[external-api] <client> <method> <path>`.
 
 ## Firewall on the external API
 

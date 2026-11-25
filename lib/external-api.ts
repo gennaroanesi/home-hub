@@ -1,24 +1,29 @@
 /**
  * Shared plumbing for the external API gateway at /api/v1/*.
  *
- * External clients (assistants like Meta's Muse, the hh CLI) can't do a Cognito login, so this
- * gateway uses a single static bearer key and acts as one household
- * member (MUSE_SENDER). Every request is forwarded to the home-agent
- * Lambda, which owns the tool definitions and executeTool — the
- * gateway never touches DynamoDB itself, so the tool surface and the
- * OpenAPI spec stay in lockstep with what the WhatsApp agent can do.
+ * External clients (assistants like Meta's Muse, the hh CLI, other third-party
+ * services) can't do a Cognito login, so each gets its own static bearer key
+ * and acts as one household member. The keys live in Secrets Manager
+ * (`home-hub/api-clients`, lib/api-clients.ts; add / list / revoke with
+ * scripts/api-clients.ts). Every request is forwarded to the home-agent
+ * Lambda, which owns the tool definitions and executeTool — the gateway
+ * never touches DynamoDB itself, so the tool surface and the OpenAPI spec
+ * stay in lockstep with what the WhatsApp agent can do.
  *
  * Env vars (Amplify Hosting → forwarded to SSR via amplify.yml):
- *   MUSE_API_KEY             — the bearer secret
- *   MUSE_SENDER              — household member name the key acts as
+ *   API_CLIENTS_SECRET_NAME  — optional, defaults to home-hub/api-clients
+ *   MUSE_API_KEY / MUSE_SENDER — legacy single key, still accepted (as client
+ *                              "muse-env") until it's moved into the secret
  *   HOME_AGENT_FUNCTION_NAME — written by backend postBuild from stack outputs
  */
 
-import { createHash, timingSafeEqual } from "crypto";
 import type { NextApiHandler, NextApiRequest, NextApiResponse } from "next";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { GetSecretValueCommand, ResourceNotFoundException, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
+import { API_CLIENTS_SECRET_NAME, hashApiKey, matchApiClient, parseApiClients, type ApiClient } from "./api-clients";
 
 const lambda = new LambdaClient({ region: "us-east-1" });
+const secrets = new SecretsManagerClient({ region: "us-east-1" });
 
 export type ApiTool = {
   name: string;
@@ -33,7 +38,7 @@ export type ApiTool = {
   access?: "read" | "write" | "sensitive";
 };
 
-export type ApiContext = { sender: string };
+export type ApiContext = { sender: string; client: string };
 
 export type ApiHandler = (
   req: NextApiRequest,
@@ -41,29 +46,58 @@ export type ApiHandler = (
   ctx: ApiContext
 ) => void | Promise<void>;
 
-// Hash both sides so the comparison is fixed-length and doesn't leak
-// the key's length through timing.
-function keyMatches(supplied: string, expected: string): boolean {
-  const digest = (v: string) => new Uint8Array(createHash("sha256").update(v).digest());
-  return timingSafeEqual(digest(supplied), digest(expected));
+// The client list is re-read at most every CLIENTS_TTL_MS per SSR container,
+// so a new or revoked key takes effect within that without a redeploy.
+const CLIENTS_TTL_MS = 5 * 60_000;
+let clientsCache: { at: number; clients: ApiClient[] } | null = null;
+
+async function loadSecretClients(): Promise<ApiClient[]> {
+  const now = Date.now();
+  if (clientsCache && now - clientsCache.at < CLIENTS_TTL_MS) return clientsCache.clients;
+  const secretId = process.env.API_CLIENTS_SECRET_NAME || API_CLIENTS_SECRET_NAME;
+  let clients: ApiClient[];
+  try {
+    const out = await secrets.send(new GetSecretValueCommand({ SecretId: secretId }));
+    clients = parseApiClients(out.SecretString);
+  } catch (err) {
+    if (!(err instanceof ResourceNotFoundException)) {
+      // Keep serving the last good list (or the env key) on a transient
+      // error, and retry on the next request rather than in 5 minutes.
+      console.error(`[external-api] reading ${secretId} failed:`, (err as Error)?.message ?? err);
+      return clientsCache?.clients ?? [];
+    }
+    clients = [];
+  }
+  clientsCache = { at: now, clients };
+  return clients;
+}
+
+// The original single key from Amplify Hosting env, kept so Muse / hh keep
+// working until their key is in the secret.
+function envClient(): ApiClient | null {
+  const key = process.env.MUSE_API_KEY;
+  const sender = process.env.MUSE_SENDER;
+  if (!key || !sender) return null;
+  return { name: "muse-env", keyHash: hashApiKey(key), sender };
 }
 
 export function withApiKey(handler: ApiHandler): NextApiHandler {
   return async (req, res) => {
     // Auth first — before any config check — so an unauthenticated
     // caller can't probe which pieces are deployed.
-    const expected = process.env.MUSE_API_KEY ?? "";
     const header = req.headers.authorization ?? "";
     const supplied = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-    if (!expected || !supplied || !keyMatches(supplied, expected)) {
-      return res.status(401).json({ error: "Unauthorized" });
-    }
+    if (!supplied) return res.status(401).json({ error: "Unauthorized" });
 
-    const sender = process.env.MUSE_SENDER;
-    if (!sender || !process.env.HOME_AGENT_FUNCTION_NAME) {
+    const env = envClient();
+    const client = matchApiClient(supplied, [...(await loadSecretClients()), ...(env ? [env] : [])]);
+    if (!client) return res.status(401).json({ error: "Unauthorized" });
+
+    if (!process.env.HOME_AGENT_FUNCTION_NAME) {
       return res.status(500).json({ error: "Server misconfigured" });
     }
-    return handler(req, res, { sender });
+    console.log(`[external-api] ${client.name} ${req.method} ${req.url?.split("?")[0]}`);
+    return handler(req, res, { sender: client.sender, client: client.name });
   };
 }
 
