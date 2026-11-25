@@ -1717,6 +1717,10 @@ const schema = a
         title: a.string(), // optional headline; rest of the note is markdown
         content: a.string().required(),
         createdBy: a.string(),
+        // Whose note: empty = household (everyone's), like a task's
+        // assignedPersonIds. A person filter shows theirs + the household's
+        // (lib/note-owners.ts).
+        ownerPersonIds: a.id().array(),
       })
       .secondaryIndexes((index) => [index("parentId")])
       .authorization((allow) => [

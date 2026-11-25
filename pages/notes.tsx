@@ -3,7 +3,8 @@
 // Standalone /notes page. Lists every homeNote across the household,
 // most-recently-edited first, with a parent-type filter. Click a note
 // to edit; click the parent badge to jump to the parent record. Mirrors
-// /attachments and /reminders in look/structure.
+// /attachments and /reminders in look/structure. The person filter shows
+// that person's notes plus household ones (lib/note-owners.ts), like /tasks.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
@@ -28,10 +29,14 @@ import {
 import DefaultLayout from "@/layouts/default";
 import { NoteModal, type NoteParentType } from "@/components/note-modal";
 import type { Schema } from "@/amplify/data/resource";
+import { householdMembers } from "@/lib/household";
+import { listAllPages } from "@/lib/list-all";
+import { noteOwnerIds, noteOwnerLabel, noteVisibleTo } from "@/lib/note-owners";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Note = Schema["homeNote"]["type"];
+type Person = Schema["homePerson"]["type"];
 
 const Markdown = dynamic(() => import("@uiw/react-markdown-preview"), {
   ssr: false,
@@ -79,6 +84,8 @@ export default function NotesPage() {
     "ALL"
   );
   const [search, setSearch] = useState("");
+  const [people, setPeople] = useState<Person[]>([]);
+  const [personFilter, setPersonFilter] = useState<string>("all");
   const [editing, setEditing] = useState<Note | null>(null);
   const modal = useDisclosure();
 
@@ -98,14 +105,16 @@ export default function NotesPage() {
     setLoading(true);
     // Pull notes + the three parent collections in parallel so we can
     // resolve parent labels without N round-trips.
-    const [notesRes, tasksRes, eventsRes, tripsRes, visitsRes, providersRes] = await Promise.all([
+    const [notesRes, tasksRes, eventsRes, tripsRes, visitsRes, providersRes, persons] = await Promise.all([
       client.models.homeNote.list(),
       client.models.homeTask.list(),
       client.models.homeCalendarEvent.list(),
       client.models.homeTrip.list(),
       client.models.homeMedicalVisit.list({ limit: 500 }),
       client.models.homeHealthProvider.list({ limit: 500 }),
+      listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
     ]);
+    setPeople(householdMembers(persons).sort((a, b) => a.name.localeCompare(b.name)));
     const sorted = [...(notesRes.data ?? [])].sort(
       (a, b) =>
         new Date(b.updatedAt ?? b.createdAt).getTime() -
@@ -128,7 +137,7 @@ export default function NotesPage() {
   }, []);
 
   const filtered = useMemo(() => {
-    let result = notes;
+    let result = notes.filter((n) => noteVisibleTo(n, personFilter));
     if (filter === "STANDALONE") {
       result = result.filter((n) => !n.parentType || !n.parentId);
     } else if (filter !== "ALL") {
@@ -148,7 +157,7 @@ export default function NotesPage() {
     }
     return result;
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes, filter, search, parents]);
+  }, [notes, filter, search, parents, personFilter]);
 
   function parentLabel(n: Note): string {
     if (!n.parentType || !n.parentId) return "—";
@@ -212,6 +221,20 @@ export default function NotesPage() {
             onClear={() => setSearch("")}
           />
           <Select
+            label="Person"
+            size="sm"
+            selectedKeys={[personFilter]}
+            onChange={(e) => setPersonFilter(e.target.value || "all")}
+            className="max-w-[150px]"
+          >
+            <>
+              <SelectItem key="all" textValue="All">All</SelectItem>
+              {people.map((p) => (
+                <SelectItem key={p.id} textValue={p.name}>{p.name}</SelectItem>
+              )) as any}
+            </>
+          </Select>
+          <Select
             label="Filter"
             size="sm"
             selectedKeys={[filter]}
@@ -268,6 +291,11 @@ export default function NotesPage() {
                           color={PARENT_COLORS[ptype]}
                         >
                           {PARENT_LABELS[ptype]}: {parentLabel(n)}
+                        </Chip>
+                      )}
+                      {noteOwnerIds(n).length > 0 && (
+                        <Chip size="sm" variant="bordered">
+                          {noteOwnerLabel(n, people)}
                         </Chip>
                       )}
                     </div>

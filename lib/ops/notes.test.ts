@@ -2,6 +2,12 @@ import { describe, expect, it } from "vitest";
 import type { OpContext } from "./context";
 import { runOp } from "./registry";
 
+const people = [
+  { id: "g", name: "Gennaro", cognitoUsername: "g", groups: ["home-users"] },
+  { id: "c", name: "Cristine", cognitoUsername: "c", groups: ["home-users"] },
+  { id: "x", name: "Friend", groups: [] },
+];
+
 function setup(notes: any[] = []) {
   const rows = notes.map((n) => ({ ...n }));
   const homeNote = {
@@ -18,8 +24,9 @@ function setup(notes: any[] = []) {
       return { data: row };
     },
   };
+  const homePerson = { list: async () => ({ data: people, nextToken: null }) };
   const ctx: OpContext = {
-    client: { models: { homeNote } },
+    client: { models: { homeNote, homePerson } },
     storage: { storeFromUrl: async () => "", copyUpload: async () => "" },
     actor: { via: "whatsapp", personName: "Gennaro" },
   };
@@ -99,5 +106,43 @@ describe("save_note", () => {
     expect(await err({ noteId: "n1", parentId: "t1", content: "x" })).toMatch(/can't be changed/);
     expect(await err({ title: "No body" })).toMatch(/content is required/);
     expect(await err({ content: "x", parentType: "TRIP" })).toMatch(/provided together/);
+  });
+});
+
+describe("note owners", () => {
+  const mine = { id: "m", title: "Gifts", content: "- watch", ownerPersonIds: ["g"], updatedAt: "2026-11-01T00:00:00Z" };
+  const hers = { id: "h", title: "Gifts", content: "- bag", ownerPersonIds: ["c"], updatedAt: "2026-11-02T00:00:00Z" };
+
+  it("filters to a person's notes plus the household's, and names the owners", async () => {
+    const { ctx } = setup([stores, mine, hers]);
+    const g: any = await runOp(ctx, "list_notes", { personName: "gennaro" });
+    expect(g.result.notes.map((n: any) => n.id)).toEqual(["m", "n1"]);
+    expect(g.result.notes[0]).toMatchObject({ ownerPersonIds: ["g"], owners: ["Gennaro"] });
+    expect(g.result.notes[1]).toMatchObject({ ownerPersonIds: [], owners: [] });
+    const c: any = await runOp(ctx, "list_notes", { personId: "c" });
+    expect(c.result.notes.map((n: any) => n.id)).toEqual(["h", "n1"]);
+    expect(((await runOp(ctx, "list_notes", { personName: "Friend" })) as any).error).toMatch(/No household member/);
+  });
+
+  it("creates household notes by default and sets or clears owners", async () => {
+    const { ctx, rows } = setup();
+    await runOp(ctx, "save_note", { title: "Wifi", content: "pw" });
+    expect(rows[0].ownerPersonIds).toEqual([]);
+    await runOp(ctx, "save_note", { noteId: rows[0].id, ownerNames: ["Cristine"] });
+    expect(rows[0].ownerPersonIds).toEqual(["c"]);
+    await runOp(ctx, "save_note", { noteId: rows[0].id, ownerNames: ["household"] });
+    expect(rows[0].ownerPersonIds).toEqual([]);
+    // Both adults own it = the household's.
+    await runOp(ctx, "save_note", { noteId: rows[0].id, ownerNames: ["both"] });
+    expect(rows[0].ownerPersonIds).toEqual([]);
+  });
+
+  it("lets two people each keep a note with the same title, but not clash with a household one", async () => {
+    const { ctx, rows } = setup([mine]);
+    const theirs: any = await runOp(ctx, "save_note", { title: "Gifts", content: "- bag", ownerNames: ["Cristine"] });
+    expect(theirs.result.note.owners).toEqual(["Cristine"]);
+    const shared: any = await runOp(ctx, "save_note", { title: "Gifts", content: "- x" });
+    expect(shared.error).toMatch(/already a note/);
+    expect(rows).toHaveLength(2);
   });
 });

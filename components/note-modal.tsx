@@ -10,6 +10,9 @@
 // is the default — caller renders one modal and reopens it as needed.
 // When both parentType and parentId are omitted in create mode the
 // note is saved standalone (used by the /notes page).
+//
+// Owners: empty = a household note (lib/note-owners.ts), like a task's
+// assignees.
 
 import React, { useEffect, useState } from "react";
 import dynamic from "next/dynamic";
@@ -24,12 +27,17 @@ import {
   ModalFooter,
 } from "@heroui/modal";
 import { addToast } from "@heroui/react";
+import { PeoplePicker } from "@/components/people-picker";
+import { householdMembers } from "@/lib/household";
+import { listAllPages } from "@/lib/list-all";
+import { noteOwnerIds } from "@/lib/note-owners";
 import { callOp } from "@/lib/ops-client";
 import type { Schema } from "@/amplify/data/resource";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
 type Note = Schema["homeNote"]["type"];
+type Person = Schema["homePerson"]["type"];
 export type NoteParentType = "TASK" | "EVENT" | "TRIP" | "VISIT" | "PROVIDER";
 
 // Editor is client-only — its `window` references break SSR
@@ -61,6 +69,8 @@ export function NoteModal({
 }: NoteModalProps) {
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
+  const [ownerIds, setOwnerIds] = useState<string[]>([]);
+  const [people, setPeople] = useState<Person[]>([]);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -68,11 +78,20 @@ export function NoteModal({
     if (editing) {
       setTitle(editing.title ?? "");
       setContent(editing.content ?? "");
+      setOwnerIds(noteOwnerIds(editing));
     } else {
       setTitle("");
       setContent("");
+      setOwnerIds([]);
     }
   }, [isOpen, editing]);
+
+  useEffect(() => {
+    if (!isOpen || people.length) return;
+    listAllPages<Person>(client.models.homePerson, { limit: 1000 })
+      .then((all) => setPeople(householdMembers(all).sort((a, b) => a.name.localeCompare(b.name))))
+      .catch(() => {});
+  }, [isOpen, people.length]);
 
   async function save(onClose: () => void) {
     if (!content.trim()) {
@@ -82,7 +101,7 @@ export function NoteModal({
     setSaving(true);
     try {
       if (editing) {
-        const r = await callOp(client, "save_note", { noteId: editing.id, title, content });
+        const r = await callOp(client, "save_note", { noteId: editing.id, title, content, ownerPersonIds: ownerIds });
         if ("error" in r) throw new Error(r.error);
         addToast({ title: "Note updated", color: "success" });
         onClose();
@@ -93,6 +112,7 @@ export function NoteModal({
         const r = await callOp(client, "save_note", {
           title,
           content,
+          ownerPersonIds: ownerIds,
           ...(parentType ? { parentType } : {}),
           ...(parentId ? { parentId } : {}),
         });
@@ -129,6 +149,14 @@ export function NoteModal({
                 placeholder="WiFi password, packing list, …"
                 value={title}
                 onValueChange={setTitle}
+              />
+              <PeoplePicker
+                label="Whose"
+                people={people}
+                selectedIds={ownerIds}
+                onChange={setOwnerIds}
+                placeholder="Household"
+                description="Leave empty for a household note"
               />
               <div data-color-mode="light">
                 <MDEditor
