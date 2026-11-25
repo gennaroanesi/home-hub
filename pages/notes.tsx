@@ -32,6 +32,7 @@ import type { Schema } from "@/amplify/data/resource";
 import { householdMembers } from "@/lib/household";
 import { listAllPages } from "@/lib/list-all";
 import { noteOwnerIds, noteOwnerLabel, noteVisibleTo } from "@/lib/note-owners";
+import { searchNotes } from "@/lib/note-search";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -105,8 +106,9 @@ export default function NotesPage() {
     setLoading(true);
     // Pull notes + the three parent collections in parallel so we can
     // resolve parent labels without N round-trips.
-    const [notesRes, tasksRes, eventsRes, tripsRes, visitsRes, providersRes, persons] = await Promise.all([
-      client.models.homeNote.list(),
+    const [allNotes, tasksRes, eventsRes, tripsRes, visitsRes, providersRes, persons] = await Promise.all([
+      // Every page, so search covers every note.
+      listAllPages<Note>(client.models.homeNote, { limit: 1000 }),
       client.models.homeTask.list(),
       client.models.homeCalendarEvent.list(),
       client.models.homeTrip.list(),
@@ -115,7 +117,7 @@ export default function NotesPage() {
       listAllPages<Person>(client.models.homePerson, { limit: 1000 }),
     ]);
     setPeople(householdMembers(persons).sort((a, b) => a.name.localeCompare(b.name)));
-    const sorted = [...(notesRes.data ?? [])].sort(
+    const sorted = [...allNotes].sort(
       (a, b) =>
         new Date(b.updatedAt ?? b.createdAt).getTime() -
         new Date(a.updatedAt ?? a.createdAt).getTime()
@@ -143,19 +145,9 @@ export default function NotesPage() {
     } else if (filter !== "ALL") {
       result = result.filter((n) => n.parentType === filter);
     }
-    const q = search.trim().toLowerCase();
-    if (q) {
-      result = result.filter((n) => {
-        const ptype = n.parentType as NoteParentType | null;
-        const parentName = ptype && n.parentId ? parentLabel(n) : "";
-        const haystack = [n.title, n.content, parentName]
-          .filter(Boolean)
-          .join(" ")
-          .toLowerCase();
-        return haystack.includes(q);
-      });
-    }
-    return result;
+    // Every word must appear in the title, content or parent's name; title
+    // hits first (lib/note-search.ts, same as list_notes).
+    return searchNotes(result, search, (n) => (n.parentType && n.parentId ? parentLabel(n) : ""));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [notes, filter, search, parents, personFilter]);
 

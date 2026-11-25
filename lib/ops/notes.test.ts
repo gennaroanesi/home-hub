@@ -146,3 +146,16 @@ describe("note owners", () => {
     expect(rows).toHaveLength(2);
   });
 });
+
+describe("list_notes search", () => {
+  it("ranks title hits first and returns a snippet", async () => {
+    const wifiInBody = { id: "a", title: "Places", content: "Cafe X, wifi is good", updatedAt: "2026-11-05T00:00:00Z" };
+    const wifiTitle = { id: "b", title: "Wifi", content: "Password: hunter2", updatedAt: "2026-11-01T00:00:00Z" };
+    const { ctx } = setup([wifiInBody, wifiTitle, stores]);
+    const out: any = await runOp(ctx, "list_notes", { query: "WIFI" });
+    expect(out.result.notes.map((n: any) => n.id)).toEqual(["b", "a"]);
+    expect(out.result.notes[1].snippet).toContain("wifi is good");
+    const plain: any = await runOp(ctx, "list_notes", {});
+    expect(plain.result.notes[0].snippet).toBeUndefined();
+  });
+});

@@ -7,6 +7,7 @@ import { z } from "zod/v4";
 import { householdMembers } from "../household";
 import { listAllPages } from "../list-all";
 import { noteOwnerIds, noteVisibleTo, ownersOverlap } from "../note-owners";
+import { noteSnippet, searchNotes } from "../note-search";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 
@@ -85,10 +86,10 @@ export const listNotes = defineOp({
   domain: "notes",
   access: "read",
   description:
-    "Search the household's notes, most recently edited first, with their full markdown content. Notes are standalone (lists and reference info, e.g. a list of clothing stores) or attached to a task, event, trip, medical visit or health provider. Each is the household's (owners empty) or belongs to some members. Answers 'what's on my clothing stores list?', 'do we have a note about the wifi?', 'what notes are on the Seattle trip?'. personId / personName narrows to that person's notes plus the household's (for 'my notes', pass the speaker). Use query to find a note by words in its title or content; use it before save_note to get the noteId.",
+    "Search the household's notes, with their full markdown content: most recently edited first, or best match first with a query. Notes are standalone (lists and reference info, e.g. a list of clothing stores) or attached to a task, event, trip, medical visit or health provider. Each is the household's (owners empty) or belongs to some members. Answers 'what's on my clothing stores list?', 'do we have a note about the wifi?', 'what notes are on the Seattle trip?'. personId / personName narrows to that person's notes plus the household's (for 'my notes', pass the speaker). Use query to find a note by words in its title or content (every word must appear; case and accents ignored; title matches rank first, and each result carries a snippet); use it before save_note to get the noteId.",
   input: z.object({
     noteId: z.string().optional().describe("Return just this note."),
-    query: z.string().optional().describe("Words that must all appear in the title or content."),
+    query: z.string().optional().describe("Words that must all appear in the title or content (any order, case and accents ignored)."),
     standalone: z.boolean().optional().describe("true = only notes not attached to anything."),
     parentType: z.enum(PARENT_TYPES).optional(),
     parentId: z.string().optional(),
@@ -98,10 +99,13 @@ export const listNotes = defineOp({
   }),
   output: z.object({
     count: z.number().describe("Matches before the limit"),
-    notes: z.array(NoteOut),
+    notes: z.array(
+      NoteOut.extend({
+        snippet: z.string().nullable().optional().describe("With a query: the content around the first match"),
+      }),
+    ),
   }),
   async run(ctx, input) {
-    const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
     const folks = await household(ctx);
     const person = input.personId ? memberById(folks, input.personId) : input.personName ? memberByName(folks, input.personName) : null;
     const out = (await allNotes(ctx)).filter((n) => {
@@ -109,12 +113,14 @@ export const listNotes = defineOp({
       if (person && !noteVisibleTo(n, person.id)) return false;
       if (input.standalone && n.parentId) return false;
       if (input.parentType && n.parentType !== input.parentType) return false;
-      if (input.parentId && n.parentId !== input.parentId) return false;
-      const hay = `${n.title ?? ""} ${n.content ?? ""}`.toLowerCase();
-      return words.every((w) => hay.includes(w));
+      return !(input.parentId && n.parentId !== input.parentId);
     });
-    out.sort((x, y) => (y.updatedAt ?? "").localeCompare(x.updatedAt ?? ""));
-    return { count: out.length, notes: out.slice(0, input.limit ?? 50).map((n) => noteForApi(n, folks)) };
+    const found = searchNotes(out, input.query);
+    const q = input.query?.trim();
+    return {
+      count: found.length,
+      notes: found.slice(0, input.limit ?? 50).map((n) => ({ ...noteForApi(n, folks), ...(q ? { snippet: noteSnippet(n, q) } : {}) })),
+    };
   },
 });
 
