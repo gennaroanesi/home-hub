@@ -3,7 +3,7 @@
  *
  * OpenAPI 3.1 spec for the external API, generated from the agent's
  * tool definitions so it can't drift from what /tools/{name} accepts.
- * Auth: `Authorization: Bearer <MUSE_API_KEY>` (see lib/external-api.ts).
+ * Auth: `Authorization: Bearer <client key>` (see lib/external-api.ts, scripts/api-clients.ts).
  */
 import { baseUrlFor, buildOpenApiSpec, listTools, withApiKey } from "@/lib/external-api";
 

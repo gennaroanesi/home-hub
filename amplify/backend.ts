@@ -1118,9 +1118,9 @@ new CfnOutput(backend.stack, "whatsappBotBuildArtifactsPrefix", {
   value: `s3://${HOME_HUB_BUCKET}/${BUILD_ARTIFACTS_PREFIX}`,
 });
 
-// ── Muse API gateway — Next.js SSR → agent Lambda ───────────────────────────
+// ── External API gateway — Next.js SSR → agent Lambda ───────────────────────
 // pages/api/v1/* invokes the agent Lambda directly from the Hosting
-// compute role. That role is managed in the Amplify console (not this
+// compute role, and reads the API clients' secret. That role is managed in the Amplify console (not this
 // stack), so we import it by name and attach just the invoke grant.
 // The function name is forwarded to the SSR runtime via amplify.yml.
 // The policy must live in the agent Lambda's own stack: putting it in
@@ -1140,6 +1140,13 @@ if (computeRoleName) {
           effect: Effect.ALLOW,
           actions: ["lambda:InvokeFunction"],
           resources: [agentLambda.functionArn],
+        }),
+        // The API clients' key hashes (lib/api-clients.ts), read per request
+        // with a 5-minute cache.
+        new PolicyStatement({
+          effect: Effect.ALLOW,
+          actions: ["secretsmanager:GetSecretValue"],
+          resources: ["arn:aws:secretsmanager:us-east-1:*:secret:home-hub/api-clients-*"],
         }),
       ],
     })
