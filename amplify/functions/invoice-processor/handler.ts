@@ -19,6 +19,8 @@ import { getAmplifyDataClientConfig } from "@aws-amplify/backend/function/runtim
 import { env } from "$amplify/env/invoice-processor";
 import type { Schema } from "../../data/resource";
 import { listAllPages } from "../../../lib/list-all.js";
+import { householdMembers } from "../../../lib/household.js";
+import { personBySenderEmail } from "../../../lib/finance/invoice-owner.js";
 import { listTransactions } from "../../../lib/finance/data.js";
 import { collectEmailSources, gateMail, isPdfAttachment, parseAllowedSenders, parseMail } from "../../../lib/finance/inbound-mail.js";
 import { autoMatchCandidates, extractInvoiceFields } from "../../../lib/finance/invoice-extract.js";
@@ -50,13 +52,19 @@ const sha256 = (b: Buffer) => createHash("sha256").update(b as unknown as Uint8A
 
 export const handler = async (event: any) => {
   const field: string | undefined = event?.fieldName ?? event?.info?.fieldName;
-  if (field === "ingestInvoicePdf") return ingestUploaded(String(event.arguments?.s3Key ?? ""));
+  // The uploader (AppSync's verified login) owns what they upload.
+  if (field === "ingestInvoicePdf") return ingestUploaded(String(event.arguments?.s3Key ?? ""), event.identity?.username ?? null);
   return handleS3(event as S3Event);
 };
 
 // ── Upload path ─────────────────────────────────────────────────────────────
 
-async function ingestUploaded(s3Key: string) {
+/** The household members (whose invoices these can be), with their logins and emails. */
+async function household(client: DataClient): Promise<any[]> {
+  return householdMembers(await listAllPages<any>(client.models.homePerson));
+}
+
+async function ingestUploaded(s3Key: string, username: string | null) {
   if (!isStagingKey("invoice", s3Key)) return { ok: false, error: "s3Key must come from /api/finance/upload-url (kind invoice)" };
   let pdf: Buffer;
   try {
@@ -66,7 +74,9 @@ async function ingestUploaded(s3Key: string) {
   }
   if (!looksLikePdf(pdf)) return { ok: false, error: "That file isn't a PDF" };
   if (pdf.byteLength > MAX_FINANCE_PDF_BYTES) return { ok: false, error: "PDF is larger than 20 MB" };
-  const r = await ingest(await getClient(), pdf, { source: "UPLOAD" });
+  const client = await getClient();
+  const uploader = username ? (await household(client)).find((p) => p.cognitoUsername === username) : null;
+  const r = await ingest(client, pdf, { source: "UPLOAD", ownerPersonIds: uploader ? [uploader.id] : [] });
   return r.status === "created" ? { ok: true, invoiceId: r.id, linkedTransactionId: r.linked } : { ok: false, error: `Already have this invoice`, invoiceId: r.id };
 }
 
@@ -100,6 +110,8 @@ async function processEmail(bucket: string, key: string) {
     return;
   }
   const client = await getClient();
+  // Whoever forwarded it owns it (matched on homePerson.email); else the household's.
+  const sender = personBySenderEmail(gate.from, await household(client));
   for (const source of await collectEmailSources(mail)) {
     try {
       const attached = (source.attachments ?? []).filter(isPdfAttachment).map((a) => a.content);
@@ -112,6 +124,7 @@ async function processEmail(bucket: string, key: string) {
             emailFrom: gate.from,
             emailSubject: source.subject ?? mail.subject ?? null,
             receivedAt: (mail.date ?? new Date()).toISOString(),
+            ownerPersonIds: sender ? [sender.id] : [],
           });
           console.log(`[invoice-processor] ${r.status} ${r.id}`);
         } catch (err) {
@@ -150,9 +163,10 @@ async function renderBodyToPdf(mail: ParsedMail): Promise<Buffer> {
 
 // ── Shared ingest ───────────────────────────────────────────────────────────
 
-type IngestMeta =
+type IngestMeta = { ownerPersonIds: string[] } & (
   | { source: "UPLOAD" }
-  | { source: "EMAIL"; raw: Buffer; emailFrom: string; emailSubject: string | null; receivedAt: string };
+  | { source: "EMAIL"; raw: Buffer; emailFrom: string; emailSubject: string | null; receivedAt: string }
+);
 
 async function ingest(client: DataClient, pdf: Buffer, meta: IngestMeta): Promise<{ status: "created" | "duplicate"; id: string; linked?: string | null }> {
   const contentHash = sha256(pdf);
@@ -200,6 +214,8 @@ async function ingest(client: DataClient, pdf: Buffer, meta: IngestMeta): Promis
     parseStatus,
     parseError: error ?? (fields?.total == null ? "Total not found in the document" : null),
     paid: false,
+    ownerPersonIds: meta.ownerPersonIds,
+    private: false,
   });
   if (r.errors?.length) throw new Error(r.errors[0].message);
 

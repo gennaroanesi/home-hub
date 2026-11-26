@@ -916,4 +916,29 @@ describe("invoices", () => {
     expect(((await runOp(ctx, "save_invoice", { invoiceId: "inv2" })) as any).error).toMatch(/Nothing to change/);
     expect(((await runOp(ctx, "save_invoice", { invoiceId: "nope", paid: true })) as any).error).toMatch(/No invoice/);
   });
+
+  it("keeps a private invoice to its owner: hidden from others and from group chats", async () => {
+    const folks = [
+      { id: "gen", name: "Gennaro", cognitoUsername: "g", groups: ["home-users"] },
+      { id: "cris", name: "Cristine", cognitoUsername: "c", groups: ["home-users"] },
+    ];
+    const { ctx, tables } = setup({ homePerson: folks, homeInvoice: [plumber, { ...crate, total: 99 }] });
+    // Gennaro (the ctx's person) files the Crate one as his, private.
+    const saved: any = await runOp(ctx, "save_invoice", { invoiceId: "inv2", ownerNames: ["Gennaro"], private: true });
+    expect(saved.result.invoice).toMatchObject({ owners: ["Gennaro"], private: true });
+    expect(((await runOp(ctx, "list_invoices", {})) as any).result.count).toBe(2);
+    const asCris = { ...ctx, actor: { via: "api" as const, personName: "Cristine" } };
+    const theirs: any = await runOp(asCris, "list_invoices", {});
+    expect(theirs.result.invoices.map((i: any) => i.id)).toEqual(["inv1"]);
+    expect(((await runOp(asCris, "save_invoice", { invoiceId: "inv2", notes: "x" })) as any).error).toMatch(/No invoice/);
+    const group = { ...ctx, actor: { ...ctx.actor, groupChat: true } };
+    expect(((await runOp(group, "list_invoices", {})) as any).result.count).toBe(1);
+    // Private needs an owner, and only an owner can set it.
+    expect(((await runOp(ctx, "save_invoice", { invoiceId: "inv1", private: true })) as any).error).toMatch(/needs an owner/);
+    expect(((await runOp(ctx, "save_invoice", { invoiceId: "inv1", ownerNames: ["Cristine"], private: true })) as any).error).toMatch(/only keep an invoice private/);
+    // Owner filter: Cristine's view of "mine" is hers plus the household's.
+    await runOp(ctx, "save_invoice", { invoiceId: "inv1", ownerNames: ["Cristine"] });
+    expect(((await runOp(ctx, "list_invoices", { personName: "Gennaro" })) as any).result.invoices.map((i: any) => i.id)).toEqual(["inv2"]);
+    expect(tables.homeInvoice.find((i: any) => i.id === "inv1").ownerPersonIds).toEqual(["cris"]);
+  });
 });

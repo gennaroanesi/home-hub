@@ -4,7 +4,7 @@
 // payment (the auto-match rule's exact ones plus anything within 5% and 30
 // days, lib/finance/invoice-screen.ts paymentCandidates) and link it, open
 // the PDF through a signed link, and delete. The original .eml isn't offered
-// on the phone.
+// on the phone. Whose it is and whether it's private: lib/finance/invoice-owner.ts.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { ActivityIndicator, Alert, Pressable, Switch, Text, View } from "react-native";
@@ -30,6 +30,9 @@ import {
 import { CategoryField, DateField, Field, FormSheet, Input, ff } from "./form";
 import { ACCENT, Chip, DANGER, GOOD, Money, WARN, fs, useFinanceAccounts } from "./ui";
 import { openFinancePdf } from "./paycheck-screen-pdf";
+import { usePeople } from "../../lib/use-people";
+import { usePerson } from "../../lib/use-person";
+import { invoiceOwnerError } from "../../../lib/finance/invoice-owner";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -38,6 +41,9 @@ const errText = (e: any) => e?.errors?.[0]?.message ?? e?.message ?? String(e);
 
 export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: any | null; onClose: () => void; onChanged: () => void }) {
   const accounts = useFinanceAccounts();
+  const { people } = usePeople();
+  const me = usePerson();
+  const viewerId = me.status === "found" ? me.person.id : null;
   const accountName = useMemo(() => new Map(accounts.map((a) => [a.id, a.name])), [accounts]);
   const [groups, setGroups] = useState<Array<{ id: string; name: string }>>([]);
   const [form, setForm] = useState<InvoiceForm | null>(null);
@@ -85,6 +91,9 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
 
   async function save(extra: Record<string, unknown> = {}) {
     if (!form || !invoice) return;
+    const ownerErr = invoiceOwnerError(form.ownerPersonIds, form.private);
+    if (ownerErr) return Alert.alert(ownerErr);
+    if (form.private && !form.ownerPersonIds.includes(viewerId ?? "")) return Alert.alert("Only an owner can keep it private", "Add yourself as an owner, or turn Private off.");
     setSaving(true);
     try {
       const r = await getClient().models.homeInvoice.update({ id: invoice.id, ...invoiceUpdate(form), ...extra } as any);
@@ -258,6 +267,34 @@ export function InvoiceDetailSheet({ invoice, onClose, onChanged }: { invoice: a
               </View>
             </Field>
           )}
+          <Field label="Whose">
+            <View style={fs.chipRow}>
+              <Chip label="Household" on={form.ownerPersonIds.length === 0} onPress={() => setForm((f) => (f ? { ...f, ownerPersonIds: [], private: false } : f))} />
+              {people.map((p) => (
+                <Chip
+                  key={p.id}
+                  label={p.name}
+                  on={form.ownerPersonIds.includes(p.id)}
+                  onPress={() =>
+                    setForm((f) => {
+                      if (!f) return f;
+                      const ids = f.ownerPersonIds.includes(p.id) ? f.ownerPersonIds.filter((x) => x !== p.id) : [...f.ownerPersonIds, p.id];
+                      return { ...f, ownerPersonIds: ids, private: ids.length ? f.private : false };
+                    })
+                  }
+                />
+              ))}
+            </View>
+          </Field>
+          <View style={ff.switchRow}>
+            <Text style={fs.text}>Private (only its owners see it)</Text>
+            <Switch
+              value={form.private}
+              disabled={!viewerId}
+              // On with no owner makes it yours: a private invoice needs one.
+              onValueChange={(v) => setForm((f) => (f ? { ...f, private: v, ownerPersonIds: v && !f.ownerPersonIds.length && viewerId ? [viewerId] : f.ownerPersonIds } : f))}
+            />
+          </View>
           <View style={ff.switchRow}>
             <Text style={fs.text}>Paid</Text>
             <Switch value={form.paid} onValueChange={(v) => set("paid", v)} />

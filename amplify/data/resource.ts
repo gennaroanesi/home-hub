@@ -1530,6 +1530,12 @@ const schema = a
         parseError: a.string(),
         paid: a.boolean().default(false),
         notes: a.string(),
+        // Whose: empty = household. Emailed ones start as the sender's,
+        // uploads as the uploader's (lib/finance/invoice-owner.ts).
+        ownerPersonIds: a.id().array(),
+        // Shown only to its owners, by the apps and ops. Not a database
+        // rule: the row stays readable to home-users.
+        private: a.boolean(),
       })
       .authorization((allow) => [allow.group("home-users")]),
 

@@ -7,8 +7,9 @@
 // components/finance/paycheck-screen-pdf.ts) or delete it
 // (InvoiceDetailSheet).
 //
-// Reads homeInvoice / homeInvoiceLink through the model client (there are
-// no invoice ops), like the web. No PDF upload on the phone (the web's
+// Reads homeInvoice / homeInvoiceLink through the model client, like the
+// web. Another member's private invoices aren't listed, and the Whose chips
+// narrow to a person's plus the household's (lib/finance/invoice-owner.ts). No PDF upload on the phone (the web's
 // ingestInvoicePdf picker): forward it to the invoices@ inbox instead.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -20,6 +21,9 @@ import { Input } from "../../../components/finance/form";
 import { Card, Chip, DANGER, FinanceHeader, GOOD, Money, WARN, fs } from "../../../components/finance/ui";
 import { InvoiceDetailSheet } from "../../../components/finance/invoice-screen-detail";
 import { listAllPages } from "../../../../lib/list-all";
+import { usePeople } from "../../../lib/use-people";
+import { usePerson } from "../../../lib/use-person";
+import { invoiceOwnerIds, invoiceOwnerLabel } from "../../../../lib/finance/invoice-owner";
 import { fmtDate } from "../../../../lib/finance/dates";
 import {
   INVOICE_INBOX,
@@ -55,7 +59,11 @@ export default function FinanceInvoices() {
   const [paid, setPaid] = useState<InvoicePaidFilter>("all");
   const [year, setYear] = useState("all");
   const [query, setQuery] = useState("");
+  const [owner, setOwner] = useState("all");
   const [openId, setOpenId] = useState<string | null>(null);
+  const { people } = usePeople();
+  const me = usePerson();
+  const viewerId = me.status === "found" ? me.person.id : null;
 
   const load = useCallback(async () => {
     try {
@@ -83,7 +91,10 @@ export default function FinanceInvoices() {
   }
 
   const years = useMemo(() => invoiceYears(invoices ?? []), [invoices]);
-  const shown = useMemo(() => filterInvoices(invoices ?? [], linkedIds, { status, paid, year, query }), [invoices, linkedIds, status, paid, year, query]);
+  const shown = useMemo(
+    () => filterInvoices(invoices ?? [], linkedIds, { status, paid, year, query, viewer: viewerId, owner }),
+    [invoices, linkedIds, status, paid, year, query, viewerId, owner],
+  );
   const totals = useMemo(() => invoiceTotals(shown, linkedIds), [shown, linkedIds]);
   const open = (invoices ?? []).find((i) => i.id === openId) ?? null;
 
@@ -110,6 +121,14 @@ export default function FinanceInvoices() {
                   <Chip key={k} label={label} on={paid === k} onPress={() => setPaid(k)} />
                 ))}
               </View>
+              {people.length > 1 && (
+                <View style={fs.chipRow}>
+                  <Chip label="Everyone's" on={owner === "all"} onPress={() => setOwner("all")} />
+                  {people.map((p) => (
+                    <Chip key={p.id} label={p.name} on={owner === p.id} onPress={() => setOwner(p.id)} />
+                  ))}
+                </View>
+              )}
               {years.length > 1 && (
                 <View style={fs.chipRow}>
                   <Chip label="All years" on={year === "all"} onPress={() => setYear("all")} />
@@ -147,6 +166,7 @@ export default function FinanceInvoices() {
                       inv.issueDate ? fmtDate(inv.issueDate, { month: "short", day: "numeric", year: "numeric" }) : "no date",
                       inv.dueDate ? `due ${fmtDate(inv.dueDate, { month: "short", day: "numeric", year: "numeric" })}` : null,
                       inv.category,
+                      invoiceOwnerIds(inv).length ? `${invoiceOwnerLabel(inv, people)}${inv.private ? " · private" : ""}` : null,
                       inv.source === "EMAIL" ? `emailed by ${inv.emailFrom ?? "?"}` : "uploaded",
                     ].filter(Boolean);
                     return (

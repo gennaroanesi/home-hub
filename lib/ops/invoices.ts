@@ -4,12 +4,19 @@
 // Janet, the external API and `hh` the same view and edits, using the
 // shared rules in lib/finance/invoice-screen.ts.
 //
+// Owners and privacy (lib/finance/invoice-owner.ts): another member's
+// private invoice doesn't exist for the caller, and none is private-visible
+// in a group chat. The caller is the verified login (web / phone), else the
+// person the surface speaks for (Janet's sender, the API key's member).
+//
 // The PDF facsimile is the record. It's only handed out as a signed /api/d
 // link (lib/file-link.ts), and only by surfaces that can sign one
 // (ctx.fileLink: the agent Lambda, which serves Janet and the API).
 
 import { z } from "zod/v4";
 import { listAllPages } from "../list-all";
+import { householdMembers } from "../household";
+import { invoiceOwnerError, invoiceOwnerIds, invoiceVisibleTo } from "../finance/invoice-owner";
 import { listTransactions } from "../finance/data";
 import { normalizeCategoryName } from "../finance/categories";
 import { rememberCategories } from "../finance/category-list";
@@ -53,6 +60,9 @@ const InvoiceOut = z.object({
   total: z.number().nullable(),
   category: z.string().nullable(),
   spendGroupId: z.string().nullable(),
+  ownerPersonIds: z.array(z.string()).describe("[] = the household's"),
+  owners: z.array(z.string()).describe("Owners' names; [] = household"),
+  private: z.boolean().describe("Shown only to its owners"),
   paid: z.boolean().describe("Marked paid, or linked to a payment"),
   markedPaid: z.boolean(),
   parseStatus: z.string().describe("PARSED, NEEDS_REVIEW (total unread: check it) or ERROR"),
@@ -68,9 +78,47 @@ const InvoiceOut = z.object({
 
 type InvoiceView = z.infer<typeof InvoiceOut>;
 
+type Member = { id: string; name: string; cognitoUsername?: string | null; active?: boolean | null; groups?: (string | null)[] | null };
+
+const household = async (ctx: OpContext) => householdMembers(await listAllPages<Member>(ctx.client.models.homePerson));
+
+/** Who's asking: the verified login, else the named person; nobody in a group chat (private stays hidden there). */
+function viewerOf(ctx: OpContext, folks: Member[]): Member | null {
+  if (ctx.actor.groupChat) return null;
+  if (ctx.actor.username) return folks.find((p) => p.cognitoUsername === ctx.actor.username) ?? null;
+  const name = (ctx.actor.personName ?? "").trim().toLowerCase();
+  return name ? (folks.find((p) => p.name.toLowerCase() === name) ?? null) : null;
+}
+
+function memberRef(folks: Member[], ref: string): Member {
+  const q = ref.trim().toLowerCase();
+  const p = folks.find((x) => x.id === ref) ?? folks.find((x) => x.name.toLowerCase() === q);
+  if (!p) throw new OpError(`No household member "${ref}". Household: ${folks.map((x) => x.name).join(", ")}`);
+  return p;
+}
+
+/** ownerPersonIds / ownerNames → ids ("household" alone = [], "both" = the adults); undefined = not given. */
+function ownerIdsFrom(folks: Member[], ids: string[] | undefined, names: string[] | undefined): string[] | undefined {
+  if (ids === undefined && names === undefined) return undefined;
+  const out = (ids ?? []).map((id) => memberRef(folks, id).id);
+  for (const n of names ?? []) {
+    const want = n.trim().toLowerCase();
+    if (want === "household" || want === "everyone") continue;
+    if (want === "both") {
+      const adults = folks.filter((p) => p.cognitoUsername);
+      out.push(...(adults.length ? adults : folks).map((p) => p.id));
+      continue;
+    }
+    out.push(memberRef(folks, n).id);
+  }
+  return [...new Set(out)];
+}
+
 async function loadInvoices(ctx: OpContext) {
-  const [invoices, links] = await Promise.all([listAllPages<any>(ctx.client.models.homeInvoice), listAllPages<any>(ctx.client.models.homeInvoiceLink)]);
-  return { invoices, links, linkedIds: new Set<string>(links.map((l) => l.invoiceId)) };
+  const [all, links, folks] = await Promise.all([listAllPages<any>(ctx.client.models.homeInvoice), listAllPages<any>(ctx.client.models.homeInvoiceLink), household(ctx)]);
+  const viewer = viewerOf(ctx, folks);
+  const invoices = all.filter((inv) => invoiceVisibleTo(inv, viewer?.id));
+  return { invoices, links, linkedIds: new Set<string>(links.map((l) => l.invoiceId)), folks, viewer };
 }
 
 async function pdfLink(ctx: OpContext, key: string | null | undefined): Promise<string | null> {
@@ -82,7 +130,8 @@ async function pdfLink(ctx: OpContext, key: string | null | undefined): Promise<
   }
 }
 
-async function invoiceView(ctx: OpContext, inv: any, links: any[], linkedIds: Set<string>, withPayments: boolean): Promise<InvoiceView> {
+async function invoiceView(ctx: OpContext, inv: any, links: any[], linkedIds: Set<string>, withPayments: boolean, folks: Member[]): Promise<InvoiceView> {
+  const ownerPersonIds = invoiceOwnerIds(inv);
   const mine = links.filter((l) => l.invoiceId === inv.id);
   const payments = withPayments
     ? await Promise.all(
@@ -105,6 +154,9 @@ async function invoiceView(ctx: OpContext, inv: any, links: any[], linkedIds: Se
     total: inv.total ?? null,
     category: inv.category ?? null,
     spendGroupId: inv.spendGroupId ?? null,
+    ownerPersonIds,
+    owners: ownerPersonIds.map((id) => folks.find((p) => p.id === id)?.name ?? id),
+    private: !!inv.private,
     paid: invoiceIsPaid(inv, linkedIds),
     markedPaid: !!inv.paid,
     parseStatus: inv.parseStatus ?? "PARSED",
@@ -119,9 +171,10 @@ async function invoiceView(ctx: OpContext, inv: any, links: any[], linkedIds: Se
   };
 }
 
+/** The invoice, if the caller may see it (another member's private one reads as missing). */
 async function getInvoice(ctx: OpContext, id: string): Promise<any> {
   const { data } = await ctx.client.models.homeInvoice.get({ id });
-  if (!data) throw new OpError(`No invoice ${id}. Use list_invoices to find the id.`);
+  if (!data || !invoiceVisibleTo(data, viewerOf(ctx, await household(ctx))?.id)) throw new OpError(`No invoice ${id}. Use list_invoices to find the id.`);
   return data;
 }
 
@@ -132,7 +185,7 @@ export const listInvoices = defineOp({
   domain: "finance",
   access: "read",
   description:
-    "The household's invoices, receipts and bills (emailed to the invoices inbox or uploaded as PDFs): vendor, number, dates, total, line items, category, whether it's paid and by which transactions, and a link to the PDF. Ones that need review (total unread) come first, then newest. Answers 'what do we owe the contractor?', 'unpaid invoices', 'how much did the plumber charge in March?', 'show me the Crate & Barrel receipt'. query matches vendor, number, category and notes.",
+    "The household's invoices, receipts and bills (emailed to the invoices inbox or uploaded as PDFs): vendor, number, dates, total, line items, category, whether it's paid and by which transactions, and a link to the PDF. Ones that need review (total unread) come first, then newest. Answers 'what do we owe the contractor?', 'unpaid invoices', 'how much did the plumber charge in March?', 'show me the Crate & Barrel receipt'. query matches vendor, number, category and notes. personName narrows to that member's invoices plus the household's ('my invoices': pass the speaker). Private invoices are only listed for their owner, never in a group chat.",
   input: z.object({
     invoiceId: z.string().optional().describe("Return just this invoice, with its payments' dates and descriptions."),
     query: z.string().optional().describe("Words that must all appear in vendor, invoice number, category or notes."),
@@ -141,6 +194,8 @@ export const listInvoices = defineOp({
     year: z.string().regex(/^\d{4}$/).optional().describe("Issue year (else the year it arrived)."),
     fromDate: DATE.optional(),
     toDate: DATE.optional(),
+    personId: z.string().optional().describe("Only this member's invoices and the household's."),
+    personName: z.string().optional().describe("Same as personId, by name."),
     limit: z.number().int().min(1).max(200).optional().describe("Default 50."),
   }),
   output: z.object({
@@ -151,8 +206,9 @@ export const listInvoices = defineOp({
     invoices: z.array(InvoiceOut),
   }),
   async run(ctx, input) {
-    const { invoices, links, linkedIds } = await loadInvoices(ctx);
-    let shown = filterInvoices(invoices, linkedIds, { status: input.status ?? "all", paid: input.paid ?? "all", year: input.year ?? "all", query: input.query ?? "" });
+    const { invoices, links, linkedIds, folks, viewer } = await loadInvoices(ctx);
+    const owner = input.personId || input.personName ? memberRef(folks, (input.personId ?? input.personName)!).id : "all";
+    let shown = filterInvoices(invoices, linkedIds, { status: input.status ?? "all", paid: input.paid ?? "all", year: input.year ?? "all", query: input.query ?? "", viewer: viewer?.id ?? null, owner });
     if (input.invoiceId) shown = shown.filter((i) => i.id === input.invoiceId);
     if (input.fromDate) shown = shown.filter((i) => invoiceDate(i) >= input.fromDate!);
     if (input.toDate) shown = shown.filter((i) => invoiceDate(i) <= input.toDate!);
@@ -163,7 +219,7 @@ export const listInvoices = defineOp({
       total: totals.sum,
       unpaid: totals.unpaid,
       needsReview: totals.review,
-      invoices: await Promise.all(page.map((inv) => invoiceView(ctx, inv, links, linkedIds, !!input.invoiceId))),
+      invoices: await Promise.all(page.map((inv) => invoiceView(ctx, inv, links, linkedIds, !!input.invoiceId, folks))),
     };
   },
 });
@@ -182,7 +238,7 @@ export const saveInvoice = defineOp({
   domain: "finance",
   access: "write",
   description:
-    "Correct or file an invoice (they arrive by email or PDF upload, so this edits, it doesn't create). Only the fields given change; null clears one. Use it to fix what the reader got wrong (vendor, total, dates), set its category or spend group, add notes, or mark it paid without a matching transaction (link_invoice_payment links the one that paid it). Setting the total on a NEEDS_REVIEW invoice marks it PARSED. items replaces the line items.",
+    "Correct or file an invoice (they arrive by email or PDF upload, so this edits, it doesn't create). Only the fields given change; null clears one. Use it to fix what the reader got wrong (vendor, total, dates), set its category or spend group, say whose it is (ownerNames: a member, 'both', or 'household') and whether it's private (only its owners see it; needs an owner), add notes, or mark it paid without a matching transaction (link_invoice_payment links the one that paid it). Setting the total on a NEEDS_REVIEW invoice marks it PARSED. items replaces the line items.",
   input: z.object({
     invoiceId: z.string(),
     vendor: z.string().nullable().optional(),
@@ -198,6 +254,9 @@ export const saveInvoice = defineOp({
     paid: z.boolean().optional(),
     notes: z.string().nullable().optional(),
     items: z.array(ItemIn).optional(),
+    ownerPersonIds: z.array(z.string()).optional().describe("Whose, by id; [] = household. Replaces the owners."),
+    ownerNames: z.array(z.string()).optional().describe("Whose, by name ('both' = the adults, 'household'). Replaces the owners."),
+    private: z.boolean().optional().describe("Only its owners see it. Needs an owner."),
   }),
   output: z.object({ invoice: InvoiceOut, newCategories: z.array(z.string()) }),
   async run(ctx, input) {
@@ -221,6 +280,17 @@ export const saveInvoice = defineOp({
         .filter((it) => it.description || it.amount != null);
       patch.items = items.length ? JSON.stringify(items) : null;
     }
+    const folks = await household(ctx);
+    const owners = ownerIdsFrom(folks, input.ownerPersonIds, input.ownerNames);
+    if (owners !== undefined) patch.ownerPersonIds = owners;
+    if (input.private !== undefined) patch.private = input.private;
+    const ownerErr = invoiceOwnerError(owners ?? invoiceOwnerIds(inv), input.private ?? !!inv.private);
+    if (ownerErr) throw new OpError(ownerErr);
+    // Making it private for others would hide it from the caller too.
+    const viewer = viewerOf(ctx, folks);
+    if ((input.private ?? inv.private) && !(owners ?? invoiceOwnerIds(inv)).includes(viewer?.id ?? "")) {
+      throw new OpError("You can only keep an invoice private if you're one of its owners.");
+    }
     if (!Object.keys(patch).length) throw new OpError("Nothing to change");
     // A person-checked total is what review was waiting for.
     if (typeof input.total === "number" && inv.parseStatus !== "PARSED") Object.assign(patch, { parseStatus: "PARSED", parseError: null });
@@ -228,7 +298,7 @@ export const saveInvoice = defineOp({
     if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
     const newCategories = patch.category ? await rememberCategories(ctx.client, [patch.category as string]) : [];
     const { links, linkedIds } = await loadInvoices(ctx);
-    return { invoice: await invoiceView(ctx, r.data, links, linkedIds, true), newCategories };
+    return { invoice: await invoiceView(ctx, r.data, links, linkedIds, true, folks), newCategories };
   },
 });
 
@@ -300,7 +370,7 @@ export const linkInvoicePayment = defineOp({
     }
     const fresh = await loadInvoices(ctx);
     const row = fresh.invoices.find((i) => i.id === inv.id) ?? inv;
-    return { action, invoice: await invoiceView(ctx, row, fresh.links, fresh.linkedIds, true) };
+    return { action, invoice: await invoiceView(ctx, row, fresh.links, fresh.linkedIds, true, fresh.folks) };
   },
 });
 

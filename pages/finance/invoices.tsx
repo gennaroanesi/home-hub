@@ -6,6 +6,8 @@
 // processor links the one transaction that paid it when exactly one
 // matches. This page reviews and corrects them, and links payments by hand.
 // Ported and trimmed from gennaroanesi.com's /finance/invoices.
+// Each has an owner (household or a member) and can be private: another
+// member's private invoices aren't listed (lib/finance/invoice-owner.ts).
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@heroui/button";
@@ -14,7 +16,8 @@ import { Chip } from "@heroui/chip";
 import { Input } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { Spinner, addToast } from "@heroui/react";
-import { FaEnvelope, FaExternalLinkAlt, FaFileUpload, FaLink, FaSearch } from "react-icons/fa";
+import { FaEnvelope, FaExternalLinkAlt, FaFileUpload, FaLink, FaLock, FaSearch } from "react-icons/fa";
+import { getCurrentUser } from "aws-amplify/auth";
 
 import { FinanceShell } from "@/components/finance/finance-shell";
 import { financeClient } from "@/components/finance/client";
@@ -23,6 +26,7 @@ import { useFinanceRefs } from "@/components/finance/use-finance-refs";
 import { InvoiceDetailModal, fileUrl } from "@/components/finance/invoice-detail-modal";
 import { listAllPages } from "@/lib/list-all";
 import { fmtDate } from "@/lib/finance/dates";
+import { invoiceOwnerIds, invoiceOwnerLabel } from "@/lib/finance/invoice-owner";
 import {
   INVOICE_INBOX as INBOX,
   filterInvoices,
@@ -50,6 +54,8 @@ export default function InvoicesPage() {
   const [paid, setPaid] = useState<PaidFilter>("all");
   const [year, setYear] = useState<string>("all");
   const [query, setQuery] = useState("");
+  const [owner, setOwner] = useState<string>("all");
+  const [username, setUsername] = useState<string | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
@@ -72,10 +78,19 @@ export default function InvoicesPage() {
 
   useEffect(() => {
     load();
+    getCurrentUser()
+      .then((u) => setUsername(u.username))
+      .catch(() => setUsername(null));
   }, [load]);
 
+  // Who's looking, as a household member: their private invoices show, others' don't.
+  const viewerId = useMemo(() => refs.household.find((p: any) => p.cognitoUsername === username)?.id ?? null, [refs.household, username]);
+
   const years = useMemo(() => invoiceYears(invoices), [invoices]);
-  const shown = useMemo(() => filterInvoices(invoices, linkedIds, { status, paid, year, query }), [invoices, linkedIds, status, paid, year, query]);
+  const shown = useMemo(
+    () => filterInvoices(invoices, linkedIds, { status, paid, year, query, viewer: viewerId, owner }),
+    [invoices, linkedIds, status, paid, year, query, viewerId, owner],
+  );
   const totals = useMemo(() => invoiceTotals(shown, linkedIds), [shown, linkedIds]);
 
   async function upload(file: File) {
@@ -150,6 +165,9 @@ export default function InvoicesPage() {
           <SelectItem key="unpaid">Unpaid</SelectItem>
           <SelectItem key="paid">Paid</SelectItem>
         </Select>
+        <Select size="sm" className="w-40" aria-label="Whose" selectedKeys={new Set([owner])} onSelectionChange={(k) => setOwner((Array.from(k as Set<string>)[0] as string) ?? "all")}>
+          {[<SelectItem key="all">Everyone&apos;s</SelectItem>, ...refs.household.map((p: any) => <SelectItem key={p.id}>{`${p.name} + household`}</SelectItem>)]}
+        </Select>
         <Select size="sm" className="w-32" aria-label="Year" selectedKeys={new Set([year])} onSelectionChange={(k) => setYear((Array.from(k as Set<string>)[0] as string) ?? "all")}>
           {[<SelectItem key="all">All years</SelectItem>, ...years.map((y) => <SelectItem key={y}>{y}</SelectItem>)]}
         </Select>
@@ -222,6 +240,12 @@ export default function InvoicesPage() {
                               {inv.category}
                             </Chip>
                           )}
+                          {invoiceOwnerIds(inv).length > 0 && (
+                            <Chip size="sm" variant="bordered" startContent={inv.private ? <FaLock className="ml-1" size={9} /> : undefined}>
+                              {invoiceOwnerLabel(inv, refs.household)}
+                              {inv.private ? " · private" : ""}
+                            </Chip>
+                          )}
                         </div>
                         <div className="text-xs text-default-400 flex flex-wrap gap-x-2">
                           <span>{inv.issueDate ? fmtDate(inv.issueDate, { month: "short", day: "numeric", year: "numeric" }) : "no date"}</span>
@@ -262,7 +286,7 @@ export default function InvoicesPage() {
         </>
       )}
 
-      <InvoiceDetailModal invoice={open} categories={refs.categories} groups={refs.groups} accounts={refs.accounts} onClose={() => setOpenId(null)} onChanged={load} />
+      <InvoiceDetailModal invoice={open} categories={refs.categories} groups={refs.groups} accounts={refs.accounts} people={refs.household} viewerId={viewerId} onClose={() => setOpenId(null)} onChanged={load} />
     </FinanceShell>
   );
 }

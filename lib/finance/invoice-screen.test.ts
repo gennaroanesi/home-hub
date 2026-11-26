@@ -11,15 +11,15 @@ const invoices = [
 
 describe("invoice list", () => {
   it("sorts errors and reviews first, then newest", () => {
-    expect(filterInvoices(invoices, new Set(), { status: "all", paid: "all", year: "all", query: "" }).map((i) => i.id)).toEqual(["4", "3", "2", "1"]);
+    expect(filterInvoices(invoices, new Set(), { status: "all", paid: "all", year: "all", query: "", viewer: null }).map((i) => i.id)).toEqual(["4", "3", "2", "1"]);
   });
 
   it("filters by status, paid (flag or link), year and words", () => {
     const linked = new Set(["2"]);
-    expect(filterInvoices(invoices, linked, { status: "parsed", paid: "paid", year: "all", query: "" }).map((i) => i.id)).toEqual(["2", "1"]);
-    expect(filterInvoices(invoices, linked, { status: "all", paid: "unpaid", year: "all", query: "" }).map((i) => i.id)).toEqual(["4", "3"]);
-    expect(filterInvoices(invoices, linked, { status: "all", paid: "all", year: "2025", query: "" }).map((i) => i.id)).toEqual(["3"]);
-    expect(filterInvoices(invoices, linked, { status: "all", paid: "all", year: "all", query: "GUTTERS roof" }).map((i) => i.id)).toEqual(["3"]);
+    expect(filterInvoices(invoices, linked, { status: "parsed", paid: "paid", year: "all", query: "", viewer: null }).map((i) => i.id)).toEqual(["2", "1"]);
+    expect(filterInvoices(invoices, linked, { status: "all", paid: "unpaid", year: "all", query: "", viewer: null }).map((i) => i.id)).toEqual(["4", "3"]);
+    expect(filterInvoices(invoices, linked, { status: "all", paid: "all", year: "2025", query: "", viewer: null }).map((i) => i.id)).toEqual(["3"]);
+    expect(filterInvoices(invoices, linked, { status: "all", paid: "all", year: "all", query: "GUTTERS roof", viewer: null }).map((i) => i.id)).toEqual(["3"]);
   });
 
   it("totals and years", () => {

@@ -3,6 +3,7 @@
 // Invoice detail for /finance/invoices: edit the extracted fields and items,
 // mark reviewed, see / unlink the transactions that paid it, find a payment
 // (exact auto-match rule plus a looser ±30 days / 5% list), and delete.
+// Whose it is and whether it's private: lib/finance/invoice-owner.ts.
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { Button } from "@heroui/button";
@@ -17,6 +18,8 @@ import { FaExternalLinkAlt, FaLink, FaPlus, FaSearch, FaTrash, FaUnlink } from "
 import { financeClient } from "@/components/finance/client";
 import { Money } from "@/components/finance/ui";
 import { FreeCombobox } from "@/components/free-combobox";
+import { PeoplePicker } from "@/components/people-picker";
+import { invoiceOwnerError } from "@/lib/finance/invoice-owner";
 import { listAllPages } from "@/lib/list-all";
 import { listTransactions } from "@/lib/finance/data";
 import { fmtDate } from "@/lib/finance/dates";
@@ -45,6 +48,8 @@ export function InvoiceDetailModal({
   categories,
   groups,
   accounts,
+  people,
+  viewerId,
   onClose,
   onChanged,
 }: {
@@ -52,6 +57,10 @@ export function InvoiceDetailModal({
   categories: string[];
   groups: any[];
   accounts: any[];
+  /** Household members, for "Whose". */
+  people: any[];
+  /** The signed-in member: only an owner can keep an invoice private. */
+  viewerId: string | null;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -101,6 +110,11 @@ export function InvoiceDetailModal({
 
   async function save(extra: Record<string, unknown> = {}) {
     if (!form) return;
+    const ownerErr = invoiceOwnerError(form.ownerPersonIds, form.private);
+    if (ownerErr || (form.private && !form.ownerPersonIds.includes(viewerId ?? ""))) {
+      addToast({ title: ownerErr ?? "Only an owner can keep it private", description: ownerErr ? undefined : "Add yourself as an owner, or turn Private off.", color: "warning" });
+      return false;
+    }
     setSaving(true);
     try {
       const r = await financeClient.models.homeInvoice.update({ id: invoice.id, ...invoiceUpdate(form), ...extra } as any);
@@ -218,6 +232,25 @@ export function InvoiceDetailModal({
                 <SelectItem key={g.id}>{g.name}</SelectItem>
               ))}
             </Select>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-center">
+            <PeoplePicker
+              size="sm"
+              label="Whose"
+              people={people}
+              selectedIds={form.ownerPersonIds}
+              onChange={(ids) => setForm((f) => (f ? { ...f, ownerPersonIds: ids, private: ids.length ? f.private : false } : f))}
+              placeholder="Household"
+            />
+            <Switch
+              size="sm"
+              isSelected={form.private}
+              isDisabled={!viewerId}
+              // Turning it on with no owner makes it yours: a private invoice needs one.
+              onValueChange={(v) => setForm((f) => (f ? { ...f, private: v, ownerPersonIds: v && !f.ownerPersonIds.length && viewerId ? [viewerId] : f.ownerPersonIds } : f))}
+            >
+              Private <span className="text-xs text-default-400">(only its owners see it)</span>
+            </Switch>
           </div>
           <div className="flex items-center gap-3">
             <Switch size="sm" isSelected={form.paid} onValueChange={(v) => set("paid", v)}>

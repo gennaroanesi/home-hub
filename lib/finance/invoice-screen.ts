@@ -5,6 +5,7 @@
 
 import { addDays } from "./dates";
 import { autoMatchCandidates } from "./invoice-fields";
+import { invoiceOwnedBy, invoiceVisibleTo } from "./invoice-owner";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -25,15 +26,22 @@ export function invoiceYears(invoices: any[]): string[] {
   return [...new Set(invoices.map((i) => invoiceDate(i).slice(0, 4)).filter(Boolean))].sort().reverse();
 }
 
-/** Filtered and sorted like the web list: ones to fix first, then newest. */
+/**
+ * Filtered and sorted like the web list: ones to fix first, then newest.
+ * `viewer` (a person id) is who's looking: another member's private invoices
+ * are left out (lib/finance/invoice-owner.ts). `owner` narrows to a person's
+ * invoices plus the household's.
+ */
 export function filterInvoices<I extends { id: string }>(
   invoices: I[],
   linkedIds: Set<string>,
-  f: { status: InvoiceStatusFilter; paid: InvoicePaidFilter; year: string; query: string },
+  f: { status: InvoiceStatusFilter; paid: InvoicePaidFilter; year: string; query: string; viewer: string | null; owner?: string },
 ): I[] {
   const words = f.query.toLowerCase().split(/\s+/).filter(Boolean);
   return invoices
     .filter((inv: any) => {
+      if (!invoiceVisibleTo(inv, f.viewer)) return false;
+      if (!invoiceOwnedBy(inv, f.owner)) return false;
       if (f.status === "review" && inv.parseStatus === "PARSED") return false;
       if (f.status === "parsed" && inv.parseStatus !== "PARSED") return false;
       const isPaid = invoiceIsPaid(inv, linkedIds);
@@ -85,6 +93,8 @@ export type InvoiceItemDraft = { description: string; qty: string; unitPrice: st
 export const EMPTY_INVOICE_ITEM: InvoiceItemDraft = { description: "", qty: "", unitPrice: "", amount: "" };
 
 export type InvoiceForm = {
+  ownerPersonIds: string[];
+  private: boolean;
   vendor: string;
   invoiceNumber: string;
   issueDate: string;
@@ -112,6 +122,8 @@ export function invoiceNum(s: string): number | null {
 
 export function invoiceForm(inv: any): InvoiceForm {
   return {
+    ownerPersonIds: (inv.ownerPersonIds ?? []).filter(Boolean),
+    private: !!inv.private,
     vendor: inv.vendor ?? "",
     invoiceNumber: inv.invoiceNumber ?? "",
     issueDate: inv.issueDate ?? "",
@@ -137,6 +149,9 @@ export function invoiceUpdate(form: InvoiceForm): Record<string, unknown> {
     .map((it) => ({ description: it.description.trim(), qty: invoiceNum(it.qty), unitPrice: invoiceNum(it.unitPrice), amount: invoiceNum(it.amount) }))
     .filter((it) => it.description || it.amount != null);
   return {
+    ownerPersonIds: form.ownerPersonIds,
+    // No owner, nobody to keep it private for (invoiceOwnerError warns first).
+    private: form.private && form.ownerPersonIds.length > 0,
     vendor: form.vendor.trim() || null,
     invoiceNumber: form.invoiceNumber.trim() || null,
     issueDate: form.issueDate || null,
