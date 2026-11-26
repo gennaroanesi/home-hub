@@ -7,6 +7,7 @@ import { OpError, type OpDef } from "./define";
 import { contactsOps } from "./contacts";
 import { financeOps } from "./finance";
 import { inventoryOps } from "./inventory";
+import { invoiceOps } from "./invoices";
 import { inventoryItemOps } from "./inventory-items";
 import { netWorthOps } from "./net-worth";
 import { notesOps } from "./notes";
@@ -14,7 +15,7 @@ import { wardrobeOps } from "./wardrobe";
 import { usageOps } from "./usage";
 import { weekOps } from "./week";
 
-export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...inventoryItemOps, ...financeOps, ...netWorthOps, ...weekOps, ...contactsOps, ...usageOps] as const;
+export const OPS = [...wardrobeOps, ...notesOps, ...inventoryOps, ...inventoryItemOps, ...financeOps, ...invoiceOps, ...netWorthOps, ...weekOps, ...contactsOps, ...usageOps] as const;
 
 export type AnyOp = (typeof OPS)[number];
 export type OpName = AnyOp["name"];

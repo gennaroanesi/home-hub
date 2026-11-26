@@ -46,12 +46,13 @@ function setup(seed: Record<string, any[]> = {}) {
       }),
     };
   };
-  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog", "homeFinanceSetting", "homeFinanceCategory", "homeInvoice"];
+  const names = ["homePerson", "homeFinanceAccount", "homeFinanceTransaction", "homeFinanceRecurring", "homeFinanceBudget", "homeFinanceSavingsGoal", "homeFinanceSpendGroup", "homeFinanceCategoryRule", "homeFinanceHolding", "homeFinanceGoalMilestone", "homeFinanceSyncLog", "homeFinanceSetting", "homeFinanceCategory", "homeInvoice", "homeInvoiceLink"];
   const models = Object.fromEntries(names.map((m) => [m, model(m)]));
   const ctx: OpContext = {
     client: { models },
     storage: { storeFromUrl: async () => "", copyUpload: async () => "" },
     actor: { via: "whatsapp", personName: "Gennaro" },
+    fileLink: async (key: string) => `https://home.example/api/d/${key.slice(5)}?t=sig`,
   };
   return { ctx, tables };
 }
@@ -873,5 +874,46 @@ describe("import_finance_transactions", () => {
 
     const synced: any = await runOp(ctx, "import_finance_transactions", { accountId: "joint", csv: HEB });
     expect(synced.error).toMatch(/SimpleFIN/);
+  });
+});
+
+describe("invoices", () => {
+  const card = { id: "card", name: "Card", type: "CREDIT", active: true };
+  const plumber = { id: "inv1", vendor: "Ace Plumbing", invoiceNumber: "A-17", issueDate: "2026-10-03", total: 450, parseStatus: "PARSED", s3KeyPdf: "home/finance/invoices/inv1/invoice.pdf", items: JSON.stringify([{ description: "Water heater", qty: 1, unitPrice: 450, amount: 450 }]) };
+  const crate = { id: "inv2", vendor: "Crate & Barrel", issueDate: "2026-11-17", total: null, parseStatus: "NEEDS_REVIEW", s3KeyPdf: "home/finance/invoices/inv2/invoice.pdf" };
+  const pay = { id: "t1", accountId: "card", date: "2026-10-05", amount: -450, description: "ACE PLUMBING", status: "POSTED" };
+  const near = { id: "t2", accountId: "card", date: "2026-10-20", amount: -460, description: "ACE PLUMBING", status: "POSTED" };
+
+  it("lists them review-first with items, paid state and a signed PDF link", async () => {
+    const { ctx } = setup({ homeInvoice: [plumber, crate] });
+    const out: any = await runOp(ctx, "list_invoices", {});
+    expect(out.result.invoices.map((i: any) => i.id)).toEqual(["inv2", "inv1"]);
+    expect(out.result).toMatchObject({ count: 2, total: 450, unpaid: 450, needsReview: 1 });
+    expect(out.result.invoices[1]).toMatchObject({ vendor: "Ace Plumbing", paid: false, items: [{ description: "Water heater", amount: 450 }], pdfLink: "https://home.example/api/d/finance/invoices/inv1/invoice.pdf?t=sig" });
+    const q: any = await runOp(ctx, "list_invoices", { query: "ace a-17" });
+    expect(q.result.invoices.map((i: any) => i.id)).toEqual(["inv1"]);
+  });
+
+  it("finds the payment, links it (marking it paid) and unlinks it", async () => {
+    const { ctx, tables } = setup({ homeFinanceAccount: [card], homeFinanceTransaction: [pay, near], homeInvoice: [plumber] });
+    const found: any = await runOp(ctx, "find_invoice_payments", { invoiceId: "inv1" });
+    expect(found.result.exact.map((t: any) => t.transactionId)).toEqual(["t1"]);
+    expect(found.result.close.map((t: any) => t.transactionId)).toEqual(["t2"]);
+    const linked: any = await runOp(ctx, "link_invoice_payment", { invoiceId: "inv1", transactionId: "t1" });
+    expect(linked.result.action).toBe("linked");
+    expect(linked.result.invoice).toMatchObject({ paid: true, markedPaid: true, payments: [{ transactionId: "t1", amount: 450, date: "2026-10-05" }] });
+    expect(((await runOp(ctx, "link_invoice_payment", { invoiceId: "inv1", transactionId: "t1" })) as any).result.action).toBe("already linked");
+    expect(((await runOp(ctx, "find_invoice_payments", { invoiceId: "inv1" })) as any).result.exact).toEqual([]);
+    await runOp(ctx, "link_invoice_payment", { invoiceId: "inv1", transactionId: "t1", unlink: true });
+    expect(tables.homeInvoiceLink).toHaveLength(0);
+  });
+
+  it("corrects fields, and a typed total clears review", async () => {
+    const { ctx, tables } = setup({ homeInvoice: [crate] });
+    const out: any = await runOp(ctx, "save_invoice", { invoiceId: "inv2", total: 1590.76, category: "Baby > Furniture", notes: " nursery dresser " });
+    expect(out.error).toBeUndefined();
+    expect(tables.homeInvoice[0]).toMatchObject({ total: 1590.76, category: "Baby: Furniture", notes: "nursery dresser", parseStatus: "PARSED", parseError: null });
+    expect(((await runOp(ctx, "save_invoice", { invoiceId: "inv2" })) as any).error).toMatch(/Nothing to change/);
+    expect(((await runOp(ctx, "save_invoice", { invoiceId: "nope", paid: true })) as any).error).toMatch(/No invoice/);
   });
 });

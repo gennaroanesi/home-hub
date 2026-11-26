@@ -30,6 +30,12 @@ export interface OpContext {
     /** A WhatsApp group chat: owner-only data is never shown here. */
     groupChat?: boolean;
   };
+  /**
+   * A signed /api/d link to a file under home/ (lib/file-link.ts), where the
+   * surface can mint one (the agent Lambda, for Janet and the API). Ops
+   * leave links out when it's missing; never hand out bare S3 URLs.
+   */
+  fileLink?: (s3Key: string) => Promise<string>;
   /** S3 keys of photos sent with the message that triggered the op (Janet). */
   messageImageKeys?: string[];
 }

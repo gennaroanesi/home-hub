@@ -2057,6 +2057,7 @@ async function executeTool(
       {
         client,
         storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
+        fileLink: documentDmLink,
         actor: { via: ctx.chatContext.channel === "API" ? "api" : "whatsapp", personName: ctx.sender, groupChat: ctx.chatContext.channel === "WA_GROUP" },
         messageImageKeys: ctx.currentImageKeys,
       },
@@ -5132,6 +5133,7 @@ async function handleApiTool(payload: {
       {
         client: await getDataClient(),
         storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
+        fileLink: documentDmLink,
         actor: { via: "api", personName: toolCtx.sender },
       },
       name,
