@@ -5,7 +5,7 @@
 
 import { classify, patternMatches, stripProcessorPrefix, type CategoryRule } from "./categories";
 import { canTakeRuleLedger } from "./ledger";
-import { findRefundPurchase, mayBeRefund, refundFields } from "./refunds";
+import { findRefundPurchase, mayBeRefund, refundFields, withRefundNote } from "./refunds";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -51,7 +51,7 @@ export function testRules(
   return { ...out, catRule: find((r) => r.category), personRule: find((r) => r.personId), ledgerRule: find((r) => r.ledger) };
 }
 
-export type RuleChange = { tx: any; category?: string; personId?: string; ledger?: string; spendGroupId?: string; outOfBudget?: boolean | null; refundOf?: any };
+export type RuleChange = { tx: any; category?: string; personId?: string; ledger?: string; spendGroupId?: string; outOfBudget?: boolean | null; refundOf?: any; notes?: string };
 
 /**
  * What the current rules would change on a transaction. Never touches a
@@ -74,6 +74,8 @@ export function planRuleChange(tx: any, rules: CategoryRule[], accountLedgerOf: 
   if (purchase) {
     const f = refundFields(purchase);
     change.refundOf = purchase;
+    const notes = withRefundNote(tx.notes, purchase);
+    if (notes !== (tx.notes ?? "").trim()) change.notes = notes;
     category = f.category;
     if (f.ledger) ledger = f.ledger;
     if (f.spendGroupId && !tx.spendGroupId) {
@@ -86,7 +88,7 @@ export function planRuleChange(tx: any, rules: CategoryRule[], accountLedgerOf: 
   if ((tx.amount ?? 0) > 0 && tx.personSource !== "MANUAL" && personId && personId !== tx.personId) change.personId = personId;
   // Never over a budget picked by hand or by the row's bill (canTakeRuleLedger).
   if (ledger && ledger !== (tx.ledger ?? "") && canTakeRuleLedger(tx, accountLedgerOf(tx.accountId))) change.ledger = ledger;
-  return change.category !== undefined || change.personId !== undefined || change.ledger !== undefined || change.spendGroupId !== undefined ? change : null;
+  return change.category !== undefined || change.personId !== undefined || change.ledger !== undefined || change.spendGroupId !== undefined || change.notes !== undefined ? change : null;
 }
 
 /**
@@ -107,6 +109,7 @@ export function ruleChangePatch(c: RuleChange): Record<string, unknown> {
   if (c.personId !== undefined) Object.assign(patch, { personId: c.personId, personSource: "RULE" });
   if (c.ledger !== undefined) Object.assign(patch, { ledger: c.ledger, ledgerSource: "RULE" });
   if (c.spendGroupId !== undefined) Object.assign(patch, { spendGroupId: c.spendGroupId, outOfBudget: c.outOfBudget ?? null });
+  if (c.notes !== undefined) patch.notes = c.notes;
   return patch;
 }
 

@@ -57,7 +57,7 @@ import { refreshAssetValues } from "../../../lib/finance/asset-values.js";
 import { addDays, round2, todayIso } from "../../../lib/finance/dates.js";
 import type { RecurringLike } from "../../../lib/finance/types.js";
 import { classifyTransactionsLLM } from "./classify-llm";
-import { findRefundPurchase, mayBeRefund, refundFields, refundLookbackFrom } from "../../../lib/finance/refunds.js";
+import { findRefundPurchase, mayBeRefund, refundFields, refundLookbackFrom, refundNote } from "../../../lib/finance/refunds.js";
 
 type DataClient = ReturnType<typeof generateClient<Schema>>;
 let _client: DataClient | null = null;
@@ -409,7 +409,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
   // off that spending. Purchases are read back REFUND_LOOKBACK_DAYS per
   // account that has a possible refund; a failed read just leaves the rule's
   // category.
-  const refundGroup = new Map<TxDraft, { spendGroupId: string | null; outOfBudget: boolean | null }>();
+  const refundGroup = new Map<TxDraft, { spendGroupId: string | null; outOfBudget: boolean | null; note: string }>();
   const maybeRefunds = fresh.filter((d) => !investedIds.has(d.accountId) && mayBeRefund(d));
   for (const accountId of new Set(maybeRefunds.map((d) => d.accountId))) {
     const mine = maybeRefunds.filter((d) => d.accountId === accountId);
@@ -423,7 +423,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
         d.category = f.category;
         d.categorySource = "RULE";
         if (f.ledger) d.ledger = f.ledger;
-        refundGroup.set(d, { spendGroupId: f.spendGroupId, outOfBudget: f.outOfBudget });
+        refundGroup.set(d, { spendGroupId: f.spendGroupId, outOfBudget: f.outOfBudget, note: refundNote(purchase) });
       }
     } catch (e) {
       errors.push(`refund matching skipped: ${e instanceof Error ? e.message : String(e)}`);
@@ -512,6 +512,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       sfTransactionId: d.sfTransactionId,
       recurringId: rule?.id ?? null,
       ...(refundGroup.get(d)?.spendGroupId ? { spendGroupId: refundGroup.get(d)!.spendGroupId, outOfBudget: refundGroup.get(d)!.outOfBudget ?? null } : {}),
+      ...(refundGroup.has(d) ? { notes: refundGroup.get(d)!.note } : {}),
       // A household bill on a personal card counts in the household budget;
       // the bill's budget beats a category rule's.
       ...(rule?.ledger?.trim()

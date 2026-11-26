@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findRefundPurchase, mayBeRefund, merchantKey, refundFields, sameMerchant } from "./refunds";
+import { findRefundPurchase, mayBeRefund, merchantKey, refundFields, refundNote, sameMerchant, withRefundNote } from "./refunds";
 import { planRuleChanges } from "./rule-tools";
 import { rulesFromDbRows } from "./categories";
 
@@ -73,7 +73,21 @@ describe("re-apply rules places old refunds", () => {
     expect(plan).toHaveLength(1);
     expect(plan[0]).toMatchObject({ category: "Baby: Furniture", spendGroupId: "nursery" });
     expect(plan[0].refundOf).toBe(sofa);
+    expect(plan[0].notes).toBe("Refund of 2026-10-01 AMAZON MKTPL*X1 ($400.00)");
+    // Applied once, nothing is left to change: the note isn't added again.
+    const again = planRuleChanges([sofa, { ...oldRefund, category: "Baby: Furniture", spendGroupId: "nursery", notes: plan[0].notes }], rules, ledgerOf, "2026-10-02");
+    expect(again).toEqual([]);
     // A hand-picked category is never touched.
     expect(planRuleChanges([sofa, { ...oldRefund, categorySource: "MANUAL" }], rules, ledgerOf, "2026-10-02")).toEqual([]);
+  });
+});
+
+describe("refund notes", () => {
+  const p = { accountId: "a", date: "2026-11-17", amount: -1590.76, description: "crateandbarrel.com" };
+  it("names the purchase, and is added once below any existing note", () => {
+    expect(refundNote(p)).toBe("Refund of 2026-11-17 crateandbarrel.com ($1,590.76)");
+    expect(withRefundNote(null, p)).toBe(refundNote(p));
+    expect(withRefundNote("returned the rug", p)).toBe(`returned the rug\n${refundNote(p)}`);
+    expect(withRefundNote(withRefundNote("x", p), p)).toBe(`x\n${refundNote(p)}`);
   });
 });

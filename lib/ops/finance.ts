@@ -30,7 +30,7 @@ import { defaultCadences, periodContaining, periodFromParam, periodRange, period
 import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
 import { CSV_FORMATS, newCsvRows, parseBankCsv } from "../finance/csv-import";
 import { importHash } from "../finance/sync-engine";
-import { findRefundPurchase, mayBeRefund, refundFields } from "../finance/refunds";
+import { findRefundPurchase, mayBeRefund, refundFields, refundNote } from "../finance/refunds";
 import { loadCategoryVocabulary, normalizeCategoryName, rememberCategories } from "../finance/category-list";
 import { checkCategoryName, countCategoryUse, financeCategoryTree, renamePath, rewriteCategories, type FinanceCategoryRow } from "../finance/category-tree";
 import { categoryAndDescendants } from "../inventory";
@@ -1734,7 +1734,7 @@ export const importFinanceTransactions = defineOp({
     const drafts = fresh.map((r) => {
       const type = r.amount >= 0 ? "INCOME" : "EXPENSE";
       const hit = classify({ type, description: r.description, amount: r.amount }, rules);
-      return { ...r, accountId: account.id, type, category: r.category ?? hit.category, ruleLedger: hit.ledger, spendGroupId: null as string | null, outOfBudget: null as boolean | null };
+      return { ...r, accountId: account.id, type, category: r.category ?? hit.category, ruleLedger: hit.ledger, spendGroupId: null as string | null, outOfBudget: null as boolean | null, notes: null as string | null };
     });
     // A refund takes its purchase's category, budget and spend group (lib/finance/refunds.ts).
     for (const d of drafts) {
@@ -1746,6 +1746,7 @@ export const importFinanceTransactions = defineOp({
       if (f.ledger) d.ruleLedger = f.ledger;
       d.spendGroupId = f.spendGroupId;
       d.outOfBudget = f.outOfBudget;
+      d.notes = refundNote(purchase);
     }
 
     let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
@@ -1766,6 +1767,7 @@ export const importFinanceTransactions = defineOp({
           categorySource: d.category ? "RULE" : null,
           ...(d.ruleLedger ? { ledger: d.ruleLedger, ledgerSource: "RULE" } : {}),
           ...(d.spendGroupId ? { spendGroupId: d.spendGroupId, outOfBudget: d.outOfBudget ?? null } : {}),
+          ...(d.notes ? { notes: d.notes } : {}),
           description: d.description,
           date: d.date,
           status: "POSTED",

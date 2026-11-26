@@ -127,6 +127,20 @@ export function refundFields(purchase: TxLikeForRefund): { category: string; led
   };
 }
 
+/** "Refund of 2026-11-17 crateandbarrel.com ($1,590.76)": the note a matched refund carries. */
+export function refundNote(purchase: TxLikeForRefund): string {
+  const amt = Math.abs(purchase.amount ?? 0).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  return `Refund of ${purchase.date ?? "?"} ${(purchase.description ?? "").trim()} ($${amt})`;
+}
+
+/** `notes` with the refund note added on its own line; unchanged when it's already there. */
+export function withRefundNote(notes: string | null | undefined, purchase: TxLikeForRefund): string {
+  const note = refundNote(purchase);
+  const cur = (notes ?? "").trim();
+  if (cur.includes(note)) return cur;
+  return cur ? `${cur}\n${note}` : note;
+}
+
 /** The earliest date whose purchases a batch of refunds could match (for loading candidates). */
 export function refundLookbackFrom(refunds: Array<{ date?: string | null }>): string | null {
   const dates = refunds.map((r) => r.date ?? "").filter(Boolean).sort();
