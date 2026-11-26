@@ -22,11 +22,39 @@ const NOISE = new Set([
 
 /** The merchant's first significant word ("AMAZON" for "AMAZON.COM REFUND" and "Amazon Mktpl*AB12"), or null. */
 export function merchantKey(description: string | null | undefined): string | null {
+  const words = merchantWords(description);
+  return words[0] ?? null;
+}
+
+// The description's words from the first one that names the merchant: a
+// leading "POS RETURN" or store number is dropped, the rest kept as is.
+function merchantWords(description: string | null | undefined): string[] {
   const words = stripProcessorPrefix(description ?? "")
     .toUpperCase()
-    .split(/[^A-Z0-9&']+/)
-    .filter((w) => w.length >= 3 && /[A-Z]/.test(w) && !NOISE.has(w));
-  return words[0] ?? null;
+    .replace(/(?<=[A-Z0-9])['’-](?=[A-Z0-9])/g, "") // H-E-B → HEB, MACY'S → MACYS
+    .split(/[^A-Z0-9]+/)
+    .filter(Boolean);
+  const start = words.findIndex((w) => w.length >= 3 && /[A-Z]/.test(w) && !NOISE.has(w));
+  return start < 0 ? [] : words.slice(start);
+}
+
+/**
+ * Whether two bank descriptions name the same merchant. Banks space and
+ * punctuate a name differently ("crateandbarrel.com" vs "CRATE AND BARREL
+ * AUSTIN TX", "AMAZON.COM REFUND" vs "Amazon Mktpl*AB12"), so this compares
+ * the names with spaces and punctuation removed: they must start the same
+ * for the length of the shorter first word, capped at 6 letters (at least 3).
+ */
+export function sameMerchant(a: string | null | undefined, b: string | null | undefined): boolean {
+  const wa = merchantWords(a);
+  const wb = merchantWords(b);
+  if (!wa.length || !wb.length) return false;
+  const ca = wa.join("");
+  const cb = wb.join("");
+  let common = 0;
+  while (common < ca.length && common < cb.length && ca[common] === cb[common]) common++;
+  const need = Math.max(3, Math.min(6, wa[0].length, wb[0].length));
+  return common >= need;
 }
 
 type TxLikeForRefund = {
@@ -81,7 +109,7 @@ export function findRefundPurchase<T extends TxLikeForRefund>(refund: TxLikeForR
       p.type !== "TRANSFER" &&
       d >= from &&
       d <= date &&
-      merchantKey(p.description) === key &&
+      sameMerchant(p.description, refund.description) &&
       isRefundableCategory(effectiveCategory(p))
     );
   });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { findRefundPurchase, mayBeRefund, merchantKey, refundFields } from "./refunds";
+import { findRefundPurchase, mayBeRefund, merchantKey, refundFields, sameMerchant } from "./refunds";
 import { planRuleChanges } from "./rule-tools";
 import { rulesFromDbRows } from "./categories";
 
@@ -12,6 +12,18 @@ describe("merchantKey", () => {
     expect(merchantKey("SQ *BLUE BOTTLE")).toBe("BLUE");
     expect(merchantKey("POS RETURN TARGET 00012")).toBe("TARGET");
     expect(merchantKey("123 456")).toBeNull();
+  });
+});
+
+describe("sameMerchant", () => {
+  it("matches a merchant however the bank spaces or punctuates it", () => {
+    expect(sameMerchant("crateandbarrel.com", "CRATE AND BARREL AUSTIN TX")).toBe(true);
+    expect(sameMerchant("CRATE&BARREL REFUND", "crateandbarrel.com")).toBe(true); // "CRATE" in full
+    expect(sameMerchant("AMAZON.COM REFUND", "Amazon Mktpl*AB12CD")).toBe(true);
+    expect(sameMerchant("POS RETURN TARGET 00012", "TARGET T-1234 AUSTIN")).toBe(true);
+    expect(sameMerchant("H-E-B ONLINE REFUND", "H-E-B #123")).toBe(true);
+    expect(sameMerchant("TARGET 0001", "AMAZON MKTPL")).toBe(false);
+    expect(sameMerchant("CRATE AND BARREL", "CRAFT WAREHOUSE")).toBe(false);
   });
 });
 
