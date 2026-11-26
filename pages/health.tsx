@@ -234,7 +234,7 @@ export default function HealthPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-3xl mx-auto px-4 py-10">
+      <div className="max-w-5xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between gap-2 mb-6">
           <div className="flex items-center gap-2">
             <FaHeartbeat className="text-default-500" />

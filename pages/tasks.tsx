@@ -183,7 +183,7 @@ export default function TasksPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-2xl mx-auto px-4 py-10">
+      <div className="max-w-6xl mx-auto px-4 py-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -226,10 +226,10 @@ export default function TasksPage() {
           </Select>
         </div>
 
-        {/* Task list */}
-        <div className="space-y-2">
+        {/* Task list: one column on phones, two from lg */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 items-start">
           {filteredTasks.length === 0 && (
-            <p className="text-center text-default-300 py-10">No tasks found</p>
+            <p className="lg:col-span-2 text-center text-default-300 py-10">No tasks found</p>
           )}
           {filteredTasks.map((task) => {
             const due = formatDueDate(task.dueDate);

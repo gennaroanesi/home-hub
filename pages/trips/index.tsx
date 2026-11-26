@@ -127,7 +127,7 @@ export default function TripsListPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-5xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-3 sm:mb-4 gap-2">
           <div className="flex items-center gap-2 min-w-0">
@@ -196,7 +196,7 @@ export default function TripsListPage() {
         {filtered.length === 0 && !loading && (
           <p className="text-center text-default-300 py-10 text-sm">No trips match your filters</p>
         )}
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 items-start">
           {filtered.map((trip) => {
             const tripType = trip.type as TripType;
             const color = TRIP_TYPE_CONFIG[tripType]?.color ?? "#999";

@@ -376,7 +376,7 @@ export default function InventoryPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-4xl mx-auto px-4 py-10">
+      <div className="max-w-6xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between gap-2 mb-6">
           <div className="flex items-center gap-2">
             <FaBoxOpen className="text-default-500" />

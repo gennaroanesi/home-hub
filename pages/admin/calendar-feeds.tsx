@@ -244,7 +244,7 @@ export default function CalendarFeedsPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-3xl mx-auto px-4 py-6">
+      <div className="max-w-6xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-3">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
@@ -299,7 +299,7 @@ export default function CalendarFeedsPage() {
           </Card>
         )}
 
-        <div className="space-y-2">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 items-start">
           {feeds.map((feed) => {
             const hasError = !!feed.lastSyncError;
             return (

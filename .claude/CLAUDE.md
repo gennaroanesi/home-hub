@@ -37,6 +37,9 @@ Home management app for a two-person household.
 - External API (`/api/v1/*`, docs/ops-architecture.md): one bearer key per third-party client, stored hashed in Secrets Manager `home-hub/api-clients` with the household member it acts as (lib/api-clients.ts); add / rotate / revoke with `npm run api-clients`, never by sharing a key between clients. The env `MUSE_API_KEY` / `MUSE_SENDER` is the legacy key, still accepted
 - Amplify's model client can't run secondary-index queries on our lowercase model names; use raw GraphQL (`txIndexQuery` in `lib/finance/data.ts`)
 
+## Web layout
+- Page widths (the outer `max-w-* mx-auto` container): `max-w-7xl` for dashboards and dense data (finance, calendar, week, photos, notes, shopping), `max-w-6xl` for card lists, `max-w-3xl` or less only for chat and settings-style forms. A list of independent cards goes `grid grid-cols-1 lg:grid-cols-2 gap-2 items-start`; cards of very different heights (notes, shopping lists) use `columns-1 lg:columns-2 2xl:columns-3` with `break-inside-avoid`. An empty-state message inside such a grid spans it (`lg:col-span-2`). The sidebar appears at `md`, so an iPad in portrait gets the desktop layout
+
 ## Dev
 - `npx ampx sandbox --profile amplify-dev` to run backend locally
 - `npm run dev` for frontend (port 3001)

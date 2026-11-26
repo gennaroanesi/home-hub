@@ -558,7 +558,7 @@ export default function DocumentsPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-5xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
         <div className="flex items-center justify-between mb-3 sm:mb-4 gap-2">
           <div className="flex items-center gap-2 min-w-0">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
@@ -757,7 +757,7 @@ export default function DocumentsPage() {
                   onValueChange={(v) => setForm((f) => ({ ...f, title: v }))}
                   placeholder="e.g. Passport"
                 />
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                   <Select
                     label="Type"
                     isRequired
@@ -826,7 +826,7 @@ export default function DocumentsPage() {
                       : "Opens without Duo, on the web, the phone and from Janet. Saving asks for a Duo push."}
                   </span>
                 </Switch>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                   <DateInput
                     label="Issued date"
                     value={form.issuedDate}

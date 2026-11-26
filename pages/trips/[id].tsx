@@ -114,7 +114,7 @@ export default function TripDetailPage() {
   if (loading) {
     return (
       <DefaultLayout>
-        <div className="max-w-4xl mx-auto px-4 py-10 text-center text-default-400">Loading…</div>
+        <div className="max-w-6xl mx-auto px-4 py-10 text-center text-default-400">Loading…</div>
       </DefaultLayout>
     );
   }
@@ -122,7 +122,7 @@ export default function TripDetailPage() {
   if (!isNew && !trip) {
     return (
       <DefaultLayout>
-        <div className="max-w-4xl mx-auto px-4 py-10">
+        <div className="max-w-6xl mx-auto px-4 py-10">
           <div className="flex items-center gap-2 mb-4">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/trips")}>
               <FaArrowLeft />
@@ -139,7 +139,7 @@ export default function TripDetailPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-4xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
+      <div className="max-w-6xl mx-auto px-2 sm:px-4 py-3 sm:py-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-4 gap-2">
           <div className="flex items-center gap-2 min-w-0">

@@ -175,7 +175,7 @@ export default function NotesPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-3xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex items-center justify-between mb-4 gap-2">
           <div className="flex items-center gap-3">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
@@ -265,11 +265,12 @@ export default function NotesPage() {
           </Card>
         )}
 
-        <div className="space-y-2">
+        {/* Masonry: notes vary a lot in height, so columns pack better than a grid. */}
+        <div className="columns-1 lg:columns-2 2xl:columns-3 gap-3">
           {filtered.map((n) => {
             const ptype = n.parentType as NoteParentType | null;
             return (
-              <Card key={n.id}>
+              <Card key={n.id} className="mb-3 break-inside-avoid">
                 <CardHeader className="flex items-start justify-between px-4 pt-3 pb-1 gap-2">
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 flex-wrap">

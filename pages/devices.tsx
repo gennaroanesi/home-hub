@@ -425,7 +425,7 @@ export default function DevicesPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-3xl mx-auto px-4 py-10">
+      <div className="max-w-6xl mx-auto px-4 py-10">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
             <Button size="sm" isIconOnly variant="light" onPress={() => router.push("/")}>
@@ -506,7 +506,7 @@ export default function DevicesPage() {
               <h2 className="text-sm font-semibold text-default-600 uppercase tracking-wide mb-2">
                 {area}
               </h2>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
                 {areaDevices.map((device) => (
                   <Card key={device.id} className={device.isPinned ? "" : "opacity-70"}>
                     <CardHeader className="flex items-center gap-2 px-4 pt-3 pb-1">

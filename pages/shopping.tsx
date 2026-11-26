@@ -177,7 +177,7 @@ export default function ShoppingPage() {
 
   return (
     <DefaultLayout>
-      <div className="max-w-2xl mx-auto px-4 py-10">
+      <div className="max-w-7xl mx-auto px-4 py-10">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
@@ -205,7 +205,7 @@ export default function ShoppingPage() {
           </p>
         )}
 
-        <div className="space-y-4">
+        <div className="columns-1 lg:columns-2 2xl:columns-3 gap-4 [&>*]:mb-4 [&>*]:break-inside-avoid">
           {lists
             .filter((l) => showArchived || !l.isArchived)
             .map((list) => {

@@ -67,7 +67,7 @@ export function FinanceShell({
 
   return (
     <DefaultLayout>
-      <div className="max-w-6xl mx-auto px-4 py-6">
+      <div className="max-w-7xl mx-auto px-4 py-6">
         <div className="flex flex-wrap items-start justify-between gap-3 mb-5">
           <div className="min-w-0">
             <h1 className="text-2xl font-bold flex items-center gap-2">
