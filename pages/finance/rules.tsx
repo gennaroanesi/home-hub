@@ -29,7 +29,7 @@ import { HOUSEHOLD as HOUSEHOLD_LEDGER, accountLedger, ledgerLabel, ledgerPeople
 import {
   moveRuleUpdates,
   newRuleSortOrder,
-  planRuleChange,
+  planRuleChanges,
   reapplyDays,
   ruleChangePatch,
   rulePatternError,
@@ -37,6 +37,7 @@ import {
   testRules,
   type RuleChange,
 } from "@/lib/finance/rule-tools";
+import { REFUND_LOOKBACK_DAYS } from "@/lib/finance/refunds";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -432,10 +433,11 @@ function Reapply({ dbRows, people, accounts }: { dbRows: any[]; people: ReturnTy
     setChecking(true);
     try {
       const today = todayIso();
-      const txs = await listTransactions(financeClient, { fromIso: addDays(today, -n), toIso: today });
+      // REFUND_LOOKBACK_DAYS more, so a refund can find the purchase it reverses.
+      const txs = await listTransactions(financeClient, { fromIso: addDays(today, -n - REFUND_LOOKBACK_DAYS), toIso: today });
       const rules = rulesFromDbRows(dbRows);
       const ledgerOfAccount = (id: string) => accountLedger(accounts.find((a) => a.id === id));
-      setPlan(txs.map((t) => planRuleChange(t, rules, ledgerOfAccount)).filter((c): c is RuleChange => !!c));
+      setPlan(planRuleChanges(txs, rules, ledgerOfAccount, addDays(today, -n)));
     } catch (e) {
       addToast({ title: "Couldn't check", description: e instanceof Error ? e.message : String(e), color: "danger" });
     } finally {
@@ -489,6 +491,11 @@ function Reapply({ dbRows, people, accounts }: { dbRows: any[]; people: ReturnTy
                       {c.personId !== undefined && <>person → {personName(c.personId)}</>}
                       {(c.category !== undefined || c.personId !== undefined) && c.ledger !== undefined && " · "}
                       {c.ledger !== undefined && <>budget → {ledgerLabel(c.ledger, people)}</>}
+                      {c.refundOf && (
+                        <span className="block text-default-400">
+                          refund of {c.refundOf.date} {c.refundOf.description} (${Math.abs(c.refundOf.amount ?? 0).toFixed(2)})
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}

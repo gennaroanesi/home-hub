@@ -5,6 +5,7 @@
 
 import { classify, patternMatches, stripProcessorPrefix, type CategoryRule } from "./categories";
 import { canTakeRuleLedger } from "./ledger";
+import { findRefundPurchase, mayBeRefund, refundFields } from "./refunds";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -50,24 +51,53 @@ export function testRules(
   return { ...out, catRule: find((r) => r.category), personRule: find((r) => r.personId), ledgerRule: find((r) => r.ledger) };
 }
 
-export type RuleChange = { tx: any; category?: string; personId?: string; ledger?: string };
+export type RuleChange = { tx: any; category?: string; personId?: string; ledger?: string; spendGroupId?: string; outOfBudget?: boolean | null; refundOf?: any };
 
 /**
  * What the current rules would change on a transaction. Never touches a
  * MANUAL category or person; a guessed (LLM) category is replaced only
  * when a rule now matches; transfers paired by the sync are left alone.
+ *
+ * With `purchases` (rows from up to REFUND_LOOKBACK_DAYS before), a refund
+ * takes its original purchase's category, budget and spend group instead of
+ * the rule's (lib/finance/refunds.ts).
  */
-export function planRuleChange(tx: any, rules: CategoryRule[], accountLedgerOf: (id: string) => string): RuleChange | null {
+export function planRuleChange(tx: any, rules: CategoryRule[], accountLedgerOf: (id: string) => string, purchases?: any[]): RuleChange | null {
   if (tx.type === "TRANSFER") return null;
-  const { category, personId, ledger } = classify({ description: tx.description, amount: tx.amount, type: tx.type }, rules);
+  const hit = classify({ description: tx.description, amount: tx.amount, type: tx.type }, rules);
+  const personId = hit.personId;
+  let { category, ledger } = hit;
   const change: RuleChange = { tx };
   const src = tx.categorySource ?? null;
+  const purchase =
+    purchases && src !== "MANUAL" && mayBeRefund({ ...tx, category: category ?? tx.category }) ? findRefundPurchase(tx, purchases) : null;
+  if (purchase) {
+    const f = refundFields(purchase);
+    change.refundOf = purchase;
+    category = f.category;
+    if (f.ledger) ledger = f.ledger;
+    if (f.spendGroupId && !tx.spendGroupId) {
+      change.spendGroupId = f.spendGroupId;
+      change.outOfBudget = f.outOfBudget;
+    }
+  }
   if (src !== "MANUAL" && category && category !== (tx.category ?? "")) change.category = category;
   // A person is only a contributor (money in); spending's owner is its ledger.
   if ((tx.amount ?? 0) > 0 && tx.personSource !== "MANUAL" && personId && personId !== tx.personId) change.personId = personId;
   // Never over a budget picked by hand or by the row's bill (canTakeRuleLedger).
   if (ledger && ledger !== (tx.ledger ?? "") && canTakeRuleLedger(tx, accountLedgerOf(tx.accountId))) change.ledger = ledger;
-  return change.category !== undefined || change.personId !== undefined || change.ledger !== undefined ? change : null;
+  return change.category !== undefined || change.personId !== undefined || change.ledger !== undefined || change.spendGroupId !== undefined ? change : null;
+}
+
+/**
+ * Re-apply over the rows dated `fromIso` or later, with every row in `txs`
+ * (load REFUND_LOOKBACK_DAYS more) as purchases a refund can match.
+ */
+export function planRuleChanges(txs: any[], rules: CategoryRule[], accountLedgerOf: (id: string) => string, fromIso: string): RuleChange[] {
+  return txs
+    .filter((t) => (t.date ?? "") >= fromIso)
+    .map((t) => planRuleChange(t, rules, accountLedgerOf, txs))
+    .filter((c): c is RuleChange => !!c);
 }
 
 /** The homeFinanceTransaction update for a change (without the id), marking each field as set by a rule. */
@@ -76,6 +106,7 @@ export function ruleChangePatch(c: RuleChange): Record<string, unknown> {
   if (c.category !== undefined) Object.assign(patch, { category: c.category, categorySource: "RULE" });
   if (c.personId !== undefined) Object.assign(patch, { personId: c.personId, personSource: "RULE" });
   if (c.ledger !== undefined) Object.assign(patch, { ledger: c.ledger, ledgerSource: "RULE" });
+  if (c.spendGroupId !== undefined) Object.assign(patch, { spendGroupId: c.spendGroupId, outOfBudget: c.outOfBudget ?? null });
   return patch;
 }
 

@@ -15,6 +15,7 @@ import {
   resolveBudgetLines,
   seedFromHistory,
   spendByCategory,
+  spendParts,
   totalOutflow,
   type BudgetLine,
 } from "./budget";
@@ -112,9 +113,10 @@ export function buildReview(input: {
   const received = ledger === HOUSEHOLD ? householdContributions(rawTxs, accounts, range) : receivedByPerson(txs, range);
   const totalIn = [...received.values()].reduce((s, n) => s + n, 0);
   const totalOut = totalOutflow(txs, range);
+  // Spend-group spending, refunds netted (spendParts: money in under a spending category is negative).
   const groupedOut = periodTxs
-    .filter((t) => t.status !== "PENDING" && t.spendGroupId && (t.amount ?? 0) < 0 && !isExcludedFromBudget(effectiveCategory(t)))
-    .reduce((s, t) => s - t.amount, 0);
+    .filter((t) => t.status !== "PENDING" && t.spendGroupId)
+    .reduce((s, t) => s + spendParts(t).reduce((n, p) => n + p.amount, 0), 0);
 
   // By category: the period, its budget line, and the usual level — the
   // median month over the REVIEW_USUAL_MONTHS before the period (only months

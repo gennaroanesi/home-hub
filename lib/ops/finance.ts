@@ -30,6 +30,7 @@ import { defaultCadences, periodContaining, periodFromParam, periodRange, period
 import { ALL_LEDGERS, HOUSEHOLD, accountLedger, allLedgersBudget, fundedInLedger, ledgerBudget, ledgerLabel, ledgerOf, ledgerPeople, scheduleLedger, canTakeScheduleLedger, txsForLedger } from "../finance/ledger";
 import { CSV_FORMATS, newCsvRows, parseBankCsv } from "../finance/csv-import";
 import { importHash } from "../finance/sync-engine";
+import { findRefundPurchase, mayBeRefund, refundFields } from "../finance/refunds";
 import { loadCategoryVocabulary, normalizeCategoryName, rememberCategories } from "../finance/category-list";
 import { checkCategoryName, countCategoryUse, financeCategoryTree, renamePath, rewriteCategories, type FinanceCategoryRow } from "../finance/category-tree";
 import { categoryAndDescendants } from "../inventory";
@@ -1733,8 +1734,19 @@ export const importFinanceTransactions = defineOp({
     const drafts = fresh.map((r) => {
       const type = r.amount >= 0 ? "INCOME" : "EXPENSE";
       const hit = classify({ type, description: r.description, amount: r.amount }, rules);
-      return { ...r, type, category: r.category ?? hit.category, ruleLedger: hit.ledger };
+      return { ...r, accountId: account.id, type, category: r.category ?? hit.category, ruleLedger: hit.ledger, spendGroupId: null as string | null, outOfBudget: null as boolean | null };
     });
+    // A refund takes its purchase's category, budget and spend group (lib/finance/refunds.ts).
+    for (const d of drafts) {
+      if (!mayBeRefund(d)) continue;
+      const purchase = findRefundPurchase(d, [...all, ...drafts]);
+      if (!purchase) continue;
+      const f = refundFields(purchase);
+      d.category = f.category;
+      if (f.ledger) d.ruleLedger = f.ledger;
+      d.spendGroupId = f.spendGroupId;
+      d.outOfBudget = f.outOfBudget;
+    }
 
     let linked: Array<{ date: string; description: string | null; amount: number; schedule: string }> = [];
     const storedSum = all.reduce((n: number, t: any) => n + (t.amount ?? 0), 0);
@@ -1753,6 +1765,7 @@ export const importFinanceTransactions = defineOp({
           category: d.category,
           categorySource: d.category ? "RULE" : null,
           ...(d.ruleLedger ? { ledger: d.ruleLedger, ledgerSource: "RULE" } : {}),
+          ...(d.spendGroupId ? { spendGroupId: d.spendGroupId, outOfBudget: d.outOfBudget ?? null } : {}),
           description: d.description,
           date: d.date,
           status: "POSTED",

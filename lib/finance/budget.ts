@@ -6,7 +6,7 @@
 // plan what moves into a savings account (accountId) each period; that money
 // is a transfer, so it never counts as spending.
 
-import { categoryParts, coveringCategory, effectiveCategory, isExcludedFromBudget, INCOME_CATEGORIES } from "./categories";
+import { categoryParts, coveringCategory, effectiveCategory, isExcludedFromBudget, isRefundableCategory, INCOME_CATEGORIES } from "./categories";
 import { addDays, daysBetween, monthEnd, occurrencesBetween, previousDay, type DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
 
@@ -365,23 +365,34 @@ function inWindow(tx: TxLike, window: DateRange): boolean {
 }
 
 /**
- * Counts against the monthly budget: posted money out in the window, not
- * internal movement or income, and not in a spend group kept out of the
- * budget (`outOfBudget`; other spend groups count under their category). Refunds are money in under their own category, so
- * they don't reduce a line's spend.
+ * Counts against the monthly budget: posted spending in the window, money
+ * out and refunds (money in under a spending category, which comes off it),
+ * not internal movement or income, and not in a spend group kept out of the
+ * budget (`outOfBudget`; other spend groups count under their category).
  */
 export function countsTowardBudget(tx: TxLike, window: DateRange): boolean {
   if (tx.status === "PENDING" || tx.outOfBudget || !inWindow(tx, window)) return false;
-  return (tx.amount ?? 0) < 0 && spendParts(tx).length > 0;
+  return spendParts(tx).length > 0;
+}
+
+/** Money in under a spending category: a refund of something bought (categories.ts isRefundableCategory). */
+export function isRefund(tx: TxLike): boolean {
+  return (tx.amount ?? 0) > 0 && tx.type !== "TRANSFER" && spendParts(tx).length > 0;
 }
 
 /**
- * The budgetable pieces of money out: one per category (several for an
+ * The budgetable pieces of a transaction: one per category (several for an
  * itemized charge, see categoryParts), minus internal movement and income.
+ * Money out is positive; a refund (money in under a spending category) is
+ * negative, so adding them up nets the refund off that category.
  */
 export function spendParts(tx: TxLike): Array<{ category: string; amount: number }> {
-  if ((tx.amount ?? 0) >= 0) return [];
-  return categoryParts(tx).filter((p) => !isExcludedFromBudget(p.category) && !INCOME_CATEGORIES.has(p.category));
+  const amt = tx.amount ?? 0;
+  if (amt < 0) return categoryParts(tx).filter((p) => !isExcludedFromBudget(p.category) && !INCOME_CATEGORIES.has(p.category));
+  if (amt === 0 || tx.type === "TRANSFER") return [];
+  return categoryParts(tx)
+    .filter((p) => isRefundableCategory(p.category))
+    .map((p) => ({ category: p.category, amount: -p.amount }));
 }
 
 export function spendByCategory(txs: TxLike[], window: DateRange): Map<string, number> {
@@ -404,12 +415,16 @@ export function budgetTransactions<T extends TxLike>(txs: T[], window: DateRange
     .sort((a, b) => Math.abs(b.amount ?? 0) - Math.abs(a.amount ?? 0));
 }
 
-/** All money that left in the window except internal movement — the honest "spent". */
+/** All money that left in the window except internal movement, less refunds — the honest "spent". */
 export function totalOutflow(txs: TxLike[], window: DateRange): number {
   let sum = 0;
   for (const tx of txs) {
-    if (tx.status === "PENDING" || !inWindow(tx, window) || (tx.amount ?? 0) >= 0) continue;
-    for (const p of categoryParts(tx)) if (!isExcludedFromBudget(p.category)) sum += p.amount;
+    if (tx.status === "PENDING" || !inWindow(tx, window)) continue;
+    if ((tx.amount ?? 0) < 0) {
+      for (const p of categoryParts(tx)) if (!isExcludedFromBudget(p.category)) sum += p.amount;
+    } else {
+      for (const p of spendParts(tx)) sum += p.amount; // refunds, negative
+    }
   }
   return sum;
 }
@@ -768,8 +783,6 @@ export function seedFromHistory(txs: TxLike[], months: string[]): CategorySeed[]
   const byCat = new Map<string, Map<string, number>>();
   for (const tx of txs) {
     if (tx.status === "PENDING" || tx.outOfBudget) continue;
-    const amt = tx.amount ?? 0;
-    if (amt >= 0) continue;
     const m = (tx.date ?? "").slice(0, 7);
     if (!months.includes(m)) continue;
     for (const p of spendParts(tx)) {

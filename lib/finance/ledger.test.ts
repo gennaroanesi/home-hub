@@ -68,6 +68,19 @@ describe("contributions in kind", () => {
     expect(Object.fromEntries(m)).toEqual({ [C]: 120, [G]: -40 });
   });
 
+  it("a refund of household spending to a personal card takes it back", () => {
+    const m = inKindContributions(
+      [
+        tx({ accountId: "cCard", amount: -120, category: "Shopping", ledger: HOUSEHOLD }),
+        tx({ accountId: "cCard", amount: 50, category: "Shopping", ledger: HOUSEHOLD }), // returned part of it
+        tx({ accountId: "cCard", amount: 2000, category: "Income", ledger: HOUSEHOLD }), // not a refund
+      ],
+      accounts,
+      window,
+    );
+    expect(Object.fromEntries(m)).toEqual({ [C]: 70 });
+  });
+
   it("householdContributions adds attributed money in to what was paid in kind", () => {
     const m = householdContributions(
       [

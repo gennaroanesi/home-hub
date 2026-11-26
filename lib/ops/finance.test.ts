@@ -855,7 +855,7 @@ describe("import_finance_transactions", () => {
       [-4.99, "Groceries"],
       [-4.99, "Groceries"],
       [500, "Credit Card Payment"],
-      [12, "Refund"],
+      [12, "Groceries"], // a return: keeps the store's category and nets against it
     ]);
 
     await runOp(ctx, "import_finance_transactions", { accountId: "heb", csv: HEB });

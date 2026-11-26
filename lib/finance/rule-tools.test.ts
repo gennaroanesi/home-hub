@@ -24,7 +24,7 @@ describe("rule tools", () => {
     expect(r.catRule?.n).toBe(3);
     expect(r.ledger).toBe("g");
     expect(r.personRule).toBeNull();
-    expect(testRules("COSTCO", "in", rules)!.category).toBe("Refund");
+    expect(testRules("COSTCO", "in", rules)!.category).toBe("Groceries");
     expect(testRules("  ", "out", rules)).toBeNull();
   });
 

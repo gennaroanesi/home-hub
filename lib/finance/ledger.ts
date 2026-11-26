@@ -20,7 +20,7 @@
 //   household's contribution lines are money moving between ledgers, so
 //   they're left out of it.
 
-import { categoryParts, effectiveCategory, isExcludedFromBudget, parseLineItems, INCOME_CATEGORIES, TRANSFER_CATEGORY, type LineItem } from "./categories";
+import { categoryParts, effectiveCategory, isExcludedFromBudget, isRefundableCategory, parseLineItems, INCOME_CATEGORIES, TRANSFER_CATEGORY, type LineItem } from "./categories";
 import { householdBudget, receivedByPerson, type BudgetLine, type HouseholdBudgetView } from "./budget";
 import type { DateRange } from "./dates";
 import type { RecurringLike, TxLike } from "./types";
@@ -155,7 +155,8 @@ export function txsForLedger<T extends TxLike & { ledger?: string | null }>(txs:
  * Contribution row: money moved between their own account and a household
  * one (a transfer the sync paired: in counts for them, back out against),
  * plus household spending paid from their own accounts, minus personal
- * spending paid with household money. Posted, in the window, not
+ * spending paid with household money. A refund undoes its share (household
+ * spending refunded to a personal account counts against that person). Posted, in the window, not
  * in a spend group kept out of the budget; card payments and other transfers aren't spending.
  */
 export function inKindContributions(txs: (TxLike & { ledger?: string | null })[], accounts: AccountLike[], window: DateRange): Map<string, number> {
@@ -172,15 +173,19 @@ export function inKindContributions(txs: (TxLike & { ledger?: string | null })[]
       if (acct === HOUSEHOLD && other !== HOUSEHOLD) add(other, tx.amount ?? 0);
       continue;
     }
-    if ((tx.amount ?? 0) >= 0) continue;
+    const inflow = (tx.amount ?? 0) > 0;
+    if (!inflow && (tx.amount ?? 0) === 0) continue;
+    if (inflow && tx.type === "TRANSFER") continue;
     for (const part of ledgerParts(tx, acct)) {
       if (part.ledger === acct) continue;
-      // Only what the budget counts as spending moves between ledgers.
-      const sliced = { ...tx, amount: -part.amount, lineItems: part.items ? JSON.stringify(part.items) : tx.lineItems };
-      const spend = categoryParts(sliced)
-        .filter((p) => !isExcludedFromBudget(p.category) && !INCOME_CATEGORIES.has(p.category))
+      // Only what the budget counts as spending moves between ledgers; a
+      // refund (money in under a spending category) moves it back.
+      const sliced = { ...tx, amount: inflow ? part.amount : -part.amount, lineItems: part.items ? JSON.stringify(part.items) : tx.lineItems };
+      const counted = categoryParts(sliced)
+        .filter((p) => (inflow ? isRefundableCategory(p.category) : !isExcludedFromBudget(p.category) && !INCOME_CATEGORIES.has(p.category)))
         .reduce((s, p) => s + p.amount, 0);
-      if (spend <= 0) continue;
+      if (counted <= 0) continue;
+      const spend = inflow ? -counted : counted;
       if (part.ledger === HOUSEHOLD && acct !== HOUSEHOLD) add(acct, spend);
       else if (acct === HOUSEHOLD && part.ledger !== HOUSEHOLD) add(part.ledger, -spend);
     }

@@ -21,7 +21,7 @@ import { HOUSEHOLD, accountLedger, financePeople, ledgerLabel, ledgerPeople } fr
 import {
   moveRuleUpdates,
   newRuleSortOrder,
-  planRuleChange,
+  planRuleChanges,
   reapplyDays,
   ruleChangePatch,
   rulePatternError,
@@ -29,6 +29,7 @@ import {
   testRules,
   type RuleChange,
 } from "../../../../lib/finance/rule-tools";
+import { REFUND_LOOKBACK_DAYS } from "../../../../lib/finance/refunds";
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
@@ -399,10 +400,12 @@ function Reapply({ dbRows, people, accounts, personName }: { dbRows: any[]; peop
     setChecking(true);
     try {
       const today = todayIso();
-      const txs = await listTransactions(getClient(), { fromIso: addDays(today, -reapplyDays(days)), toIso: today });
+      const n = reapplyDays(days);
+      // REFUND_LOOKBACK_DAYS more, so a refund can find the purchase it reverses.
+      const txs = await listTransactions(getClient(), { fromIso: addDays(today, -n - REFUND_LOOKBACK_DAYS), toIso: today });
       const rules = rulesFromDbRows(dbRows);
       const ledgerOfAccount = (id: string) => accountLedger(accounts.find((a) => a.id === id));
-      setPlan(txs.map((t) => planRuleChange(t, rules, ledgerOfAccount)).filter((c): c is RuleChange => !!c));
+      setPlan(planRuleChanges(txs, rules, ledgerOfAccount, addDays(today, -n)));
     } catch (e) {
       Alert.alert("Couldn't check", errorText(e));
     } finally {
@@ -455,6 +458,7 @@ function Reapply({ dbRows, people, accounts, personName }: { dbRows: any[]; peop
                   c.category !== undefined ? `${c.tx.category ?? "Uncategorized"} → ${c.category}` : null,
                   c.personId !== undefined ? `person → ${personName(c.personId)}` : null,
                   c.ledger !== undefined ? `budget → ${ledgerLabel(c.ledger, people)}` : null,
+                  c.refundOf ? `refund of ${c.refundOf.date} ${c.refundOf.description ?? ""}` : null,
                 ]
                   .filter(Boolean)
                   .join(" · ")}

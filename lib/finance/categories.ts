@@ -127,9 +127,15 @@ export function suggestPattern(description: string | null | undefined): string {
   return words.slice(0, 2).join(" ").toUpperCase();
 }
 
-// A money-IN row matching one of these keeps the rule's category instead of
-// becoming a Refund.
-const NON_REFUNDABLE = new Set<string>([...EXCLUDED_FROM_BUDGET, ...INCOME_CATEGORIES, REFUND_CATEGORY]);
+/**
+ * Money in under this category is a refund that comes off that category's
+ * spending: anything spending-like. Not internal movement, income, the
+ * catch-all Refund bucket (a refund we couldn't place) or Uncategorized.
+ */
+export function isRefundableCategory(category: string | null | undefined): boolean {
+  const c = (category ?? "").trim();
+  return !!c && !EXCLUDED_FROM_BUDGET.has(c) && !INCOME_CATEGORIES.has(c) && c !== REFUND_CATEGORY && c !== UNCATEGORIZED;
+}
 
 type InferInput = {
   description?: string | null;
@@ -155,6 +161,13 @@ function ruleHits(rule: CategoryRule, desc: string, stripped: string): boolean {
  * category, the first with a personId the person, the first with a ledger
  * the budget, so a rule like "transfer from … 1234 → Gennaro" can sit next
  * to the generic transfer rule.
+ *
+ * Refunds: money in keeps a spending rule's category, so "AMAZON" money in
+ * is Shopping and comes off Shopping's spending (lib/finance/budget.ts). A
+ * rule whose category is Refund ("…REFUND…") only marks the row as one: the
+ * next rule with a real category decides it, and it stays Refund only when
+ * none matches. lib/finance/refunds.ts then prefers the original purchase's
+ * category when it can find that purchase.
  */
 export function classify(
   tx: InferInput,
@@ -166,19 +179,21 @@ export function classify(
   const desc = (tx.description ?? "").trim();
   if (desc) {
     const stripped = stripProcessorPrefix(desc);
+    let refundMarked = false;
     for (const rule of rules) {
       if (category && personId && ledger) break;
       if (!ruleHits(rule, desc, stripped)) continue;
       if (!personId && rule.personId) personId = rule.personId;
-      if (!category && rule.category) category = rule.category;
+      if (!category && rule.category === REFUND_CATEGORY) refundMarked = true;
+      else if (!category && rule.category) category = rule.category;
       if (!ledger && rule.ledger) ledger = rule.ledger;
     }
+    // A refund-marked row whose merchant no rule knows stays Refund; one
+    // that some rule calls income or a transfer isn't spending to undo.
+    if (refundMarked && !isRefundableCategory(category)) category = REFUND_CATEGORY;
   }
   if (tx.type === "TRANSFER") category = TRANSFER_CATEGORY;
-  else if (category && isInflow(tx)) {
-    if (category === TRANSFER_CATEGORY) category = CONTRIBUTION_CATEGORY;
-    else if (!NON_REFUNDABLE.has(category)) category = REFUND_CATEGORY;
-  }
+  else if (category && isInflow(tx) && category === TRANSFER_CATEGORY) category = CONTRIBUTION_CATEGORY;
   if (!category && tx.type === "INCOME") category = "Income";
   return { category, personId, ledger };
 }

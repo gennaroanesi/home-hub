@@ -57,6 +57,7 @@ import { refreshAssetValues } from "../../../lib/finance/asset-values.js";
 import { addDays, round2, todayIso } from "../../../lib/finance/dates.js";
 import type { RecurringLike } from "../../../lib/finance/types.js";
 import { classifyTransactionsLLM } from "./classify-llm";
+import { findRefundPurchase, mayBeRefund, refundFields, refundLookbackFrom } from "../../../lib/finance/refunds.js";
 
 type DataClient = ReturnType<typeof generateClient<Schema>>;
 let _client: DataClient | null = null;
@@ -403,6 +404,32 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
     });
   }
 
+  // Refunds: money in for something bought takes the original purchase's
+  // category, budget and spend group (lib/finance/refunds.ts), so it comes
+  // off that spending. Purchases are read back REFUND_LOOKBACK_DAYS per
+  // account that has a possible refund; a failed read just leaves the rule's
+  // category.
+  const refundGroup = new Map<TxDraft, { spendGroupId: string | null; outOfBudget: boolean | null }>();
+  const maybeRefunds = fresh.filter((d) => !investedIds.has(d.accountId) && mayBeRefund(d));
+  for (const accountId of new Set(maybeRefunds.map((d) => d.accountId))) {
+    const mine = maybeRefunds.filter((d) => d.accountId === accountId);
+    try {
+      const stored = await txsForAccount(c, accountId, { ge: refundLookbackFrom(mine)! });
+      const pool = [...stored, ...fresh.filter((d) => d.accountId === accountId)];
+      for (const d of mine) {
+        const purchase = findRefundPurchase(d, pool);
+        if (!purchase) continue;
+        const f = refundFields(purchase);
+        d.category = f.category;
+        d.categorySource = "RULE";
+        if (f.ledger) d.ledger = f.ledger;
+        refundGroup.set(d, { spendGroupId: f.spendGroupId, outOfBudget: f.outOfBudget });
+      }
+    } catch (e) {
+      errors.push(`refund matching skipped: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
   // Link posted rows to their scheduled transaction (one occurrence per schedule per run).
   const schedules = (await listAllPages<any>(c.models.homeFinanceRecurring)).filter((r) => r.active !== false) as RecurringLike[]; // eslint-disable-line @typescript-eslint/no-explicit-any
   const links = new Map<TxDraft, RecurringLike>();
@@ -484,6 +511,7 @@ async function runSync(opts: SyncOptions): Promise<SyncSummary> {
       importHash: d.importHash,
       sfTransactionId: d.sfTransactionId,
       recurringId: rule?.id ?? null,
+      ...(refundGroup.get(d)?.spendGroupId ? { spendGroupId: refundGroup.get(d)!.spendGroupId, outOfBudget: refundGroup.get(d)!.outOfBudget ?? null } : {}),
       // A household bill on a personal card counts in the household budget;
       // the bill's budget beats a category rule's.
       ...(rule?.ledger?.trim()

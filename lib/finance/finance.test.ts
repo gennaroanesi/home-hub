@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { categoryParts, classify, effectiveCategory, parseLineItems, rulesFromDbRows, suggestPattern, CATEGORY_RULES } from "./categories";
 import { addMonthsAnchored, monthRange, occurrencesBetween, todayIso } from "./dates";
-import { budgetTransactions, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
+import { budgetTransactions, isRefund, spendByCategory, totalOutflow, filterBudgetView, householdBudget, planBudgetChange, resolveBudgetLines, validateBudgetHistory, budgetedForRange, type BudgetLine } from "./budget";
 import { findScheduleMatches, planScheduleLinks, lowestPoint, nextDateAfter, nextDueAfterPaid, projectBalance, upcomingEvents } from "./recurring";
 import { goalProgress, milestoneViews } from "./goals";
 import { canTakeRuleLedger, canTakeScheduleLedger } from "./ledger";
@@ -15,10 +15,22 @@ describe("categories", () => {
     expect(classify({ description: "ROCKET MORTGAGE MORTGAGE PMT", amount: -2400 }).category).toBe("Mortgage Payment");
   });
 
-  it("turns money in under a transfer rule into a Contribution, and spend rules into Refund", () => {
+  it("turns money in under a transfer rule into a Contribution, and keeps a spend rule's category (a refund)", () => {
     expect(classify({ description: "ONLINE TRANSFER FROM CHK 1234", amount: 2500 }).category).toBe("Contribution");
     expect(classify({ description: "ONLINE TRANSFER TO SAV 9876", amount: -500 }).category).toBe("Transfers");
-    expect(classify({ description: "H-E-B #123", amount: 12 }).category).toBe("Refund");
+    expect(classify({ description: "H-E-B #123", amount: 12 }).category).toBe("Groceries");
+  });
+
+  it("lets a Refund rule mark a row and the merchant's rule decide its category", () => {
+    const rules = rulesFromDbRows([
+      { pattern: "/\\brefund\\b/i", category: "Refund", sortOrder: 1 },
+      { pattern: "AMAZON", category: "Shopping", sortOrder: 2 },
+      { pattern: "PAYROLL", category: "Income", sortOrder: 3 },
+    ]);
+    expect(classify({ description: "AMAZON.COM REFUND", amount: 40 }, rules).category).toBe("Shopping");
+    expect(classify({ description: "ACME REFUND", amount: 40 }, rules).category).toBe("Refund");
+    // Income isn't spending to undo: the marker wins.
+    expect(classify({ description: "PAYROLL REFUND", amount: 40 }, rules).category).toBe("Refund");
   });
 
   it("lets person rules sit beside category rules", () => {
@@ -493,5 +505,28 @@ describe("planScheduleLinks", () => {
     // Already linked earlier, schedule moved on: a later stray charge isn't this month's again.
     const moved = { ...apple, nextDate: "2026-12-19" };
     expect(planScheduleLinks([{ ...tx("a", "2026-11-12", -38.5), recurringId: "one" }, tx("b", "2026-11-17", -36)], [moved])).toEqual([]);
+  });
+});
+
+describe("refunds net against their category", () => {
+  const w = { fromIso: "2026-11-01", toIso: "2026-11-30", label: "Nov" };
+  const buy = { id: "b", accountId: "a", date: "2026-11-03", amount: -100, category: "Shopping", status: "POSTED" };
+  const back = { id: "r", accountId: "a", date: "2026-11-10", amount: 40, category: "Shopping", status: "POSTED" };
+  const pay = { id: "p", accountId: "a", date: "2026-11-11", amount: 3000, category: "Income", status: "POSTED" };
+  const lost = { id: "l", accountId: "a", date: "2026-11-12", amount: 15, category: "Refund", status: "POSTED" };
+
+  it("takes a refund off its category's spending and the total", () => {
+    expect(spendByCategory([buy, back, pay, lost], w).get("Shopping")).toBe(60);
+    expect(totalOutflow([buy, back, pay, lost], w)).toBe(60);
+    expect(isRefund(back)).toBe(true);
+    // Income and the catch-all Refund bucket aren't spending to undo.
+    expect(isRefund(pay)).toBe(false);
+    expect(isRefund(lost)).toBe(false);
+    expect(budgetTransactions([buy, back], w, ["Shopping"]).map((t) => t.id)).toEqual(["b", "r"]);
+  });
+
+  it("ignores pending refunds and transfers", () => {
+    expect(spendByCategory([buy, { ...back, status: "PENDING" }], w).get("Shopping")).toBe(100);
+    expect(spendByCategory([buy, { ...back, type: "TRANSFER" }], w).get("Shopping")).toBe(100);
   });
 });
