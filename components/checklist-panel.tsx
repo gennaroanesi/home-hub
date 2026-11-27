@@ -139,11 +139,12 @@ function SortableItem({ item, isEditing, editingText, onToggle, onStartEdit, onE
         </form>
       ) : (
         <>
-          <button type="button" title="Click to edit" onClick={onStartEdit} className={`flex-1 text-left text-sm min-w-0 break-words ${item.isDone ? "line-through text-default-400" : ""}`}>
+          <button type="button" title="Click to edit (clear the text to delete)" onClick={onStartEdit} className={`flex-1 text-left text-sm min-w-0 break-words ${item.isDone ? "line-through text-default-400" : ""}`}>
             {item.text}
           </button>
-          <button type="button" aria-label="Delete item" onClick={onDelete} className="text-default-300 hover:text-danger flex-shrink-0 opacity-0 group-hover:opacity-100 px-1">
-            <FaTrash size={10} />
+          {/* Always shown, like the grip: hover-only hid it on the iPad. */}
+          <button type="button" aria-label="Delete item" title="Delete item" onClick={onDelete} className="text-default-400 hover:text-danger flex-shrink-0 p-1.5 -my-1 rounded hover:bg-danger-50">
+            <FaTrash size={11} />
           </button>
         </>
       )}
@@ -508,7 +509,12 @@ export function ChecklistPanel({ entityType, entityId, archiveFilter = "ALL", on
   async function renameItem(id: string) {
     const text = editingItemText.trim();
     setEditingItemId(null);
-    if (!text) return;
+    // Clearing the text and saving deletes the item.
+    if (!text) {
+      await deleteItem(id);
+      addToast({ title: "Item deleted", color: "default" });
+      return;
+    }
     await client.models.homeChecklistItem.update({ id, text });
     await loadData();
   }
