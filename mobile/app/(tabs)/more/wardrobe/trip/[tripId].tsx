@@ -10,6 +10,9 @@
 // checklist, tweak with a note, undo, move a look to another day, save a
 // look (pinned through re-plans), unpin, delete the plan. Polling and
 // backgrounding: components/wardrobe/use-trip-plan.ts.
+// Or "I'll pick": tap the pieces yourself (TripPicker); the looks use only
+// those and a review says whether they work, with pieces to add or leave
+// home. "A look for each day" off gives mix-and-match looks.
 
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -21,6 +24,7 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -35,9 +39,13 @@ import { isWearable } from "../../../../../../lib/wardrobe";
 import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
+  TRIP_REVIEW_LABELS,
   addTripPlanItem,
+  categoryCounts,
+  categoryCountsLabel,
   packCount,
   parseJsonField,
+  picksOf,
   removeTripPlanItem,
   swapTripPlanItem,
   tripDates,
@@ -45,6 +53,7 @@ import {
   type TripDayWeather,
   type TripLook,
   type TripPlan,
+  type TripReview,
 } from "../../../../../../lib/wardrobe-trip";
 import {
   editTripPlanPatch,
@@ -76,6 +85,7 @@ import { LookFormModal, type LookDraft } from "../../../../../components/wardrob
 import { ItemFormModal } from "../../../../../components/wardrobe/ItemFormModal";
 import { PackPieceModal, type PackPickerMode } from "../../../../../components/wardrobe/PackPieceModal";
 import { PackChecklistModal } from "../../../../../components/wardrobe/PackChecklistModal";
+import { TripPicker } from "../../../../../components/wardrobe/TripPicker";
 
 type DaySheet = { kind: "activity"; n: number } | { kind: "look"; n: number };
 
@@ -126,6 +136,10 @@ export default function TripLooksScreen() {
   const feedback = (plan?.feedback ?? []).filter((x): x is string => !!x);
   const canUndo = !!plan?.previousPlan && !working;
   const closet = useMemo(() => mine.filter((i) => isWearable(i)), [mine]);
+  // Copies come from the picks on a PICKED plan, else from the looks.
+  const planPicks = ready?.mode === "PICKED" ? picksOf(ready) : null;
+  const copiesOf = (p: WardrobeItem) => packCount(p, looks, planPicks);
+  const review = ready?.mode === "PICKED" ? parseJsonField<TripReview | null>(ready.review, null) : null;
   const savedLook = (id?: string | null) => (id ? data.looks.find((l) => l.id === id) : undefined);
 
   // Sheets and modals.
@@ -154,7 +168,10 @@ export default function TripLooksScreen() {
     if (next === current) return;
     setEditBusy(true);
     try {
-      if (!(await tp.savePlan(editTripPlanPatch(plan, next)))) return;
+      const patch = editTripPlanPatch(plan, next);
+      if (!(await tp.savePlan(patch))) return;
+      // A PICKED plan's picks follow the packing list.
+      if (patch.pickedItemIds) form.setPicks({ itemIds: patch.pickedItemIds, copies: parseJsonField<Record<string, number>>(patch.pickedCopies, {}) });
       setPicker(null);
       toast({ title, detail: packEditSummary(changedLooks, pinnedKept, keptName) });
     } finally {
@@ -287,6 +304,31 @@ export default function TripLooksScreen() {
                 </View>
               )}
 
+              <Text style={ws.sectionLabel}>What to pack</Text>
+              <View style={ws.chipWrap}>
+                <Chip on={form.mode === "SUGGEST"} onPress={() => form.setMode("SUGGEST")} label="Stylist picks" />
+                <Chip
+                  on={form.mode === "PICKED"}
+                  onPress={() => {
+                    form.setMode("PICKED");
+                    // Picking yourself after a stylist plan: start from what it packed.
+                    if (!form.picks.itemIds.length && packIds.length) form.setPicks({ itemIds: packIds, copies: {} });
+                  }}
+                  label="I'll pick"
+                />
+              </View>
+              <View style={[styles.inline, { justifyContent: "space-between" }]}>
+                <Text style={ws.body}>A look for each day</Text>
+                <Switch value={form.perDay} onValueChange={form.setPerDay} />
+              </View>
+              {!form.perDay && <Text style={ws.meta}>Mix-and-match looks instead, plus one per activity.</Text>}
+              {form.mode === "PICKED" && (
+                <View style={{ gap: 6 }}>
+                  <Text style={ws.meta}>Tap what you&apos;d pack. The looks use only these, and you get an opinion on whether they suit the weather, the days and the luggage.</Text>
+                  <TripPicker closet={closet} picks={form.picks} onChange={form.setPicks} />
+                </View>
+              )}
+
               <Text style={ws.sectionLabel}>Activities</Text>
               {form.activities.map((a, n) => (
                 <View key={n} style={styles.activityRow}>
@@ -327,7 +369,19 @@ export default function TripLooksScreen() {
               <View style={styles.inline}>
                 <Pressable onPress={() => void tp.generate()} disabled={working} style={[ws.btn, ws.btnPrimary, working && ws.disabled]}>
                   {working && !tweaking ? <ActivityIndicator color="#fff" size="small" /> : <Ionicons name="sparkles" size={14} color="#fff" />}
-                  <Text style={ws.btnPrimaryText}>{working && !tweaking ? "Planning…" : ready ? "Plan again from scratch" : "Plan trip looks"}</Text>
+                  <Text style={ws.btnPrimaryText}>
+                    {working && !tweaking
+                      ? form.mode === "PICKED"
+                        ? "Checking…"
+                        : "Planning…"
+                      : form.mode === "PICKED"
+                        ? ready?.mode === "PICKED"
+                          ? "Check my picks again"
+                          : "Check my picks & build looks"
+                        : ready
+                          ? "Plan again from scratch"
+                          : "Plan trip looks"}
+                  </Text>
                 </Pressable>
                 {plan && !working && (
                   <Pressable onPress={confirmDelete} hitSlop={8}>
@@ -362,17 +416,63 @@ export default function TripLooksScreen() {
                   </ScrollView>
                 )}
 
+                {review && (
+                  <View style={[ws.card, review.verdict === "GOOD" ? styles.reviewGood : review.verdict === "PROBLEMS" ? styles.reviewBad : styles.reviewGaps]}>
+                    <Text style={ws.sectionTitle}>Your picks: {TRIP_REVIEW_LABELS[review.verdict]}</Text>
+                    <Text style={ws.body}>{review.summary}</Text>
+                    {review.concerns.map((c, i) => (
+                      <Text key={i} style={ws.body}>
+                        • {c}
+                      </Text>
+                    ))}
+                    {[
+                      { list: review.add, label: "Worth adding", act: "Add", has: false },
+                      { list: review.leaveHome, label: "Could leave at home", act: "Leave home", has: true },
+                    ].map(({ list, label, act, has }) => {
+                      const rows = list.map((r) => ({ ...r, item: data.byId.get(r.itemId) })).filter((r) => r.item && packIds.includes(r.itemId) === has);
+                      if (!rows.length) return null;
+                      return (
+                        <View key={label} style={{ gap: 6, marginTop: 4 }}>
+                          <Text style={ws.sectionLabel}>{label}</Text>
+                          {rows.map((r) => (
+                            <View key={r.itemId} style={styles.reviewRow}>
+                              <Pressable onPress={() => setItemOpen(r.item!)} style={{ flex: 1 }}>
+                                <Text style={[ws.body, { fontWeight: "600" }]}>
+                                  {r.item!.name}
+                                  <Text style={{ color: "#888", fontWeight: "400" }}> · {r.item!.category}</Text>
+                                </Text>
+                                {!!r.why && <Text style={ws.meta}>{r.why}</Text>}
+                              </Pressable>
+                              <Pressable
+                                onPress={() => (has ? void editPack((c) => removeTripPlanItem(c, r.itemId), `${r.item!.name} stays home`, r.item!.name) : void addItem(r.item!))}
+                                disabled={editBusy}
+                                style={[ws.btn, ws.btnFlat, ws.btnSmall]}
+                              >
+                                <Text style={[ws.btnFlatText, ws.btnSmallText]}>{act}</Text>
+                              </Pressable>
+                            </View>
+                          ))}
+                        </View>
+                      );
+                    })}
+                    <Pressable onPress={() => void tp.generate()} disabled={working} style={[ws.btn, ws.btnFlat, ws.btnSmall, { alignSelf: "flex-start", marginTop: 6 }]}>
+                      <Text style={[ws.btnFlatText, ws.btnSmallText]}>Check again</Text>
+                    </Pressable>
+                  </View>
+                )}
+
                 {/* Packing list */}
                 <View style={ws.card}>
                   <Text style={ws.sectionTitle}>Packing list</Text>
                   <Text style={ws.meta}>
-                    {pack.reduce((n, p) => n + packCount(p, looks), 0)} pieces · {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
+                    {pack.reduce((n, p) => n + copiesOf(p), 0)} pieces · {pack.reduce((n, p) => n + (packed.has(p.id) ? copiesOf(p) : 0), 0)} packed
                     {ready.capacity === "PIECES" && ready.maxPieces
                       ? ` · limit ${ready.maxPieces}`
                       : ready.capacity
                         ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}`
                         : ""}
                   </Text>
+                  {pack.length > 0 && <Text style={ws.body}>{categoryCountsLabel(categoryCounts(pack, copiesOf))}</Text>}
                   <View style={styles.inline}>
                     <Pressable onPress={() => setPicker({ kind: "add" })} style={[ws.btn, ws.btnFlat, ws.btnSmall]} disabled={editBusy}>
                       <Ionicons name="add" size={14} color={ACCENT} />
@@ -400,7 +500,7 @@ export default function TripLooksScreen() {
                                 <Ionicons name={on ? "checkbox" : "square-outline"} size={18} color={on ? "#2e7d43" : "#999"} />
                                 <Text style={[styles.packName, on && styles.packNameOn]} numberOfLines={2}>
                                   {p.name}
-                                  {(p.quantity ?? 1) > 1 && <Text style={{ color: "#888" }}> · pack {packCount(p, looks)} of {p.quantity}</Text>}
+                                  {(p.quantity ?? 1) > 1 && <Text style={{ color: "#888" }}> · pack {copiesOf(p)} of {p.quantity}</Text>}
                                 </Text>
                               </Pressable>
                               <View style={styles.packActions}>
@@ -562,7 +662,7 @@ export default function TripLooksScreen() {
               personId={person.id}
               personName={person.name}
               groups={packGroups}
-              copies={(it) => packCount(it, looks)}
+              copies={copiesOf}
               onClose={() => setChecklistOpen(false)}
               onDone={(title, detail) => toast({ title, detail })}
             />
@@ -606,6 +706,10 @@ export default function TripLooksScreen() {
 
 const styles = StyleSheet.create({
   body: { padding: 16, paddingBottom: 60 },
+  reviewGood: { backgroundColor: "#eef8f0", borderColor: "#bfe3c8" },
+  reviewGaps: { backgroundColor: "#fff8e8", borderColor: "#f0dca8" },
+  reviewBad: { backgroundColor: "#fdeeee", borderColor: "#f0c4c4" },
+  reviewRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   inline: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 12 },
   activityRow: { flexDirection: "row", alignItems: "center", gap: 8 },
   dayBtn: {

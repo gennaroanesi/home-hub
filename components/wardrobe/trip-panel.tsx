@@ -3,6 +3,11 @@
 // activity, built from the destination's weather (forecast or past years'
 // averages). One saved plan per (trip, person) in homeWardrobeTripPlan; see
 // lib/wardrobe-trip.ts for the planner itself.
+//
+// Start from the stylist's picks or your own (TripPicker): with your own,
+// the looks use only what you picked and a review says whether it works
+// (weather, counts for the days, luggage), with pieces to add or leave home.
+// "A look for each day" off gives mix-and-match looks instead.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import NextLink from "next/link";
@@ -12,6 +17,7 @@ import { Button } from "@heroui/button";
 import { Input, Textarea } from "@heroui/input";
 import { Select, SelectItem } from "@heroui/select";
 import { FaCheck, FaExchangeAlt, FaListUl, FaMagic, FaMinus, FaPlus, FaThumbtack, FaTimes, FaTrash, FaUndo } from "react-icons/fa";
+import { Switch } from "@heroui/switch";
 
 import { listAllPages } from "@/lib/list-all";
 import { photoUrl } from "@/lib/image-loader";
@@ -20,9 +26,13 @@ import { formatTripRange } from "@/lib/trip";
 import {
   TRIP_CAPACITIES,
   TRIP_CAPACITY_LABELS,
+  TRIP_REVIEW_LABELS,
   addTripPlanItem,
+  categoryCounts,
+  categoryCountsLabel,
   packCount,
   parseJsonField,
+  picksOf,
   removeTripPlanItem,
   swapTripPlanItem,
   tripDates,
@@ -30,7 +40,10 @@ import {
   type TripCapacity,
   type TripDayWeather,
   type TripLook,
+  type TripPicks,
   type TripPlan,
+  type TripPlanMode,
+  type TripReview,
 } from "@/lib/wardrobe-trip";
 import {
   TRIP_PLAN_POLL_LIMIT_MS as POLL_LIMIT_MS,
@@ -57,6 +70,7 @@ import type { WardrobeItem } from "./shared";
 import { LookCard } from "./look-card";
 import { PackChecklistModal } from "./pack-checklist-modal";
 import { PackPieceModal, type PackPickerMode } from "./pack-piece-modal";
+import { TripPicker } from "./trip-picker";
 
 const client = generateClient<Schema>({ authMode: "userPool" });
 
@@ -100,6 +114,9 @@ export function TripPanel({
   const [maxPieces, setMaxPieces] = useState("12");
   const [activities, setActivities] = useState<TripActivity[]>([]);
   const [request, setRequest] = useState("");
+  const [mode, setMode] = useState<TripPlanMode>("SUGGEST");
+  const [picks, setPicks] = useState<TripPicks>({ itemIds: [], copies: {} });
+  const [perDay, setPerDay] = useState(true);
   const [busy, setBusy] = useState(false); // the mutation call is in flight
   const [polling, setPolling] = useState(false); // waiting on a saved GENERATING plan
   const [checklistOpen, setChecklistOpen] = useState(false);
@@ -154,6 +171,9 @@ export function TripPanel({
       setMaxPieces(String(p?.maxPieces ?? 12));
       setActivities(parseJsonField<TripActivity[]>(p?.activities, []));
       setRequest(p?.request ?? "");
+      setMode((p?.mode as TripPlanMode | null) ?? "SUGGEST");
+      setPicks(p ? picksOf(p) : { itemIds: [], copies: {} });
+      setPerDay(p?.perDay !== false);
       // A plan still generating (e.g. started before a reload) gets polled.
       if (tripPlanStillGenerating(p)) {
         pollUntil.current = Date.now() + POLL_LIMIT_MS;
@@ -193,6 +213,10 @@ export function TripPanel({
   // A fresh plan from the form, or (with `revision`) a tweak of the saved one.
   async function generate(revision?: string) {
     if (!trip) return;
+    if (!revision && mode === "PICKED" && picks.itemIds.length < 2) {
+      addToast({ title: "Pick at least two pieces", description: "Tick what you'd pack below, then check.", color: "warning" });
+      return;
+    }
     setBusy(true);
     setTweaking(!!revision);
     try {
@@ -204,6 +228,10 @@ export function TripPanel({
         activities: JSON.stringify(activities.filter((a) => a.text.trim())),
         request: request.trim() || null,
         revision: revision ?? null,
+        mode,
+        perDay,
+        pickedItemIds: mode === "PICKED" ? picks.itemIds : null,
+        pickedCopies: mode === "PICKED" ? JSON.stringify(picks.copies ?? {}) : null,
       });
       if (errors?.length) throw new Error(errors[0].message);
       const p = await loadPlan();
@@ -255,8 +283,10 @@ export function TripPanel({
     if (next === current) return;
     setEditBusy(true);
     try {
-      const ok = await savePlan(editTripPlanPatch(plan, next));
+      const patch = editTripPlanPatch(plan, next);
+      const ok = await savePlan(patch);
       if (!ok) return;
+      if (patch.pickedItemIds) setPicks({ itemIds: patch.pickedItemIds, copies: parseJsonField<Record<string, number>>(patch.pickedCopies, {}) });
       setPicker(null);
       addToast({ title, description: packEditSummary(changedLooks, pinnedKept, keptName), color: "success" });
     } finally {
@@ -314,6 +344,10 @@ export function TripPanel({
     [byId, personId],
   );
   const packGroups = useMemo(() => groupByCategory(pack), [pack]);
+  // Copies come from the picks on a PICKED plan, else from the looks.
+  const planPicks = ready?.mode === "PICKED" ? picksOf(ready) : null;
+  const copiesOf = (p: WardrobeItem) => packCount(p, looks, planPicks);
+  const review = ready?.mode === "PICKED" ? parseJsonField<TripReview | null>(ready.review, null) : null;
 
   if (tripsLoaded && !trips.length) {
     return (
@@ -383,6 +417,41 @@ export function TripPanel({
           </div>
         </div>
 
+        <div className="flex flex-col gap-1.5">
+          <span className="text-sm text-default-600">What to pack</span>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {([
+              ["SUGGEST", "Stylist picks"],
+              ["PICKED", "I'll pick"],
+            ] as const).map(([m, label]) => (
+              <button
+                key={m}
+                type="button"
+                onClick={() => {
+                  setMode(m);
+                  // Picking yourself after a stylist plan: start from what it packed.
+                  if (m === "PICKED" && !picks.itemIds.length && packIds.length) setPicks({ itemIds: packIds, copies: {} });
+                }}
+                className={`px-3 py-1 rounded-full text-sm ${mode === m ? "bg-primary text-primary-foreground" : "bg-default-100 text-default-600"}`}
+              >
+                {label}
+              </button>
+            ))}
+            <Switch size="sm" className="ml-3" isSelected={perDay} onValueChange={setPerDay}>
+              <span className="text-sm">A look for each day</span>
+            </Switch>
+            {!perDay && <span className="text-xs text-default-500">Mix-and-match looks instead, plus one per activity</span>}
+          </div>
+          {mode === "PICKED" && (
+            <div className="mt-1 rounded-lg border border-default-200 p-3">
+              <p className="text-xs text-default-500 mb-2">
+                Tick what you&apos;d pack. The looks use only these, and you get an opinion on whether they suit the weather, the days and the luggage.
+              </p>
+              <TripPicker closet={closet} picks={picks} onChange={setPicks} disabled={working} />
+            </div>
+          )}
+        </div>
+
         <div className="flex flex-col gap-2">
           <span className="text-sm text-default-600">Activities</span>
           {activities.map((a, n) => (
@@ -428,7 +497,17 @@ export function TripPanel({
         />
         <div className="flex items-center gap-2 flex-wrap">
           <Button color="primary" startContent={!working && <FaMagic size={12} />} onPress={() => generate()} isLoading={working && !tweaking} isDisabled={!trip || working}>
-            {working && !tweaking ? "Planning…" : ready ? "Plan again from scratch" : "Plan trip looks"}
+            {working && !tweaking
+              ? mode === "PICKED"
+                ? "Checking…"
+                : "Planning…"
+              : mode === "PICKED"
+                ? ready?.mode === "PICKED"
+                  ? "Check my picks again"
+                  : "Check my picks & build looks"
+                : ready
+                  ? "Plan again from scratch"
+                  : "Plan trip looks"}
           </Button>
           {plan && !working && (
             <Button variant="light" color="danger" startContent={<FaTrash size={11} />} onPress={deletePlan}>
@@ -462,13 +541,61 @@ export function TripPanel({
             </div>
           )}
 
+          {review && (
+            <section
+              className={`rounded-xl border p-4 flex flex-col gap-2 ${
+                review.verdict === "GOOD" ? "border-success-200 bg-success-50" : review.verdict === "PROBLEMS" ? "border-danger-200 bg-danger-50" : "border-warning-200 bg-warning-50"
+              }`}
+            >
+              <div className="flex items-baseline justify-between gap-2 flex-wrap">
+                <h2 className="text-lg font-semibold">Your picks: {TRIP_REVIEW_LABELS[review.verdict]}</h2>
+                <Button size="sm" variant="flat" onPress={() => generate()} isDisabled={working}>
+                  Check again
+                </Button>
+              </div>
+              <p className="text-sm">{review.summary}</p>
+              {review.concerns.length > 0 && (
+                <ul className="list-disc pl-5 text-sm text-default-700">
+                  {review.concerns.map((c, i) => (
+                    <li key={i}>{c}</li>
+                  ))}
+                </ul>
+              )}
+              {[
+                { list: review.add, label: "Worth adding", act: "Add", has: false },
+                { list: review.leaveHome, label: "Could leave at home", act: "Leave home", has: true },
+              ].map(({ list, label, act, has }) => {
+                const rows = list.map((r) => ({ ...r, item: byId.get(r.itemId) })).filter((r) => r.item && packIds.includes(r.itemId) === has);
+                if (!rows.length) return null;
+                return (
+                  <div key={label} className="flex flex-col gap-1">
+                    <span className="text-[11px] uppercase tracking-wider text-default-500">{label}</span>
+                    {rows.map((r) => (
+                      <div key={r.itemId} className="flex items-center gap-2 text-sm">
+                        <button type="button" className="text-left flex-1 min-w-0" onClick={() => onOpenItem(r.item!)}>
+                          <span className="font-medium">{r.item!.name}</span>
+                          <span className="text-default-500"> · {r.item!.category}</span>
+                          {r.why && <span className="block text-xs text-default-600">{r.why}</span>}
+                        </button>
+                        <Button size="sm" variant="flat" isDisabled={working || editBusy} onPress={() => (has ? removeItem(r.item!) : addItem(r.item!))}>
+                          {act}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                );
+              })}
+              <p className="text-xs text-default-500">Adding or leaving a piece home changes your picks; looks that wore a removed piece lose it. Check again for a fresh opinion and looks.</p>
+            </section>
+          )}
+
           <section className="rounded-xl border border-default-200 bg-content1 p-4 flex flex-col gap-3">
             <div className="flex items-baseline justify-between gap-2 flex-wrap">
               <h2 className="text-lg font-semibold">Packing list</h2>
               <div className="flex items-center gap-2">
                 <span className="text-xs text-default-500">
-                  {pack.reduce((n, p) => n + packCount(p, looks), 0)} pieces ·{" "}
-                  {pack.reduce((n, p) => n + (packed.has(p.id) ? packCount(p, looks) : 0), 0)} packed
+                  {pack.reduce((n, p) => n + copiesOf(p), 0)} pieces ·{" "}
+                  {pack.reduce((n, p) => n + (packed.has(p.id) ? copiesOf(p) : 0), 0)} packed
                   {ready.capacity === "PIECES" && ready.maxPieces ? ` · limit ${ready.maxPieces}` : ready.capacity ? ` · ${TRIP_CAPACITY_LABELS[ready.capacity as TripCapacity]}` : ""}
                 </span>
                 <Button size="sm" variant="flat" startContent={<FaPlus size={10} />} onPress={() => setPicker({ kind: "add" })} isDisabled={working}>
@@ -481,6 +608,7 @@ export function TripPanel({
                 )}
               </div>
             </div>
+            {pack.length > 0 && <p className="text-sm text-default-600 -mt-1">{categoryCountsLabel(categoryCounts(pack, copiesOf))}</p>}
             {packGroups.map(([cat, list]) => (
               <div key={cat}>
                 <p className="text-[11px] uppercase tracking-wider text-default-400 mb-1.5">{cat}</p>
@@ -507,7 +635,7 @@ export function TripPanel({
                           <span className={`line-clamp-2 ${on ? "line-through text-default-400" : ""}`}>
                             {p.name}
                             {(p.quantity ?? 1) > 1 && (
-                              <span className="text-default-500"> · pack {packCount(p, looks)} of {p.quantity}</span>
+                              <span className="text-default-500"> · pack {copiesOf(p)} of {p.quantity}</span>
                             )}
                           </span>
                         </label>
@@ -662,7 +790,7 @@ export function TripPanel({
               personId={personId}
               personName={personName}
               groups={packGroups}
-              copies={(it) => packCount(it, looks)}
+              copies={copiesOf}
             />
           )}
         </div>

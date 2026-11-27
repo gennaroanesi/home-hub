@@ -13,7 +13,18 @@ import {
   ymdInTz,
   type WardrobeItemApi,
 } from "../wardrobe";
-import { describeTripDay, packCount, parseJsonField, type TripDayWeather, type TripLook } from "../wardrobe-trip";
+import {
+  TRIP_REVIEW_LABELS,
+  categoryCounts,
+  categoryCountsLabel,
+  describeTripDay,
+  packCount,
+  parseJsonField,
+  picksOf,
+  type TripDayWeather,
+  type TripLook,
+  type TripReview,
+} from "../wardrobe-trip";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 import { resolvePerson } from "./people";
@@ -257,7 +268,7 @@ export const getTripPlan = defineOp({
   domain: "wardrobe",
   access: "read",
   description:
-    "Read the saved trip-looks plan for someone's trip (made on the wardrobe page's Trip looks tab): the packing list (with copies to pack and what's already ticked off as packed), the outfit for each day and activity, the weather used and packing tips. Answers 'what am I packing for Seattle?', 'what do I wear for the dinner on the London trip?'. Defaults to the next upcoming trip.",
+    "Read the saved trip-looks plan for someone's trip (made on the wardrobe page's Trip looks tab): the packing list (with copies to pack, what's already ticked off as packed, and how it adds up by type, e.g. '4 T-Shirts · 3 Jeans'), the outfits (one per day and activity, or a set of mix-and-match looks), the weather used and packing tips. When the person picked the pieces themselves, `review` is the stylist's opinion of them: verdict, concerns, pieces to add and to leave at home. Answers 'what am I packing for Seattle?', 'what do I wear for the dinner on the London trip?'. Defaults to the next upcoming trip.",
   input: z.object({
     ...person,
     tripName: z.string().optional().describe("Fuzzy trip name or city, e.g. 'Seattle'. Defaults to the next upcoming trip."),
@@ -269,6 +280,19 @@ export const getTripPlan = defineOp({
     note: z.string().optional(),
     luggage: z.string().nullable().optional(),
     context: z.string().nullable().optional(),
+    startedFrom: z.enum(["SUGGESTED", "PICKED"]).optional().describe("Who chose the pieces: the stylist, or the person"),
+    perDay: z.boolean().optional().describe("false = mix-and-match looks, not one per day"),
+    counts: z.string().optional().describe("The packing list by type, copies counted: '4 T-Shirts · 3 Jeans'"),
+    review: z
+      .object({
+        verdict: z.string(),
+        summary: z.string(),
+        concerns: z.array(z.string()),
+        add: z.array(z.object({ piece: z.string(), why: z.string().nullable() })),
+        leaveHome: z.array(z.object({ piece: z.string(), why: z.string().nullable() })),
+      })
+      .nullable()
+      .optional(),
     weather: z.array(z.object({ date: z.string(), forecast: z.string() })).optional(),
     packingList: z.array(WardrobeItemOut.extend({ copiesToPack: z.number(), packed: z.boolean() })).optional(),
     looks: z
@@ -291,16 +315,26 @@ export const getTripPlan = defineOp({
     const label = (id: string) => (byId.has(id) ? itemLabel(byId.get(id)) : null);
     const packed = new Set((plan.packedItemIds ?? []).filter(Boolean));
     const looks = parseJsonField<TripLook[]>(plan.looks, []);
+    const picks = plan.mode === "PICKED" ? picksOf(plan) : null;
+    const packList = (plan.packItemIds ?? []).filter((id: string | null): id is string => !!id && byId.has(id)).map((id: string) => byId.get(id));
+    const review = parseJsonField<TripReview | null>(plan.review, null);
+    const refs = (list: { itemId: string; why: string | null }[]) => list.filter((r) => byId.has(r.itemId)).map((r) => ({ piece: label(r.itemId)!, why: r.why }));
     return {
       trip: trip.name,
       dates,
       status: "READY",
       luggage: plan.capacity === "PIECES" ? `${plan.maxPieces} pieces` : plan.capacity,
       context: plan.context,
+      startedFrom: picks ? ("PICKED" as const) : ("SUGGESTED" as const),
+      perDay: plan.perDay !== false,
+      counts: categoryCountsLabel(categoryCounts(packList, (it: any) => packCount(it, looks, picks))), // eslint-disable-line @typescript-eslint/no-explicit-any
+      review: review
+        ? { verdict: TRIP_REVIEW_LABELS[review.verdict] ?? review.verdict, summary: review.summary, concerns: review.concerns ?? [], add: refs(review.add ?? []), leaveHome: refs(review.leaveHome ?? []) }
+        : null,
       weather: parseJsonField<TripDayWeather[]>(plan.weather, []).map((w) => ({ date: w.date, forecast: describeTripDay(w) })),
       packingList: (plan.packItemIds ?? [])
         .filter((id: string | null): id is string => !!id && byId.has(id))
-        .map((id: string) => ({ ...wardrobeItemForApi(byId.get(id)), copiesToPack: packCount(byId.get(id), looks), packed: packed.has(id) })),
+        .map((id: string) => ({ ...wardrobeItemForApi(byId.get(id)), copiesToPack: packCount(byId.get(id), looks, picks), packed: packed.has(id) })),
       looks: looks.map((l) => ({
         date: l.date ?? null,
         title: l.title,
@@ -372,7 +406,7 @@ export const addTripPackToChecklist = defineOp({
     const skipped: string[] = [];
     for (const id of picked) {
       const item = byId.get(id);
-      const copies = packCount(item, looks);
+      const copies = packCount(item, looks, plan.mode === "PICKED" ? picksOf(plan) : null);
       const text = copies > 1 ? `${itemLabel(item)} ×${copies}` : itemLabel(item);
       if (have.has(text.toLowerCase())) {
         skipped.push(text);

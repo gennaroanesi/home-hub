@@ -55,6 +55,16 @@ describe("trip plan patches", () => {
     expect(snap.tips).toBe("Roll, don't fold");
   });
 
+  it("keeps a PICKED plan's picks in step with its packing list", () => {
+    const r = row({ mode: "PICKED", pickedItemIds: ["shirt", "chino", "boots"], pickedCopies: JSON.stringify({ shirt: 2, boots: 1 }) });
+    const { plan } = removeTripPlanItem({ packItemIds: ["shirt", "chino", "boots"], looks, tips: null }, "chino");
+    const patch = editTripPlanPatch(r, plan);
+    expect(patch.pickedItemIds).toEqual(["shirt", "boots"]);
+    expect(JSON.parse(patch.pickedCopies!)).toEqual({ shirt: 2, boots: 1 });
+    // A stylist plan has no picks to keep.
+    expect(editTripPlanPatch(row(), plan).pickedItemIds).toBeUndefined();
+  });
+
   it("undo swaps current and previous, so it can be redone", () => {
     const prev: TripPlanSnapshot = { packItemIds: ["shirt", "chino"], looks: [looks[0]], tips: null, feedback: [] };
     const r = row({ previousPlan: JSON.stringify(prev) });

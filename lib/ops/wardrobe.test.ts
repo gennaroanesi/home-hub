@@ -181,6 +181,32 @@ describe("get_trip_plan", () => {
     expect(out.result.weather[0].forecast).toMatch(/Some rainy days/);
   });
 
+  it("reports picks: counts by type, the chosen copies and the review", async () => {
+    const ctx = tripSetup("READY");
+    const plan = ((await ctx.client.models.homeWardrobeTripPlan.list({})).data as any[])[0];
+    Object.assign(plan, {
+      mode: "PICKED",
+      perDay: false,
+      pickedItemIds: ["i1", "i2"],
+      pickedCopies: JSON.stringify({ i1: 3 }),
+      review: JSON.stringify({ verdict: "GAPS", summary: "Thin on layers.", concerns: ["No jacket for 40°F nights"], add: [], leaveHome: [{ itemId: "i2", why: "Two pants is plenty" }] }),
+    });
+    const out: any = await runOp(ctx, "get_trip_plan", {});
+    expect(out.result).toMatchObject({ startedFrom: "PICKED", perDay: false });
+    expect(out.result.packingList.map((p: any) => [p.id, p.copiesToPack])).toEqual([
+      ["i1", 3],
+      ["i2", 1],
+    ]);
+    expect(out.result.counts).toMatch(/^3 \S+ · 1 Pants$/);
+    expect(out.result.review).toEqual({
+      verdict: "A few gaps",
+      summary: "Thin on layers.",
+      concerns: ["No jacket for 40°F nights"],
+      add: [],
+      leaveHome: [{ piece: "Todd Snyder Chino (Stone)", why: "Two pants is plenty" }],
+    });
+  });
+
   it("finds a trip by name or city, and says when there's no finished plan", async () => {
     expect(((await runOp(tripSetup("GENERATING"), "get_trip_plan", { tripName: "seattle" })) as any).result).toMatchObject({ status: "GENERATING" });
     expect(((await runOp(tripSetup(null), "get_trip_plan", { tripName: "Seattle" })) as any).result).toMatchObject({ status: "NONE" });

@@ -8,6 +8,13 @@
 // Open-Meteo's 16-day window, otherwise the same dates averaged over the
 // last few years). planTripOutfits() hands that to Claude with the
 // propose_trip_plan tool and validates the answer against real item ids.
+//
+// Two ways in (TripPlanMode): SUGGEST, where Claude picks what to pack, and
+// PICKED, where the person picked the pieces (and copies) themselves: Claude
+// then builds looks only from those, and reviews the picks (TripReview:
+// weather, counts for the days, luggage, style) with closet pieces it would
+// add and picks it would leave home. `perDay` false asks for a set of
+// mix-and-match looks instead of one per day.
 
 import type Anthropic from "@anthropic-ai/sdk";
 import { addDaysYmd, isWearable, quantityOf, ymdInTz, type WardrobeItemLike } from "./wardrobe";
@@ -51,10 +58,40 @@ export interface TripLook {
   lookId?: string | null;
 }
 
+export const TRIP_PLAN_MODES = ["SUGGEST", "PICKED"] as const;
+export type TripPlanMode = (typeof TRIP_PLAN_MODES)[number];
+
+export const TRIP_REVIEW_VERDICTS = ["GOOD", "GAPS", "PROBLEMS"] as const;
+export type TripReviewVerdict = (typeof TRIP_REVIEW_VERDICTS)[number];
+export const TRIP_REVIEW_LABELS: Record<TripReviewVerdict, string> = {
+  GOOD: "Looks good",
+  GAPS: "A few gaps",
+  PROBLEMS: "Needs changes",
+};
+
+/** Claude's opinion of picked pieces (PICKED mode). */
+export interface TripReview {
+  verdict: TripReviewVerdict;
+  summary: string;
+  concerns: string[];
+  /** Closet pieces it would add (not picked). */
+  add: { itemId: string; why: string | null }[];
+  /** Picked pieces it would leave at home. */
+  leaveHome: { itemId: string; why: string | null }[];
+}
+
+/** What the person picked: the pieces, and copies for items owned several times (only when more than 1). */
+export interface TripPicks {
+  itemIds: string[];
+  copies?: Record<string, number>;
+}
+
 export interface TripPlan {
   packItemIds: string[];
   looks: TripLook[];
   tips: string | null;
+  /** PICKED mode only. */
+  review?: TripReview | null;
 }
 
 export interface TripLocation {
@@ -88,6 +125,10 @@ export interface TripPlanOptions {
   revise?: { current: TripPlan; change: string } | null;
   // Saved looks, kept as they are; the planner builds the rest around them.
   pinned?: TripLook[];
+  // PICKED mode: build looks only from these, and review them.
+  picked?: TripPicks | null;
+  // False: a set of mix-and-match looks, not one per day. Default true.
+  perDay?: boolean;
 }
 
 /** A plan as saved before a tweak or re-plan, so it can be undone. */
@@ -365,19 +406,25 @@ function itemLine(i: WardrobeItemLike): string {
 }
 
 export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { system: string; user: string } {
+  const picked = opts.picked?.itemIds.length ? opts.picked : null;
+  const perDay = opts.perDay !== false;
   const system = [
     `You are a personal stylist packing for ${ctx.person.name}'s trip, using only clothes they own.`,
     "Rules:",
     "- Use only item ids from the wardrobe list. Never invent items.",
-    "- First pick a compact capsule to pack (packItemIds), then build the looks only from that capsule.",
-    "- Plan one look per day (date set), plus a separate look for each activity or reservation that needs different clothes (dinner out, golf, a wedding, a hike). The first day's look is what's worn while travelling: comfortable, with the bulkiest shoes and outerwear.",
+    picked
+      ? "- The person already chose what to pack (the Picked list). Build every look only from picked pieces; never put an unpicked piece in a look. packItemIds is exactly the picked list. Then review the picks honestly in `review`: does the selection suit each day's weather and the activities, are there enough tops, bottoms, layers and shoes for the number of days (counting copies), does it fit the luggage, does it follow the style brief. In `review.add` name specific closet pieces (from the wardrobe, not picked) that would fix a gap; in `review.leaveHome` name picked pieces that aren't needed or don't suit the trip. Keep it practical; don't pad the lists."
+      : "- First pick a compact capsule to pack (packItemIds), then build the looks only from that capsule.",
+    perDay
+      ? "- Plan one look per day (date set), plus a separate look for each activity or reservation that needs different clothes (dinner out, golf, a wedding, a hike). The first day's look is what's worn while travelling: comfortable, with the bulkiest shoes and outerwear."
+      : "- Don't plan day by day: give a set of mix-and-match looks with no date (about one for every two days of the trip, between 3 and 8, covering the different weather), plus a separate look, dated when it's known, for each activity or reservation that needs different clothes. Title the first one for travelling.",
     "- Every look is complete: a top, a bottom and shoes, plus a layer or outerwear when the weather calls for it.",
     "- Dress for each day's weather: no heavy wool above ~80°F, a layer below ~60°F, rain-proof shoes and outerwear when rain is likely.",
     "- Maximise reuse: each bottom, shoe and layer should appear in several looks. Repeat looks rather than over-pack.",
     "- An item with several identical copies can be worn on as many days as there are copies (a fresh one each day). Each copy packed counts as a piece toward the luggage limit.",
     "- Match formality to the activity and the trip type.",
     "- Golf-category items are only for golf.",
-    "- Respect the luggage limit.",
+    picked ? "- If the picks break the luggage limit, say so in `review` (and what to drop) rather than dropping them yourself." : "- Respect the luggage limit.",
     "- The request is an instruction, not a suggestion: a piece it names (even as 'consider' or 'ideally') is packed and worn in at least one look, and its counts (pairs of bottoms, number of tops…) replace the luggage defaults. Make room by dropping something else. Leave a named piece out only when the weather makes it unwearable, and then say so in `tips`.",
     "- `why` is one sentence naming the pieces by their brand and name exactly as listed in the wardrobe; never rename or nickname them. `tips` is two or three short sentences: what to wear on the plane, anything missing from the closet that the trip needs, and what to leave at home.",
     ctx.styleNotes ? `\nThis person's style brief (follow it):\n${ctx.styleNotes}` : "",
@@ -410,9 +457,14 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
       : "",
     opts.request?.trim() ? `\nRequest (follow it; pieces it names go in the plan):\n${opts.request.trim()}` : "",
     pinned.length ? pinnedBlock(ctx, pinned) : "",
+    picked ? pickedBlock(ctx, picked) : "",
     feedback.length ? `\nFeedback on earlier versions of this plan (still applies):\n${feedback.map((f) => `- ${f}`).join("\n")}` : "",
     `\nWardrobe:\n${ctx.items.map(itemLine).join("\n")}`,
-    revise ? revisionBlock(ctx, revise.current, revise.change) : "\nPlan the trip with the propose_trip_plan tool.",
+    revise
+      ? revisionBlock(ctx, revise.current, revise.change)
+      : picked
+        ? "\nReview the picks and build the looks from them with the propose_trip_plan tool (include `review`)."
+        : "\nPlan the trip with the propose_trip_plan tool.",
   ]
     .filter(Boolean)
     .join("\n");
@@ -437,6 +489,17 @@ function pinnedBlock(ctx: TripPlanContext, pinned: TripLook[]): string {
     "\nAlready decided (saved looks; keep them exactly as they are):",
     ...pinned.map(look),
     "Don't return these looks and don't plan another look for the same day and occasion. Their pieces are packed: count them toward the luggage limit and reuse them in other looks where it makes sense.",
+  ].join("\n");
+}
+
+// The pieces the person chose (PICKED mode), with how they add up by category.
+function pickedBlock(ctx: TripPlanContext, picked: TripPicks): string {
+  const byId = new Map(ctx.items.map((i) => [i.id, i]));
+  const chosen = picked.itemIds.map((id) => byId.get(id)).filter((i): i is WardrobeItemLike => !!i);
+  const copies = (i: WardrobeItemLike) => pickedCopies(i, picked);
+  return [
+    `\nPicked to pack (${chosen.reduce((n, i) => n + copies(i), 0)} pieces: ${categoryCounts(chosen, copies).map(([c, n]) => `${n} ${c}`).join(", ")}):`,
+    ...chosen.map((i) => `- [${i.id}] ${i.category} | ${[i.brand, i.name].filter(Boolean).join(" ")}${copies(i) > 1 ? ` | packing ${copies(i)} copies` : ""}`),
   ].join("\n");
 }
 
@@ -479,6 +542,26 @@ export const PROPOSE_TRIP_PLAN_TOOL: Anthropic.Tool = {
         },
       },
       tips: { type: "string" },
+      review: {
+        type: "object",
+        description: "Only when the person picked the pieces: your opinion of the picks.",
+        properties: {
+          verdict: { type: "string", enum: ["GOOD", "GAPS", "PROBLEMS"], description: "GOOD: ready to go. GAPS: works, but something's missing or thin. PROBLEMS: doesn't fit the weather, the activities or the luggage." },
+          summary: { type: "string", description: "One or two sentences, plainly." },
+          concerns: { type: "array", items: { type: "string" }, description: "Specific issues, e.g. 'Only 2 t-shirts for 6 warm days', 'No rain layer and Thursday looks wet'." },
+          add: {
+            type: "array",
+            items: { type: "object", properties: { itemId: { type: "string" }, why: { type: "string" } }, required: ["itemId"] },
+            description: "Closet pieces (not picked) worth adding.",
+          },
+          leaveHome: {
+            type: "array",
+            items: { type: "object", properties: { itemId: { type: "string" }, why: { type: "string" } }, required: ["itemId"] },
+            description: "Picked pieces to leave at home.",
+          },
+        },
+        required: ["verdict", "summary"],
+      },
     },
     required: ["packItemIds", "looks"],
   },
@@ -494,7 +577,13 @@ export const PROPOSE_TRIP_PLAN_TOOL: Anthropic.Tool = {
  * Copies of an item to pack: one per day it's worn (undated looks count as
  * one more day), capped at the copies owned and never below one.
  */
-export function packCount(item: { id: string; quantity?: number | null }, looks: Pick<TripLook, "date" | "itemIds">[]): number {
+export function packCount(
+  item: { id: string; quantity?: number | null },
+  looks: Pick<TripLook, "date" | "itemIds">[],
+  // PICKED mode: the copies the person chose win.
+  picks?: TripPicks | null,
+): number {
+  if (picks?.itemIds.includes(item.id)) return pickedCopies(item, picks);
   const days = new Set<string>();
   let undated = 0;
   for (const l of looks) {
@@ -505,10 +594,13 @@ export function packCount(item: { id: string; quantity?: number | null }, looks:
   return Math.max(1, Math.min(quantityOf(item), days.size + undated));
 }
 
-export function parseTripPlan(raw: unknown, ctx: Pick<TripPlanContext, "items" | "dates">): TripPlan {
-  const owned = new Set(ctx.items.map((i) => i.id));
+export function parseTripPlan(raw: unknown, ctx: Pick<TripPlanContext, "items" | "dates">, picked?: TripPicks | null): TripPlan {
+  const ownedAll = new Set(ctx.items.map((i) => i.id));
+  const pick = picked?.itemIds.length ? picked.itemIds.filter((id) => ownedAll.has(id)) : null;
+  // With picks, looks may only use picked pieces.
+  const owned = pick ? new Set(pick) : ownedAll;
   const days = new Set(ctx.dates);
-  const r = (raw ?? {}) as { packItemIds?: unknown; looks?: unknown; tips?: unknown };
+  const r = (raw ?? {}) as { packItemIds?: unknown; looks?: unknown; tips?: unknown; review?: unknown };
   const ids = (v: unknown) => {
     const list = Array.isArray(v) ? v.map(String) : [];
     return list.filter((id, n) => owned.has(id) && list.indexOf(id) === n);
@@ -530,14 +622,73 @@ export function parseTripPlan(raw: unknown, ctx: Pick<TripPlanContext, "items" |
   // Day looks in date order, undated ones last; stable otherwise.
   looks.sort((a, b) => (a.date ?? "9999").localeCompare(b.date ?? "9999"));
 
-  const pack = ids(r.packItemIds);
+  // With picks, the packing list is the picks, whatever came back.
+  const pack = pick ? [...pick] : ids(r.packItemIds);
   for (const l of looks) for (const id of l.itemIds) if (!pack.includes(id)) pack.push(id);
 
   return {
     packItemIds: pack,
     looks,
     tips: typeof r.tips === "string" && r.tips.trim() ? r.tips.trim() : null,
+    ...(pick ? { review: parseTripReview(r.review, ownedAll, new Set(pick)) } : {}),
   };
+}
+
+/**
+ * The review of picked pieces, kept to real ids: additions must be owned and
+ * not picked, leave-at-homes must be picked. A missing or garbled review
+ * still reads as one, so the person sees that nothing came back.
+ */
+export function parseTripReview(raw: unknown, owned: Set<string>, picked: Set<string>): TripReview {
+  const r = (raw ?? {}) as Record<string, unknown>;
+  const verdict = (TRIP_REVIEW_VERDICTS as readonly string[]).includes(String(r.verdict)) ? (r.verdict as TripReviewVerdict) : "GAPS";
+  const text = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+  const refs = (v: unknown, ok: (id: string) => boolean) => {
+    const out: { itemId: string; why: string | null }[] = [];
+    for (const x of (Array.isArray(v) ? v : []) as Record<string, unknown>[]) {
+      const id = String(x?.itemId ?? "");
+      if (ok(id) && !out.some((o) => o.itemId === id)) out.push({ itemId: id, why: text(x?.why) });
+    }
+    return out;
+  };
+  return {
+    verdict,
+    summary: text(r.summary) ?? "No review came back; the looks below use your picks.",
+    concerns: (Array.isArray(r.concerns) ? r.concerns : []).map(text).filter((x): x is string => !!x),
+    add: refs(r.add, (id) => owned.has(id) && !picked.has(id)),
+    leaveHome: refs(r.leaveHome, (id) => picked.has(id)),
+  };
+}
+
+// ── Picks and counts ───────────────────────────────────────────────────────
+
+/** Copies of a picked item to pack: what the person chose, within what they own; at least 1. */
+export function pickedCopies(item: { id: string; quantity?: number | null }, picks: TripPicks | null | undefined): number {
+  const n = picks?.copies?.[item.id] ?? 1;
+  return Math.max(1, Math.min(quantityOf(item), Math.floor(n)));
+}
+
+/**
+ * How the pieces add up by category, counting copies: [["T-Shirts", 4],
+ * ["Jeans", 3]], in the order categories first appear.
+ */
+export function categoryCounts<T extends { id: string; category?: string | null }>(items: T[], copies: (item: T) => number = () => 1): [string, number][] {
+  const m = new Map<string, number>();
+  for (const it of items) {
+    const c = it.category?.trim() || "Other";
+    m.set(c, (m.get(c) ?? 0) + copies(it));
+  }
+  return Array.from(m.entries());
+}
+
+/** "4 T-Shirts · 3 Jeans · 2 Shoes". */
+export function categoryCountsLabel(counts: [string, number][]): string {
+  return counts.map(([c, n]) => `${n} ${c}`).join(" · ");
+}
+
+/** Picks as saved on the plan row (pickedItemIds + pickedCopies AWSJSON). */
+export function picksOf(row: { pickedItemIds?: (string | null)[] | null; pickedCopies?: unknown }): TripPicks {
+  return { itemIds: (row.pickedItemIds ?? []).filter((x): x is string => !!x), copies: parseJsonField<Record<string, number>>(row.pickedCopies, {}) };
 }
 
 /**
@@ -680,7 +831,9 @@ export async function planTripOutfits(
     tool_choice: { type: "auto", disable_parallel_tool_use: true },
   });
   const block = msg.content.find((b) => b.type === "tool_use");
-  const plan = mergePinned(parseTripPlan(block && "input" in block ? block.input : null, ctx), opts.pinned ?? []);
+  // A tweak isn't held to the picks: the change may add a piece.
+  const picked = opts.revise ? null : opts.picked;
+  const plan = mergePinned(parseTripPlan(block && "input" in block ? block.input : null, ctx, picked), opts.pinned ?? []);
   return { plan, context: tripContextLine(ctx) };
 }
 

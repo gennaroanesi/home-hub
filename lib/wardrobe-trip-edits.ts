@@ -27,6 +27,9 @@ export interface TripPlanRow {
   tips?: string | null;
   feedback?: (string | null)[] | null;
   previousPlan?: unknown;
+  mode?: string | null;
+  pickedItemIds?: (string | null)[] | null;
+  pickedCopies?: unknown;
 }
 
 /** What to write back. `looks` and `previousPlan` are already JSON strings (AWSJSON). */
@@ -38,6 +41,9 @@ export interface TripPlanPatch {
   feedback?: string[];
   previousPlan?: string;
   error?: null;
+  // PICKED plans: the picks follow the packing list, so the next check reviews what's packed now.
+  pickedItemIds?: string[];
+  pickedCopies?: string;
 }
 
 // The planner Lambda outlives AppSync's 30s limit, so callers poll the row.
@@ -73,6 +79,14 @@ export function togglePackedPatch(row: TripPlanRow, id: string): TripPlanPatch {
   return { packedItemIds: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] };
 }
 
+/** For a PICKED plan, picks that match `packItemIds` (copies kept for pieces still picked). */
+function picksPatch(row: TripPlanRow, packItemIds: string[]): Pick<TripPlanPatch, "pickedItemIds" | "pickedCopies"> {
+  if (row.mode !== "PICKED") return {};
+  const copies = parseJsonField<Record<string, number>>(row.pickedCopies, {});
+  const kept = Object.fromEntries(Object.entries(copies).filter(([id]) => packItemIds.includes(id)));
+  return { pickedItemIds: packItemIds, pickedCopies: JSON.stringify(kept) };
+}
+
 /**
  * A direct packing-list edit (replace / remove / add, lib/wardrobe-trip.ts)
  * saved through previousPlan so "Undo last change" works. Ticks only survive
@@ -86,6 +100,7 @@ export function editTripPlanPatch(row: TripPlanRow, next: TripPlan): TripPlanPat
     packedItemIds: ids(row.packedItemIds).filter((id) => next.packItemIds.includes(id) && current.packItemIds.includes(id)),
     previousPlan: JSON.stringify(tripPlanSnapshotOf(row)),
     error: null,
+    ...picksPatch(row, next.packItemIds),
   };
 }
 
@@ -101,6 +116,7 @@ export function undoTripPlanPatch(row: TripPlanRow): TripPlanPatch | null {
     packedItemIds: ids(row.packedItemIds).filter((id) => prev.packItemIds.includes(id)),
     previousPlan: JSON.stringify(tripPlanSnapshotOf(row)),
     error: null,
+    ...picksPatch(row, prev.packItemIds),
   };
 }
 
@@ -153,7 +169,7 @@ export function pinTripLookPatch(row: TripPlanRow, n: number, saved: SavedLookLi
     : { ...l, lookId: null };
   const pack = ids(row.packItemIds);
   for (const id of list[n].itemIds) if (!pack.includes(id)) pack.push(id);
-  return { looks: JSON.stringify(list), packItemIds: pack };
+  return { looks: JSON.stringify(list), packItemIds: pack, ...picksPatch(row, pack) };
 }
 
 /** Forget one remembered tweak (later plans stop following it). */

@@ -17,7 +17,7 @@ import { AppState } from "react-native";
 
 import { getClient } from "../../lib/amplify";
 import { listAllPages } from "../../../lib/list-all";
-import { parseJsonField, type TripActivity, type TripCapacity } from "../../../lib/wardrobe-trip";
+import { parseJsonField, picksOf, type TripActivity, type TripCapacity, type TripPicks, type TripPlanMode } from "../../../lib/wardrobe-trip";
 import {
   TRIP_PLAN_POLL_MS,
   latestTripPlan,
@@ -40,6 +40,9 @@ export function useTripPlan(tripId: string, personId: string, toast: (m: ToastMs
   const [maxPieces, setMaxPieces] = useState("12");
   const [activities, setActivities] = useState<TripActivity[]>([]);
   const [request, setRequest] = useState("");
+  const [mode, setMode] = useState<TripPlanMode>("SUGGEST");
+  const [picks, setPicks] = useState<TripPicks>({ itemIds: [], copies: {} });
+  const [perDay, setPerDay] = useState(true);
   const [change, setChange] = useState("");
   const [busy, setBusy] = useState(false); // the mutation call is in flight
   const [polling, setPolling] = useState(false); // waiting on a saved GENERATING plan
@@ -120,6 +123,9 @@ export function useTripPlan(tripId: string, personId: string, toast: (m: ToastMs
       setMaxPieces(String(p?.maxPieces ?? 12));
       setActivities(parseJsonField<TripActivity[]>(p?.activities, []));
       setRequest(p?.request ?? "");
+      setMode((p?.mode as TripPlanMode | null) ?? "SUGGEST");
+      setPicks(p ? picksOf(p) : { itemIds: [], copies: {} });
+      setPerDay(p?.perDay !== false);
       setChange("");
       setLoaded(true);
       // A plan still generating (started on the web, or before leaving) gets polled.
@@ -165,6 +171,10 @@ export function useTripPlan(tripId: string, personId: string, toast: (m: ToastMs
   /** A fresh plan from the form, or (with `revision`) a tweak of the saved one. */
   async function generate(revision?: string) {
     if (!tripId || !personId) return;
+    if (!revision && mode === "PICKED" && picks.itemIds.length < 2) {
+      toast({ title: "Pick at least two pieces", detail: "Tap what you'd pack, then check.", tone: "warn" });
+      return;
+    }
     tweakingRef.current = !!revision;
     setTweaking(!!revision);
     setBusy(true);
@@ -180,6 +190,10 @@ export function useTripPlan(tripId: string, personId: string, toast: (m: ToastMs
         activities: JSON.stringify(activities.filter((a) => a.text.trim())),
         request: request.trim() || null,
         revision: revision ?? null,
+        mode,
+        perDay,
+        pickedItemIds: mode === "PICKED" ? picks.itemIds : null,
+        pickedCopies: mode === "PICKED" ? JSON.stringify(picks.copies ?? {}) : null,
       });
       if (errors?.length) throw new Error(errors[0].message);
       if (!run.current) return; // the poll already finished it
@@ -231,7 +245,7 @@ export function useTripPlan(tripId: string, personId: string, toast: (m: ToastMs
     plan,
     loaded,
     reload: loadPlan,
-    form: { capacity, setCapacity, maxPieces, setMaxPieces, activities, setActivities, request, setRequest },
+    form: { capacity, setCapacity, maxPieces, setMaxPieces, activities, setActivities, request, setRequest, mode, setMode, picks, setPicks, perDay, setPerDay },
     change,
     setChange,
     busy,

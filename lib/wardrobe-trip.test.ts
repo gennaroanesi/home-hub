@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   MAX_TRIP_DAYS,
   buildTripPrompt,
+  categoryCounts,
+  categoryCountsLabel,
   mergePinned,
+  pickedCopies,
+  picksOf,
   capacityRule,
   fetchTripWeather,
   packCount,
@@ -322,5 +326,88 @@ describe("pinned (saved) looks", () => {
     const { user } = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], pinned: [{ ...saved, itemIds: [items[0].id, items[1].id] }] });
     expect(user).toContain(`Already decided (saved looks; keep them exactly as they are):\n- 2026-11-12 · Dinner (Dinner): [${items[0].id}]`);
     expect(user).toContain("Don't return these looks");
+  });
+});
+
+// ── Picked pieces, review and mix-and-match ────────────────────────────────
+
+describe("picked pieces", () => {
+  const closet = [
+    { id: "tee", category: "T-Shirts", name: "Supima tee", quantity: 4 },
+    { id: "tee2", category: "T-Shirts", name: "Pocket tee" },
+    { id: "jeans", category: "Jeans", name: "Selvedge" },
+    { id: "boots", category: "Shoes", name: "Boots" },
+    { id: "rain", category: "Outerwear", name: "Rain shell" },
+  ];
+  const ctx: TripPlanContext = {
+    person: { id: "p", name: "Gennaro" },
+    styleNotes: null,
+    trip: { id: "t", name: "Seattle", type: "LEISURE", startDate: "2026-12-01", endDate: "2026-12-04", notes: null },
+    location: null,
+    dates: ["2026-12-01", "2026-12-02", "2026-12-03", "2026-12-04"],
+    weather: [],
+    reservations: [],
+    items: closet,
+  };
+  const picks = { itemIds: ["tee", "jeans", "boots", "tee2"], copies: { tee: 3 } };
+
+  it("counts copies by category", () => {
+    const chosen = closet.filter((i) => picks.itemIds.includes(i.id));
+    const counts = categoryCounts(chosen, (i) => pickedCopies(i, picks));
+    expect(counts).toEqual([["T-Shirts", 4], ["Jeans", 1], ["Shoes", 1]]);
+    expect(categoryCountsLabel(counts)).toBe("4 T-Shirts · 1 Jeans · 1 Shoes");
+    // Copies never go past what's owned, nor below 1.
+    expect(pickedCopies({ id: "tee", quantity: 4 }, { itemIds: ["tee"], copies: { tee: 9 } })).toBe(4);
+    expect(pickedCopies({ id: "tee2" }, picks)).toBe(1);
+    expect(packCount({ id: "tee", quantity: 4 }, [], picks)).toBe(3);
+  });
+
+  it("tells the model the picks, with counts and copies, and asks for a review", () => {
+    const { system, user } = buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], picked: picks });
+    expect(system).toMatch(/already chose what to pack/);
+    expect(system).toMatch(/say so in `review`/);
+    expect(user).toMatch(/Picked to pack \(6 pieces: 4 T-Shirts, 1 Jeans, 1 Shoes\)/);
+    expect(user).toMatch(/\[tee\] T-Shirts \| Supima tee \| packing 3 copies/);
+    expect(user).toMatch(/include `review`/);
+  });
+
+  it("asks for mix-and-match looks when not per day", () => {
+    expect(buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [], perDay: false }).system).toMatch(/Don't plan day by day/);
+    expect(buildTripPrompt(ctx, { capacity: "CARRY_ON", activities: [] }).system).toMatch(/Plan one look per day/);
+  });
+
+  it("keeps looks to the picks, packs exactly the picks, and cleans up the review", () => {
+    const raw = {
+      packItemIds: ["rain", "tee"],
+      looks: [
+        { date: "2026-12-01", title: "Travel", itemIds: ["tee", "jeans", "boots", "rain"] },
+        { title: "Mix 1", itemIds: ["tee2", "rain"] }, // only one picked piece left: dropped
+      ],
+      review: {
+        verdict: "GAPS",
+        summary: "Good base, but Seattle is wet.",
+        concerns: ["No rain layer", "  "],
+        add: [{ itemId: "rain", why: "Rain most days" }, { itemId: "tee", why: "already picked" }, { itemId: "ghost" }],
+        leaveHome: [{ itemId: "tee2", why: "Four tees is plenty" }, { itemId: "rain" }],
+      },
+    };
+    const plan = parseTripPlan(raw, ctx, picks);
+    expect(plan.looks).toHaveLength(1);
+    expect(plan.looks[0].itemIds).toEqual(["tee", "jeans", "boots"]);
+    expect(plan.packItemIds).toEqual(["tee", "jeans", "boots", "tee2"]);
+    expect(plan.review).toEqual({
+      verdict: "GAPS",
+      summary: "Good base, but Seattle is wet.",
+      concerns: ["No rain layer"],
+      add: [{ itemId: "rain", why: "Rain most days" }],
+      leaveHome: [{ itemId: "tee2", why: "Four tees is plenty" }],
+    });
+    // No review back still reads as one; a stylist plan has none.
+    expect(parseTripPlan({ looks: [] }, ctx, picks).review?.summary).toMatch(/No review came back/);
+    expect(parseTripPlan(raw, ctx).review).toBeUndefined();
+  });
+
+  it("reads picks off the plan row", () => {
+    expect(picksOf({ pickedItemIds: ["a", null, "b"], pickedCopies: '{"a":2}' })).toEqual({ itemIds: ["a", "b"], copies: { a: 2 } });
   });
 });

@@ -928,6 +928,15 @@ const schema = a
         feedback: a.string().array(),
         // The plan before the last tweak or re-plan (TripPlanSnapshot), for undo.
         previousPlan: a.json(),
+        // SUGGEST: Claude picks what to pack. PICKED: the person picked
+        // (pickedItemIds, pickedCopies {itemId: n} when more than 1) and
+        // Claude builds looks from those and reviews them (review, a
+        // TripReview). perDay false = mix-and-match looks, not one per day.
+        mode: a.enum(["SUGGEST", "PICKED"]),
+        pickedItemIds: a.id().array(),
+        pickedCopies: a.json(),
+        perDay: a.boolean(),
+        review: a.json(),
       })
       .secondaryIndexes((index) => [index("tripId")])
       .authorization((allow) => [
@@ -2660,6 +2669,11 @@ const schema = a
         // Tweak the saved plan instead of re-planning; the other inputs
         // then come from the saved plan.
         revision: a.string(),
+        // PICKED: build looks only from these pieces and review them.
+        mode: a.string(), // SUGGEST (default) | PICKED
+        pickedItemIds: a.id().array(),
+        pickedCopies: a.json(), // { itemId: copies } for items owned more than once
+        perDay: a.boolean(), // default true; false = mix-and-match looks
       })
       .returns(a.ref("wardrobeTripPlanResponse"))
       .handler(a.handler.function(wardrobeSuggest)),

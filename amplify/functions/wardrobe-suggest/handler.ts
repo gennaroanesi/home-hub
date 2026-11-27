@@ -13,6 +13,7 @@ import type { Schema } from "../../data/resource";
 import { loadSuggestContext, suggestOutfits, type Suggestion } from "../../../lib/wardrobe-suggest.js";
 import {
   TRIP_CAPACITIES,
+  TRIP_PLAN_MODES,
   loadTripPlanContext,
   parseJsonField,
   planTripOutfits,
@@ -20,6 +21,8 @@ import {
   type TripCapacity,
   type TripLook,
   type TripPlan,
+  type TripPlanMode,
+  type TripPicks,
   type TripPlanSnapshot,
 } from "../../../lib/wardrobe-trip.js";
 import { listAllPages } from "../../../lib/list-all.js";
@@ -51,6 +54,10 @@ interface TripArgs {
   activities?: unknown; // AWSJSON: string or parsed
   request?: string | null;
   revision?: string | null;
+  mode?: string | null;
+  pickedItemIds?: (string | null)[] | null;
+  pickedCopies?: unknown;
+  perDay?: boolean | null;
 }
 
 interface TripResult {
@@ -111,6 +118,18 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
     );
     const maxPieces = capacity === "PIECES" ? Math.max(1, Math.min(60, (change ? before!.maxPieces : args.maxPieces) ?? 12)) : null;
     const request = (change ? before!.request : args.request)?.trim() || null;
+    // Mode, picks and per-day: a tweak keeps the saved ones.
+    const mode: TripPlanMode = change
+      ? ((before!.mode as TripPlanMode | null) ?? "SUGGEST")
+      : (TRIP_PLAN_MODES as readonly string[]).includes(args.mode ?? "")
+        ? (args.mode as TripPlanMode)
+        : "SUGGEST";
+    const perDay = (change ? before!.perDay : args.perDay) !== false;
+    const pickedIds = [...new Set((change ? before!.pickedItemIds : args.pickedItemIds) ?? [])].filter((x): x is string => !!x);
+    const copiesIn = parseJsonField<Record<string, number>>(change ? before!.pickedCopies : args.pickedCopies, {});
+    const pickedCopies = Object.fromEntries(Object.entries(copiesIn).filter(([id, n]) => pickedIds.includes(id) && Number(n) > 1).map(([id, n]) => [id, Math.floor(Number(n))]));
+    if (mode === "PICKED" && !change && pickedIds.length < 2) throw new Error("Pick at least two pieces to pack.");
+    const picks: TripPicks | null = mode === "PICKED" ? { itemIds: pickedIds, copies: pickedCopies } : null;
     const feedback = (before?.feedback ?? []).filter((f): f is string => !!f);
 
     const inputs = {
@@ -118,6 +137,10 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       maxPieces,
       activities: JSON.stringify(activities) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       request,
+      mode,
+      perDay,
+      pickedItemIds: mode === "PICKED" ? pickedIds : [],
+      pickedCopies: JSON.stringify(mode === "PICKED" ? pickedCopies : {}) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
       status: "GENERATING" as const,
       error: null,
     };
@@ -146,6 +169,8 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       feedback,
       revise: change && current ? { current, change } : null,
       pinned,
+      picked: picks,
+      perDay,
     });
     const ok = plan.looks.length > 0;
     const noLooks = context.startsWith("Add more") ? context : "No looks came back. Try again or loosen the request.";
@@ -167,6 +192,10 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       // Keep ticks for pieces still on the list.
       packedItemIds: (before?.packedItemIds ?? []).filter((id): id is string => !!id && plan.packItemIds.includes(id)),
       tips: plan.tips,
+      // A fresh check of picks reviews them; a tweak leaves no review (it's stale), until the next check.
+      review: JSON.stringify(plan.review ?? null) as any, // eslint-disable-line @typescript-eslint/no-explicit-any
+      // After a tweak of a PICKED plan, what's packed now is the picks.
+      ...(mode === "PICKED" && change ? { pickedItemIds: plan.packItemIds } : {}),
       generatedAt: new Date().toISOString(),
       feedback: change ? [...feedback, change] : feedback,
       ...(ok && snapshot ? { previousPlan: JSON.stringify(snapshot) as any } : {}), // eslint-disable-line @typescript-eslint/no-explicit-any
