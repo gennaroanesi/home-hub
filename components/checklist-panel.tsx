@@ -20,7 +20,8 @@ import { FaPlus, FaTrash, FaCheck, FaTimes, FaFileImport, FaGripVertical, FaChev
 import {
   DndContext,
   closestCorners,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   KeyboardSensor,
   useSensor,
   useSensors,
@@ -111,7 +112,12 @@ function SortableItem({ item, isEditing, editingText, onToggle, onStartEdit, onE
   const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   return (
     <div ref={setNodeRef} style={style} className="group flex items-center gap-1.5 py-1 rounded hover:bg-default-50">
-      <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 opacity-0 group-hover:opacity-100" {...attributes} {...listeners}>
+      <span
+        className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 touch-none p-1 -m-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+        aria-label="Drag to move"
+        {...attributes}
+        {...listeners}
+      >
         <FaGripVertical size={10} />
       </span>
       <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={onToggle} aria-label={item.text} />
@@ -194,7 +200,8 @@ function SectionColumn({ group, checklistId, single, renaming, renameText, onSta
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: `section:${checklistId}:${group.sectionId}`,
     data: { type: "section", sectionId: group.sectionId, checklistId },
-    disabled: isUngrouped,
+    // General stays put but still takes drops (moving an item out of a section).
+    disabled: isUngrouped ? { draggable: true, droppable: false } : false,
   });
   const style: React.CSSProperties = { transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? 0.4 : 1 };
   const p = progress(group.items);
@@ -207,7 +214,7 @@ function SectionColumn({ group, checklistId, single, renaming, renameText, onSta
       {!single && (
         <div className="flex items-center gap-1 mb-1 px-0.5">
           {!isUngrouped && (
-            <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0" {...attributes} {...listeners}>
+            <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 touch-none p-1 -m-1" aria-label="Drag section" {...attributes} {...listeners}>
               <FaGripVertical size={10} />
             </span>
           )}
@@ -293,7 +300,14 @@ export function ChecklistPanel({ entityType, entityId, archiveFilter = "ALL", on
   const [loadingMoveEntities, setLoadingMoveEntities] = useState(false);
 
   const [activeItem, setActiveItem] = useState<ChecklistItem | null>(null);
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }));
+  // Mouse drags after 5px; touch (iPad, phone browsers) after a short press, so
+  // a swipe still scrolls the board and the page. The grips are touch-none so
+  // the browser doesn't take the gesture for a scroll mid-drag.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
 
   useEffect(() => {
     const s = readOpen();
@@ -739,11 +753,16 @@ export function ChecklistPanel({ entityType, entityId, archiveFilter = "ALL", on
           for (const [idx, name] of order.entries()) if (!have.has(name)) groups.push({ sectionId: name, sectionName: name, items: [], sortOrder: idx });
           groups.sort((a, b) => a.sortOrder - b.sortOrder);
           const hasSections = groups.some((g) => g.sectionId !== UNGROUPED);
-          // The General column: only when something is in it, or there's nothing else.
+          // The General column: when something is in it, when there's nothing
+          // else, and while an item of this list is being dragged (so it can be
+          // dropped back out of a section).
+          const draggingHere = !!activeItem && activeItem.checklistId === cl.id;
           const columns = groups
-            .filter((g) => g.sectionId !== UNGROUPED || g.items.length > 0 || !hasSections)
+            .filter((g) => g.sectionId !== UNGROUPED || g.items.length > 0 || !hasSections || draggingHere)
             .map((g) => (g.sectionId === UNGROUPED ? { ...g, sectionName: "General" } : g));
-          if (!columns.length) columns.push({ sectionId: UNGROUPED, sectionName: "General", items: [], sortOrder: -1 });
+          if (!columns.length || (draggingHere && !columns.some((g) => g.sectionId === UNGROUPED))) {
+            columns.unshift({ sectionId: UNGROUPED, sectionName: "General", items: [], sortOrder: -1 });
+          }
           const p = progress(items);
           const isOpen = open.has(cl.id);
           const archived = cl.isArchived === true;

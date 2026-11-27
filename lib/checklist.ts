@@ -260,3 +260,18 @@ export async function copyChecklist(
   }
   return { id: copy.id, name, itemsCopied: items.length };
 }
+
+/**
+ * Moving an item to another section (null = General, no section): the
+ * fields to write, putting it last there. Null when it's already in it.
+ */
+export function moveToSectionPatch(
+  items: Pick<ChecklistItem, "id" | "section" | "sortOrder">[],
+  itemId: string,
+  section: string | null,
+): { section: string | null; sortOrder: number } | null {
+  const item = items.find((i) => i.id === itemId);
+  if (!item || (item.section || null) === section) return null;
+  const there = items.filter((i) => i.id !== itemId && (i.section || null) === section);
+  return { section, sortOrder: there.length ? Math.max(...there.map((i) => i.sortOrder ?? 0)) + 1 : 0 };
+}

@@ -6,7 +6,8 @@
 //     web's: one card per section, swiped sideways, then General (items in
 //     no section; always there, so something can be added outside the
 //     sections). The header is hidden when General is the only group.
-//   • Tap the box to tick, the text to rename, the trash to delete; a
+//   • Tap the box to tick, the text to rename, the trash to delete; hold
+//     an item to move it to another section (or General). A
 //     composer under each section adds to it. "New section" adds one (an
 //     empty card until its first item, like the web). Renaming and
 //     reordering sections is web-only.
@@ -26,6 +27,7 @@ import {
   archivePatch,
   buildSectionGroups,
   deriveSectionOrder,
+  moveToSectionPatch,
   progress,
   type Checklist,
   type ChecklistItem,
@@ -179,6 +181,31 @@ export function ChecklistBody({
     }
   }
 
+  async function moveItem(item: ChecklistItem, section: string | null) {
+    const patch = moveToSectionPatch(items, item.id, section);
+    if (!patch) return;
+    setItems((prev) => prev.map((p) => (p.id === item.id ? { ...p, ...patch } : p)));
+    const { errors } = await getClient().models.homeChecklistItem.update({ id: item.id, ...patch });
+    if (errors?.length) {
+      Alert.alert("Move failed", errors[0].message);
+      await reload();
+    }
+  }
+
+  // Hold an item: move it to any other section, or General.
+  function itemMenu(item: ChecklistItem) {
+    const here = item.section || null;
+    const targets = groups
+      .filter((g) => (g.sectionId === UNGROUPED ? null : g.sectionName) !== here)
+      .map((g) => ({ label: `Move to ${g.sectionId === UNGROUPED ? "General" : g.sectionName}`, run: () => void moveItem(item, g.sectionId === UNGROUPED ? null : g.sectionName) }));
+    if (!targets.length) return;
+    if (Platform.OS === "ios") {
+      ActionSheetIOS.showActionSheetWithOptions({ title: item.text, options: [...targets.map((t) => t.label), "Cancel"], cancelButtonIndex: targets.length }, (i) => targets[i]?.run());
+    } else {
+      Alert.alert(item.text, undefined, [...targets.map((t) => ({ text: t.label, onPress: t.run })), { text: "Cancel", style: "cancel" as const }]);
+    }
+  }
+
   function deleteItem(item: ChecklistItem) {
     Alert.alert(`Delete "${item.text}"?`, undefined, [
       { text: "Cancel", style: "cancel" },
@@ -260,6 +287,8 @@ export function ChecklistBody({
                       setEditingItemId(item.id);
                       setItemDraft(item.text);
                     }}
+                    onLongPress={board ? () => itemMenu(item) : undefined}
+                    delayLongPress={350}
                     style={s.itemTextPress}
                     hitSlop={4}
                   >
