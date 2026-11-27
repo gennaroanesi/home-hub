@@ -36,6 +36,12 @@ export interface OpContext {
    * leave links out when it's missing; never hand out bare S3 URLs.
    */
   fileLink?: (s3Key: string) => Promise<string>;
+  /**
+   * Starts the trip-looks planner (the planTripOutfits mutation's
+   * arguments) in the background, where the surface can: the agent Lambda
+   * invokes wardrobe-suggest asynchronously. The plan row shows progress.
+   */
+  startTripPlan?: (args: Record<string, unknown>) => Promise<void>;
   /** S3 keys of photos sent with the message that triggered the op (Janet). */
   messageImageKeys?: string[];
 }

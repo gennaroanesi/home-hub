@@ -319,6 +319,11 @@ dailySummaryLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API
 // Same plain-env-var pattern as the agent for the Anthropic key.
 const wardrobeSuggestLambda = backend.wardrobeSuggest.resources.lambda as LambdaFunction;
 wardrobeSuggestLambda.addEnvironment("ANTHROPIC_API_KEY", process.env.ANTHROPIC_API_KEY ?? "");
+// plan_trip_looks (Janet, the API, hh) starts the trip planner from the
+// agent Lambda with an async invoke. Both sit in the data stack, so this
+// reference stays inside one stack.
+agentLambda.addEnvironment("WARDROBE_SUGGEST_FUNCTION", wardrobeSuggestLambda.functionName);
+wardrobeSuggestLambda.grantInvoke(agentLambda);
 
 const wardrobeTryOnLambda = backend.wardrobeTryOn.resources.lambda as LambdaFunction;
 wardrobeTryOnLambda.addEnvironment("OPENAI_API_KEY", process.env.OPENAI_API_KEY ?? "");

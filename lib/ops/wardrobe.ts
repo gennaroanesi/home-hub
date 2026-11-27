@@ -3,6 +3,7 @@
 import { z } from "zod/v4";
 import { getHouseholdTimezone } from "../household-settings";
 import { listAllPages } from "../list-all";
+import { photoUrl } from "../image-loader";
 import {
   FORMALITIES,
   SEASONS,
@@ -30,6 +31,7 @@ import { OpError, defineOp } from "./define";
 import { resolvePerson } from "./people";
 
 const WARDROBE_PREFIX = "home/wardrobe/";
+const DATE = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "YYYY-MM-DD");
 const OWNED = ["KEEP", "NEW", "TAILOR"];
 
 const person = {
@@ -463,4 +465,197 @@ async function latestPlan(ctx: OpContext, tripId: string, personId: string) {
   return plans.sort((x, y) => y.updatedAt.localeCompare(x.updatedAt))[0] ?? null;
 }
 
-export const wardrobeOps = [listWardrobe, saveWardrobeItem, getTripPlan, addTripPackToChecklist];
+// ── Looks (homeWardrobeLook) ───────────────────────────────────────────────
+
+const LookOut = z.object({
+  id: z.string(),
+  title: z.string(),
+  occasion: z.string().nullable(),
+  palette: z.string().nullable(),
+  note: z.string().nullable().describe("Why it works"),
+  source: z.string().nullable().describe("MANUAL, SUGGESTED or IMPORTED"),
+  pieces: z.array(z.object({ id: z.string(), label: z.string(), category: z.string().nullable() })).describe("In the look's order; pieces since deleted are left out"),
+  previewUrl: z.string().nullable().describe("Try-on image, when one was made"),
+  updatedAt: z.string().nullable(),
+});
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function lookForApi(l: any, byId: Map<string, any>): z.infer<typeof LookOut> {
+  return {
+    id: l.id,
+    title: l.title,
+    occasion: l.occasion ?? null,
+    palette: l.palette ?? null,
+    note: l.note ?? null,
+    source: l.source ?? null,
+    pieces: (l.itemIds ?? [])
+      .filter((id: string | null): id is string => !!id && byId.has(id))
+      .map((id: string) => ({ id, label: itemLabel(byId.get(id)), category: byId.get(id).category ?? null })),
+    previewUrl: l.previewImageKey ? photoUrl(l.previewImageKey, 800) : null,
+    updatedAt: l.updatedAt ?? null,
+  };
+}
+
+const looksOf = (ctx: OpContext, personId: string) =>
+  listAllPages<any>(ctx.client.models.homeWardrobeLook, { filter: { ownerPersonId: { eq: personId } } }); // eslint-disable-line @typescript-eslint/no-explicit-any
+
+export const listWardrobeLooks = defineOp({
+  name: "list_wardrobe_looks",
+  domain: "wardrobe",
+  access: "read",
+  description:
+    "Someone's saved looks (outfits on the wardrobe page's Looks tab): title, occasion, palette, why it works, and its pieces. Answers 'what looks do I have for golf?', 'show my saved office outfits'. query matches title, occasion, palette, note and piece names.",
+  input: z.object({
+    ...person,
+    lookId: z.string().optional().describe("Return just this look."),
+    query: z.string().optional(),
+    limit: z.number().int().min(1).max(200).optional().describe("Default 50."),
+  }),
+  output: z.object({ count: z.number(), looks: z.array(LookOut) }),
+  async run(ctx, input) {
+    const p = await resolvePerson(ctx, input);
+    const [looks, items] = await Promise.all([looksOf(ctx, p.id), itemsOf(ctx, p.id)]);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const words = (input.query ?? "").toLowerCase().split(/\s+/).filter(Boolean);
+    const out = looks.filter((l) => {
+      if (input.lookId && l.id !== input.lookId) return false;
+      const pieces = (l.itemIds ?? []).map((id: string) => (byId.has(id) ? itemLabel(byId.get(id)) : "")).join(" ");
+      const hay = [l.title, l.occasion, l.palette, l.note, pieces].filter(Boolean).join(" ").toLowerCase();
+      return words.every((w) => hay.includes(w));
+    });
+    out.sort((x, y) => (x.sortOrder ?? 0) - (y.sortOrder ?? 0) || (y.updatedAt ?? "").localeCompare(x.updatedAt ?? ""));
+    return { count: out.length, looks: out.slice(0, input.limit ?? 50).map((l) => lookForApi(l, byId)) };
+  },
+});
+
+export const saveWardrobeLook = defineOp({
+  name: "save_wardrobe_look",
+  domain: "wardrobe",
+  access: "write",
+  description:
+    "Save an outfit as a look on someone's wardrobe page, or change one. Without lookId it creates a look (title and itemIds required); with lookId it updates only what's given. itemIds are pieces from that person's closet (ids from list_wardrobe or suggest_outfit's pieces looked up there), at least two, in the order to show them; on update they replace the pieces. To keep a suggest_outfit result, save it with source SUGGESTED and its why as the note.",
+  input: z.object({
+    ...person,
+    lookId: z.string().optional().describe("Look to change. Leave out to create."),
+    title: z.string().optional(),
+    itemIds: z.array(z.string()).optional().describe("Closet piece ids, at least 2. Replaces the pieces on update."),
+    occasion: z.string().nullable().optional().describe("'Office', 'Weekend', 'Golf'…"),
+    palette: z.string().nullable().optional().describe("'Navy + grey'"),
+    note: z.string().nullable().optional().describe("Why it works"),
+    source: z.enum(["MANUAL", "SUGGESTED"]).optional().describe("Default MANUAL on create"),
+  }),
+  output: z.object({ action: z.enum(["created", "updated"]), look: LookOut }),
+  async run(ctx, input) {
+    const p = await resolvePerson(ctx, input);
+    const items = await itemsOf(ctx, p.id);
+    const byId = new Map(items.map((i) => [i.id, i]));
+    const text = (v: string | null | undefined) => (v === undefined ? undefined : v?.trim() || null);
+
+    let itemIds: string[] | undefined;
+    if (input.itemIds !== undefined) {
+      itemIds = [...new Set(input.itemIds)];
+      const missing = itemIds.filter((id) => !byId.has(id));
+      if (missing.length) throw new OpError(`Not in ${p.name}'s closet: ${missing.join(", ")}. Use list_wardrobe for their ids.`);
+      if (itemIds.length < 2) throw new OpError("A look needs at least two pieces");
+    }
+    const title = input.title === undefined ? undefined : input.title.trim();
+    if (title === "") throw new OpError("A look needs a title");
+
+    if (input.lookId) {
+      const { data: existing } = await ctx.client.models.homeWardrobeLook.get({ id: input.lookId });
+      if (!existing || existing.ownerPersonId !== p.id) throw new OpError(`No look ${input.lookId} for ${p.name}. Use list_wardrobe_looks.`);
+      const patch: Record<string, unknown> = {};
+      if (title !== undefined) patch.title = title;
+      if (itemIds !== undefined) patch.itemIds = itemIds;
+      for (const k of ["occasion", "palette", "note"] as const) if (input[k] !== undefined) patch[k] = text(input[k]);
+      if (input.source !== undefined) patch.source = input.source;
+      if (!Object.keys(patch).length) throw new OpError("Nothing to change");
+      const r = await ctx.client.models.homeWardrobeLook.update({ id: existing.id, ...patch });
+      if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+      return { action: "updated" as const, look: lookForApi(r.data, byId) };
+    }
+
+    if (!title) throw new OpError("title is required to create a look");
+    if (!itemIds) throw new OpError("itemIds are required to create a look");
+    const existing = await looksOf(ctx, p.id);
+    const r = await ctx.client.models.homeWardrobeLook.create({
+      ownerPersonId: p.id,
+      title,
+      itemIds,
+      occasion: text(input.occasion) ?? null,
+      palette: text(input.palette) ?? null,
+      note: text(input.note) ?? null,
+      source: input.source ?? "MANUAL",
+      // At the end of the Looks tab.
+      sortOrder: Math.max(0, ...existing.map((l) => l.sortOrder ?? 0)) + 1,
+    });
+    if (r.errors?.length || !r.data) throw new Error(r.errors?.[0]?.message ?? "Save failed");
+    return { action: "created" as const, look: lookForApi(r.data, byId) };
+  },
+});
+
+// ── plan_trip_looks ────────────────────────────────────────────────────────
+
+export const planTripLooks = defineOp({
+  name: "plan_trip_looks",
+  domain: "wardrobe",
+  access: "write",
+  description:
+    "Start the trip-looks planner for someone's trip (what the wardrobe page's Trip looks tab does). It runs in the background for about a minute and replaces the trip's current plan; read the result with get_trip_plan (status GENERATING, then READY or FAILED). Two ways: leave pickedItemIds out and the stylist chooses what to pack; or pass pickedItemIds (closet ids from list_wardrobe, at least 2, with pickedCopies for items owned more than once) and it builds the looks only from those and reviews them (get_trip_plan's `review`: verdict, concerns, pieces to add or leave home). perDay false gives mix-and-match looks instead of one per day. change tweaks the finished plan instead (\"swap the field jacket for something lower-key\"), keeping everything else and its saved settings.",
+  input: z.object({
+    ...person,
+    tripId: z.string().optional().describe("The trip, by id. Or use tripName."),
+    tripName: z.string().optional().describe("Fuzzy trip name or city. Defaults to the next upcoming trip."),
+    luggage: z.enum(["CARRY_ON", "CHECKED", "PIECES"]).optional().describe("Default: the saved plan's, else CARRY_ON"),
+    maxPieces: z.number().int().min(1).max(60).optional().describe("With luggage PIECES"),
+    activities: z.array(z.object({ date: DATE.nullable().optional(), text: z.string() })).optional().describe("Things to dress for; reservations on the trip are included automatically. Default: the saved plan's"),
+    request: z.string().optional().describe("Anything else, followed as an instruction ('one smart dinner; want to wear the new boots')"),
+    pickedItemIds: z.array(z.string()).optional().describe("Pick the pieces yourself; the looks use only these and they get reviewed"),
+    pickedCopies: z.record(z.string(), z.number().int().min(1)).optional().describe("{ itemId: copies } for picked items owned more than once"),
+    perDay: z.boolean().optional().describe("Default true: a look per day. false: mix-and-match looks"),
+    change: z.string().optional().describe("Tweak the finished plan instead of planning again"),
+  }),
+  output: z.object({ status: z.literal("STARTED"), trip: z.string(), dates: z.string(), startedFrom: z.enum(["SUGGESTED", "PICKED", "TWEAK"]), note: z.string() }),
+  async run(ctx, input) {
+    if (!ctx.startTripPlan) throw new OpError("Planning trip looks from here isn't available; use the wardrobe page's Trip looks tab.");
+    const p = await resolvePerson(ctx, input);
+    const trip = await findTrip(ctx, p.id, input);
+    const before = await latestPlan(ctx, trip.id, p.id);
+    const change = input.change?.trim() || null;
+    if (before?.status === "GENERATING" && before.updatedAt && Date.now() - new Date(before.updatedAt).getTime() < 150_000) {
+      throw new OpError("A plan for this trip is already being made; check get_trip_plan in a minute.");
+    }
+    if (change && before?.status !== "READY") throw new OpError("There's no finished plan to tweak yet; plan it first.");
+
+    const picked = input.pickedItemIds ? [...new Set(input.pickedItemIds)] : null;
+    if (picked) {
+      const byId = new Map((await itemsOf(ctx, p.id)).map((i) => [i.id, i]));
+      const bad = picked.filter((id) => !byId.has(id) || !OWNED.includes(byId.get(id).status ?? "KEEP"));
+      if (bad.length) throw new OpError(`Not wearable pieces in ${p.name}'s closet: ${bad.join(", ")}. Use list_wardrobe for their ids.`);
+      if (picked.length < 2) throw new OpError("Pick at least two pieces to pack.");
+    }
+    const capacity = input.luggage ?? before?.capacity ?? "CARRY_ON";
+    await ctx.startTripPlan({
+      tripId: trip.id,
+      personId: p.id,
+      capacity,
+      maxPieces: capacity === "PIECES" ? (input.maxPieces ?? before?.maxPieces ?? 12) : null,
+      activities: JSON.stringify(input.activities ?? parseJsonField(before?.activities, [])),
+      request: input.request ?? before?.request ?? null,
+      revision: change,
+      mode: picked ? "PICKED" : "SUGGEST",
+      pickedItemIds: picked,
+      pickedCopies: picked ? JSON.stringify(input.pickedCopies ?? {}) : null,
+      perDay: input.perDay ?? before?.perDay ?? true,
+    });
+    return {
+      status: "STARTED" as const,
+      trip: trip.name,
+      dates: `${trip.startDate} to ${trip.endDate}`,
+      startedFrom: change ? ("TWEAK" as const) : picked ? ("PICKED" as const) : ("SUGGESTED" as const),
+      note: "Takes about a minute. Read it with get_trip_plan (same trip); status is GENERATING until it's READY or FAILED.",
+    };
+  },
+});
+
+export const wardrobeOps = [listWardrobe, saveWardrobeItem, listWardrobeLooks, saveWardrobeLook, getTripPlan, planTripLooks, addTripPackToChecklist];

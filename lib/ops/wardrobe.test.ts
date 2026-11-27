@@ -283,3 +283,53 @@ describe("registry", () => {
     expect((save.input_schema.properties as any).status.enum).toContain("WISHLIST");
   });
 });
+
+describe("looks and planning over the API", () => {
+  const chino = { id: "i2", category: "Pants", name: "Chino", brand: "Todd Snyder", color: "Stone", status: "KEEP" };
+  const wish = { id: "i3", category: "Shoes", name: "Loafers", status: "WISHLIST" };
+
+  it("saves a look from closet pieces, lists it, and edits it", async () => {
+    const { ctx, tables } = setup([polo, chino, wish]);
+    const made: any = await runOp(ctx, "save_wardrobe_look", { title: " Weekend ", itemIds: ["i1", "i2", "i1"], occasion: "Weekend", note: "Easy", source: "SUGGESTED" });
+    expect(made.error).toBeUndefined();
+    expect(made.result.action).toBe("created");
+    expect(tables.homeWardrobeLook[0]).toMatchObject({ ownerPersonId: "p1", title: "Weekend", itemIds: ["i1", "i2"], source: "SUGGESTED", sortOrder: 1 });
+    expect(made.result.look.pieces.map((p: any) => p.label)).toEqual(["Cotton piqué polo", "Todd Snyder Chino (Stone)"]);
+
+    const listed: any = await runOp(ctx, "list_wardrobe_looks", { query: "stone" });
+    expect(listed.result.looks.map((l: any) => l.title)).toEqual(["Weekend"]);
+
+    const id = made.result.look.id;
+    const edited: any = await runOp(ctx, "save_wardrobe_look", { lookId: id, palette: "Navy + stone", note: null });
+    expect(edited.result.action).toBe("updated");
+    expect(tables.homeWardrobeLook[0]).toMatchObject({ palette: "Navy + stone", note: null, title: "Weekend" });
+  });
+
+  it("refuses pieces outside the closet, one-piece looks and missing fields", async () => {
+    const { ctx } = setup([polo, chino]);
+    const err = async (input: unknown) => ((await runOp(ctx, "save_wardrobe_look", input)) as any).error;
+    expect(await err({ title: "X", itemIds: ["i1", "nope"] })).toMatch(/Not in Gennaro's closet: nope/);
+    expect(await err({ title: "X", itemIds: ["i1"] })).toMatch(/at least two/);
+    expect(await err({ itemIds: ["i1", "i2"] })).toMatch(/title is required/);
+    expect(await err({ lookId: "ghost", title: "X" })).toMatch(/No look ghost/);
+  });
+
+  it("starts the trip planner in the background with the picks, and checks them first", async () => {
+    const { ctx, tables } = setup([polo, chino, wish]);
+    tables.homeTrip = [{ id: "t1", name: "Seattle", startDate: "2099-11-16", endDate: "2099-11-18", participantIds: ["p1"] }];
+    const started: any[] = [];
+    const withPlanner = { ...ctx, startTripPlan: async (args: any) => void started.push(args) };
+
+    expect(((await runOp(ctx, "plan_trip_looks", {})) as any).error).toMatch(/isn't available/);
+    expect(((await runOp(withPlanner, "plan_trip_looks", { pickedItemIds: ["i1", "i3"] })) as any).error).toMatch(/Not wearable pieces.*i3/);
+    expect(((await runOp(withPlanner, "plan_trip_looks", { change: "lighter" })) as any).error).toMatch(/no finished plan/);
+
+    const out: any = await runOp(withPlanner, "plan_trip_looks", { pickedItemIds: ["i1", "i2"], pickedCopies: { i1: 2 }, perDay: false, luggage: "PIECES", maxPieces: 8 });
+    expect(out.result).toMatchObject({ status: "STARTED", trip: "Seattle", startedFrom: "PICKED" });
+    expect(started[0]).toMatchObject({ tripId: "t1", personId: "p1", mode: "PICKED", pickedItemIds: ["i1", "i2"], pickedCopies: '{"i1":2}', perDay: false, capacity: "PIECES", maxPieces: 8, revision: null });
+
+    // A plan already running isn't started twice.
+    tables.homeWardrobeTripPlan = [{ id: "pl", tripId: "t1", personId: "p1", status: "GENERATING", updatedAt: new Date().toISOString() }];
+    expect(((await runOp(withPlanner, "plan_trip_looks", {})) as any).error).toMatch(/already being made/);
+  });
+});

@@ -1,3 +1,4 @@
+import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "node:crypto";
 import { Amplify } from "aws-amplify";
@@ -116,6 +117,19 @@ let fileLinkKeyCache: string | null = null;
 async function documentDmLink(s3Key: string): Promise<string> {
   if (!fileLinkKeyCache) fileLinkKeyCache = deriveFileLinkKey(await fileLinkRootSecret());
   return signedFileLink(s3Key, fileLinkKeyCache, { ttlMs: FILE_LINK_DM_TTL_MS });
+}
+
+// Trip-looks planner (plan_trip_looks): the wardrobe-suggest Lambda takes
+// about a minute, so it's invoked asynchronously with the planTripOutfits
+// mutation's arguments; it saves its progress on homeWardrobeTripPlan.
+const lambdaClient = new LambdaClient({});
+async function startTripPlan(args: Record<string, unknown>): Promise<void> {
+  const fn = process.env.WARDROBE_SUGGEST_FUNCTION;
+  if (!fn) throw new Error("WARDROBE_SUGGEST_FUNCTION isn't set");
+  const out = await lambdaClient.send(
+    new InvokeCommand({ FunctionName: fn, InvocationType: "Event", Payload: Buffer.from(JSON.stringify({ fieldName: "planTripOutfits", arguments: args })) }),
+  );
+  if (out.StatusCode !== 202) throw new Error(`Couldn't start the trip planner (status ${out.StatusCode})`);
 }
 
 async function fetchS3AsBase64(s3Key: string): Promise<{ contentType: string; data: string }> {
@@ -2058,6 +2072,7 @@ async function executeTool(
         client,
         storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
         fileLink: documentDmLink,
+        startTripPlan,
         actor: { via: ctx.chatContext.channel === "API" ? "api" : "whatsapp", personName: ctx.sender, groupChat: ctx.chatContext.channel === "WA_GROUP" },
         messageImageKeys: ctx.currentImageKeys,
       },
@@ -5134,6 +5149,7 @@ async function handleApiTool(payload: {
         client: await getDataClient(),
         storage: createS3ImageStorage(s3, process.env.HOME_HUB_BUCKET),
         fileLink: documentDmLink,
+        startTripPlan,
         actor: { via: "api", personName: toolCtx.sender },
       },
       name,
