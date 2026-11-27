@@ -48,7 +48,8 @@ export interface TripPlanPatch {
 
 // The planner Lambda outlives AppSync's 30s limit, so callers poll the row.
 export const TRIP_PLAN_POLL_MS = 4000;
-export const TRIP_PLAN_POLL_LIMIT_MS = 150_000;
+// As long as the planner Lambda may run (wardrobe-suggest timeoutSeconds).
+export const TRIP_PLAN_POLL_LIMIT_MS = 600_000;
 
 const ids = (v: (string | null)[] | null | undefined): string[] => (v ?? []).filter((x): x is string => !!x);
 

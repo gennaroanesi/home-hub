@@ -26,6 +26,7 @@ import {
   type TripLook,
   type TripReview,
 } from "../wardrobe-trip";
+import { tripPlanStillGenerating } from "../wardrobe-trip-edits";
 import type { OpContext } from "./context";
 import { OpError, defineOp } from "./define";
 import { resolvePerson } from "./people";
@@ -601,7 +602,7 @@ export const planTripLooks = defineOp({
   domain: "wardrobe",
   access: "write",
   description:
-    "Start the trip-looks planner for someone's trip (what the wardrobe page's Trip looks tab does). It runs in the background for about a minute and replaces the trip's current plan; read the result with get_trip_plan (status GENERATING, then READY or FAILED). Two ways: leave pickedItemIds out and the stylist chooses what to pack; or pass pickedItemIds (closet ids from list_wardrobe, at least 2, with pickedCopies for items owned more than once) and it builds the looks only from those and reviews them (get_trip_plan's `review`: verdict, concerns, pieces to add or leave home). perDay false gives mix-and-match looks instead of one per day. change tweaks the finished plan instead (\"swap the field jacket for something lower-key\"), keeping everything else and its saved settings.",
+    "Start the trip-looks planner for someone's trip (what the wardrobe page's Trip looks tab does). It runs in the background for a minute or more (longer trips take longer) and replaces the trip's current plan; read the result with get_trip_plan (status GENERATING, then READY or FAILED). Two ways: leave pickedItemIds out and the stylist chooses what to pack; or pass pickedItemIds (closet ids from list_wardrobe, at least 2, with pickedCopies for items owned more than once) and it builds the looks only from those and reviews them (get_trip_plan's `review`: verdict, concerns, pieces to add or leave home). perDay false gives mix-and-match looks instead of one per day. change tweaks the finished plan instead (\"swap the field jacket for something lower-key\"), keeping everything else and its saved settings.",
   input: z.object({
     ...person,
     tripId: z.string().optional().describe("The trip, by id. Or use tripName."),
@@ -622,7 +623,7 @@ export const planTripLooks = defineOp({
     const trip = await findTrip(ctx, p.id, input);
     const before = await latestPlan(ctx, trip.id, p.id);
     const change = input.change?.trim() || null;
-    if (before?.status === "GENERATING" && before.updatedAt && Date.now() - new Date(before.updatedAt).getTime() < 150_000) {
+    if (before?.status === "GENERATING" && tripPlanStillGenerating(before)) {
       throw new OpError("A plan for this trip is already being made; check get_trip_plan in a minute.");
     }
     if (change && before?.status !== "READY") throw new OpError("There's no finished plan to tweak yet; plan it first.");
@@ -653,7 +654,7 @@ export const planTripLooks = defineOp({
       trip: trip.name,
       dates: `${trip.startDate} to ${trip.endDate}`,
       startedFrom: change ? ("TWEAK" as const) : picked ? ("PICKED" as const) : ("SUGGESTED" as const),
-      note: "Takes about a minute. Read it with get_trip_plan (same trip); status is GENERATING until it's READY or FAILED.",
+      note: "Takes a minute or more. Read it with get_trip_plan (same trip); status is GENERATING until it's READY or FAILED.",
     };
   },
 });

@@ -389,7 +389,7 @@ export default function TripLooksScreen() {
                   </Pressable>
                 )}
               </View>
-              {working && <Text style={ws.meta}>Takes about a minute. You can leave this screen or the app; the plan is saved when it&apos;s done.</Text>}
+              {working && <Text style={ws.meta}>Takes a minute or two (longer for long trips). You can leave this screen or the app; the plan is saved when it&apos;s done.</Text>}
             </View>
 
             {plan?.status === "FAILED" && !working && <Text style={styles.error}>{plan.error ?? "Planning failed. Try again."}</Text>}
