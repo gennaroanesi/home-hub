@@ -113,12 +113,15 @@ function SortableItem({ item, isEditing, editingText, onToggle, onStartEdit, onE
   return (
     <div ref={setNodeRef} style={style} className="group flex items-center gap-1.5 py-1 rounded hover:bg-default-50">
       <span
-        className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 touch-none p-1 -m-1 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+        // Always shown (an iPad with a trackpad "hovers", so hover-only grips
+        // stayed hidden), dark enough to see, with a finger-sized target.
+        className="text-default-500 hover:text-default-700 group-hover:text-default-600 cursor-grab active:cursor-grabbing flex-shrink-0 touch-none p-1.5 -my-1 -ml-1.5 rounded hover:bg-default-200"
         aria-label="Drag to move"
+        title="Drag to move"
         {...attributes}
         {...listeners}
       >
-        <FaGripVertical size={10} />
+        <FaGripVertical size={13} />
       </span>
       <Checkbox size="sm" isSelected={!!item.isDone} onValueChange={onToggle} aria-label={item.text} />
       {isEditing ? (
@@ -214,8 +217,14 @@ function SectionColumn({ group, checklistId, single, renaming, renameText, onSta
       {!single && (
         <div className="flex items-center gap-1 mb-1 px-0.5">
           {!isUngrouped && (
-            <span className="text-default-300 hover:text-default-500 cursor-grab flex-shrink-0 touch-none p-1 -m-1" aria-label="Drag section" {...attributes} {...listeners}>
-              <FaGripVertical size={10} />
+            <span
+              className="text-default-500 hover:text-default-700 cursor-grab active:cursor-grabbing flex-shrink-0 touch-none p-1.5 -m-1.5 rounded hover:bg-default-200"
+              aria-label="Drag section"
+              title="Drag section"
+              {...attributes}
+              {...listeners}
+            >
+              <FaGripVertical size={13} />
             </span>
           )}
           {renaming ? (
