@@ -161,7 +161,7 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
           }
         : null;
     const ctx = await loadTripPlanContext(client, { tripId: args.tripId, personId: args.personId });
-    const { plan, context } = await planTripOutfits(anthropic, ctx, {
+    const { plan, context, problem } = await planTripOutfits(anthropic, ctx, {
       capacity,
       maxPieces,
       activities,
@@ -173,7 +173,7 @@ async function planTrip(args: TripArgs): Promise<TripResult> {
       perDay,
     });
     const ok = plan.looks.length > 0;
-    const noLooks = context.startsWith("Add more") ? context : "No looks came back. Try again or loosen the request.";
+    const noLooks = context.startsWith("Add more") ? context : `No looks came back. ${problem ?? "Try again or loosen the request."}`;
     if (!ok && change) {
       // A failed tweak leaves the plan as it was.
       await client.models.homeWardrobeTripPlan.update({ id: planId, status: "READY", error: noLooks });

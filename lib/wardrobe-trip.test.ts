@@ -7,6 +7,8 @@ import {
   mergePinned,
   pickedCopies,
   picksOf,
+  planTripOutfits,
+  tripPlanProblem,
   capacityRule,
   fetchTripWeather,
   packCount,
@@ -409,5 +411,66 @@ describe("picked pieces", () => {
 
   it("reads picks off the plan row", () => {
     expect(picksOf({ pickedItemIds: ["a", null, "b"], pickedCopies: '{"a":2}' })).toEqual({ itemIds: ["a", "b"], copies: { a: 2 } });
+  });
+});
+
+describe("when no looks come back", () => {
+  const closet = [
+    { id: "tee", category: "T-Shirts", name: "Tee" },
+    { id: "jeans", category: "Jeans", name: "Selvedge" },
+    { id: "sneaker", category: "Shoes", name: "Sneakers" },
+    { id: "linen", category: "Shirts", name: "Linen shirt" },
+  ];
+  const ctx: TripPlanContext = {
+    person: { id: "p", name: "Gennaro" },
+    styleNotes: null,
+    trip: { id: "t", name: "Porto Alegre", type: "LEISURE", startDate: "2026-12-20", endDate: "2026-12-22", notes: null },
+    location: null,
+    dates: ["2026-12-20", "2026-12-21", "2026-12-22"],
+    weather: [],
+    reservations: [],
+    items: closet,
+  };
+  const picks = { itemIds: ["tee", "jeans", "sneaker"] };
+
+  it("treats the request as what the trip needs, not an order, when the pieces are picked", () => {
+    const { system, user } = buildTripPrompt(ctx, { capacity: "CHECKED", activities: [], picked: picks, request: "2-3 linen shirts" });
+    expect(system).toMatch(/Check the picks against it/);
+    expect(system).not.toMatch(/The request is an instruction/);
+    expect(user).toMatch(/What the trip needs \(check the picks against it\):\n2-3 linen shirts/);
+  });
+
+  it("says why: text instead of a plan, unpicked pieces, or the length limit", () => {
+    const empty = { packItemIds: [], looks: [], tips: null };
+    expect(tripPlanProblem({ stop_reason: "end_turn", content: [{ type: "text", text: "Which linen shirts?" }] }, empty, picks)).toMatch(/answered in words.*Which linen shirts/);
+    expect(tripPlanProblem({ stop_reason: "tool_use", content: [{ type: "tool_use", input: { looks: [{ itemIds: ["linen"] }] } }] }, empty, picks)).toMatch(/All 1 looks used pieces that weren't picked/);
+    expect(tripPlanProblem({ stop_reason: "max_tokens", content: [] }, empty, picks)).toMatch(/length limit/);
+    expect(tripPlanProblem({ content: [] }, { ...empty, looks: [{ date: null, title: "x", occasion: null, itemIds: ["a", "b"], why: null }] }, picks)).toBeNull();
+  });
+
+  it("retries once, answering the bad tool call, and keeps the second plan", async () => {
+    const calls: any[] = [];
+    const replies = [
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu1", name: "propose_trip_plan", input: { packItemIds: [], looks: [{ title: "Beach", itemIds: ["linen", "tee"] }] } }] },
+      { stop_reason: "tool_use", content: [{ type: "tool_use", id: "tu2", name: "propose_trip_plan", input: { packItemIds: [], looks: [{ title: "Beach", itemIds: ["tee", "jeans", "sneaker"] }], review: { verdict: "GAPS", summary: "No linen shirts picked." } } }] },
+    ];
+    const anthropic: any = { messages: { create: async (req: any) => (calls.push(JSON.parse(JSON.stringify(req))), replies[calls.length - 1]) } };
+    const out = await planTripOutfits(anthropic, ctx, { capacity: "CHECKED", activities: [], picked: picks });
+    expect(calls).toHaveLength(2);
+    const retry = calls[1].messages;
+    expect(retry[1].role).toBe("assistant");
+    expect(retry[2].content[0]).toMatchObject({ type: "tool_result", tool_use_id: "tu1", is_error: true });
+    expect(retry[2].content[0].content).toMatch(/weren't picked/);
+    expect(out.problem).toBeNull();
+    expect(out.plan.looks[0].itemIds).toEqual(["tee", "jeans", "sneaker"]);
+    expect(out.plan.review?.summary).toBe("No linen shirts picked.");
+  });
+
+  it("reports the problem when the retry fails too", async () => {
+    const text = { stop_reason: "end_turn", content: [{ type: "text", text: "Do you want the linen shirts?" }] };
+    const anthropic: any = { messages: { create: async () => text } };
+    const out = await planTripOutfits(anthropic, ctx, { capacity: "CHECKED", activities: [], picked: picks });
+    expect(out.plan.looks).toEqual([]);
+    expect(out.problem).toMatch(/answered in words/);
   });
 });

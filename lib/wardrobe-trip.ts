@@ -425,7 +425,9 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
     "- Match formality to the activity and the trip type.",
     "- Golf-category items are only for golf.",
     picked ? "- If the picks break the luggage limit, say so in `review` (and what to drop) rather than dropping them yourself." : "- Respect the luggage limit.",
-    "- The request is an instruction, not a suggestion: a piece it names (even as 'consider' or 'ideally') is packed and worn in at least one look, and its counts (pairs of bottoms, number of tops…) replace the luggage defaults. Make room by dropping something else. Leave a named piece out only when the weather makes it unwearable, and then say so in `tips`.",
+    picked
+      ? "- The request says what the trip needs (places, occasions, counts like '3-4 t-shirts', pieces they'd like to bring). Check the picks against it. Where it asks for something the picks don't cover, don't use unpicked pieces: say so in `review.concerns` and put the closest closet pieces in `review.add`. Build the looks from the picks anyway, as well as they allow."
+      : "- The request is an instruction, not a suggestion: a piece it names (even as 'consider' or 'ideally') is packed and worn in at least one look, and its counts (pairs of bottoms, number of tops…) replace the luggage defaults. Make room by dropping something else. Leave a named piece out only when the weather makes it unwearable, and then say so in `tips`.",
     "- `why` is one sentence naming the pieces by their brand and name exactly as listed in the wardrobe; never rename or nickname them. `tips` is two or three short sentences: what to wear on the plane, anything missing from the closet that the trip needs, and what to leave at home.",
     ctx.styleNotes ? `\nThis person's style brief (follow it):\n${ctx.styleNotes}` : "",
   ]
@@ -455,7 +457,11 @@ export function buildTripPrompt(ctx: TripPlanContext, opts: TripPlanOptions): { 
           .map((r) => `- ${r.date ?? "?"}${r.time ? ` ${r.time}` : ""}: ${r.type ? `${r.type.toLowerCase()} ` : ""}${r.name}`)
           .join("\n")}`
       : "",
-    opts.request?.trim() ? `\nRequest (follow it; pieces it names go in the plan):\n${opts.request.trim()}` : "",
+    opts.request?.trim()
+      ? picked
+        ? `\nWhat the trip needs (check the picks against it):\n${opts.request.trim()}`
+        : `\nRequest (follow it; pieces it names go in the plan):\n${opts.request.trim()}`
+      : "",
     pinned.length ? pinnedBlock(ctx, pinned) : "",
     picked ? pickedBlock(ctx, picked) : "",
     feedback.length ? `\nFeedback on earlier versions of this plan (still applies):\n${feedback.map((f) => `- ${f}`).join("\n")}` : "",
@@ -811,30 +817,79 @@ export function tripContextLine(ctx: TripPlanContext): string {
 
 // ── Call ───────────────────────────────────────────────────────────────────
 
+/**
+ * Why an answer gave no usable looks, in words for the model (on the retry)
+ * and for the person (when the retry fails too). Null when it did.
+ */
+export function tripPlanProblem(
+  msg: { stop_reason?: string | null; content: Array<{ type: string; text?: string; input?: unknown }> },
+  plan: TripPlan,
+  picked: TripPicks | null | undefined,
+): string | null {
+  if (plan.looks.length) return null;
+  if (msg.stop_reason === "max_tokens") return "The answer ran past the length limit before the plan was finished.";
+  const block = msg.content.find((b) => b.type === "tool_use");
+  if (!block) {
+    const text = msg.content.filter((b) => b.type === "text").map((b) => b.text ?? "").join(" ").replace(/\s+/g, " ").trim();
+    return text ? `The stylist answered in words instead of a plan: "${text.slice(0, 400)}${text.length > 400 ? "…" : ""}"` : "No plan came back.";
+  }
+  const raw = (block.input ?? {}) as { looks?: unknown };
+  const n = Array.isArray(raw.looks) ? raw.looks.length : 0;
+  if (!n) return "The plan came back with no looks.";
+  return picked
+    ? `All ${n} looks used pieces that weren't picked (or fewer than two picked pieces), so none could be kept.`
+    : `None of the ${n} looks had at least two pieces from the closet.`;
+}
+
 export async function planTripOutfits(
   anthropic: Anthropic,
   ctx: TripPlanContext,
   opts: TripPlanOptions & { model?: string },
-): Promise<{ plan: TripPlan; context: string }> {
+): Promise<{ plan: TripPlan; context: string; problem?: string | null }> {
   if (ctx.items.length < 3) {
     return { plan: { packItemIds: [], looks: [], tips: null }, context: "Add more items to the wardrobe first." };
   }
   const { system, user } = buildTripPrompt(ctx, opts);
-  const msg = await anthropic.messages.create({
-    model: opts.model ?? SUGGEST_MODEL,
-    max_tokens: 6000,
-    system,
-    messages: [{ role: "user", content: user }],
-    tools: [PROPOSE_TRIP_PLAN_TOOL],
-    // Same as the outfit suggester: Sonnet 5.5 rejects forced tool_choice,
-    // and the prompt's last line names the tool.
-    tool_choice: { type: "auto", disable_parallel_tool_use: true },
-  });
-  const block = msg.content.find((b) => b.type === "tool_use");
   // A tweak isn't held to the picks: the change may add a piece.
   const picked = opts.revise ? null : opts.picked;
-  const plan = mergePinned(parseTripPlan(block && "input" in block ? block.input : null, ctx, picked), opts.pinned ?? []);
-  return { plan, context: tripContextLine(ctx) };
+  const messages: Anthropic.MessageParam[] = [{ role: "user", content: user }];
+  const ask = () =>
+    anthropic.messages.create({
+      model: opts.model ?? SUGGEST_MODEL,
+      // Long trips with a review need room; a cut-off tool call is lost.
+      max_tokens: 12000,
+      system,
+      messages,
+      tools: [PROPOSE_TRIP_PLAN_TOOL],
+      // Same as the outfit suggester: Sonnet 5.5 rejects forced tool_choice,
+      // and the prompt's last line names the tool.
+      tool_choice: { type: "auto", disable_parallel_tool_use: true },
+    });
+  const parse = (msg: Anthropic.Message) => {
+    const block = msg.content.find((b) => b.type === "tool_use");
+    return mergePinned(parseTripPlan(block && "input" in block ? block.input : null, ctx, picked), opts.pinned ?? []);
+  };
+
+  let msg = await ask();
+  let plan = parse(msg);
+  let problem = tripPlanProblem(msg, plan, picked);
+  if (problem) {
+    // One more turn, saying what went wrong.
+    console.warn("[wardrobe-trip] retrying:", problem, "stop:", msg.stop_reason);
+    const fix = `${problem} Use the propose_trip_plan tool now with a complete plan${picked ? "; every look only from the picked pieces (by their ids), and anything missing goes in `review`" : ""}. Keep \`why\` and \`tips\` short.`;
+    const block = msg.content.find((b) => b.type === "tool_use");
+    messages.push({ role: "assistant", content: msg.content });
+    messages.push({
+      role: "user",
+      // A tool call must be answered with its result before anything else.
+      content: block && block.type === "tool_use" ? [{ type: "tool_result", tool_use_id: block.id, content: fix, is_error: true }] : fix,
+    });
+    msg = await ask();
+    plan = parse(msg);
+    problem = tripPlanProblem(msg, plan, picked);
+    if (problem) console.warn("[wardrobe-trip] still no looks:", problem, "stop:", msg.stop_reason);
+  }
+  return { plan, context: tripContextLine(ctx), problem };
 }
 
 /** Tolerates the AWSJSON round trip: a JSON string or the parsed value. */
